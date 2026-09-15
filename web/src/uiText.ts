@@ -41,6 +41,8 @@ Object.assign(capabilityNames,{query_contact_context:"读取联络单办理资�
 
 Object.assign(capabilityNames,{query_project_control_context:'读取项目暂停恢复资料',prepare_project_pause:'准备项目整体暂停',prepare_project_resume:'准备项目整体恢复',project_pause_resume:'项目暂停与恢复'})
 
+Object.assign(capabilityNames,{query_project_closure_context:'读取项目终止与结项资料',prepare_project_closure_checklist:'准备正常结项清单',prepare_project_termination:'准备项目终止审批',prepare_project_closure_item:'准备更新结项事项',prepare_project_normal_close:'准备正常关闭审批',prepare_project_settlement_close:'准备终止结算关闭',project_termination_closure:'项目终止、结算与关闭'})
+
 Object.assign(capabilityNames,{prepare_contact_attach:"准备关联联络单附件",query_uploaded_files:"查询当前会话附件"})
 
 Object.assign(verbs,{attach:"关联附件",upload:"上传本人会话附件"})
@@ -51,6 +53,8 @@ Object.assign(verbs,{plan:'提交处理方案',review:'复验处理结果',set_r
 Object.assign(capabilityNames,{query_contact_resolution:'查询联络单处理方案',prepare_contact_resolution:'准备处理方案审批',prepare_contact_review:'准备复验处理结果',prepare_contact_close:'准备人工关闭联络单',prepare_contact_set_reviewer:'准备指定验收负责人',prepare_contact_cancel_task:'准备撤销联络事项'})
 Object.assign(fields,{case_id:'关联联络单',case_revision:'联络资料版本',solution:'处理方案',customer_due_affected:'是否影响客户交期',customer_evidence:'客户确认依据',material_snapshot:'审批材料快照',tasks:'责任事项',attachments:'附件版本',title:'名称',filename:'文件名',size:'文件大小',media_type:'文件格式',sha256:'原件摘要',department_name:'责任部门',document_id:'材料标识',previous_id:'原版本标识',linked_at:'关联时间',linked_by:'关联人',is_current:'提交时的当前版本',file_id:'原件标识',closed_at:'关闭时间',closed_by_name:'关闭人',reviewer_name:'验收负责人',resolutions:'处理方案审批',verified_plan_id:'复验方案标识',approval_templates:'可选审批模板',category_name:'流程类别',instance_id:'审批记录'})
 Object.assign(fields,{expected_resume_date:'预计恢复日期',task_snapshot:'暂停时冻结的未完成任务',customer_due_date_snapshot:'客户承诺交期快照',allowed_during_pause:'暂停期保留办理事项',plan_number:'关联计划单号',source_pause_number:'来源暂停单号',shifted_days:'实际顺延天数',task_shifts:'计划节点顺延记录',previous_start:'原计划开始',previous_end:'原计划完成',shifted_start:'顺延后开始',shifted_end:'顺延后完成',task_status:'顺延时任务状态'})
+Object.assign(fields,{project_code:'项目编号',project_name:'项目名称',project_status:'项目状态',project_version:'项目版本',system_facts:'系统已知事实',closure_case:'结项清单',current_stage:'当前环节',item_key:'事项标识',label:'事项',allow_not_applicable:'可否不适用',system_managed:'系统事实校验',result:'处置或核对结果',evidence:'依据',source_system:'来源系统',source_ref:'来源原记录',source_as_of:'来源核对时点',history_count:'历史修订数',blockers:'未完成事项',active_plan_number:'有效计划单号',plan_task_count:'计划任务数',unfinished_plan_tasks:'未完成计划任务',open_contact_cases:'未关闭联络事项',open_payment_reservations:'未释放付款占用',open_local_purchase_orders:'本地未关闭采购订单',closure_case_version:'结项清单版本',completed_work_summary:'已完成工作',incurred_cost_summary:'已发生费用说明',incurred_cost_amount:'已发生费用金额'})
+Object.assign(auditNames,{'project.closure.opened':'发起项目结项清单','project.closure.cancelled':'取消原结项清单','project.closure.item.updated':'更新结项核对事项','project.terminated':'项目终止生效','project.closed':'项目关闭生效'})
 Object.assign(auditNames,{'contact.resolution_submitted':'提交联络方案审批','contact.reviewer_set':'指定联络验收负责人','contact.task_cancelled':'撤销联络事项','contact.task_reviewed':'复验联络处理结果','contact.closed':'人工关闭联络单'})
 
 export function numberText(value:string=''){return value.replace(/^CONTACT_RESOLUTI-/, '联络方案-')}

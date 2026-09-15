@@ -939,8 +939,8 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["backend/app/project_closure.py 区分终止/正常关闭并在终止生效后停止Agent本地未完成任务", "backend/app/project_closure_tools.py 提供终止材料准备、人工确认和Agent BPM提交", "ProjectClosureDetail保存终止依据、当前环节、完成工作和费用汇总"],
+      "verification_evidence": ["tests/test_project_closure.py覆盖终止生效、任务停止和终止清单建立", "内置浏览器验证合成终止建议、本人确认、审批通过及生效"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -949,8 +949,8 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["终止清单保存未完成采购、在制品、供应商任务及客户/供应商结算处置", "ERP事实要求原生引用和截至时间且不复制ERP台账", "项目终止后使用专用待结算状态"],
+      "verification_evidence": ["tests/test_project_closure.py覆盖ERP来源缺少引用时阻断及追加修订历史", "真实ERP处置与结算联调待执行"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -959,8 +959,8 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["终止关闭使用独立TERMINATION清单和SETTLEMENT_CLOSE决定", "交付/验收允许记录原因后标为不适用", "关闭结果为CLOSED_TERMINATION且历史不删除"],
+      "verification_evidence": ["tests/test_project_closure.py覆盖终止结算关闭、不适用项和关闭后历史保护", "专用PostgreSQL验收待执行"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -969,8 +969,8 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["正常关闭清单要求计划、交付、适用验收、发票、客户回款、供应商结算、异常处理及归档", "最终审批生效前重新检查实时阻断项"],
+      "verification_evidence": ["tests/test_project_closure.py覆盖未完成计划和新联络事项阻断正常关闭", "测试覆盖计划完成后的实时复核与系统修订归档"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -979,8 +979,8 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["ProjectClosureItemRevision追加保存每次清单更正历史", "关闭案例保留人员、版本、来源、依据、截至时间和检查明细", "迁移f1a4d8c7e2b3建立关闭案例、清单、修订和数据库约束"],
+      "verification_evidence": ["5项终止/关闭规则测试通过", "全部可运行的非PostgreSQL测试114 passed、103项专用PostgreSQL集成测试跳过", "离线DDL和真实数据库验收另行登记"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

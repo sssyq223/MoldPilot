@@ -297,6 +297,84 @@ class PauseTaskShift(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint('pause_id','task_id'), CheckConstraint('shifted_days >= 0'))
 
 
+class ProjectClosureCase(IdentityMixin, Base):
+    """Durable normal-close or termination-settlement checklist."""
+    __tablename__ = 'project_closure_case'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    mode: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default='OPEN')
+    current_stage: Mapped[str] = mapped_column(String(200))
+    opened_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    source_termination_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), unique=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    closed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("mode IN ('NORMAL','TERMINATION')", name='project_closure_mode'),
+        CheckConstraint("status IN ('OPEN','CLOSED','CANCELLED')", name='project_closure_status'),
+    )
+
+
+class ProjectClosureItem(IdentityMixin, Base):
+    __tablename__ = 'project_closure_item'
+    case_id: Mapped[str] = mapped_column(ForeignKey('project_closure_case.id'), index=True)
+    item_key: Mapped[str] = mapped_column(String(80))
+    label: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(30), default='PENDING')
+    allow_not_applicable: Mapped[bool] = mapped_column(Boolean, default=False)
+    system_managed: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[str] = mapped_column(Text, default='')
+    evidence: Mapped[str] = mapped_column(Text, default='')
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(300))
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (
+        UniqueConstraint('case_id','item_key'),
+        CheckConstraint("status IN ('PENDING','DONE','NOT_APPLICABLE')", name='project_closure_item_status'),
+        CheckConstraint("source_system IN ('AGENT','ERP','MANUAL')", name='project_closure_item_source'),
+    )
+
+
+class ProjectClosureItemRevision(IdentityMixin, Base):
+    """Append-only evidence for checklist changes; corrections never erase history."""
+    __tablename__ = 'project_closure_item_revision'
+    item_id: Mapped[str] = mapped_column(ForeignKey('project_closure_item.id'), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    from_status: Mapped[str | None] = mapped_column(String(30))
+    to_status: Mapped[str] = mapped_column(String(30))
+    result: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20))
+    source_ref: Mapped[str | None] = mapped_column(String(300))
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    changed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (UniqueConstraint('item_id','revision'),)
+
+
+class ProjectClosureDetail(Base):
+    __tablename__ = 'project_closure_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    decision: Mapped[str] = mapped_column(String(30))
+    effective_date: Mapped[date] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text)
+    project_version: Mapped[int] = mapped_column(Integer)
+    closure_case_id: Mapped[str | None] = mapped_column(ForeignKey('project_closure_case.id'))
+    closure_case_version: Mapped[int | None] = mapped_column(Integer)
+    current_stage: Mapped[str | None] = mapped_column(String(200))
+    completed_work_summary: Mapped[str | None] = mapped_column(Text)
+    incurred_cost_summary: Mapped[str | None] = mapped_column(Text)
+    incurred_cost_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    __table_args__ = (
+        CheckConstraint("decision IN ('TERMINATE','NORMAL_CLOSE','SETTLEMENT_CLOSE')", name='project_closure_decision'),
+        CheckConstraint('incurred_cost_amount IS NULL OR incurred_cost_amount >= 0', name='project_closure_cost'),
+    )
+
+
 class EngineeringChangeDetail(Base):
     __tablename__ = 'engineering_change_detail'
     subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)

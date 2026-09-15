@@ -23,6 +23,12 @@ TOOLS.update({
     'query_project_control_context':{'description':'查询指定项目的执行状态、有效计划、未完成任务、当前暂停区间及可选审批流程；区分内部计划与客户承诺交期。','permission':'project.read'},
     'prepare_project_pause':{'description':'准备项目整体暂停并提交 Agent BPM 的操作建议；冻结未完成任务范围，审批完成前不改变状态。','permission':'pause_resume.create'},
     'prepare_project_resume':{'description':'准备项目整体恢复并提交 Agent BPM 的操作建议；展示实际暂停天数和拟顺延节点，客户承诺交期不自动改变。','permission':'pause_resume.create'},
+    'query_project_closure_context':{'description':'查询项目终止或正常关闭清单、系统已知阻塞项、历史修订及可选审批流程；不会把局部完成误判为项目关闭。','permission':'project_close.read'},
+    'prepare_project_closure_checklist':{'description':'准备建立正常项目结项清单；人工确认后仅创建核对事项，不关闭项目。','permission':'project_close.create'},
+    'prepare_project_termination':{'description':'准备客户终止项目的审批建议，固化当前环节、已完成工作和已发生费用；审批生效后转入终止处置。','permission':'project_close.create'},
+    'prepare_project_closure_item':{'description':'准备更新一个结项处置或核对事项；保留原状态和依据修订，ERP 来源必须带原记录引用与核对时点。','permission':'project_close.execute'},
+    'prepare_project_normal_close':{'description':'准备正常关闭审批；仅在交付、验收、财务、异常和归档等适用清单全部完成后允许提交。','permission':'project_close.create'},
+    'prepare_project_settlement_close':{'description':'准备终止结算关闭审批；不强制不适用的交付验收，但要求处置、结算、收付款和归档清单完成。','permission':'project_close.create'},
 })
 from . import contact_tools
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
@@ -34,7 +40,10 @@ SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["q
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
-               'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context','prepare_project_pause','prepare_project_resume']}})
+               'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context','prepare_project_pause','prepare_project_resume']},
+               'project_termination_closure':{'name':'项目终止、结算与关闭','tools':['query_projects','query_project_closure_context',
+                   'prepare_project_closure_checklist','prepare_project_termination','prepare_project_closure_item',
+                   'prepare_project_normal_close','prepare_project_settlement_close']}})
 
 
 def assigned(db, user, kind, key):
@@ -51,7 +60,11 @@ def tool_schema(key):
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         schema=contact_tools.ContextInput.model_json_schema() if key=='query_contact_context' else contact_tools.schema(key.removeprefix('prepare_contact_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema}}
-    if key.startswith('prepare_project_') or key=='query_project_control_context':
+    from .project_closure_tools import ACTION_BY_TOOL,ClosureContextInput,schema as closure_schema
+    if key in ACTION_BY_TOOL or key=='query_project_closure_context':
+        parameters=ClosureContextInput.model_json_schema() if key=='query_project_closure_context' else closure_schema(ACTION_BY_TOOL[key])
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import ProjectContextInput,schema
         parameters=ProjectContextInput.model_json_schema() if key=='query_project_control_context' else schema(key.removeprefix('prepare_project_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
@@ -74,7 +87,11 @@ def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         return contact_tools.execute_tool(db,user,key,arguments)
-    if key.startswith('prepare_project_') or key=='query_project_control_context':
+    from .project_closure_tools import ACTION_BY_TOOL
+    if key in ACTION_BY_TOOL or key=='query_project_closure_context':
+        from .project_closure_tools import execute_tool
+        return execute_tool(db,user,key,arguments)
+    if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments)
     if arguments: raise DomainError("INVALID_TOOL_INPUT", "该工具不接受额外参数")

@@ -64,6 +64,21 @@ class PauseResumeInput(StrictModel):
     source_pause_subject_id: str | None = Field(default=None,max_length=36)
 
 
+class ProjectCloseInput(StrictModel):
+    decision: Literal['TERMINATE','NORMAL_CLOSE','SETTLEMENT_CLOSE']
+    effective_date: date
+    reason: str = Field(min_length=1,max_length=4000)
+    evidence: str = Field(min_length=1,max_length=4000)
+    project_version: int = Field(ge=1)
+    closure_case_id: str | None = Field(default=None,max_length=36)
+    closure_case_version: int | None = Field(default=None,ge=1)
+    current_stage: str | None = Field(default=None,max_length=200)
+    completed_work_summary: str | None = Field(default=None,max_length=10000)
+    incurred_cost_summary: str | None = Field(default=None,max_length=10000)
+    incurred_cost_amount: Decimal | None = Field(default=None,ge=0,max_digits=18,decimal_places=2)
+    currency: str | None = Field(default=None,pattern=r'^[A-Z]{3}$')
+
+
 class ImpactInput(StrictModel):
     task_id: str
     action: Literal['KEEP','PAUSE','CANCEL','REWORK']
@@ -157,7 +172,7 @@ CATALOG = {
     'pause_resume': {'name':'暂停与恢复', 'schema':PauseResumeInput, 'risk':'H12'},
     'supplier_payment': {'name':'供应商付款申请', 'schema':PaymentInput, 'risk':'H04'},
     'engineering_change': {'name':'工程联络单', 'schema':ChangeInput, 'risk':'H09'},
-    'project_close': {'name':'项目关闭', 'schema':DecisionInput, 'decisions':['NORMAL_CLOSE','TERMINATE','SETTLEMENT_CLOSE'], 'risk':'H12'},
+    'project_close': {'name':'项目终止与关闭', 'schema':ProjectCloseInput, 'risk':'H12'},
 }
 
 READ_FIELDS = ['id','kind','number','project_id','category','warehouse_id','remark','status','revision',

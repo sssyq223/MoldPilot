@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon} from 'lucide-vue-next'
+import type {ColorTheme} from '../theme'
 import {api,shanghai} from '../api'
 import {capabilityName,permissionName,auditName} from '../uiText'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
-const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string}>()
-const emit=defineEmits<{close:[];error:[message:string]}>()
+const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme}>()
+const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme]}>()
 const page=ref('account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
 const navigation=computed(()=>[
  {key:'account',name:'账号与模型',icon:Settings,allow:true},
@@ -40,6 +41,14 @@ async function select(key:string){
    <template v-if="page==='account'">
     <h2>账号与模型</h2><p class="muted">当前账号的信息及智能体使用的模型。</p>
     <dl class="settings-facts surface"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>模型</dt><dd>{{modelName}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
+    <h3 class="settings-section-title">外观</h3>
+    <section class="surface appearance-setting" aria-labelledby="appearance-title">
+     <div><strong id="appearance-title">颜色模式</strong><small class="muted">选择更适合当前环境的工作台明暗外观，设置会保存在本机。</small></div>
+     <div class="theme-options" role="group" aria-label="颜色模式">
+      <button :class="{active:colorTheme==='light'}" :aria-pressed="colorTheme==='light'" @click="emit('themeChange','light')"><Sun :size="17"/>浅色</button>
+      <button :class="{active:colorTheme==='dark'}" :aria-pressed="colorTheme==='dark'" @click="emit('themeChange','dark')"><Moon :size="17"/>深色</button>
+     </div>
+    </section>
    </template>
    <template v-else-if="page==='capabilities'">
     <h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。</p>

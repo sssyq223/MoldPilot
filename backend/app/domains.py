@@ -66,6 +66,12 @@ def typed_detail(db,subject):
             pause=db.scalar(select(m.PauseRecord).where(m.PauseRecord.subject_id==detail['source_pause_subject_id']))
             detail['shifted_days']=pause.shifted_days if pause else 0
             detail['task_shifts']=[values(row) for row in rows(db,m.PauseTaskShift,pause_id=pause.id)] if pause else []
+    elif kind=='project_close':
+        detail=values(db.get(m.ProjectClosureDetail,subject.id),('subject_id',))
+        if detail.get('closure_case_id'):
+            case=db.get(m.ProjectClosureCase,detail['closure_case_id'])
+            detail['closure_case']={**values(case),'items':[
+                values(item) for item in rows(db,m.ProjectClosureItem,case_id=case.id)]} if case else None
     elif kind=='engineering_change':
         detail=values(db.get(m.EngineeringChangeDetail,subject.id),('subject_id',))
         detail['impacts']=[values(i) for i in rows(db,m.ChangeImpact,change_id=subject.id)]
@@ -228,6 +234,10 @@ def create(db,user,payload):
             reason=detail.reason,evidence=detail.evidence,source_pause_subject_id=detail.source_pause_subject_id,
             plan_subject_id=context['plan'].id if context['plan'] else None,
             task_snapshot=context['task_snapshot'],customer_due_date_snapshot=context['customer_due_date']))
+    elif isinstance(detail,s.ProjectCloseInput):
+        from .project_closure import validate_close_detail
+        validate_close_detail(db,project,detail,subject.id)
+        db.add(m.ProjectClosureDetail(subject_id=subject.id,**detail.model_dump()))
     elif isinstance(detail,s.ChangeInput):
         if detail.customer_due_affected and not detail.customer_evidence:
             raise DomainError('CUSTOMER_CONFIRMATION_REQUIRED','影响客户交期时必须提供独立客户确认依据')
@@ -270,6 +280,9 @@ def before_submit(db,user,subject):
         from .contact_lifecycle import ensure_materials
         ensure_materials(db,db.get(m.ContactResolution,subject.id))
     if subject.kind=='supplier_payment':payment_reserve(db,subject)
+    elif subject.kind=='project_close':
+        from .project_closure import validate_close_detail
+        validate_close_detail(db,project,db.get(m.ProjectClosureDetail,subject.id),subject.id)
     elif subject.kind=='internal_start':
         detail=db.get(m.BusinessDecisionDetail,subject.id)
         source=require_source(db,detail.source_subject_id,subject.project_id,{'quote_acceptance'})
@@ -355,23 +368,8 @@ def apply(db,user,subject):
             # Customer commitment is intentionally untouched; changing it needs separate confirmed evidence.
         project.row_version+=1
     elif kind=='project_close':
-        detail=db.get(m.BusinessDecisionDetail,subject.id)
-        tasks=list(db.scalars(select(m.PlanTask).join(m.BusinessSubject,m.BusinessSubject.id==m.PlanTask.plan_id).where(m.BusinessSubject.project_id==project.id,m.BusinessSubject.status=='EFFECTIVE')))
-        if detail.decision=='TERMINATE':
-            if project.status in {'CLOSED','TERMINATED'}:raise DomainError('CLOSE_STATE','项目已终止或关闭')
-            for task in tasks:
-                if task.status!='DONE':task.status='STOPPED'
-            project.status='TERMINATED'
-        else:
-            if detail.decision=='NORMAL_CLOSE' and (not tasks or any(t.status!='DONE' for t in tasks)):
-                raise DomainError('CLOSE_BLOCKED','正常关闭需要有效计划且全部适用任务已完成')
-            if detail.decision=='SETTLEMENT_CLOSE' and project.status!='TERMINATED':raise DomainError('CLOSE_STATE','终止结算关闭要求项目已终止')
-            open_payments=db.scalar(select(m.PaymentRequestDetail.subject_id).join(m.BusinessSubject,m.BusinessSubject.id==m.PaymentRequestDetail.subject_id).where(m.BusinessSubject.project_id==project.id,m.PaymentRequestDetail.reservation>0).limit(1))
-            if open_payments:raise DomainError('SETTLEMENT_PENDING','仍有未完成付款占用，不能关闭')
-            project.status='CLOSED'
-            profile=db.get(m.ProjectProfile,project.id)
-            if profile:profile.settlement_status='CLOSED'
-        project.row_version+=1
+        from .project_closure import apply_subject
+        apply_subject(db,user,subject)
     elif kind=='supplier_payment':
         detail=db.get(m.PaymentRequestDetail,subject.id)
         stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())

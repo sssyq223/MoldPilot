@@ -9,6 +9,9 @@ import ApprovalPanel from './components/ApprovalPanel.vue'
 import ContactPanel from './components/ContactPanel.vue'
 import ContactProposal from './components/ContactProposal.vue'
 import FileMaterial from './components/FileMaterial.vue'
+import {applyTheme,storedTheme,type ColorTheme} from './theme'
+const colorTheme=ref<ColorTheme>(storedTheme())
+function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
 const modelName=ref('未配置模型')
 const contactTarget=ref('')
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
@@ -67,7 +70,7 @@ onUnmounted(()=>clearInterval(timer))
 <template>
 <div v-if="loading" class="loading-screen">正在连接工作台…</div>
 <main v-else-if="!me" class="login-screen"><form class="login-box" @submit.prevent="login"><div class="brand-symbol"><Bot :size="30"/></div><h1>MoldPilot</h1><p>模具项目智能工作台 · 从一个任务开始，让业务能力协同工作。</p><label>用户名<input v-model="username" autocomplete="username" required autofocus/></label><label>密码<input v-model="password" type="password" autocomplete="current-password" required/></label><p v-if="error" class="error" role="alert">{{error}}</p><button class="primary" :disabled="busy">{{busy?'正在登录…':'登录工作台'}}<ArrowRight :size="16"/></button><small>统一智能体入口 · 你的权限决定可用能力</small></form></main>
-<SettingsPage v-else-if="settingsOpen" :me="me" :permissions="permissions" :capabilities="capabilities" :model-name="modelName" @close="settingsOpen=false;refresh().catch(e=>fail(e.message))" @error="fail"/>
+<SettingsPage v-else-if="settingsOpen" :me="me" :permissions="permissions" :capabilities="capabilities" :model-name="modelName" :color-theme="colorTheme" @theme-change="changeTheme" @close="settingsOpen=false;refresh().catch(e=>fail(e.message))" @error="fail"/>
 <main v-else class="workbench" :class="{'panel-full':full&&workspaceOpen}">
   <aside class="sidebar"><div class="brand"><Bot :size="23"/><strong>MoldPilot</strong></div><button class="new-chat" @click="newConversation"><Plus :size="18"/>新对话</button><label class="search"><Search :size="16"/><input v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="notice-entry" @click="showNotices?showNotices=false:openNotices()"><Bell :size="18"/>消息通知<span v-if="noticeCount" class="counter">{{noticeCount}}</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><button v-for="c in conversations.filter(c=>c.title.includes(search))" :key="c.id" :class="{active:conversation===c.id}" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar">{{me.display_name[0]}}</span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.super_admin?'超级管理员':me.department||me.username}}</small></span></button>
 <div v-if="showProfile" class="profile-dismiss" @click="closeProfile"/>

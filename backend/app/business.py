@@ -254,6 +254,9 @@ def create_intent(db, user, action, resource_id, payload):
     elif action == 'project_control.execute':
         from .project_control_tools import validate_intent
         validate_intent(db,user,payload)
+    elif action == 'project_closure.execute':
+        from .project_closure_tools import validate_intent
+        validate_intent(db,user,payload)
     elif action.startswith('domain.'):
         from .domain_commands import validate_command
         validate_command(db,user,action[7:],resource_id,payload)
@@ -280,6 +283,9 @@ def confirm_intent(db, user, intent_id, challenge):
         result=confirm(db,user,intent.payload)
     elif intent.action=='project_control.execute':
         from .project_control_tools import confirm
+        result=confirm(db,user,intent.payload)
+    elif intent.action=='project_closure.execute':
+        from .project_closure_tools import confirm
         result=confirm(db,user,intent.payload)
     elif intent.action.startswith('domain.'):
         from .domain_commands import execute_command

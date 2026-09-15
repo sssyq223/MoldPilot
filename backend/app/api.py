@@ -421,3 +421,5 @@ from .contact_tools import router as contact_proposal_router
 app.include_router(contact_proposal_router)
 from .project_control_tools import router as project_control_proposal_router
 app.include_router(project_control_proposal_router)
+from .project_closure_tools import router as project_closure_proposal_router
+app.include_router(project_closure_proposal_router)
