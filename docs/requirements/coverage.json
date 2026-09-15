@@ -699,8 +699,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -709,8 +718,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -719,8 +737,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -729,8 +756,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -739,8 +775,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -749,8 +794,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -759,8 +813,17 @@
       "module": "采购与价格",
       "agent_responsibility": "Agent 开发辅材、办公用品、试模料新增需求及全部适用审批；原材/五金/委外和已有下单/拆单动作调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文",
+        "procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据",
+        "工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常",
+        "工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请"
+      ],
+      "verification_evidence": [
+        "tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合",
+        "tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号",
+        "tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1456,7 +1519,9 @@
         "query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations",
         "工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划",
         "query_design_route_context 在设计/BOM/路线语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划或联络工具时写入 limitations",
-        "设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成"
+        "设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成",
+        "query_procurement_price_context 在采购价格和订单语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少设计、申请或订单工具时写入 limitations",
+        "采购上下文工具不把无价格推断为不可采购，不把订单存在推断为已收货/检验/入库完成，正式执行仍以对应回执为准"
       ],
       "verification_evidence": [
         "tests/test_project_dossier.py 覆盖同号歧义与无权不可见",
@@ -1465,7 +1530,8 @@
         "tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态",
         "tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态",
         "tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离",
-        "tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离"
+        "tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离",
+        "tests/test_procurement_tools.py 覆盖多候选、无有效价格和采购申请/订单权限隔离"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

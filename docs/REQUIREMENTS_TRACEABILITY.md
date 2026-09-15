@@ -466,8 +466,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 辅料和刀具先建正式料品档案，包含料号、分类、名称、规格型号、单位、库存方式、默认供应商、参考价格及启停状态。普通采购必须引用正式料品，不长期使用临时名称代替料号；分类和编码规则支持维护。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-049
@@ -475,8 +475,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 管理按料号的通用价目表、按材质分类的分类价目表及按供应商与料号的专用价目表。价格新增、修改和停用须审批；多个价格同时适用时的优先级、有效期和税价口径在适配中确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-050
@@ -484,8 +484,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 已有审批有效价格时带出对应依据；无价格或不适用时由采购询价、比价、议价，人工上传报价单、邮件或聊天记录后审批。历史报价只作参考，不直接替代有效采购价格。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-051
@@ -493,8 +493,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 采购区分设计委外、原材料及五金零件、工序委外、组装、试模、整套委外、辅料和刀具等类型，按对应流程执行。供应商信息及负责采购岗位按类别维护。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-052
@@ -502,8 +502,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 普通采购从料品档案发起。资产采购建立电子合同台账，按约定开票和付款，由采购办理、财务按业务要求盖章确认；是否扩展为资产管理功能在适配中明确。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-053
@@ -511,8 +511,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 试模料由设计与项目并行确认是否需要额外采购及数量。客户提供满足需求的试模料时不重复采购；需额外采购时按确认需求办理，由对应冲压采购岗位跟进供应商。客户供料情况和采购判断应保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-054
@@ -520,8 +520,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 下单后跟踪供应商生产、发货、到货、收货、检验和入库状态及凭证。不合格时按确认结果安排整改、退换货、扣款或重新交付，并关联原订单及工程联络单。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
 - 验收状态：NOT_VERIFIED
 
 ## 整套委外合同与付款条件
@@ -1086,8 +1086,8 @@ Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按�
 按提问查询时，应区分未找到、多条候选、未确认数据及无权限情形，必要时要求用户明确对象。不编造缺失数据或将不同项目的记录拼接为确定答案；计算结果可回溯输入口径。自然语言技术实现和响应指标后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限；query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations；工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接；query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations；工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划；query_design_route_context 在设计/BOM/路线语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划或联络工具时写入 limitations；设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成
-- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态；tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态；tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离；tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离
+- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限；query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations；工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接；query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations；工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划；query_design_route_context 在设计/BOM/路线语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划或联络工具时写入 limitations；设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成；query_procurement_price_context 在采购价格和订单语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少设计、申请或订单工具时写入 limitations；采购上下文工具不把无价格推断为不可采购，不把订单存在推断为已收货/检验/入库完成，正式执行仍以对应回执为准
+- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态；tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态；tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离；tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离；tests/test_procurement_tools.py 覆盖多候选、无有效价格和采购申请/订单权限隔离
 - 验收状态：NOT_VERIFIED
 
 ## 权限与审计
