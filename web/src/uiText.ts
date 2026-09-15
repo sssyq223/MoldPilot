@@ -30,8 +30,8 @@ export function capabilityMeta(item:any){
  const action=permission.split('.')[1]||''
  const type=capabilityTypes[key]||(
   key.startsWith('query_')||action==='read'?'query':
-  key.includes('review')||action==='approve'?'approval':
-  key.endsWith('_review')?'review':
+  action==='approve'?'approval':
+  key.includes('review')||key.endsWith('_review')?'review':
   'operation'
  )
  return {department,type,departmentName:capabilityDepartmentNames[department]||'业务部门',typeName:capabilityTypeNames[type]||'操作'}

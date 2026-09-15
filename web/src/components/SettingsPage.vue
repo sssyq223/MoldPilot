@@ -79,7 +79,7 @@ async function select(key:string){
       <h3>{{department.name}}</h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
        <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="tool in type.items" :key="tool.key" class="surface capability-card"><h3><Wrench :size="16"/>{{capabilityName(tool.key)}}</h3><p>{{tool.description}}</p><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">所需权限：{{permissionName(tool.permission)}} · {{tool.key.startsWith('prepare_')?'准备建议，须本人确认':'只读'}}</small></article>
+       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool.key)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">{{permissionName(tool.permission)}} · {{tool.key.startsWith('prepare_')?'需确认':'只读'}}</small></div></article>
       </div>
      </section>
     </div>
@@ -91,7 +91,7 @@ async function select(key:string){
       <h3>{{department.name}}</h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
        <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="skill in type.items" :key="skill.key" class="surface capability-card"><h3><Layers :size="16"/>{{capabilityName(skill.key)}}</h3><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div><small class="muted">第 {{skill.version}} 版 · 使用当前授权工具</small></article>
+       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill.key)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div></div></article>
       </div>
      </section>
     </div>
