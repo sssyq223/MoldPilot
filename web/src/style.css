@@ -724,7 +724,7 @@ html[data-theme="light"] .chat-header-actions .small{color:#172334!important}
 /* Welcome robot should read as blue, not grey. */
 .chat .agent-mark{color:var(--accent)!important;background:color-mix(in srgb,var(--accent) 18%,transparent)!important;border-color:color-mix(in srgb,var(--accent) 36%,transparent)!important}
 .chat .agent-mark svg{color:currentColor!important;stroke-width:2}
-html[data-theme="light"] .chat .agent-mark{color:#2f6fa8!important;background:#e1efff!important;border-color:#9fc2e8!important}
+html[data-theme="light"] .chat .agent-mark{color:#172334!important;background:#e1efff!important;border-color:#9fc2e8!important}
 
 /* Context usage popover must be an opaque card, not transparent over the composer. */
 .context-popover{background:#fff!important;color:#223044!important;border-color:#cbd8e6!important;box-shadow:0 18px 55px #34495e2b!important}
