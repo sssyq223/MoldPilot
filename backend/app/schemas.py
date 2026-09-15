@@ -125,6 +125,7 @@ class ModelConfigInput(StrictModel):
     company: CompanyModelConfigInput = Field(default_factory=CompanyModelConfigInput)
     ollama: OllamaModelConfigInput = Field(default_factory=OllamaModelConfigInput)
     max_output_tokens: int = Field(default=2048, ge=256, le=8192)
+    context_window: int = Field(default=8192, ge=4096, le=2_000_000)
     max_turns: int = Field(default=12, ge=1, le=30)
     connect_timeout: float = Field(default=10, gt=0, le=20)
     read_timeout: float = Field(default=60, gt=0, le=120)

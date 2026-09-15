@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import timedelta, datetime
 import json
+import re
 import secrets
 from fastapi import FastAPI, Depends, Request, Response, Query
 from fastapi.responses import JSONResponse
@@ -28,6 +29,36 @@ from .erp_design_upload import router as erp_design_upload_router
 app.include_router(erp_design_upload_router)
 
 _conversation_flags_checked = False
+
+
+def compact_conversation_title(prompt: str) -> str:
+    text = re.sub(r"\s+", " ", (prompt or "").strip())
+    code = next((m.group(0) for m in re.finditer(r"\b[A-Z][A-Z0-9]+-[A-Z0-9-]+\b", text)), "")
+    topic_rules = [
+        (("权限", "审计", "通知", "附件", "来源治理"), "权限治理核对"),
+        (("财务", "收付款", "回款", "付款", "开票", "发票"), "财务节点核对"),
+        (("客户验收", "出厂", "出库", "物流", "签收", "交付"), "交付物流核对"),
+        (("中标", "客户分类", "承接", "拒单"), "中标接收核对"),
+        (("报价", "成本", "工艺", "采购价格"), "报价评估核对"),
+        (("合同", "销售合同", "整套委外合同"), "合同上下文核对"),
+        (("正式开工", "开工"), "开工条件核对"),
+        (("项目计划", "节点", "逾期"), "项目计划核对"),
+        (("设计", "BOM", "路线", "图纸"), "设计BOM核对"),
+        (("制造", "质检", "检验", "报工"), "制造质检核对"),
+        (("装配", "试模"), "装配试模核对"),
+        (("采购订单", "采购价格", "采购"), "采购上下文核对"),
+        (("项目业务档案", "业务档案"), "项目档案核对"),
+        (("暂停", "恢复"), "暂停恢复核对"),
+        (("终止", "关闭", "结项"), "项目关闭核对"),
+    ]
+    topic = next((name for keys, name in topic_rules if any(key in text for key in keys)), "")
+    if code and topic:
+        return f"{code} {topic}"[:80]
+    if code:
+        return f"{code} 查询"[:80]
+    cleaned = re.sub(r"^(请|帮我|查询|核对|查看|分析)\s*", "", text)
+    cleaned = re.sub(r"(请调用|调用).*$", "", cleaned).strip(" ，。；;")
+    return (cleaned[:28] + "…") if len(cleaned) > 28 else (cleaned or "新对话")
 
 
 def ensure_conversation_flags(db):
@@ -160,7 +191,9 @@ def me(user=Depends(current_user), db=Depends(get_db)):
     model_config = model_settings()
     return {"user": {**public_user(user), "authorization_hash": auth.fingerprint(db, user)},
             "permissions": permissions, "llm_configured": model_config.llm_enabled,
-            "model": model_config.active_model if model_config.llm_enabled else None}
+            "model": model_config.active_model if model_config.llm_enabled else None,
+            "model_limits": {"context_window": model_config.llm_context_window,
+                             "max_output_tokens": model_config.llm_max_output_tokens}}
 
 
 @app.get("/api/model-config")
@@ -474,7 +507,7 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
         conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id, m.Conversation.archived == False))
         if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     else:
-        conversation = m.Conversation(user_id=user.id, title=data.prompt[:60]); db.add(conversation); db.flush()
+        conversation = m.Conversation(user_id=user.id, title=compact_conversation_title(data.prompt)); db.add(conversation); db.flush()
     model_config = model_settings()
     run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=data.prompt,
                 status="QUEUED" if model_config.llm_enabled else "WAITING_CONFIGURATION")
@@ -491,7 +524,8 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
     current_hash = auth.fingerprint(db, user)
     result = []
     for r in db.scalars(select(m.Run).where(m.Run.conversation_id == conversation_id, m.Run.user_id == user.id).order_by(m.Run.created_at)):
-        visible = r.security_version == user.security_version and (not r.checkpoint or r.checkpoint.get("authorization_hash") == current_hash)
+        checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
+        visible = r.security_version == user.security_version and (not checkpoint or checkpoint.get("authorization_hash") == current_hash)
         steps = list(db.scalars(select(m.Step).where(m.Step.run_id == r.id).order_by(m.Step.sequence))) if visible else []
         result.append({"id": r.id, "prompt": r.prompt, "status": r.status,
                        "created_at": r.created_at,
@@ -499,9 +533,11 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
                        "files": run_files(db,user,r) if visible else [],
                        "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
                        "trace": run_trace(r, steps) if visible else [],
-                       "progress": {"turn": r.checkpoint.get("turn", 0),
-                                    "phase": r.checkpoint.get('phase'),
-                                    "model_elapsed_ms": r.checkpoint.get('model_elapsed_ms', 0),
+                       "context_usage": checkpoint.get("context_usage") if visible else None,
+                       "progress": {"turn": checkpoint.get("turn", 0),
+                                    "phase": checkpoint.get('phase'),
+                                    "model_elapsed_ms": checkpoint.get('model_elapsed_ms', 0),
+                                    "context_usage": checkpoint.get("context_usage"),
                                     "elapsed_seconds": max(0, int((now()-aware(r.created_at)).total_seconds())) if r.status in {'QUEUED','RUNNING'} else None,
                                     "tools": [{"id": step.id, "name": step.tool} for step in steps]} if visible else None})
     return result

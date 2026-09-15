@@ -117,7 +117,8 @@ def install(app):
                        "MODEL_READ_TIMEOUT": "模型响应超时，本次任务未完成，请稍后重新发起。",
                        "MODEL_AUTH_FAILED": "模型服务认证失败，请联系管理员核对模型配置。",
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
-                       "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
+                       "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。",
+                       "CONTEXT_BUDGET_EXCEEDED": "模型上下文窗口不足，运行时压缩后仍无法安全提交本次请求，请缩小附件或问题范围后重试。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
             run.status = "FAILED"; run.result = {"message": message, "error_code": code}
             run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_max_turns: int = 12
     llm_max_output_tokens: int = 2048
+    llm_context_window: int = 8192
     llm_enabled: bool = False
     worker_secret: str = ""
     api_base_url: str = "http://127.0.0.1:8000"
@@ -97,6 +98,7 @@ def model_settings():
         "ollama_model": str(data.get("ollama_model", base.ollama_model) or ""),
         "llm_max_turns": int(data.get("llm_max_turns", base.llm_max_turns)),
         "llm_max_output_tokens": int(data.get("llm_max_output_tokens", base.llm_max_output_tokens)),
+        "llm_context_window": int(data.get("llm_context_window", base.llm_context_window)),
         "worker_secret": base.worker_secret,
         "api_base_url": base.api_base_url,
     }
@@ -123,6 +125,7 @@ def public_model_config() -> dict:
             "model": config.ollama_model,
         },
         "max_output_tokens": config.llm_max_output_tokens,
+        "context_window": config.llm_context_window,
         "max_turns": config.llm_max_turns,
         "connect_timeout": config.llm_connect_timeout,
         "read_timeout": config.llm_read_timeout,
@@ -139,6 +142,7 @@ def save_model_config(data: dict) -> dict:
         "llm_enabled": bool(data.get("enabled", True)),
         "llm_provider": provider,
         "llm_max_output_tokens": int(data.get("max_output_tokens", current.get("llm_max_output_tokens", settings().llm_max_output_tokens))),
+        "llm_context_window": int(data.get("context_window", current.get("llm_context_window", settings().llm_context_window))),
         "llm_max_turns": int(data.get("max_turns", current.get("llm_max_turns", settings().llm_max_turns))),
         "llm_connect_timeout": float(data.get("connect_timeout", current.get("llm_connect_timeout", settings().llm_connect_timeout))),
         "llm_read_timeout": float(data.get("read_timeout", current.get("llm_read_timeout", settings().llm_read_timeout))),

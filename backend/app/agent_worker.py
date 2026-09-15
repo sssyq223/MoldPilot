@@ -1,8 +1,8 @@
 import time
 import httpx
 from .config import settings, model_settings
-from .harness import ModelAdapter, run_loop
-from .model_adapter import ModelError
+from .harness import run_loop
+from .model_adapter import ModelAdapter, ModelError
 from .ollama_adapter import OllamaAdapter
 
 
@@ -47,7 +47,7 @@ class Gateway:
 def create_model(config):
     if not config.llm_enabled or not config.worker_secret or (config.llm_provider=='company' and (not config.llm_base_url or not config.llm_model or (not config.llm_api_key and not config.llm_trusted_http_origin))):
         raise SystemExit("Model or worker configuration missing; no simulated model is substituted.")
-    return OllamaAdapter(config.ollama_base_url,config.ollama_model,config.llm_max_output_tokens) if config.llm_provider=='ollama' else ModelAdapter(config.llm_base_url, config.llm_api_key, config.llm_model,
+    return OllamaAdapter(config.ollama_base_url,config.ollama_model,config.llm_max_output_tokens,context_window=config.llm_context_window) if config.llm_provider=='ollama' else ModelAdapter(config.llm_base_url, config.llm_api_key, config.llm_model,
                          config.llm_max_output_tokens, proxy=config.llm_proxy_url,
                          trusted_http_origin=config.llm_trusted_http_origin,
                          tls_max_version=config.llm_tls_max_version,
@@ -73,7 +73,9 @@ def main():
                 gateway = Gateway(client, context)
                 try:
                     context['tools']=gateway.discover()
-                    run_loop(context, model, gateway, max_turns=config.llm_max_turns)
+                    run_loop(context, model, gateway, max_turns=config.llm_max_turns,
+                             context_window=runtime_config.llm_context_window,
+                             max_output_tokens=runtime_config.llm_max_output_tokens)
                 except Exception as exc:
                     # Do not send arbitrary upstream responses or credentials into business logs.
                     gateway.post("fail", {"code": str(exc) if isinstance(exc, ModelError) else type(exc).__name__})

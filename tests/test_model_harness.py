@@ -218,6 +218,32 @@ def test_failed_model_call_records_timing_and_does_not_fake_result():
     assert gateway.final is None
 
 
+def test_context_budget_compacts_model_visible_tool_history_before_next_model_call():
+    gateway = Gateway()
+
+    class LargeResultGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {"evidence_id": "e1", "data": [{"code": "DEMO-A", "detail": "长字段" * 5000}]}
+
+    class InspectingModel:
+        def __init__(self): self.calls = 0
+        def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return copy.deepcopy(PROPOSAL)
+            tool_content = next(message["content"] for message in messages if message.get("role") == "tool")
+            assert "compact_summary" in tool_content
+            assert len(tool_content) < 2000
+            return copy.deepcopy(FINAL)
+
+    gateway = LargeResultGateway()
+    result = run_loop(context(), InspectingModel(), gateway, context_window=7000, max_output_tokens=512)
+    assert result["summary"] == "one visible project"
+    assert gateway.saved["context_usage"]["compaction_count"] == 1
+    assert gateway.saved["context_compactions"][0]["saved_tokens"] > 0
+
+
 
 
 def test_followup_user_context_is_data_and_current_request_is_last():

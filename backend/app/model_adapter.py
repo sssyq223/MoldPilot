@@ -82,6 +82,16 @@ class ModelAdapter:
                 if not response.is_success:
                     raise ModelError("MODEL_HTTP_FAILED")
                 data = response.json()
+                usage = data.get("usage") if isinstance(data, dict) else {}
+                if isinstance(usage, dict):
+                    for source, target in (("prompt_tokens", "prompt_tokens"),
+                                           ("completion_tokens", "completion_tokens"),
+                                           ("total_tokens", "total_tokens")):
+                        if isinstance(usage.get(source), int):
+                            self.last_metrics[target] = usage[source]
+                    details = usage.get("completion_tokens_details")
+                    if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
+                        self.last_metrics["reasoning_tokens"] = details["reasoning_tokens"]
                 choice = data["choices"][0]
                 if choice.get("finish_reason") == "length":
                     raise ModelError("MODEL_OUTPUT_TRUNCATED")

@@ -1,7 +1,7 @@
 """A real bounded model/tool loop. This process has no database or human-session credential."""
 import json
 import time
-from .model_adapter import ModelAdapter
+from .context_budget import compact_messages_for_model, usage_snapshot
 
 
 SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用户完成任务。
@@ -18,14 +18,15 @@ SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用�
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请只依据已有证据，直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
-SOFT_CONTEXT_LIMIT = 36000
-HARD_CONTEXT_LIMIT = 48000
+DEFAULT_CONTEXT_WINDOW = 8192
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
 MAX_TOOL_TURNS_BEFORE_FINALIZE = 8
 MAX_PROTOCOL_REPAIRS = 2
 
 
 
-def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=300):
+def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=300,
+             context_window=DEFAULT_CONTEXT_WINDOW, max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
     """Persist proposals before execution so recovery replays the same idempotent step."""
     deadline = context.get("deadline") or time.time()+max_seconds
     messages = context.get("messages") or [{"role": "system", "content": SYSTEM+"\n授权技能："+json.dumps(context["skills"], ensure_ascii=False)},
@@ -43,6 +44,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
     finalizing = context.get('finalizing', False)
     protocol_repairs = context.get('protocol_repairs', 0)
     executed_tool_signatures = list(context.get('executed_tool_signatures', []))
+    compactions = list(context.get('context_compactions', []))
 
     def tool_signature(call):
         name = call["function"]["name"]
@@ -61,6 +63,12 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         save()
 
     def save():
+        active_tools = [] if finalizing else tools
+        context_usage = usage_snapshot(messages, active_tools,
+                                       context_window=context_window,
+                                       max_output_tokens=max_output_tokens,
+                                       model_metrics=model_metrics,
+                                       compactions=compactions)
         gateway.checkpoint({"messages": messages, "turn": turn, "tool_count": count,
                             "evidence_ids": evidence_ids, "deadline": deadline,
                             "pending": pending, "pending_index": pending_index,
@@ -68,12 +76,33 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                             'model_elapsed_ms': model_elapsed_ms, 'model_metrics':model_metrics,
                             'finalizing': finalizing,
                             'protocol_repairs': protocol_repairs,
-                            'executed_tool_signatures': executed_tool_signatures})
+                            'executed_tool_signatures': executed_tool_signatures,
+                            'context_usage': context_usage,
+                            'context_compactions': compactions})
 
     def check_budget():
+        nonlocal messages, compactions
         if time.time() >= deadline:
             raise RuntimeError("BUDGET_EXCEEDED")
-        if len(json.dumps(messages, ensure_ascii=False)) > HARD_CONTEXT_LIMIT:
+        active_tools = [] if finalizing else tools
+        usage = usage_snapshot(messages, active_tools,
+                               context_window=context_window,
+                               max_output_tokens=max_output_tokens,
+                               model_metrics=model_metrics,
+                               compactions=compactions)
+        if usage["used_tokens"] <= usage["safe_limit"]:
+            return
+        compacted, record = compact_messages_for_model(messages)
+        if record:
+            messages = compacted
+            compactions.append(record)
+            save()
+            usage = usage_snapshot(messages, active_tools,
+                                   context_window=context_window,
+                                   max_output_tokens=max_output_tokens,
+                                   model_metrics=model_metrics,
+                                   compactions=compactions)
+        if usage["used_tokens"] > usage["safe_limit"]:
             raise RuntimeError("CONTEXT_BUDGET_EXCEEDED")
 
     while True:
@@ -100,20 +129,24 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
             pending, pending_index = [], 0
             save()
             continue
-        context_size = len(json.dumps(messages, ensure_ascii=False))
+        context_size = usage_snapshot(messages, [] if finalizing else tools,
+                                      context_window=context_window,
+                                      max_output_tokens=max_output_tokens,
+                                      model_metrics=model_metrics,
+                                      compactions=compactions)["used_tokens"]
         should_finalize = bool(evidence_ids) and (
             finalizing
             or turn >= max_turns - 1
             or count >= MAX_TOOL_TURNS_BEFORE_FINALIZE
-            or context_size >= SOFT_CONTEXT_LIMIT
+            or context_size >= max(1, int((context_window - max_output_tokens) * 0.75))
         )
         if should_finalize and not finalizing:
             finalizing = True
             messages.append({"role": "system", "content": FINALIZE_REMINDER})
             save()
-        if not finalizing:
-            if turn >= max_turns: raise RuntimeError("BUDGET_EXCEEDED")
-            check_budget()
+        if not finalizing and turn >= max_turns:
+            raise RuntimeError("BUDGET_EXCEEDED")
+        check_budget()
         # Reserve the model turn before network I/O; a crashed call still consumes budget.
         turn += 1
         phase = 'MODEL_WAITING'; model_started_at = time.time()

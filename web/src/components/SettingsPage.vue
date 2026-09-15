@@ -158,6 +158,7 @@ async function unarchiveConversation(c:any){
       </template>
       <div class="form-grid compact">
        <label>最大输出 token<input v-model.number="modelConfig.max_output_tokens" type="number" min="256" max="8192"/></label>
+       <label>上下文窗口 token<input v-model.number="modelConfig.context_window" type="number" min="4096" max="2000000" step="1024"/></label>
        <label>最大 ReAct 轮次<input v-model.number="modelConfig.max_turns" type="number" min="1" max="30"/></label>
        <label>连接超时（秒）<input v-model.number="modelConfig.connect_timeout" type="number" min="1" max="20" step="0.5"/></label>
        <label>读取超时（秒）<input v-model.number="modelConfig.read_timeout" type="number" min="1" max="120" step="0.5"/></label>
