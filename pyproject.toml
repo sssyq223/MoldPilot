@@ -1,0 +1,16 @@
+[project]
+name = "moldpilot"
+version = "0.1.0"
+description = "Agent-first mold project workflow workbench"
+readme = "README.md"
+authors = [{ name = "sssyq", email = "2372822523@qq.com" }]
+requires-python = ">=3.12,<3.13"
+dependencies = ["fastapi", "uvicorn[standard]", "sqlalchemy>=2,<3", "psycopg[binary]", "alembic", "pydantic-settings", "argon2-cffi", "redis", "httpx", "sqlglot", "SpiffWorkflow", "pyotp", "cryptography", "boto3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["tests"]
+markers = ["integration: requires isolated PostgreSQL", "redis: requires isolated Redis"]
+
+[tool.ruff]
+line-length = 110

@@ -1,0 +1,453 @@
+"""Typed local business facts. Shared approval envelopes do not replace domain tables."""
+from datetime import date, datetime
+from decimal import Decimal
+from sqlalchemy import String, Date, DateTime, Integer, Boolean, Text, Numeric, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+from .models import IdentityMixin, Base, J
+
+
+class BusinessSubject(IdentityMixin, Base):
+    __tablename__ = 'business_subject'
+    kind: Mapped[str] = mapped_column(String(60), index=True)
+    number: Mapped[str] = mapped_column(String(80), unique=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    category: Mapped[str | None] = mapped_column(String(60))
+    warehouse_id: Mapped[str | None] = mapped_column(ForeignKey('warehouse.id'))
+    created_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    status: Mapped[str] = mapped_column(String(30), default='DRAFT')
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    round_no: Mapped[int] = mapped_column(Integer, default=0)
+    remark: Mapped[str] = mapped_column(Text, default='')
+    __table_args__ = (CheckConstraint("status IN ('DRAFT','SUBMITTED','APPROVED','REJECTED','RETURNED','APPLY_BLOCKED','EFFECTIVE','CANCELLED','CLOSED')", name='subject_status'),)
+
+
+class Supplier(IdentityMixin, Base):
+    __tablename__ = 'supplier'
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(150))
+    category: Mapped[str] = mapped_column(String(60))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Customer(IdentityMixin, Base):
+    __tablename__ = 'customer'
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(150))
+    rule_key: Mapped[str] = mapped_column(String(80), default='standard')
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Mold(IdentityMixin, Base):
+    __tablename__ = 'mold'
+    internal_number: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(150))
+    status: Mapped[str] = mapped_column(String(30), default='ACTIVE')
+
+
+class ProjectMold(IdentityMixin, Base):
+    __tablename__ = 'project_mold'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'))
+    mold_id: Mapped[str] = mapped_column(ForeignKey('mold.id'))
+    __table_args__ = (UniqueConstraint('project_id','mold_id'),)
+
+
+class ProjectProfile(Base):
+    __tablename__ = 'project_profile'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), primary_key=True)
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey('customer.id'))
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    execution_mode: Mapped[str] = mapped_column(String(30), default='INTERNAL')
+    customer_due_date: Mapped[date | None] = mapped_column(Date)
+    settlement_status: Mapped[str] = mapped_column(String(30), default='OPEN')
+    __table_args__ = (CheckConstraint("execution_mode IN ('INTERNAL','FULL_OUTSOURCE')"),)
+
+
+class Warehouse(IdentityMixin, Base):
+    __tablename__ = 'warehouse'
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(150))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    scope_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    start_date: Mapped[date | None] = mapped_column(Date)
+    opening_evidence: Mapped[str | None] = mapped_column(Text)
+
+
+class PurchaseOrder(IdentityMixin, Base):
+    __tablename__ = 'purchase_order'
+    request_id: Mapped[str] = mapped_column(ForeignKey('purchase_request.id'), unique=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str | None] = mapped_column(ForeignKey('supplier.id'))
+    number: Mapped[str] = mapped_column(String(80), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default='DRAFT')
+    currency: Mapped[str] = mapped_column(String(3), default='CNY')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    issued_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (CheckConstraint("status IN ('DRAFT','ISSUED','CLOSED','CANCELLED')"),)
+
+
+class OrderLine(IdentityMixin, Base):
+    __tablename__ = 'purchase_order_line'
+    order_id: Mapped[str] = mapped_column(ForeignKey('purchase_order.id'), index=True)
+    source_line_id: Mapped[str] = mapped_column(ForeignKey('purchase_request_line.id'), unique=True)
+    material_id: Mapped[str] = mapped_column(ForeignKey('material.id'))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18,6))
+    agreed_ship_date: Mapped[date] = mapped_column(Date)
+    __table_args__ = (CheckConstraint('quantity > 0 AND (unit_price IS NULL OR unit_price >= 0)'),)
+
+
+class SupplierShipment(IdentityMixin, Base):
+    __tablename__ = 'supplier_shipment'
+    order_line_id: Mapped[str] = mapped_column(ForeignKey('purchase_order_line.id'), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    shipped_date: Mapped[date] = mapped_column(Date)
+    reference: Mapped[str] = mapped_column(String(150))
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (UniqueConstraint('order_line_id','reference'), CheckConstraint('quantity > 0'))
+
+
+class DeliveryException(IdentityMixin, Base):
+    __tablename__ = 'delivery_exception'
+    order_line_id: Mapped[str] = mapped_column(ForeignKey('purchase_order_line.id'), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    expected_ship_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30), default='OPEN')
+    reported_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    evidence: Mapped[str] = mapped_column(Text)
+    closed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    resolution: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (CheckConstraint("status IN ('OPEN','CLOSED')"),)
+
+
+class GoodsReceipt(IdentityMixin, Base):
+    __tablename__ = 'goods_receipt'
+    shipment_id: Mapped[str] = mapped_column(ForeignKey('supplier_shipment.id'), index=True)
+    warehouse_id: Mapped[str] = mapped_column(ForeignKey('warehouse.id'))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    reference: Mapped[str] = mapped_column(String(150))
+    received_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    evidence: Mapped[str] = mapped_column(Text)
+    __table_args__ = (UniqueConstraint('shipment_id','reference'), CheckConstraint('quantity > 0'))
+
+
+class ReceiptInspection(IdentityMixin, Base):
+    __tablename__ = 'receipt_inspection'
+    receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)
+    accepted_quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    rejected_quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    inspector_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    evidence: Mapped[str] = mapped_column(Text)
+    __table_args__ = (CheckConstraint('accepted_quantity >= 0 AND rejected_quantity >= 0'),)
+
+
+class StockBalance(IdentityMixin, Base):
+    __tablename__ = 'stock_balance'
+    warehouse_id: Mapped[str] = mapped_column(ForeignKey('warehouse.id'))
+    material_id: Mapped[str] = mapped_column(ForeignKey('material.id'))
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6), default=0)
+    __table_args__ = (UniqueConstraint('warehouse_id','material_id','project_id'), CheckConstraint('quantity >= 0'))
+
+
+class StockMovement(IdentityMixin, Base):
+    __tablename__ = 'stock_movement'
+    balance_id: Mapped[str] = mapped_column(ForeignKey('stock_balance.id'), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    kind: Mapped[str] = mapped_column(String(30))
+    source_key: Mapped[str] = mapped_column(String(150), unique=True)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    evidence: Mapped[str] = mapped_column(Text)
+    __table_args__ = (CheckConstraint('quantity <> 0'),)
+
+
+class ContractDetail(Base):
+    __tablename__ = 'contract_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey('customer.id'))
+    supplier_id: Mapped[str | None] = mapped_column(ForeignKey('supplier.id'))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3))
+    contract_number: Mapped[str] = mapped_column(String(100))
+    expected_date: Mapped[date | None] = mapped_column(Date)
+    replaces_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    __table_args__ = (CheckConstraint('amount > 0'),)
+
+
+class PaymentStage(IdentityMixin, Base):
+    __tablename__ = 'payment_stage'
+    contract_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
+    name: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3))
+    condition: Mapped[str] = mapped_column(Text)
+    condition_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    condition_evidence: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (CheckConstraint('amount > 0'),)
+
+
+class PaymentRequestDetail(Base):
+    __tablename__ = 'payment_request_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey('payment_stage.id'))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3))
+    reservation: Mapped[Decimal] = mapped_column(Numeric(18,2), default=0)
+    __table_args__ = (CheckConstraint('amount > 0 AND reservation >= 0 AND reservation <= amount'),)
+
+
+class PaymentConfirmation(IdentityMixin, Base):
+    __tablename__ = 'payment_confirmation'
+    request_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3))
+    paid_date: Mapped[date] = mapped_column(Date)
+    reference: Mapped[str] = mapped_column(String(100), unique=True)
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    reversal_of_id: Mapped[str | None] = mapped_column(ForeignKey('payment_confirmation.id'), unique=True)
+    __table_args__ = (CheckConstraint('amount <> 0'),)
+
+
+class PlanDetail(Base):
+    __tablename__ = 'plan_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    previous_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    reason: Mapped[str] = mapped_column(Text)
+
+
+class PlanTask(IdentityMixin, Base):
+    __tablename__ = 'plan_task'
+    plan_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    key: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(150))
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    planned_start: Mapped[date] = mapped_column(Date)
+    planned_end: Mapped[date] = mapped_column(Date)
+    actual_start: Mapped[date | None] = mapped_column(Date)
+    actual_end: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30), default='PLANNED')
+    __table_args__ = (UniqueConstraint('plan_id','key'), CheckConstraint('planned_end >= planned_start'))
+
+
+class TaskDependency(Base):
+    __tablename__ = 'task_dependency'
+    task_id: Mapped[str] = mapped_column(ForeignKey('plan_task.id'), primary_key=True)
+    prerequisite_id: Mapped[str] = mapped_column(ForeignKey('plan_task.id'), primary_key=True)
+    __table_args__ = (CheckConstraint('task_id <> prerequisite_id'),)
+
+
+class BusinessDecisionDetail(Base):
+    """Typed decision/notice fields shared by simple human control documents."""
+    __tablename__ = 'business_decision_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    source_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    decision: Mapped[str] = mapped_column(String(40))
+    execution_mode: Mapped[str | None] = mapped_column(String(30))
+    effective_date: Mapped[date] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+
+
+class PauseRecord(IdentityMixin, Base):
+    __tablename__ = 'pause_record'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), unique=True)
+    resume_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), unique=True)
+    shifted_days: Mapped[int] = mapped_column(Integer, default=0)
+    shift_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    customer_due_date_snapshot: Mapped[date | None] = mapped_column(Date)
+
+
+class ProjectPauseDetail(Base):
+    """Approval material for a whole-project pause or resume.
+
+    The task snapshot is frozen when the draft is created so approval cannot
+    silently apply to a different plan scope later.
+    """
+    __tablename__ = 'project_pause_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    decision: Mapped[str] = mapped_column(String(20))
+    effective_date: Mapped[date] = mapped_column(Date)
+    expected_resume_date: Mapped[date | None] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_pause_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    plan_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    task_snapshot: Mapped[list] = mapped_column(J, default=list)
+    customer_due_date_snapshot: Mapped[date | None] = mapped_column(Date)
+    __table_args__ = (CheckConstraint("decision IN ('PAUSE','RESUME')", name='project_pause_decision'),)
+
+
+class PauseTaskShift(IdentityMixin, Base):
+    """Immutable before/after evidence for one resume date adjustment."""
+    __tablename__ = 'pause_task_shift'
+    pause_id: Mapped[str] = mapped_column(ForeignKey('pause_record.id'), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey('plan_task.id'), index=True)
+    previous_start: Mapped[date] = mapped_column(Date)
+    previous_end: Mapped[date] = mapped_column(Date)
+    shifted_start: Mapped[date] = mapped_column(Date)
+    shifted_end: Mapped[date] = mapped_column(Date)
+    shifted_days: Mapped[int] = mapped_column(Integer)
+    task_status: Mapped[str] = mapped_column(String(30))
+    __table_args__ = (UniqueConstraint('pause_id','task_id'), CheckConstraint('shifted_days >= 0'))
+
+
+class EngineeringChangeDetail(Base):
+    __tablename__ = 'engineering_change_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    problem: Mapped[str] = mapped_column(Text)
+    solution: Mapped[str] = mapped_column(Text)
+    customer_due_affected: Mapped[bool] = mapped_column(Boolean, default=False)
+    customer_evidence: Mapped[str | None] = mapped_column(Text)
+
+
+class ChangeImpact(IdentityMixin, Base):
+    __tablename__ = 'change_impact'
+    change_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey('plan_task.id'))
+    action: Mapped[str] = mapped_column(String(30))
+    implemented_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    implementation_evidence: Mapped[str | None] = mapped_column(Text)
+    rechecked_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    recheck_passed: Mapped[bool | None] = mapped_column(Boolean)
+    __table_args__ = (UniqueConstraint('change_id','task_id'), CheckConstraint("action IN ('KEEP','PAUSE','CANCEL','REWORK')"))
+
+
+class RiskPolicy(IdentityMixin, Base):
+    __tablename__ = 'risk_policy'
+    version: Mapped[int] = mapped_column(Integer, unique=True)
+    near_due_days: Mapped[int] = mapped_column(Integer)
+    configured_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (CheckConstraint('near_due_days BETWEEN 0 AND 90'),)
+
+
+class RiskAnalysis(IdentityMixin, Base):
+    __tablename__ = 'risk_analysis_result'
+    user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    authorization_hash: Mapped[str] = mapped_column(String(64))
+    policy_version: Mapped[int] = mapped_column(Integer)
+    trigger_type: Mapped[str] = mapped_column(String(20), default='USER_REQUEST')
+    findings: Mapped[list] = mapped_column(J)
+    limitations: Mapped[list] = mapped_column(J)
+
+
+class DesignDetail(Base):
+    __tablename__='design_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    design_type: Mapped[str | None] = mapped_column(String(30))
+    drawing_revision: Mapped[str] = mapped_column(String(100))
+    drawing_evidence: Mapped[str] = mapped_column(Text)
+    reviewer_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+
+
+class DesignItem(IdentityMixin, Base):
+    __tablename__='design_item'
+    design_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    material_id: Mapped[str] = mapped_column(ForeignKey('material.id'))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    route: Mapped[str] = mapped_column(String(30))
+    task_id: Mapped[str | None] = mapped_column(ForeignKey('plan_task.id'))
+    __table_args__=(UniqueConstraint('design_id','material_id'), CheckConstraint('quantity > 0'),
+                   CheckConstraint("route IN ('INTERNAL','PURCHASE','OUTSOURCE')"))
+
+
+class PriceDetail(Base):
+    __tablename__='price_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'))
+    material_id: Mapped[str] = mapped_column(ForeignKey('material.id'))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    currency: Mapped[str] = mapped_column(String(3))
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date] = mapped_column(Date)
+    quote_evidence: Mapped[str] = mapped_column(Text)
+    __table_args__=(CheckConstraint('unit_price >= 0'),CheckConstraint('valid_to >= valid_from'))
+
+
+class OrderPriceSnapshot(Base):
+    __tablename__='order_price_snapshot'
+    line_id: Mapped[str] = mapped_column(ForeignKey('purchase_order_line.id'), primary_key=True)
+    price_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18,6))
+    currency: Mapped[str] = mapped_column(String(3))
+    selected_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+
+
+class AssemblyDetail(Base):
+    __tablename__='assembly_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    design_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
+    supervisor_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    prerequisites_evidence: Mapped[str] = mapped_column(Text)
+    planned_date: Mapped[date] = mapped_column(Date)
+    execution_status: Mapped[str] = mapped_column(String(30), default='NOT_STARTED')
+    __table_args__=(CheckConstraint("execution_status IN ('NOT_STARTED','RUNNING','DONE')"),)
+
+
+class AssemblyExecution(IdentityMixin, Base):
+    __tablename__='assembly_execution'
+    assembly_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
+    action: Mapped[str] = mapped_column(String(20))
+    actual_date: Mapped[date] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__=(UniqueConstraint('assembly_id','action'),CheckConstraint("action IN ('START','DONE')"))
+
+
+class TrialDetail(Base):
+    __tablename__='trial_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    assembly_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
+    planned_date: Mapped[date] = mapped_column(Date)
+    location: Mapped[str] = mapped_column(String(200))
+    acceptance_criteria: Mapped[str] = mapped_column(Text)
+    responsible_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+
+
+class TrialResult(IdentityMixin, Base):
+    __tablename__='trial_result'
+    trial_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), unique=True)
+    passed: Mapped[bool] = mapped_column(Boolean)
+    actual_date: Mapped[date] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    findings: Mapped[str] = mapped_column(Text)
+    change_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+
+
+class FinanceCorrectionDetail(Base):
+    __tablename__='finance_correction_detail'
+    subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
+    original_payment_id: Mapped[str] = mapped_column(ForeignKey('payment_confirmation.id'))
+    reason: Mapped[str] = mapped_column(Text)
+    reversal_evidence: Mapped[str] = mapped_column(Text)
+    reversal_date: Mapped[date] = mapped_column(Date)
+    reversal_id: Mapped[str | None] = mapped_column(ForeignKey('payment_confirmation.id'), unique=True)
+
+
+class ERPIdentity(Base):
+    __tablename__='erp_identity'
+    user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'), primary_key=True)
+    erp_user_id: Mapped[str] = mapped_column(String(40), unique=True)
+    token_ciphertext: Mapped[str | None] = mapped_column(Text)
+    authenticated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ERPOperation(IdentityMixin, Base):
+    __tablename__='erp_operation'
+    user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    intent_id: Mapped[str] = mapped_column(ForeignKey('human_action_intent.id'), unique=True)
+    action: Mapped[str] = mapped_column(String(80))
+    native_id: Mapped[str] = mapped_column(String(80), index=True)
+    state: Mapped[str] = mapped_column(String(30), default='DISPATCHING')
+    request_hash: Mapped[str] = mapped_column(String(64))
+    erp_user_id: Mapped[str] = mapped_column(String(40))
+    response: Mapped[dict | None] = mapped_column(J)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    __table_args__=(CheckConstraint("state IN ('DISPATCHING','SUCCEEDED','REJECTED','UNKNOWN','OBSERVED_APPLIED')"),)
