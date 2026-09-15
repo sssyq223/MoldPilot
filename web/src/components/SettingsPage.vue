@@ -6,9 +6,9 @@ import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
-const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme}>()
+const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
 const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme];openConversation:[conversation:any];modelUpdated:[model:string]}>()
-const page=ref('account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
+const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
 const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('tools')
 const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
@@ -64,6 +64,7 @@ async function select(key:string){
  if(key==='archived')await loadArchived()
  if(key==='model')await loadModelConfig()
 }
+watch(()=>props.initialPage,key=>{if(key)select(key)},{immediate:true})
 async function loadModelConfig(){
  if(!props.me.super_admin)return
  modelLoading.value=true;modelSaved.value=''
