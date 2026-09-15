@@ -21,6 +21,9 @@ class TemplateEdit(StrictModel):
     name:str=Field(min_length=1,max_length=150)
     contract:dict
     expected_hash:str=Field(min_length=64,max_length=64)
+class XlsxPreviewInput(StrictModel):
+    file_id:str=Field(min_length=1,max_length=36)
+    mapping:dict=Field(default_factory=dict)
 
 def material_data(t):
     return {'id':t.id,'template_key':t.template_key,'name':t.name,'version':t.version,'status':t.status,
@@ -66,6 +69,24 @@ def publish(template_id:str,user=Depends(current_user),db=Depends(get_db)):
     valid(t.name,t.contract)
     t.package_hash=content_hash({'template_key':t.template_key,'version':t.version,'contract':t.contract})
     t.status='PUBLISHED';record(db,user,'material.template.published',t.id,{'hash':t.package_hash});db.commit();return material_data(t)
+
+@router.post('/{template_id}/xlsx-preview')
+def xlsx_preview(template_id:str,body:XlsxPreviewInput,user=Depends(current_user),db=Depends(get_db)):
+    from . import files,object_storage
+    from .material_xlsx import preview_xlsx
+    require(db,user,'file.upload')
+    t=db.get(MaterialTemplate,template_id)
+    if not t:raise DomainError('NOT_FOUND','资料模板不存在',404)
+    if t.status!='PUBLISHED':require(db,user,'workflow.design')
+    blob=files.load(db,user,body.file_id)
+    if blob.media_type!='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        raise DomainError('FILE_TYPE_UNSUPPORTED','资料解析预览当前只支持 XLSX 原件')
+    preview=preview_xlsx(object_storage.read(blob),t.contract,body.mapping)
+    record(db,user,'material.xlsx.previewed',blob.id,{'template_id':t.id,'template_key':t.template_key,
+        'template_version':t.version,'status':preview['status'],'issue_count':len(preview['issues'])})
+    db.commit()
+    return {**preview,'template':{'id':t.id,'template_key':t.template_key,'version':t.version,'package_hash':t.package_hash},
+            'file':files.metadata(blob),'limitations':['解析结果仅供人工核对，尚未绑定业务对象或审批实例','不会执行宏、外部链接或公式；含公式或缺列的数据必须人工处理','本接口不解除正式提交的 MATERIALS_NOT_BOUND 门禁']}
 
 def bind_contract(db,config,template_id):
     if not template_id:return config
