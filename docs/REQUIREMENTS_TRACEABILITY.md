@@ -1099,8 +1099,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 按角色及项目授权控制查看、录入、修改、审批和导出；价格、成本、利润和项目资料采用适用数据权限。问答、页面、附件下载及导出应执行一致权限，不通过汇总或链接绕过限制。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，治理上下文只返回当前可见附件元数据，不下载、不导出、不解析原文
+- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的运行隔离
 - 验收状态：NOT_VERIFIED
 
 ### FR-114
@@ -1108,8 +1108,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 关键操作记录操作者、时间、前后状态、原因及依据，包括承接、开工、计划、合同版本、设变、暂停恢复、终止、实际收付款及金额更正。历史有效记录不以直接覆盖方式消除。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：AuditEvent/Outbox 在关键操作 record 时保留操作者、动作、资源、时间和 detail；query_governance_context 按可见项目资源汇总 audit_trail；工程联络附件、项目结项事项、付款更正、暂停恢复等业务模型保留版本、前后引用或修订记录，不通过直接覆盖消除历史
+- 验证证据：tests/test_governance_context_tools.py 覆盖审计事件按项目资源返回且包含状态前后和原因依据；tests/test_files.py 覆盖附件版本不可直接删除、旧版本仍可追溯；tests/test_project_closure_tools.py 与 tests/test_finance_context_tools.py 覆盖结项/财务更正上下文的历史依据
 - 验收状态：NOT_VERIFIED
 
 ## 通知与附件
@@ -1121,8 +1121,8 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 待办和提醒关联业务对象、触发条件、接收角色及处理状态，支持确认与追踪。节点变更后更新适用提醒，避免对同一业务重复生成有效任务；手机、站内或其他消息渠道在适配阶段确定。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重；query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态
+- 验证证据：tests/test_governance_context_tools.py 覆盖通知投递、未读计数和关联业务对象；tests/test_messages.py 覆盖 Outbox 发布重试、Inbox 去重和 Notification 唯一投递；tests/test_contacts.py 覆盖工程联络分派通知生成
 - 验收状态：NOT_VERIFIED
 
 ### FR-116
@@ -1130,8 +1130,8 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 附件保留来源、上传人、时间、版本及对象关联，授权人员可查看和下载。文件格式、大小、保留期限及敏感数据范围后续确认；历史截图中的字段和按钮不自动扩大权限或功能。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态，不暴露对象存储 key，不读取文件内容
+- 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见
 - 验收状态：NOT_VERIFIED
 
 ## 来源与运行交付
@@ -1143,8 +1143,8 @@ Agent 开发明确来源的受控调用、失败核对、Docker 部署、备份�
 各数据来源应明确录入或同步责任、确认环节及最终有效系统；同步失败或数据冲突应进入可见的待处理状态，不能静默认定成功。具体接口、重试和人工补录规则列入适配方案。
 
 - 最新口径：按权威来源直接查询/调用，不采用 ERP 镜像、CDC、投影、先本地后 ERP 的查找策略。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：ContactTask、ProjectClosureItem 等来源字段保留 source_system/source_ref/source_as_of 和执行来源；ERPOperation 记录 native_id、state、request_hash、erp_user_id、response/error_code；query_governance_context 明示权威来源策略，返回来源字段、ERP 操作状态和 pending_or_failed_source_operations，UNKNOWN/REJECTED/DISPATCHING 不默认为成功
+- 验证证据：tests/test_governance_context_tools.py 覆盖 ERP UNKNOWN/TIMEOUT 进入待处理来源状态并展示不采用镜像/投影策略；tests/test_project_closure_tools.py 覆盖 ERP 来源结项事项必须带原记录引用和核对时点；tests/test_change_intake_tools.py 覆盖联络/设变来源字段可查
 - 验收状态：NOT_VERIFIED
 
 ### FR-118

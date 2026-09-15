@@ -1804,8 +1804,16 @@
       "module": "权限与审计",
       "agent_responsibility": "Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过程审计；正式操作人工确认",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash",
+        "files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文",
+        "tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总"
+      ],
+      "verification_evidence": [
+        "tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名",
+        "tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话",
+        "tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1814,8 +1822,15 @@
       "module": "权限与审计",
       "agent_responsibility": "Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过程审计；正式操作人工确认",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "AuditEvent/Outbox 在关键操作 record 时保留操作者、动作、资源、时间和 detail；query_governance_context 按可见项目资源汇总 audit_trail",
+        "工程联络附件、项目结项事项、付款更正、暂停恢复等业务模型保留版本、前后引用或修订记录，不通过直接覆盖消除历史"
+      ],
+      "verification_evidence": [
+        "tests/test_governance_context_tools.py 覆盖审计事件按项目资源返回且包含状态前后和原因依据",
+        "tests/test_files.py 覆盖附件版本不可直接删除、旧版本仍可追溯",
+        "tests/test_project_closure_tools.py 与 tests/test_finance_context_tools.py 覆盖结项/财务更正上下文的历史依据"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1824,8 +1839,15 @@
       "module": "通知与附件",
       "agent_responsibility": "Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI 预警分别管理",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重",
+        "query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态，帮助识别重复或失败提醒"
+      ],
+      "verification_evidence": [
+        "tests/test_governance_context_tools.py 覆盖通知投递、未读计数和关联业务对象",
+        "tests/test_messages.py 覆盖 Outbox 发布重试、Inbox 去重和 Notification 唯一投递",
+        "tests/test_contacts.py 覆盖工程联络分派通知生成"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1834,8 +1856,14 @@
       "module": "通知与附件",
       "agent_responsibility": "Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI 预警分别管理",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间",
+        "query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容"
+      ],
+      "verification_evidence": [
+        "tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见",
+        "tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1844,8 +1872,15 @@
       "module": "来源与运行交付",
       "agent_responsibility": "Agent 开发明确来源的受控调用、失败核对、Docker 部署、备份恢复及实施验收；不转发投影或等待 ERP 开发",
       "latest_decision": "按权威来源直接查询/调用，不采用 ERP 镜像、CDC、投影、先本地后 ERP 的查找策略。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "ContactTask、ProjectClosureItem 等来源字段保留 source_system/source_ref/source_as_of 和执行来源；ERPOperation 记录 native_id、state、request_hash、erp_user_id、response/error_code",
+        "query_governance_context 明示权威来源策略，返回来源字段、ERP 操作状态和 pending_or_failed_source_operations；UNKNOWN/REJECTED/DISPATCHING 不默认为成功"
+      ],
+      "verification_evidence": [
+        "tests/test_governance_context_tools.py 覆盖 ERP UNKNOWN/TIMEOUT 进入待处理来源状态并展示不采用镜像/投影策略",
+        "tests/test_project_closure_tools.py 覆盖 ERP 来源结项事项必须带原记录引用和核对时点",
+        "tests/test_change_intake_tools.py 覆盖联络/设变来源字段可查"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

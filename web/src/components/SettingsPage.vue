@@ -112,24 +112,28 @@ async function unarchiveConversation(c:any){
    </section>
    </template>
    <template v-else-if="page==='model'&&me.super_admin">
-    <div class="section-heading model-config-heading"><div><h2>模型配置</h2><p class="muted">配置工作台智能体调用的模型服务。API Key 只会保存，不会回显明文。</p></div><small class="muted">{{modelConfig?.enabled?'已启用':'未启用'}}</small></div>
+    <div class="section-heading model-config-heading"><div><h2>模型配置</h2><p class="muted">配置工作台智能体调用的模型服务。API Key 只会保存，不会回显明文。</p></div><button type="button" class="model-add-button" @click="modelDetailsOpen=true">新增模型配置</button></div>
     <p v-if="modelLoading" role="status">正在读取模型配置…</p>
     <form v-else-if="modelConfig" class="model-config-form surface" @submit.prevent="saveModelConfig">
-     <button type="button" class="model-summary-card" :aria-expanded="modelDetailsOpen" @click="modelDetailsOpen=!modelDetailsOpen">
+     <div class="model-selection-heading"><strong>选择模型配置</strong><small class="muted">选择当前工作台要启用的模型服务。</small></div>
+     <button type="button" class="model-summary-card active" :aria-expanded="modelDetailsOpen" @click="modelDetailsOpen=!modelDetailsOpen">
       <span class="model-summary-icon"><BrainCircuit :size="19"/></span>
       <span class="model-summary-main">
        <strong>{{activeModelName}}</strong>
        <small>{{modelProviderName}} · {{modelConfig.enabled?'模型已启用':'模型未启用'}}</small>
       </span>
+      <span class="model-summary-toggle" @click.stop>
+       <input id="active-model-enabled" v-model="modelConfig.enabled" type="checkbox"/>
+       <label for="active-model-enabled">{{modelConfig.enabled?'已启用':'未启用'}}</label>
+      </span>
       <span class="model-summary-meta">
        <span>{{modelCredentialState}}</span>
        <small>{{modelEndpoint}}</small>
       </span>
-      <span class="model-summary-action">{{modelDetailsOpen?'收起详细配置':'查看 / 编辑详细配置'}}</span>
+      <span class="model-summary-action">{{modelDetailsOpen?'收起详细配置':'查看详细配置'}}</span>
      </button>
      <div v-if="modelDetailsOpen" class="model-config-details">
-      <div class="model-config-row">
-       <label class="check-label model-enabled"><input v-model="modelConfig.enabled" type="checkbox"/>启用模型</label>
+      <div class="model-config-row service-only">
        <label>服务类型<select v-model="modelConfig.provider"><option value="company">OpenAI 兼容接口</option><option value="ollama">本机 Ollama</option></select></label>
       </div>
       <template v-if="modelConfig.provider==='company'">
@@ -159,10 +163,9 @@ async function unarchiveConversation(c:any){
        <label>读取超时（秒）<input v-model.number="modelConfig.read_timeout" type="number" min="1" max="120" step="0.5"/></label>
       </div>
      </div>
-     <div class="model-config-footer">
+     <div v-if="modelDetailsOpen" class="model-config-footer">
       <span class="muted small">当前生效模型：{{modelConfig.model||'未配置'}}</span>
       <button v-if="modelDetailsOpen" class="primary" :disabled="modelSaving">{{modelSaving?'正在保存…':'保存模型配置'}}</button>
-      <button v-else type="button" @click="modelDetailsOpen=true">编辑配置</button>
      </div>
      <p v-if="modelSaved" class="muted small">{{modelSaved}}</p>
     </form>
