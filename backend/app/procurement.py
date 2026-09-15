@@ -1,5 +1,6 @@
 from decimal import Decimal
 import secrets
+from pydantic import Field, model_validator
 from sqlalchemy import select, func, exists
 from . import models as m
 from .authorization import require, predicate, select_fields, fingerprint, access
@@ -7,6 +8,23 @@ from .errors import DomainError
 from .db import now
 from .events import record
 from .domains import values, rows
+from .schemas import StrictModel
+
+
+class DeliveryRiskInput(StrictModel):
+    project_id: str | None = Field(default=None, min_length=1, max_length=36,
+        description='可选。限定分析的项目 ID；不填写时分析当前用户可见范围内的正式订单。')
+    identifier: str | None = Field(default=None, min_length=1, max_length=200,
+        description='可选。项目编号或项目名称，用于把风险分析限定到单个可见项目。')
+
+    @model_validator(mode='after')
+    def one_project_locator(self):
+        if self.project_id and self.identifier:
+            raise ValueError('project_id 和 identifier 只能填写一项')
+        if self.identifier:
+            self.identifier=self.identifier.strip()
+            if not self.identifier:raise ValueError('项目标识不能为空')
+        return self
 
 
 def line_context(db,line):
@@ -142,3 +160,54 @@ def delivery_risks(db,user,project_id=None):
     db.add(analysis);db.flush()
     return {'analysis_id':analysis.id,'data':findings,'source':'agent_db','as_of':now().isoformat(),
             'rule_version':policy.version,'near_due_days':policy.near_due_days,'limitations':limitations}
+
+
+def _project_card(db,user,project,matched_by=()):
+    try:fields=access(db,user,'project.read',{'project_id':project.id}).fields
+    except DomainError:fields=frozenset()
+    data={'id':project.id,'code':project.code,'name':project.name,'status':project.status,
+          'matched_by':sorted(set(matched_by))}
+    return select_fields(data,fields) if fields else {'id':project.id,'matched_by':sorted(set(matched_by))}
+
+
+def _resolve_project(db,user,data:DeliveryRiskInput):
+    if data.project_id:
+        project=db.get(m.Project,data.project_id)
+        return (data.project_id,{'resolution':'FILTERED_BY_PROJECT_ID',
+            'project':_project_card(db,user,project,('项目ID',)) if project else {'id':data.project_id}})
+    if not data.identifier:
+        return None,{'resolution':'ALL_VISIBLE'}
+    visible=list(db.scalars(select(m.Project).where(predicate(db,user,'project.read',{'project_id':m.Project.id}))
+                            .order_by(m.Project.code).limit(501)))
+    needle=data.identifier.casefold()
+    matches=[]
+    for project in visible[:500]:
+        reasons=[]
+        if project.code.casefold()==needle:reasons.append('项目编号')
+        elif needle in project.code.casefold():reasons.append('项目编号')
+        if project.name.casefold()==needle:reasons.append('项目名称')
+        elif needle in project.name.casefold():reasons.append('项目名称')
+        if reasons:matches.append((project,reasons))
+    exact=[item for item in matches if item[0].code.casefold()==needle or item[0].name.casefold()==needle]
+    matches=exact or matches
+    if not matches:
+        return None,{'resolution':'NOT_FOUND_OR_FORBIDDEN','identifier':data.identifier,
+            'candidates':[],'limitations':['未找到唯一可见项目；不会扩大到全部项目进行替代分析。']}
+    if len(matches)>1:
+        return None,{'resolution':'AMBIGUOUS','identifier':data.identifier,
+            'candidates':[_project_card(db,user,project,reasons) for project,reasons in matches[:20]],
+            'limitations':['项目标识命中多个可见项目；请使用项目 ID 或完整项目编号后再分析。']}
+    project,reasons=matches[0]
+    return project.id,{'resolution':'FILTERED_BY_PROJECT','identifier':data.identifier,
+        'project':_project_card(db,user,project,reasons)}
+
+
+def analyze_delivery_risk(db,user,data:DeliveryRiskInput):
+    project_id,resolution=_resolve_project(db,user,data)
+    if resolution['resolution'] in {'NOT_FOUND_OR_FORBIDDEN','AMBIGUOUS'}:
+        return {'data':[],'source':'agent_db','as_of':now().isoformat(),**resolution}
+    result=delivery_risks(db,user,project_id)
+    result.update(resolution)
+    if project_id:
+        result['limitations']=['本次已限定到解析出的单个项目；仍只分析当前授权责任域内已正式下单的供应商发货信息。']+result['limitations']
+    return result

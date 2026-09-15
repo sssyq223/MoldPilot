@@ -9,8 +9,15 @@
       "module": "业务对象与匹配",
       "agent_responsibility": "Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["backend/app/project_control_tools.py 会话查询、暂停建议和本人确认后提交 BPM", "ProjectPauseDetail 冻结有效计划与未完成任务范围", "项目暂停生效后复用执行门禁阻断普通执行动作"],
-      "verification_evidence": ["tests/test_project_pause.py 覆盖审批前范围变化阻断", "非 PostgreSQL 测试 109 passed；Vue 生产构建通过；专用 PostgreSQL 与 ERP 联调待执行"],
+      "implementation_evidence": [
+        "backend/app/project_control_tools.py 会话查询、暂停建议和本人确认后提交 BPM",
+        "ProjectPauseDetail 冻结有效计划与未完成任务范围",
+        "项目暂停生效后复用执行门禁阻断普通执行动作"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 覆盖审批前范围变化阻断",
+        "非 PostgreSQL 测试 109 passed；Vue 生产构建通过；专用 PostgreSQL 与 ERP 联调待执行"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -19,8 +26,15 @@
       "module": "业务对象与匹配",
       "agent_responsibility": "Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["恢复强制关联当前有效 PauseRecord", "按实际暂停天数顺延冻结且未完成的计划任务", "PauseTaskShift 保存每个节点计划日期前后值并以唯一约束防重复"],
-      "verification_evidence": ["tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点不变与重复恢复阻断", "d33a12f7b9e1 PostgreSQL DDL 离线生成通过"],
+      "implementation_evidence": [
+        "恢复强制关联当前有效 PauseRecord",
+        "按实际暂停天数顺延冻结且未完成的计划任务",
+        "PauseTaskShift 保存每个节点计划日期前后值并以唯一约束防重复"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点不变与重复恢复阻断",
+        "d33a12f7b9e1 PostgreSQL DDL 离线生成通过"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -29,8 +43,15 @@
       "module": "业务对象与匹配",
       "agent_responsibility": "Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["PauseRecord 保存区间与客户交期快照", "恢复不修改 ProjectProfile.customer_due_date", "暂停期仅阻断普通执行动作，资料、沟通、工程联络和结算核对仍按权限办理"],
-      "verification_evidence": ["tests/test_project_pause.py 验证客户承诺交期保持不变及顺延审计", "真实业务验收尚未执行"],
+      "implementation_evidence": [
+        "PauseRecord 保存区间与客户交期快照",
+        "恢复不修改 ProjectProfile.customer_due_date",
+        "暂停期仅阻断普通执行动作，资料、沟通、工程联络和结算核对仍按权限办理"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 验证客户承诺交期保持不变及顺延审计",
+        "真实业务验收尚未执行"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -819,8 +840,12 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验"],
-      "verification_evidence": ["tests/test_contact_impact.py：主数据必填与未来日期阻断"],
+      "implementation_evidence": [
+        "ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验"
+      ],
+      "verification_evidence": [
+        "tests/test_contact_impact.py：主数据必填与未来日期阻断"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -829,8 +854,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源", "既有附件版本与方案审批记录"],
-      "verification_evidence": ["tests/test_contact_impact.py：创建、反馈和不可覆盖规则"],
+      "implementation_evidence": [
+        "contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源",
+        "既有附件版本与方案审批记录"
+      ],
+      "verification_evidence": [
+        "tests/test_contact_impact.py：创建、反馈和不可覆盖规则"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -839,8 +869,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["附件版本、过程记录、独立复验以及事项实际工时/金额/证据", "affected_type/ref 原生对象引用"],
-      "verification_evidence": ["结构化影响与执行单测；财务正式计价未联调"],
+      "implementation_evidence": [
+        "附件版本、过程记录、独立复验以及事项实际工时/金额/证据",
+        "affected_type/ref 原生对象引用"
+      ],
+      "verification_evidence": [
+        "结构化影响与执行单测；财务正式计价未联调"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -849,8 +884,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["项目负责人和责任部门负责人待办", "可配置方案 BPM、退回整改及生效通知"],
-      "verification_evidence": ["联络生命周期集成测试；完整生产岗位矩阵待验收"],
+      "implementation_evidence": [
+        "项目负责人和责任部门负责人待办",
+        "可配置方案 BPM、退回整改及生效通知"
+      ],
+      "verification_evidence": [
+        "联络生命周期集成测试；完整生产岗位矩阵待验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -859,8 +899,12 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点"],
-      "verification_evidence": ["tests/test_contact_impact.py：材料冻结和 ERP 来源约束"],
+      "implementation_evidence": [
+        "ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点"
+      ],
+      "verification_evidence": [
+        "tests/test_contact_impact.py：材料冻结和 ERP 来源约束"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -869,8 +913,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["方案冻结结构化影响材料", "RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具"],
-      "verification_evidence": ["生效交接幂等单测；真实 ERP 更新和全部门通知未联调"],
+      "implementation_evidence": [
+        "方案冻结结构化影响材料",
+        "RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具"
+      ],
+      "verification_evidence": [
+        "生效交接幂等单测；真实 ERP 更新和全部门通知未联调"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -879,8 +928,12 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["设计、采购、制造、装配、试模对象引用与执行/复验依据"],
-      "verification_evidence": ["原生引用和来源规则单测；正式对象执行工具端到端待完成"],
+      "implementation_evidence": [
+        "设计、采购、制造、装配、试模对象引用与执行/复验依据"
+      ],
+      "verification_evidence": [
+        "原生引用和来源规则单测；正式对象执行工具端到端待完成"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -889,8 +942,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["项目节点、合同和其他原生对象引用及交期/金额影响结构", "方案交接不直接改写物流、合同或财务"],
-      "verification_evidence": ["结构与边界校验；物流/合同/财务/预警联动未验证"],
+      "implementation_evidence": [
+        "项目节点、合同和其他原生对象引用及交期/金额影响结构",
+        "方案交接不直接改写物流、合同或财务"
+      ],
+      "verification_evidence": [
+        "结构与边界校验；物流/合同/财务/预警联动未验证"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -899,8 +957,13 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["方案审批、实际反馈、独立复验/整改及人工关闭分离", "最新方案下全事项复验关闭门禁和追加式实际数据"],
-      "verification_evidence": ["联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调"],
+      "implementation_evidence": [
+        "方案审批、实际反馈、独立复验/整改及人工关闭分离",
+        "最新方案下全事项复验关闭门禁和追加式实际数据"
+      ],
+      "verification_evidence": [
+        "联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -939,8 +1002,15 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["backend/app/project_closure.py 区分终止/正常关闭并在终止生效后停止Agent本地未完成任务", "backend/app/project_closure_tools.py 提供终止材料准备、人工确认和Agent BPM提交", "ProjectClosureDetail保存终止依据、当前环节、完成工作和费用汇总"],
-      "verification_evidence": ["tests/test_project_closure.py覆盖终止生效、任务停止和终止清单建立", "内置浏览器验证合成终止建议、本人确认、审批通过及生效"],
+      "implementation_evidence": [
+        "backend/app/project_closure.py 区分终止/正常关闭并在终止生效后停止Agent本地未完成任务",
+        "backend/app/project_closure_tools.py 提供终止材料准备、人工确认和Agent BPM提交",
+        "ProjectClosureDetail保存终止依据、当前环节、完成工作和费用汇总"
+      ],
+      "verification_evidence": [
+        "tests/test_project_closure.py覆盖终止生效、任务停止和终止清单建立",
+        "内置浏览器验证合成终止建议、本人确认、审批通过及生效"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -949,8 +1019,15 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["终止清单保存未完成采购、在制品、供应商任务及客户/供应商结算处置", "ERP事实要求原生引用和截至时间且不复制ERP台账", "项目终止后使用专用待结算状态"],
-      "verification_evidence": ["tests/test_project_closure.py覆盖ERP来源缺少引用时阻断及追加修订历史", "真实ERP处置与结算联调待执行"],
+      "implementation_evidence": [
+        "终止清单保存未完成采购、在制品、供应商任务及客户/供应商结算处置",
+        "ERP事实要求原生引用和截至时间且不复制ERP台账",
+        "项目终止后使用专用待结算状态"
+      ],
+      "verification_evidence": [
+        "tests/test_project_closure.py覆盖ERP来源缺少引用时阻断及追加修订历史",
+        "真实ERP处置与结算联调待执行"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -959,8 +1036,15 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["终止关闭使用独立TERMINATION清单和SETTLEMENT_CLOSE决定", "交付/验收允许记录原因后标为不适用", "关闭结果为CLOSED_TERMINATION且历史不删除"],
-      "verification_evidence": ["tests/test_project_closure.py覆盖终止结算关闭、不适用项和关闭后历史保护", "专用PostgreSQL验收待执行"],
+      "implementation_evidence": [
+        "终止关闭使用独立TERMINATION清单和SETTLEMENT_CLOSE决定",
+        "交付/验收允许记录原因后标为不适用",
+        "关闭结果为CLOSED_TERMINATION且历史不删除"
+      ],
+      "verification_evidence": [
+        "tests/test_project_closure.py覆盖终止结算关闭、不适用项和关闭后历史保护",
+        "专用PostgreSQL验收待执行"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -969,8 +1053,14 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["正常关闭清单要求计划、交付、适用验收、发票、客户回款、供应商结算、异常处理及归档", "最终审批生效前重新检查实时阻断项"],
-      "verification_evidence": ["tests/test_project_closure.py覆盖未完成计划和新联络事项阻断正常关闭", "测试覆盖计划完成后的实时复核与系统修订归档"],
+      "implementation_evidence": [
+        "正常关闭清单要求计划、交付、适用验收、发票、客户回款、供应商结算、异常处理及归档",
+        "最终审批生效前重新检查实时阻断项"
+      ],
+      "verification_evidence": [
+        "tests/test_project_closure.py覆盖未完成计划和新联络事项阻断正常关闭",
+        "测试覆盖计划完成后的实时复核与系统修订归档"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -979,8 +1069,16 @@
       "module": "终止结算与正常关闭",
       "agent_responsibility": "Agent 开发不同关闭清单、处置协同、人工确认、归档及历史更正；引用 ERP 已有执行/财务事实",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": ["ProjectClosureItemRevision追加保存每次清单更正历史", "关闭案例保留人员、版本、来源、依据、截至时间和检查明细", "迁移f1a4d8c7e2b3建立关闭案例、清单、修订和数据库约束"],
-      "verification_evidence": ["5项终止/关闭规则测试通过", "全部可运行的非PostgreSQL测试114 passed、103项专用PostgreSQL集成测试跳过", "离线DDL和真实数据库验收另行登记"],
+      "implementation_evidence": [
+        "ProjectClosureItemRevision追加保存每次清单更正历史",
+        "关闭案例保留人员、版本、来源、依据、截至时间和检查明细",
+        "迁移f1a4d8c7e2b3建立关闭案例、清单、修订和数据库约束"
+      ],
+      "verification_evidence": [
+        "5项终止/关闭规则测试通过",
+        "全部可运行的非PostgreSQL测试114 passed、103项专用PostgreSQL集成测试跳过",
+        "离线DDL和真实数据库验收另行登记"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1099,8 +1197,15 @@
       "module": "Agent 查询与被动预警",
       "agent_responsibility": "Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按对象和权限路由，不镜像 ERP 数据",
       "latest_decision": "AI 预警仅用户提问时执行，依据已上报异常或临期未发货；严格限定用户责任域。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "analyze_delivery_risk 工具按已发布临期规则、正式订单、发货记录和未关闭供应商异常计算风险",
+        "DeliveryRiskInput 支持 project_id/identifier，将分析限定到单个可见项目",
+        "项目解析失败或多项目命中返回 resolution/candidates，不扩大为全量分析"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_risk_tool.py 覆盖工具 schema、项目编号过滤和歧义不退回全量分析",
+        "tests/test_domains.py::test_hardware_risks_exclude_other_supplier_domain 验证责任域隔离（专用 PostgreSQL 集成测试）"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1109,8 +1214,14 @@
       "module": "Agent 查询与被动预警",
       "agent_responsibility": "Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按对象和权限路由，不镜像 ERP 数据",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_dossier 支持项目编号/名称、模具、联络、订单、合同和业务单号反查项目",
+        "analyze_delivery_risk 支持按项目 ID/编号/名称聚焦供应商执行风险"
+      ],
+      "verification_evidence": [
+        "tests/test_project_dossier.py 覆盖同号歧义、隐藏项目不可见和字段裁剪不反查",
+        "tests/test_delivery_risk_tool.py 覆盖项目编号限定风险分析"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1119,8 +1230,14 @@
       "module": "Agent 查询与被动预警",
       "agent_responsibility": "Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按对象和权限路由，不镜像 ERP 数据",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations",
+        "analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论"
+      ],
+      "verification_evidence": [
+        "tests/test_project_dossier.py 覆盖同号歧义与无权不可见",
+        "tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

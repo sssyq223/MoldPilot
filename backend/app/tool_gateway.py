@@ -73,6 +73,9 @@ def tool_schema(key):
     if key=='query_project_dossier':
         from .project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
+    if key=='analyze_delivery_risk':
+        from .procurement import DeliveryRiskInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DeliveryRiskInput.model_json_schema()}}
     return {"type": "function", "function": {"name": key, "description": TOOLS[key]["description"],
              "parameters": {"type": "object", "properties": {}, "additionalProperties": False}, "strict": True}}
 
@@ -105,6 +108,12 @@ def execute(db, user, key, arguments, run=None):
         try:data=ProjectDossierInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目档案查询参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
+    if key=='analyze_delivery_risk':
+        from pydantic import ValidationError
+        from .procurement import DeliveryRiskInput,analyze_delivery_risk
+        try:data=DeliveryRiskInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','发货风险分析参数无效：'+error.errors()[0]['msg']) from None
+        return analyze_delivery_risk(db,user,data)
     if arguments: raise DomainError("INVALID_TOOL_INPUT", "该工具不接受额外参数")
     if key=='query_uploaded_files':
         from .files import conversation_files
@@ -146,9 +155,6 @@ def execute(db, user, key, arguments, run=None):
     elif key=='query_purchase_orders':
         from .procurement import visible_orders
         data=visible_orders(db,user)
-    elif key=='analyze_delivery_risk':
-        from .procurement import delivery_risks
-        return delivery_risks(db,user)
     elif 'business_kind' in TOOLS[key]:
         from .domains import visible
         data=visible(db,user,TOOLS[key]['business_kind'])
