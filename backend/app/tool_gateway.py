@@ -19,6 +19,7 @@ TOOLS['query_engineering_change']['description']='查询已有工程联络方案
 TOOLS.update({
     'query_business_object_candidates':{'description':'按项目号、项目名、模具号、合同号、订单号等线索查询当前权限内候选业务对象；只返回候选和来源，不自动匹配或创建。','permission':'project.dossier.read'},
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
+    'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
@@ -48,6 +49,7 @@ SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["q
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
                'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context']},
+               'quote_evaluation_review':{'name':'报价评估与加工方式核对','tools':['query_quote_evaluation_context']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context']},
@@ -91,6 +93,9 @@ def tool_schema(key):
         from .business_matching import BusinessMatchInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':BusinessMatchInput.model_json_schema()}}
     if key=='query_quote_acceptance_context':
+        from .quote_tools import QuoteContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
+    if key=='query_quote_evaluation_context':
         from .quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
     if key=='query_contract_context':
@@ -154,6 +159,13 @@ def execute(db, user, key, arguments, run=None):
         from .quote_tools import QuoteContextInput,query
         try:data=QuoteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','报价与承接上下文参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_quote_evaluation_context':
+        from pydantic import ValidationError
+        from .quote_tools import QuoteContextInput
+        from .quote_evaluation_tools import query
+        try:data=QuoteContextInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','报价评估上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_contract_context':
         from pydantic import ValidationError
