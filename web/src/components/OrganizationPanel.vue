@@ -10,12 +10,12 @@ function toggle(uid:string,checked:boolean){editing.value.members=checked?[...ed
 async function save(){busy.value=true;try{const g=editing.value;const data={kind:g.kind,name:g.name,members:g.members,active:g.active,reason:reason.value};if(g.id)await api(`/organization/groups/${g.id}`,{method:'PUT',body:JSON.stringify({...data,expected_version:g.version})});else await post('/organization/groups',data);editing.value=null;await load();notice.value='人员规则已保存；已有审批席位保持不变，后续节点使用最新成员。';emit('changed')}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 </script>
 <template>
-<section class="surface form-stack" aria-label="部门与角色管理">
-  <div class="section-heading"><h3>部门与角色</h3><button @click="edit()">新增部门或角色</button></div>
-  <p class="muted">用于审批人员选择，可兼任多个角色。业务、数据、工具和技能权限仍需单独分配；用户原有部门文本不会自动成为审批规则。</p>
-  <p v-if="notice" role="status">{{notice}}</p>
-  <div v-for="g in groups" :key="g.id" class="grant-row"><div><strong>{{g.name}} · {{g.kind==='ROLE'?'角色':'部门'}}</strong><small>{{g.members.length}} 位成员 · {{g.active?'启用':'停用'}}</small></div><button @click="edit(g)">维护成员</button></div>
-  <form v-if="editing" class="form-stack" @submit.prevent="save">
+<section class="surface form-stack organization-compact" aria-label="部门与角色管理">
+  <div class="admin-card-title"><div><h3>部门与角色</h3><p class="muted">用于审批候选人选择，不直接授予业务权限。</p></div><button @click="edit()">新增</button></div>
+  <p v-if="notice" class="admin-inline-notice" role="status">{{notice}}</p>
+  <p v-if="!groups.length&&!editing" class="admin-empty">还没有部门或角色规则。</p>
+  <div v-for="g in groups" :key="g.id" class="grant-row organization-row"><div><strong>{{g.name}} · {{g.kind==='ROLE'?'角色':'部门'}}</strong><small>{{g.members.length}} 位成员 · {{g.active?'启用':'停用'}}</small></div><button @click="edit(g)">维护</button></div>
+  <form v-if="editing" class="form-stack organization-editor" @submit.prevent="save">
     <label>类型<select v-model="editing.kind" :disabled="!!editing.id"><option value="ROLE">角色</option><option value="DEPARTMENT">部门</option></select></label>
     <label>名称<input v-model="editing.name" required maxlength="100"/></label>
     <label class="check-label"><input v-model="editing.active" type="checkbox"/>启用</label>

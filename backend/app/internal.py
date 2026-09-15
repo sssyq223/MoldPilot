@@ -73,9 +73,11 @@ def install(app):
         if not user or not user.active or user.security_version != run.security_version:
             run.status = "FAILED"; run.result = {"message": "权限已变化，请重新发起"}; db.commit(); return {"run": None}
         authorization_hash = fingerprint(db, user)
-        if run.checkpoint and run.checkpoint.get("authorization_hash") != authorization_hash:
+        checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+        existing_authorization_hash = checkpoint.get("authorization_hash")
+        if existing_authorization_hash and existing_authorization_hash != authorization_hash:
             run.status = "FAILED"; run.result = {"message": "授权范围或有效期已变化，请重新发起"}; db.commit(); return {"run": None}
-        run.checkpoint = {**run.checkpoint, "authorization_hash": authorization_hash}
+        run.checkpoint = {**checkpoint, "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"), "authorization_hash": authorization_hash}
         run.status, run.lease_epoch, run.lease_until = "RUNNING", run.lease_epoch+1, now()+timedelta(seconds=120)
         from .files import run_files
         context = {"recent_requests":recent_requests(db,user,run),"files":run_files(db,user,run),"id": run.id, "epoch": run.lease_epoch, "prompt": run.prompt,
@@ -93,7 +95,10 @@ def install(app):
     @app.post("/internal/runs/{run_id}/checkpoint", dependencies=[Depends(worker_auth)])
     def checkpoint(run_id: str, data: dict, db=Depends(get_db)):
         run, _ = fence(db, run_id, data["epoch"])
-        run.checkpoint = {**data["checkpoint"], "authorization_hash": run.checkpoint["authorization_hash"]}
+        previous = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+        run.checkpoint = {**data["checkpoint"],
+                          "agent_permission_mode": data["checkpoint"].get("agent_permission_mode", previous.get("agent_permission_mode", "ask")),
+                          "authorization_hash": previous["authorization_hash"]}
         db.commit(); return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/finish", dependencies=[Depends(worker_auth)])

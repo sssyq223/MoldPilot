@@ -597,13 +597,15 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
     else:
         conversation = m.Conversation(user_id=user.id, title=compact_conversation_title(data.prompt)); db.add(conversation); db.flush()
     model_config = model_settings()
+    permission_mode = data.agent_permission_mode
     run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=data.prompt,
-                status="QUEUED" if model_config.llm_enabled else "WAITING_CONFIGURATION")
+                status="QUEUED" if model_config.llm_enabled else "WAITING_CONFIGURATION",
+                checkpoint={"agent_permission_mode": permission_mode})
     db.add(run); db.flush()
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
-    record(db, user, "agent.run.created", run.id); db.commit()
-    return {"id": run.id, "conversation_id": conversation.id, "status": run.status}
+    record(db, user, "agent.run.created", run.id, {"agent_permission_mode": permission_mode}); db.commit()
+    return {"id": run.id, "conversation_id": conversation.id, "status": run.status, "agent_permission_mode": permission_mode}
 
 
 @app.get("/api/conversations/{conversation_id}/runs")
@@ -613,10 +615,12 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
     result = []
     for r in db.scalars(select(m.Run).where(m.Run.conversation_id == conversation_id, m.Run.user_id == user.id).order_by(m.Run.created_at)):
         checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
-        visible = r.security_version == user.security_version and (not checkpoint or checkpoint.get("authorization_hash") == current_hash)
+        authorization_hash = checkpoint.get("authorization_hash")
+        visible = r.security_version == user.security_version and (not authorization_hash or authorization_hash == current_hash)
         steps = list(db.scalars(select(m.Step).where(m.Step.run_id == r.id).order_by(m.Step.sequence))) if visible else []
         result.append({"id": r.id, "prompt": r.prompt, "status": r.status,
                        "created_at": r.created_at,
+                       "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
                        "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
                        "files": run_files(db,user,r) if visible else [],
                        "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},

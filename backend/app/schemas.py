@@ -114,6 +114,7 @@ class RunInput(StrictModel):
     prompt: str = Field(min_length=1, max_length=6000)
     conversation_id: str | None = None
     file_ids:list[UUID]=Field(default_factory=list,max_length=10)
+    agent_permission_mode: Literal["ask", "delegated_auto"] = "ask"
 
 
 class CapabilityInput(StrictModel):

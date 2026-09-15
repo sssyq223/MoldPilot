@@ -25,6 +25,26 @@ def execute(client, context):
                        json={'epoch': context['epoch'], 'sequence': 0, 'key': 'query_purchase_requests', 'arguments': {}})
 
 
+def test_run_persists_agent_permission_mode_for_worker_context(client, data, monkeypatch):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client, 'test_buyer')
+    run = client.post('/api/runs', json={
+        'prompt': '查询我的采购申请',
+        'agent_permission_mode': 'delegated_auto'
+    }).json()
+    assert run['agent_permission_mode'] == 'delegated_auto'
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    assert history[0]['agent_permission_mode'] == 'delegated_auto'
+    assert history[0]['progress'] is not None
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert claimed['id'] == run['id']
+    assert claimed['agent_permission_mode'] == 'delegated_auto'
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': {'turn': 1}}).status_code == 200
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    assert history[0]['agent_permission_mode'] == 'delegated_auto'
+
+
 def test_tool_assignment_cannot_grant_business_data_access(client, data):
     ids, _ = data; sign_in(client)
     user = client.post('/api/users', json={'username':'empty_user','display_name':'无业务权限测试','password':'SyntheticPassword-2026!'}).json()
