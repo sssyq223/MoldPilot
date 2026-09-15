@@ -174,3 +174,52 @@ def test_xlsx_preview_flags_formula_and_unstable_or_duplicate_rows(client,data,l
     assert {'FORMULA_NOT_ACCEPTED','ROW_ID_DUPLICATE'} <= codes
     assert body['material_data']['tables']['design'][0]['values']['item']=='MAT-DUP'
     assert 'quantity' not in body['material_data']['tables']['design'][0]['values']
+
+
+def test_xlsx_review_persists_preview_and_confirms_clean_snapshot(client,data,local_file_storage):
+    sign_in(client);template=create(client,XLSX_CONTRACT)
+    published=client.post('/api/material-templates/'+template['id']+'/publish').json()
+    file=upload_xlsx(client,xlsx([
+        (1,'B',True),(2,'B','2026-09-22'),(4,'A','料号'),(4,'B','数量'),(4,'C','币种'),(4,'D','单价'),
+        (5,'A','MAT-R'),(5,'B',8),(5,'C','CNY'),(5,'D','25.5')])).json()
+    mapping={'fields':{'urgent':'数据!B1','needed_on':'数据!B2'},'tables':{'design':{'sheet':'数据','header_row':4,'first_data_row':5}}}
+    saved=client.post(f"/api/material-templates/{template['id']}/xlsx-mappings",
+        json={'name':'核对默认映射','mapping':mapping,'expected_template_hash':published['package_hash']}).json()
+
+    created=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews",json={'file_id':file['id']})
+    assert created.status_code==200,created.text
+    review=created.json()
+    assert review['status']=='READY_FOR_CONFIRMATION'
+    assert review['mapping_id']==saved['id']
+    assert review['template_hash']==published['package_hash']
+    assert review['file_sha256']==file['sha256']
+    assert review['issues']==[]
+    assert review['material_data']['fields']['urgent'] is True
+    assert review['material_data']['tables']['design'][0]['values']['item']=='MAT-R'
+    assert client.get(f"/api/material-templates/{template['id']}/xlsx-reviews").json()[0]['id']==review['id']
+
+    confirmed=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews/{review['id']}/confirm",
+        json={'expected_hash':review['review_hash'],'comment':'人工核对无误'})
+    assert confirmed.status_code==200,confirmed.text
+    assert confirmed.json()['status']=='CONFIRMED'
+    assert confirmed.json()['confirmed_at']
+    stale=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews/{review['id']}/confirm",
+        json={'expected_hash':'0'*64})
+    assert stale.status_code==409 and stale.json()['error']['code']=='VERSION_CONFLICT'
+
+
+def test_xlsx_review_with_issues_cannot_be_confirmed(client,data,local_file_storage):
+    sign_in(client);template=create(client,XLSX_CONTRACT)
+    client.post('/api/material-templates/'+template['id']+'/publish')
+    file=upload_xlsx(client,xlsx([
+        (1,'B',False),(2,'B','2026-09-20'),(4,'A','料号'),(4,'B','数量'),(4,'C','币种'),(4,'D','单价'),
+        (5,'A','MAT-DUP'),(5,'B',('formula','SUM(10,10)','20')),(5,'C','CNY'),(5,'D','100'),
+        (6,'A','MAT-DUP'),(6,'B',5),(6,'C','CNY'),(6,'D','50')])).json()
+    mapping={'fields':{'urgent':'数据!B1','needed_on':'数据!B2'},'tables':{'design':{'sheet':'数据','header_row':4,'first_data_row':5}}}
+    review=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews",json={'file_id':file['id'],'mapping':mapping}).json()
+    assert review['status']=='NEEDS_REVIEW'
+    assert {issue['code'] for issue in review['issues']} >= {'FORMULA_NOT_ACCEPTED','ROW_ID_DUPLICATE'}
+    blocked=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews/{review['id']}/confirm",
+        json={'expected_hash':review['review_hash']})
+    assert blocked.status_code==409
+    assert blocked.json()['error']['code']=='MATERIAL_REVIEW_HAS_ISSUES'

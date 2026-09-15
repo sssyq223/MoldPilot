@@ -20,7 +20,9 @@ tests/test_material_templates.py 覆盖草稿并发、发布不可变、数据�
 
 Excel 列映射已进入版本化管理：`material_template_xlsx_mapping` 保存已发布资料模板的映射版本、映射哈希、创建人和时间；`/api/material-templates/{id}/xlsx-mappings` 可登记和查询映射版本，预览接口未传临时映射时使用最新保存版本。映射版本仍只是解析配置，不代表某份业务材料已确认。
 
-尚缺：文件存储后的用户核对与确认、与业务对象绑定、字段级授权、动态条件编辑器和动态模拟界面。现有正式提交 API 不接受任意客户端 material_data；对声明 material_contract 但尚无已确认资料绑定的流程明确返回 MATERIALS_NOT_BOUND。资料模板结构绑定、XLSX 映射或预览结果都不等于实际材料已经核对。后续需用持久化资料绑定替换该接入保护，不能简单删除保护或用模拟数据作为正式材料。前端复制草稿保留 material_contract，避免丢失已定义资料要求。
+XLSX 解析结果已可持久化为本人核对包：`material_review` 保存资料模板哈希、映射哈希、原文件 sha256、结构化 `material_data`、issues 和 `review_hash`；无 issues 的核对包可由上传/核对人确认，确认记录包含确认人、确认时间和审计事件。有公式、缺列、重复行号等 issues 的核对包禁止确认，必须重新处理来源文件或映射。
+
+尚缺：与业务对象绑定、字段级授权、动态条件编辑器和动态模拟界面。现有正式提交 API 不接受任意客户端 material_data；对声明 material_contract 但尚无已确认资料绑定的流程明确返回 MATERIALS_NOT_BOUND。资料模板结构绑定、XLSX 映射、预览结果或已确认核对包都不等于审批实例材料已经冻结。后续需用持久化资料绑定替换该接入保护，不能简单删除保护或用模拟数据作为正式材料。前端复制草稿保留 material_contract，避免丢失已定义资料要求。
 
 ## 三类配置分开管理
 

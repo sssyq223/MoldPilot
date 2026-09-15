@@ -131,6 +131,24 @@ class MaterialTemplateXlsxMapping(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint('template_id','version'),)
 
 
+class MaterialReview(IdentityMixin, Base):
+    __tablename__ = 'material_review'
+    template_id: Mapped[str] = mapped_column(ForeignKey('material_template.id'), index=True)
+    mapping_id: Mapped[str | None] = mapped_column(ForeignKey('material_template_xlsx_mapping.id'), index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey('file_object.id'), index=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'), index=True)
+    status: Mapped[str] = mapped_column(String(30))
+    material_data: Mapped[dict] = mapped_column(J)
+    issues: Mapped[list] = mapped_column(J)
+    template_hash: Mapped[str] = mapped_column(String(64))
+    mapping_hash: Mapped[str] = mapped_column(String(64))
+    file_sha256: Mapped[str] = mapped_column(String(64))
+    review_hash: Mapped[str] = mapped_column(String(64))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (CheckConstraint("status IN ('NEEDS_REVIEW','READY_FOR_CONFIRMATION','CONFIRMED','REJECTED')"),)
+
+
 class WorkflowDefinition(IdentityMixin, Base):
     __tablename__ = "workflow_definition"
     process_key: Mapped[str] = mapped_column(String(80))
