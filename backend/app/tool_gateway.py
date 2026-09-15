@@ -22,6 +22,7 @@ TOOLS.update({
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
+    'query_design_route_context':{'description':'按项目、设计单、图纸、BOM物料或任务线索核对设计、BOM、加工路线、计划任务和工程联络影响；只读，不生成图纸或重复ERP设计模块。','permission':'design_route.read'},
     'query_project_dossier':{'description':'按项目编号/名称、模具号、工程联络、合同或订单编号反查并汇总当前可见的项目业务档案；只读，不复制 ERP 单据。','permission':'project.dossier.read'},
     'query_contact_cases':{'description':'查询当前用户可见的工程联络单、客户/模具/当前环节、结构化影响项、责任部门、处理人和协作状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
     'query_purchase_orders':{'description':'查询正式订单与草稿、发货数量和供应商异常，禁止把草稿视为已下单。','permission':'order.read'},
@@ -49,6 +50,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context']},
+               'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context']},
                'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
                'project_dossier_review':{'name':'项目业务档案核对','tools':['query_project_dossier']},
@@ -98,6 +100,9 @@ def tool_schema(key):
     if key=='query_project_plan_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
+    if key=='query_design_route_context':
+        from .design_tools import DesignRouteContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DesignRouteContextInput.model_json_schema()}}
     if key=='analyze_delivery_risk':
         from .procurement import DeliveryRiskInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DeliveryRiskInput.model_json_schema()}}
@@ -162,6 +167,12 @@ def execute(db, user, key, arguments, run=None):
         from .plan_tools import ProjectPlanContextInput,query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目计划上下文参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_design_route_context':
+        from pydantic import ValidationError
+        from .design_tools import DesignRouteContextInput,query
+        try:data=DesignRouteContextInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设计BOM与路线上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='analyze_delivery_risk':
         from pydantic import ValidationError

@@ -604,8 +604,17 @@
       "module": "设计与成果协同",
       "agent_responsibility": "Agent 开发设计审批、资料协同及工程联络单关联；设计上传/BOM 等已登记业务能力经核对调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境",
+        "design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记",
+        "工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响",
+        "工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题"
+      ],
+      "verification_evidence": [
+        "tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合",
+        "tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题",
+        "tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -614,8 +623,17 @@
       "module": "设计与成果协同",
       "agent_responsibility": "Agent 开发设计审批、资料协同及工程联络单关联；设计上传/BOM 等已登记业务能力经核对调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境",
+        "design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记",
+        "工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响",
+        "工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题"
+      ],
+      "verification_evidence": [
+        "tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合",
+        "tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题",
+        "tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -624,8 +642,17 @@
       "module": "设计与成果协同",
       "agent_responsibility": "Agent 开发设计审批、资料协同及工程联络单关联；设计上传/BOM 等已登记业务能力经核对调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境",
+        "design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记",
+        "工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响",
+        "工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题"
+      ],
+      "verification_evidence": [
+        "tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合",
+        "tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题",
+        "tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -634,8 +661,17 @@
       "module": "设计与成果协同",
       "agent_responsibility": "Agent 开发设计审批、资料协同及工程联络单关联；设计上传/BOM 等已登记业务能力经核对调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境",
+        "design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记",
+        "工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响",
+        "工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题"
+      ],
+      "verification_evidence": [
+        "tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合",
+        "tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题",
+        "tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -644,8 +680,17 @@
       "module": "设计与成果协同",
       "agent_responsibility": "Agent 开发设计审批、资料协同及工程联络单关联；设计上传/BOM 等已登记业务能力经核对调用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境",
+        "design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记",
+        "工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响",
+        "工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题"
+      ],
+      "verification_evidence": [
+        "tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合",
+        "tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题",
+        "tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1409,7 +1454,9 @@
         "query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations",
         "工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接",
         "query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations",
-        "工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划"
+        "工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划",
+        "query_design_route_context 在设计/BOM/路线语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划或联络工具时写入 limitations",
+        "设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成"
       ],
       "verification_evidence": [
         "tests/test_project_dossier.py 覆盖同号歧义与无权不可见",
@@ -1417,7 +1464,8 @@
         "tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要",
         "tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态",
         "tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态",
-        "tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离"
+        "tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离",
+        "tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

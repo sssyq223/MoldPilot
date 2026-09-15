@@ -417,8 +417,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计主管确认内部设计或设计委外并提交审批，记录负责人、时间、费用及适用的供应商信息。当前设计排产以线下安排、线上进度记录为基础；供应商不适用于内部设计时不强制虚填。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-044
@@ -426,8 +426,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 内部设计按工艺分析、结构设计、出图、设计确认推进。设计委外记录任务下达、成果接收、审核及整改结果，由设计主管组织排期和确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-045
@@ -435,8 +435,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计确认后形成正式设计版本，管理对应BOM、工艺路线、零件清单及后续任务；设计人员上传需采购物料、零件和加工任务清单。成果产生方式按适配确认，正式版本的项目、模具和任务关联必须保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-046
@@ -444,8 +444,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 图纸或工艺路线改版保留旧版，评估对采购、加工和其他任务的影响。工程联络单转设计时创建或关联设计订单，继承客户、项目、模具、料号、责任、紧急程度、方案、要求日期及附件审批信息。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-047
@@ -453,8 +453,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 工艺分析后向采购提供试模料标准，包括客户、规格和颜色。发货地点、单独招标及无合同而线下确认的信息可通过记录表及附件维护，并保留来源。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ## 采购与价格
@@ -1086,8 +1086,8 @@ Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按�
 按提问查询时，应区分未找到、多条候选、未确认数据及无权限情形，必要时要求用户明确对象。不编造缺失数据或将不同项目的记录拼接为确定答案；计算结果可回溯输入口径。自然语言技术实现和响应指标后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限；query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations；工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接；query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations；工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划
-- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态；tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态；tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离
+- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限；query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations；工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接；query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations；工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划；query_design_route_context 在设计/BOM/路线语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划或联络工具时写入 limitations；设计上下文工具不把无生效设计推断为项目无设计工作，不把BOM路线推断为采购/加工/装配/试模执行已完成
+- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态；tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态；tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离；tests/test_design_tools.py 覆盖多候选、无生效设计和计划/联络权限隔离
 - 验收状态：NOT_VERIFIED
 
 ## 权限与审计
