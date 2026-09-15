@@ -218,7 +218,7 @@ function delegationLabel(row:any){
      <section class="surface agent-approval-card">
       <div class="agent-approval-copy"><ShieldCheck :size="22"/><div><strong>授权一个流程节点</strong><small class="muted">只有流程设计中打开了 Agent 自动审批的节点会出现在这里；高风险或强制人工节点不会接受授权。</small></div></div>
       <div v-if="delegationOptions.length" class="agent-delegation-form">
-       <label>可授权节点<select v-model="delegationNode"><option v-for="option in delegationOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版）</option></select></label>
+       <label>可授权节点<select v-model="delegationNode"><option v-for="option in delegationOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版{{option.has_auto_policy?' · 已设安全条件':''}}）</option></select></label>
        <label>授权原因<textarea v-model="delegationReason" rows="2" placeholder="例如：低风险辅材采购金额小、资料齐全时允许自动同意"/></label>
        <label>有效期至<input v-model="delegationValidTo" type="datetime-local"/><small class="muted">留空表示长期有效，撤销后立即失效。</small></label>
        <button class="primary" :disabled="delegationSaving||!selectedDelegationOption" @click="saveAgentDelegation">{{delegationSaving?'正在保存…':'授权 Agent 自动同意'}}</button>

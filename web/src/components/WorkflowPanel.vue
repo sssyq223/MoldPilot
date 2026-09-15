@@ -25,6 +25,8 @@ const groups=computed(()=>Object.values(templates.value.filter(t=>!categoryFilte
 const sample=ref({quantity:'',amount:'',currency:'CNY',category:'',remark:'',project_id:''})
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[]})
+function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
+function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled)n.agent_auto_policy={condition:{field:'quantity',op:'lte',value:''}};else delete n.agent_auto_policy}
 async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
@@ -54,6 +56,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
     <ol><li v-for="(n,i) in selected.config.nodes" :key="n.key" class="form-stack surface"><strong>{{n.name}} · {{n.mode==='ALL'?'全部人员同意（会签）':'任一人员同意（或签）'}}</strong>
       <p>审批人员：{{assignmentNames(n)}}</p><p v-if="n.assignment" class="muted">当前候选人员：{{candidateNames(n)}}。实际进入节点时校验业务与材料读取权限。</p>
       <p v-if="n.agent_auto_approval" class="muted">Agent 自动审批：允许审批人本人授权后自动同意该节点；未授权时仍人工处理。</p>
+      <p v-if="n.agent_auto_policy" class="muted">自动审批安全条件：{{ruleText(n.agent_auto_policy.condition)}}。不满足或资料不足时保持人工审批。</p>
       <h4>必须驳回条件</h4><p v-if="!n.reject_rules.length" class="muted">未设置</p><div v-for="(r,j) in n.reject_rules" :key="j"><p>{{ruleText(r.condition)}}</p><p>驳回原因：{{r.reason}}</p></div>
       <h4>后续流转</h4><template v-if="n.routes"><p v-for="(r,j) in n.routes" :key="j">当{{ruleText(r.condition)}} → {{routeName(r.target,selected.config.nodes)}}</p><p>全部条件未命中 → {{routeName(n.default_target,selected.config.nodes)}}</p><small class="muted">资料缺失或同时命中多个分支时，等待处理。</small></template><p v-else>审批通过 → {{selected.config.nodes[Number(i)+1]?.name||'审批结束'}}</p>
     </li></ol><div class="actions"><button @click="copy(selected,selected.status==='DRAFT')">{{selected.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="selected.status==='DRAFT'" :disabled="busy" @click="publish(selected)">校验并发布</button></div>
@@ -72,8 +75,14 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
         <div class="section-heading"><strong>审批节点 {{i+1}}</strong><button v-if="nodes.length>1" type="button" class="icon-button" aria-label="删除节点" @click="removeNode(i)"><Trash2 :size="16"/></button></div>
         <div class="form-grid"><label>节点名称<input v-model="n.name" required/></label></div>
         <label>审批方式<select v-model="n.mode"><option value="ALL">全部人员同意（会签）</option><option value="ANY">任一人员同意（或签）</option></select></label>
-        <label class="check-label"><input v-model="n.agent_auto_approval" type="checkbox"/>允许审批人本人授权后由 Agent 自动同意该节点</label>
+        <label class="check-label"><input type="checkbox" :checked="!!n.agent_auto_approval" @change="toggleAgentAuto(n,($event.target as HTMLInputElement).checked)"/>允许审批人本人授权后由 Agent 自动同意该节点</label>
         <p class="muted small">只建议用于低风险、资料齐全时可例行同意的节点。Agent 不会自动驳回，也不能绕过审批人员、业务权限、资料版本或必须驳回条件。</p>
+        <div v-if="n.agent_auto_approval" class="surface form-stack">
+          <strong>自动审批安全条件</strong>
+          <p class="muted small">可选。设置后条件必须明确满足才会自动同意；条件不满足或资料不足时继续人工处理。</p>
+          <template v-if="n.agent_auto_policy"><RuleEditor v-model="n.agent_auto_policy.condition"/><button type="button" @click="setAgentAutoPolicy(n,false)">移除安全条件</button></template>
+          <button v-else type="button" class="subtle" @click="setAgentAutoPolicy(n,true)">增加安全条件</button>
+        </div>
         <label>人员来源<select :value="n.assignment?'RULE':'USERS'" @change="assignmentMode(n,($event.target as HTMLSelectElement).value==='RULE')"><option value="USERS">指定人员</option><option value="RULE">按角色或部门选择</option></select></label>
         <fieldset v-if="!n.assignment"><legend>审批人员</legend><label class="check-label" v-for="u in users.filter(x=>x.active)" :key="u.id"><input v-model="n.users" type="checkbox" :value="u.id"/>{{u.display_name}}</label></fieldset>
         <template v-else>

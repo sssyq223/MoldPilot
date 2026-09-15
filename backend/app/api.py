@@ -453,7 +453,8 @@ def agent_approval_node_options(db):
             options.append({"process_key": definition.process_key, "process_name": definition.name,
                             "definition_id": definition.id, "version": definition.version,
                             "business_type": definition.config.get("business_type"),
-                            "node_key": node["key"], "node_name": node.get("name", node["key"])})
+                            "node_key": node["key"], "node_name": node.get("name", node["key"]),
+                            "has_auto_policy": bool(node.get("agent_auto_policy"))})
     return options
 
 

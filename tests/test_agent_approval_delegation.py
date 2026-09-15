@@ -33,7 +33,7 @@ def grant(db, user, admin, permission, project, category="hardware"):
                    fields=PERMISSIONS[permission], reason="自动审批测试授权", granted_by=admin.id))
 
 
-def fixture_data(db, *, auto_node=True):
+def fixture_data(db, *, auto_node=True, auto_policy=None):
     admin = m.User(username="admin", display_name="管理员", password_hash=hasher.hash("SyntheticPassword-2026!"), super_admin=True)
     buyer = m.User(username="buyer", display_name="采购员", password_hash=hasher.hash("SyntheticPassword-2026!"))
     reviewer = m.User(username="reviewer", display_name="采购主管", password_hash=hasher.hash("SyntheticPassword-2026!"))
@@ -48,6 +48,8 @@ def fixture_data(db, *, auto_node=True):
     node = {"key": "review", "name": "采购主管审批", "users": [reviewer.id], "mode": "ALL", "reject_rules": []}
     if auto_node:
         node["agent_auto_approval"] = True
+    if auto_policy:
+        node["agent_auto_policy"] = auto_policy
     config = {"business_type": "purchase_request", "nodes": [node]}
     definition = m.WorkflowDefinition(process_key="auto_purchase", version=1, name="自动审批测试", config=config,
                                       bpmn_xml=bpm.compile_bpmn(config), status="PUBLISHED",
@@ -60,11 +62,11 @@ def fixture_data(db, *, auto_node=True):
     return admin, buyer, reviewer, project, material, definition
 
 
-def draft(db, buyer, project, material):
+def draft(db, buyer, project, material, quantity=Decimal("2")):
     return business.create_request(db, buyer, s.PurchaseInput(
         project_id=project.id,
         remark="自动审批测试",
-        lines=[s.LineInput(material_id=material.id, quantity=Decimal("2"), due_date=date(2026, 9, 16))],
+        lines=[s.LineInput(material_id=material.id, quantity=quantity, due_date=date(2026, 9, 16))],
     ))
 
 
@@ -100,6 +102,23 @@ def test_agent_delegation_does_not_bypass_force_human_node(sqlite_session):
     seat = db.scalar(select(m.ApprovalSeat).where(m.ApprovalSeat.instance_id == instance.id))
     assert seat.user_id == reviewer.id
     assert seat.status == "PENDING"
+    assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
+
+
+def test_agent_delegation_respects_node_auto_policy(sqlite_session):
+    db = sqlite_session
+    _admin, buyer, reviewer, project, material, definition = fixture_data(
+        db, auto_node=True,
+        auto_policy={"condition": {"field": "quantity", "op": "lte", "value": "1"}},
+    )
+    req = draft(db, buyer, project, material, quantity=Decimal("2"))
+    result = business.submit_request(db, buyer, req.id, req.revision, definition.id)
+    assert result["status"] == "SUBMITTED"
+    assert result["agent_auto_approved"] == []
+    instance = db.get(m.ApprovalInstance, result["instance_id"])
+    assert instance.status == "RUNNING"
+    seat = db.scalar(select(m.ApprovalSeat).where(m.ApprovalSeat.instance_id == instance.id))
+    assert seat.user_id == reviewer.id and seat.status == "PENDING"
     assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
 
 

@@ -118,6 +118,14 @@ def _active_delegation(db, user_id, definition, node):
     ))
 
 
+def _agent_auto_policy_allows(definition, node, snapshot):
+    policy = node.get("agent_auto_policy")
+    if not policy:
+        return True
+    result = bpm.evaluate_snapshot(policy["condition"], snapshot, definition.config.get("material_contract"))
+    return result is True
+
+
 def process_agent_auto_approvals(db, instance_id, limit=12):
     """Apply explicit user delegations for auto-approvable nodes only.
 
@@ -134,6 +142,8 @@ def process_agent_auto_approvals(db, instance_id, limit=12):
             break
         node = definition.config["nodes"][instance.stage_index]
         if not node.get("agent_auto_approval"):
+            break
+        if not _agent_auto_policy_allows(definition, node, instance.snapshot):
             break
         seats = list(db.scalars(select(ApprovalSeat).where(
             ApprovalSeat.instance_id == instance.id,
