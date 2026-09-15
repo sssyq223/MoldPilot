@@ -549,7 +549,7 @@ html[data-theme="light"] .user-message{background:#edf4fb;border-color:#cbdceb;c
 html[data-theme="light"] .message-action:hover,html[data-theme="light"] .message-action:focus-visible{background:transparent!important;color:#2f4154}
 html[data-theme="light"] .message-action.copied,html[data-theme="light"] .copy-feedback{color:#2f8f5c!important}
 .answer-body{display:flex;flex-direction:column;align-items:flex-end}
-.answer-body>.run-label,.answer-body>p.muted.small,.react-trace,.assistant-message-actions{width:min(820px,100%);margin-left:auto}
+.answer-body>.run-label,.answer-body>p.muted.small,.react-trace,.assistant-message-actions{width:100%;margin-left:auto}
 .react-trace{margin-right:0}
 .assistant-prose,.assistant-prose.final,.run-process .assistant-prose.process-text{width:100%;max-width:none}
 .profile-area{margin-top:6px!important;margin-bottom:0!important;padding:4px 0 0!important}
@@ -597,6 +597,15 @@ html[data-theme="light"] .profile-menu button:hover{background:#edf3f8!important
 .model-clear-key{align-self:end}
 .model-config-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:2px;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
 .model-config-footer .primary{height:34px;padding:0 14px}
+.workspace{overflow:hidden;flex-shrink:1!important;min-width:320px;max-width:calc(100vw - 320px)}
+.workspace-header{height:52px;padding:0 14px;gap:12px;min-width:0}
+.workspace-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workspace-header>div{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto}
+.workspace-header .icon-button{width:28px;height:28px;padding:0;flex:none}
+.workspace-tabs{min-height:42px;padding:0 14px;min-width:0;overflow:hidden}
+.workspace-tabs button{padding:10px 8px;font-size:13px}
+.workspace-tabs .small{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.workspace-content{padding:18px}
 html[data-theme="light"] .settings-back{background:transparent}
 html[data-theme="light"] .settings-sidebar nav button.active{background:#e7f0f9;box-shadow:inset 2px 0 0 #5d8fc8}
 html[data-theme="light"] .run-duration-toggle{color:#6b7888}

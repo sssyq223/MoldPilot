@@ -760,8 +760,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 设变包括客户设变、内部修模改模及委外设变；客户设变的执行方式可为内部或委外。收费与否、是否新增合同和具体执行范围分别记录，不以有无合同代替设变记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_change_intake_context 汇总客户设变、内部修模改模、委外设变分类，分别返回收费/金额线索、销售/委外合同、开工通知、执行范围和工程变更记录；change_intake_review Skill 明确设变记录、合同、收费、开工和执行范围不能相互替代
+- 验证证据：tests/test_change_intake_tools.py 覆盖客户设变、合同/开工、影响项和未闭环状态聚合
 - 验收状态：NOT_VERIFIED
 
 ### FR-079
@@ -769,8 +769,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 小设变可能免费或无合同，仍沿用正常开工通知及审批规则，不能因无合同跳过开工条件。收费通过邮件或沟通确认时保留可核对记录；口头沟通应补充书面确认记录及相关聊天等证据。内部执行由相关人员与客户确认金额，委外由采购与供应商确认金额并上传依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_change_intake_context 在 derived_status 中区分 customer_written_evidence、effective_start_notice、charge_or_cost_impact 和 effective_contract；工具 warnings 对“无合同或免费小设变也不能跳过开工条件”和口头/客户确认依据缺口给出模型可用提示
+- 验证证据：tests/test_change_intake_tools.py 构造免费小改、客户邮件依据和正式开工通知，验证工具不把合同缺失等同为可跳过流程
 - 验收状态：NOT_VERIFIED
 
 ### FR-080
@@ -778,8 +778,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 已有模具设变复用内部模具号，客户模号变化保留历史；可通过已确认的订单合同关系定位原模具，无新增合同时直接关联原模具及原项目。缺少海尔物料号时由人工按订单编号查询客户系统，查询不到时补录或上传依据并留痕。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_change_intake_context 通过 ProjectMold/Mold、工程联络 mold_number/product_ref/customer_ref 和销售合同线索反查原项目、原内部模具与客户料品/模号证据；工具 gaps 明确缺少内部模具档案或客户物料号/客户系统依据时不能重复建模具或凭猜测办理
+- 验证证据：tests/test_change_intake_tools.py 验证已有内部模具号 MOLD-INT-001 与客户模号变更线索同时返回
 - 验收状态：NOT_VERIFIED
 
 ### FR-081
@@ -787,8 +787,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 首次承接外部模具设变时，人工报价评估，可承接后按新业务承接流程办理并建立内部模具档案。已有档案再次设变不得重复建模具。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_change_intake_context 返回 latest_quote_acceptance、known_molds、effective_start_notices 和 contact/engineering change 事实，用于外部模具首次承接与既有档案再次设变的分流核对；change_intake_review Skill 要求首次外部模具走新业务承接，已有档案再次设变不得重复建模具
+- 验证证据：tests/test_change_intake_tools.py 覆盖报价承接、内部模具档案和再次设变复用原模具的查询证据；首次外部模具建档端到端仍待业务验收
 - 验收状态：NOT_VERIFIED
 
 ## 工程联络单与异常闭环
@@ -800,8 +800,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 客户设变、设计异常、组立异常、加工异常、采购异常、质检异常、试模异常、外协不良、降低成本及制程改善等，按业务适用情况通过工程联络单统一管理，并关联当前环节。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验
-- 验证证据：tests/test_contact_impact.py：主数据必填与未来日期阻断
+- 实现证据：ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验；query_change_intake_context 汇总 CUSTOMER_CHANGE、DESIGN_ISSUE、ASSEMBLY_ISSUE、MACHINING_ISSUE、PROCUREMENT_ISSUE、QUALITY_ISSUE、TRIAL_ISSUE、OUTSOURCE_DEFECT 等来源并关联当前环节
+- 验证证据：tests/test_contact_impact.py：主数据必填与未来日期阻断；tests/test_change_intake_tools.py：客户设变联络单按当前加工环节被上下文工具聚合
 - 验收状态：NOT_VERIFIED
 
 ### FR-083
@@ -809,8 +809,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 联络单至少记录客户、项目号、模具号、产品料号或适用料品、申请日期、问题来源、责任部门、变更类别、紧急程度、说明、对策、要求及实际完成时间、工时、金额、附件、版本和审批记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录
-- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则
+- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录；query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要
+- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则；tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取
 - 验收状态：NOT_VERIFIED
 
 ### FR-084
@@ -818,8 +818,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 原件附件、操作记录和复检结果一并留存，关联设变单、维修或返工任务、项目节点和成本记录；额外工时及其计价关联财务，计价方式和审批权限后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；affected_type/ref 原生对象引用
-- 验证证据：结构化影响与执行单测；财务正式计价未联调
+- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代
+- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调
 - 验收状态：NOT_VERIFIED
 
 ### FR-085
@@ -827,8 +827,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 发起后向项目负责人和设计发送待办。设计评估问题并提出方案，项目负责人可退回方案或据此组织计划。工程联络单由总经理或后续明确的授权审批岗位审批；具体审核、批准、加签和退回路线按审批矩阵执行，退回到明确责任人。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目负责人和责任部门负责人待办；可配置方案 BPM、退回整改及生效通知
-- 验证证据：联络生命周期集成测试；完整生产岗位矩阵待验收
+- 实现证据：项目负责人和责任部门负责人待办；可配置方案 BPM、退回整改及生效通知；query_change_intake_context 返回 contact_resolutions 与 approved/effective 状态，并保留“方案审批不等于执行完成”的告警
+- 验证证据：联络生命周期集成测试；完整生产岗位矩阵待验收；tests/test_change_intake_tools.py：有效处理方案和未完成复验同时返回，避免误判
 - 验收状态：NOT_VERIFIED
 
 ### FR-086
@@ -836,8 +836,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 评估应列明受影响图纸、物料、采购单、在制任务及供应商任务，明确继续执行、暂停、取消、返工或重新下达。判断当前环节的可变更性及交期影响，不能把所有设变都机械解释为全部任务从头重做。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点
-- 验证证据：tests/test_contact_impact.py：材料冻结和 ERP 来源约束
+- 实现证据：ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点；query_change_intake_context 按 affected_type 和 planned_action 汇总图纸、物料、采购单、在制任务、供应商任务等影响，返回 CONTINUE/PAUSE/CANCEL/REWORK/REISSUE 及交期影响
+- 验证证据：tests/test_contact_impact.py：材料冻结和 ERP 来源约束；tests/test_change_intake_tools.py：WIP_TASK 返工和交期影响进入 planned_action_summary/affected_object_summary
 - 验收状态：NOT_VERIFIED
 
 ### FR-087
@@ -845,8 +845,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变审批后按确认方案更新正式版本、受影响任务、节点计划及生产安排，通知设计、采购、生产、装配、试模、品质和验收等相关部门。未受影响的任务按批准计划继续；新旧版本及已发生执行记录均保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具
-- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调
+- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具；query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整
+- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调；tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回
 - 验收状态：NOT_VERIFIED
 
 ### FR-088
@@ -854,8 +854,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变涉及设计时关联工艺分析、结构设计、出图及确认；涉及采购时关联请购、订单、价格审批及供应商合同；涉及制造、装配、试模时关联工单、报工、检测和复验结果。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：设计、采购、制造、装配、试模对象引用与执行/复验依据
-- 验证证据：原生引用和来源规则单测；正式对象执行工具端到端待完成
+- 实现证据：设计、采购、制造、装配、试模对象引用与执行/复验依据；query_change_intake_context 通过 ContactTask affected_type/ref、PlanTask、EngineeringChange impacts、销售/委外合同上下文关联设计、采购、制造、装配、试模、物流、合同和财务对象
+- 验证证据：原生引用和来源规则单测；正式对象执行工具端到端待完成；tests/test_change_intake_tools.py：计划任务和在制任务引用进入设变上下文
 - 验收状态：NOT_VERIFIED
 
 ### FR-089
@@ -863,8 +863,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变影响出入库、物流路线、发货日期或运费时同步相关单据；影响金额、付款条件或交期时更新经确认的合同及财务记录。寄售料号、安全采购量及采购预警仅在已确认适配范围内联动。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目节点、合同和其他原生对象引用及交期/金额影响结构；方案交接不直接改写物流、合同或财务
-- 验证证据：结构与边界校验；物流/合同/财务/预警联动未验证
+- 实现证据：项目节点、合同和其他原生对象引用及交期/金额影响结构；方案交接不直接改写物流、合同或财务；query_change_intake_context 将交期影响、合同、委外合同、金额/费用影响和未落实事项聚合为只读上下文，并在 limitations 中声明不改写物流、合同或财务
+- 验证证据：结构与边界校验；物流/合同/财务/预警联动未验证；tests/test_change_intake_tools.py：合同、金额和交期影响被识别；物流/财务正式联动仍待验证
 - 验收状态：NOT_VERIFIED
 
 ### FR-090
@@ -872,8 +872,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 异常处理须记录方案批准、执行结果及复检或复验结论，由适用责任角色确认关闭。工程联络单获批不表示整改完成；涉及节点、费用及合同事项未落实时应能识别未完成事项。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据
-- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调
+- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成
+- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警
 - 验收状态：NOT_VERIFIED
 
 ## 暂停与恢复
