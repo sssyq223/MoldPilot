@@ -604,8 +604,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 系统显示适用的齐套进度，钳工主管确认装配条件后分配任务并下达装配工单。装配完成后确认完工，无异常由钳工主管发起试模申请；有异常关联质检及工程联络单，定位责任任务处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_assembly_trial_context 按项目、装配任务或试模线索核对计划节点、设计BOM路线、装配任务下发、装配开工/完工、试模申请、试模结果和工程联络异常上下文；analysis.derived_status 区分 has_assembly_order、has_assembly_started、has_assembly_done、has_trial_request、has_trial_result、has_open_assembly_or_trial_issue，避免把装配完成误判为试模完成或异常关闭；工具 limitations 明确实际装配/试模执行复用 ERP 或正式业务回执，Agent 不下达装配工单、不登记开完工、不修改 ERP 执行数据
+- 验证证据：tests/test_assembly_trial_tools.py 覆盖装配计划节点、设计BOM路线、装配完工、试模未通过、工程联络异常聚合；真实 ERP 齐套率、关键件口径、钳工主管确认和装配工单联调尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-063
@@ -613,8 +613,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 试模安排确认机台租赁或内部资源及计划可用性，由试模主管分配任务。试模人员记录执行结果并上传报告；通过后形成出厂自检合格资料，不通过时发起工程联络单，返回对应任务整改后重新验证。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_assembly_trial_context 返回试模 planned_date、location、acceptance_criteria、responsible_id、results，并在 analysis 中区分 has_trial_request、has_trial_result、has_trial_passed、has_trial_failed；试模未通过时 warnings 提醒需关联工程联络单、整改责任任务和重新验证依据；试模通过时提醒不等于客户验收、出厂放行或项目关闭；试模记录仅在当前用户具备 trial_request.read 授权时通过同一上下文工具读取，未授权时不泄露试模单号、报告或结论
+- 验证证据：tests/test_assembly_trial_tools.py 覆盖试模结果读取、试模未通过整改提示、无 trial_request.read 时不泄露 TRIAL-SECRET 或 SECRET-TRIAL-REPORT；机台租赁/内部资源可用性、试模报告附件解析和出厂自检资料联调尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 交付与物流
