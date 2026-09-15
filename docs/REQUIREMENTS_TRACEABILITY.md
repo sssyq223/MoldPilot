@@ -198,8 +198,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 客户工艺方案确认并收到客户开工通知后，满足正式启动条件。项目负责人正式下达内部开工通知，通知设计、采购、生产、装配、财务等相关部门。承接确认、客户开工条件和内部正式下达分别留存依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；正式下达、部门通知和客户开工条件校验仍需独立流程，不由本工具执行
-- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态
+- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；正式下达、部门通知和客户开工条件校验仍需独立流程，不由本工具执行；query_internal_start_readiness 汇总项目状态、有效承接、正式开工通知、合同和计划上下文，区分承接确认、合同和内部正式下达；readiness.known_blockers/warnings/hints 只表达当前可见事实，不创建开工通知或发送部门任务
+- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态；tests/test_start_tools.py 覆盖具备承接依据时可准备开工、已有正式开工时不重复准备；客户工艺方案确认和部门通知矩阵尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-021
@@ -207,8 +207,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 正式下达前允许匹配数据、准备草稿和项目计划草案，并按业务需要开展开工前的工艺评估及客户确认；不得下达或执行生产、采购、装配、试模任务。正式下达后，部门任务仍应按项目计划审批结果执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行
+- 验证证据：tests/test_start_tools.py 验证工具只读核对与 can_prepare_start_from_known_facts；开工前草稿准备和正式任务门禁全流程尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-022
@@ -216,8 +216,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部开工业务状态为：待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中。中标接收、匹配等处理动作另留记录；拒单记录原因后结束，暂停和终止按第12章管理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态
+- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-023
@@ -225,8 +225,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部通知关联外部订单、客户及内部模具、机型或物料号、项目、合同、开工时间和交期。新模流程生成或确认内部唯一模具号，已有模具设变复用原号。内部通知与销售合同分别管理，合同未到不阻塞已满足条件的项目开工。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：正式开工条件核对同时展示开工通知、销售合同、整套委外合同和计划上下文，明确内部通知与销售合同分别管理；工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对
+- 验证证据：tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-024
@@ -234,8 +234,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 无合同时记录预计到达日期；合同收到后补充实际到达日期并上传附件。超过预计日期仍未收到时提醒财务和项目负责人，业务或市场人员跟踪补充及签订情况。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：query_internal_start_readiness 在未见销售合同时给出 warning，说明合同晚到需保留开工依据并后续补合同核对；query_contract_context 的 late_expected_contracts 可提示预计日期已过但合同记录未生效/关闭
+- 验证证据：tests/test_start_tools.py 覆盖未见销售合同时的开工核对 warning；tests/test_contract_tools.py 覆盖晚到合同提示；合同附件上传和催补通知尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-025
@@ -243,8 +243,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 财务按确认方式取得BPM等来源的开工通知，核对订单和合同信息；客户付款节点单独维护，不仅保存备注。移模时间按客户签收时间记录，由财务人工维护；签收不等于质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：待逐条核验并登记
-- 验证证据：未登记完整通过证据
+- 实现证据：正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认；工具只读，不维护移模时间、不确认客户付款节点、不替代财务核对
+- 验证证据：tests/test_start_tools.py 覆盖开工通知独立于承接；tests/test_contract_tools.py 覆盖付款节点只读展示，财务取得 BPM 开工通知和移模维护尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 合同上传与管理
@@ -1086,8 +1086,8 @@ Agent/Harness/LLM/Tool/Skills 新开发；只在提问时分析，查询先按�
 按提问查询时，应区分未找到、多条候选、未确认数据及无权限情形，必要时要求用户明确对象。不编造缺失数据或将不同项目的记录拼接为确定答案；计算结果可回溯输入口径。自然语言技术实现和响应指标后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限
-- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态
+- 实现证据：项目档案查询与发货风险分析均在未找到、多候选、无权限或范围不足时返回明确 resolution/limitations；analyze_delivery_risk 对项目标识不唯一时要求用户指定，不把全部可见项目当作替代结论；query_quote_acceptance_context 在报价承接语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，限制模型把不同项目记录拼接成确定答案；工具结果包含 limitations，说明只读边界、权限范围和人工审批要求；query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations；合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限；query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations；工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接
+- 验证证据：tests/test_project_dossier.py 覆盖同号歧义与无权不可见；tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径；tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要；tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态；tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态
 - 验收状态：NOT_VERIFIED
 
 ## 权限与审计
