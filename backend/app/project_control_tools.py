@@ -3,8 +3,9 @@
 Tools only prepare a proposal. A browser session must confirm it before a
 draft is created and submitted to the configured Agent BPM.
 """
+from collections import defaultdict
 from datetime import date,timedelta
-from pydantic import Field,ValidationError
+from pydantic import Field,ValidationError,model_validator
 from fastapi import APIRouter,Depends
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
@@ -18,7 +19,18 @@ from .security import current_user
 
 
 class ProjectContextInput(StrictModel):
-    project_id:str=Field(min_length=1,max_length=36)
+    project_id:str|None=Field(default=None,min_length=1,max_length=36)
+    identifier:str|None=Field(default=None,min_length=1,max_length=200,
+        description='项目编号/名称、模具号、工程联络标题、客户引用或暂停恢复单号。')
+
+    @model_validator(mode='after')
+    def one_locator(self):
+        if bool(self.project_id)==bool(self.identifier):
+            raise ValueError('project_id 和 identifier 须且只能填写一项')
+        if self.identifier:
+            self.identifier=self.identifier.strip()
+            if not self.identifier:raise ValueError('线索不能为空')
+        return self
 
 
 class PauseProposalInput(ProjectContextInput):
@@ -29,6 +41,12 @@ class PauseProposalInput(ProjectContextInput):
     evidence:str=Field(min_length=1,max_length=4000)
     workflow_definition_id:str=Field(min_length=1,max_length=36)
 
+    @model_validator(mode='after')
+    def requires_project_id(self):
+        if not self.project_id or self.identifier:
+            raise ValueError('准备暂停须使用查询返回的真实 project_id，不能只用自然语言线索')
+        return self
+
 
 class ResumeProposalInput(ProjectContextInput):
     project_version:int=Field(ge=1)
@@ -37,6 +55,12 @@ class ResumeProposalInput(ProjectContextInput):
     reason:str=Field(min_length=1,max_length=4000)
     evidence:str=Field(min_length=1,max_length=4000)
     workflow_definition_id:str=Field(min_length=1,max_length=36)
+
+    @model_validator(mode='after')
+    def requires_project_id(self):
+        if not self.project_id or self.identifier:
+            raise ValueError('准备恢复须使用查询返回的真实 project_id，不能只用自然语言线索')
+        return self
 
 
 def workflow_options(db,user,project):
@@ -53,9 +77,89 @@ def workflow_options(db,user,project):
     return result
 
 
-def project_context(db,user,project_id):
-    project=db.get(m.Project,project_id)
-    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+def _strength(value,needle):
+    if value is None:return 0
+    value=str(value).casefold();needle=str(needle).casefold()
+    return 100 if value==needle else 50 if needle in value else 0
+
+
+def _project_card(db,user,project,matched_by=()):
+    require(db,user,'project.read',{'project_id':project.id})
+    return {'id':project.id,'code':project.code,'name':project.name,'status':project.status,
+        'row_version':project.row_version,'matched_by':sorted(set(matched_by))}
+
+
+def _visible_projects(db,user):
+    from .authorization import predicate
+    rows=list(db.scalars(select(m.Project).where(predicate(db,user,'project.read',
+        {'project_id':m.Project.id})).order_by(m.Project.code).limit(501)))
+    return rows[:500],len(rows)>500
+
+
+def resolve_project(db,user,data:ProjectContextInput):
+    visible,truncated=_visible_projects(db,user);by_id={project.id:project for project in visible}
+    if data.project_id:
+        project=by_id.get(data.project_id)
+        return project,([] if project else None),truncated
+    scores=defaultdict(int);reasons=defaultdict(list)
+    def add(project_id,value,label):
+        if project_id not in by_id:return
+        score=_strength(value,data.identifier)
+        if score:
+            scores[project_id]=max(scores[project_id],score);reasons[project_id].append(label)
+    for project in visible:
+        add(project.id,project.id,'项目ID');add(project.id,project.code,'项目编号');add(project.id,project.name,'项目名称')
+    if by_id:
+        for link,mold in db.execute(select(m.ProjectMold,m.Mold).join(m.Mold,m.Mold.id==m.ProjectMold.mold_id)
+                .where(m.ProjectMold.project_id.in_(list(by_id))).limit(501)):
+            add(link.project_id,mold.internal_number,'模具号');add(link.project_id,mold.name,'模具名称')
+        for case in db.scalars(select(m.ContactCase).where(m.ContactCase.project_id.in_(list(by_id))).limit(501)):
+            add(case.project_id,case.title,'工程联络标题');add(case.project_id,case.customer_ref,'客户引用')
+            add(case.project_id,case.mold_number,'联络模具号');add(case.project_id,case.product_ref,'产品/料品号')
+        for subject in db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id.in_(list(by_id)),
+                m.BusinessSubject.kind=='pause_resume').limit(501)):
+            add(subject.project_id,subject.number,'暂停恢复单号');add(subject.project_id,subject.remark,'暂停恢复原因')
+    if not scores:return None,[],truncated
+    best=max(scores.values());ids=[project_id for project_id,score in scores.items() if score==best]
+    if len(ids)!=1:return None,[_project_card(db,user,by_id[project_id],reasons[project_id]) for project_id in ids[:20]],truncated
+    return by_id[ids[0]],reasons[ids[0]],truncated
+
+
+def _pause_history(db,project_id):
+    rows=[]
+    for record in db.scalars(select(m.PauseRecord).where(m.PauseRecord.project_id==project_id)
+            .order_by(m.PauseRecord.start_date.desc(),m.PauseRecord.id).limit(50)):
+        pause_detail=db.get(m.ProjectPauseDetail,record.subject_id)
+        resume_detail=db.get(m.ProjectPauseDetail,record.resume_subject_id) if record.resume_subject_id else None
+        shifts=[{'task_id':shift.task_id,'previous_start':shift.previous_start,'previous_end':shift.previous_end,
+                 'shifted_start':shift.shifted_start,'shifted_end':shift.shifted_end,
+                 'shifted_days':shift.shifted_days,'task_status':shift.task_status}
+                for shift in db.scalars(select(m.PauseTaskShift).where(m.PauseTaskShift.pause_id==record.id)
+                    .order_by(m.PauseTaskShift.id).limit(100))]
+        rows.append({'pause_subject_id':record.subject_id,'resume_subject_id':record.resume_subject_id,
+            'start_date':record.start_date,'end_date':record.end_date,'expected_resume_date':pause_detail.expected_resume_date if pause_detail else None,
+            'reason':pause_detail.reason if pause_detail else None,'pause_evidence_present':bool(pause_detail and pause_detail.evidence),
+            'resume_reason':resume_detail.reason if resume_detail else None,'resume_evidence_present':bool(resume_detail and resume_detail.evidence),
+            'shifted_days':record.shifted_days,'shift_applied':record.shift_applied,
+            'customer_due_date_snapshot':record.customer_due_date_snapshot,'task_shift_count':len(shifts),'task_shifts':shifts})
+    return rows
+
+
+def _pending_pause_requests(db,project_id):
+    result=[]
+    for subject in db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project_id,
+            m.BusinessSubject.kind=='pause_resume',m.BusinessSubject.status.in_(['DRAFT','SUBMITTED']))
+            .order_by(m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(20)):
+        detail=db.get(m.ProjectPauseDetail,subject.id)
+        result.append({'id':subject.id,'number':subject.number,'status':subject.status,
+            'decision':detail.decision if detail else None,'effective_date':detail.effective_date if detail else None,
+            'expected_resume_date':detail.expected_resume_date if detail else None,
+            'source_pause_subject_id':detail.source_pause_subject_id if detail else None,
+            'reason':detail.reason if detail else None,'evidence_present':bool(detail and detail.evidence)})
+    return result
+
+
+def project_context(db,user,project):
     require(db,user,'project.read',{'project_id':project.id})
     require(db,user,'pause_resume.read',{'project_id':project.id})
     profile=db.get(m.ProjectProfile,project.id)
@@ -63,12 +167,20 @@ def project_context(db,user,project_id):
     active_pause=db.scalar(select(m.PauseRecord).where(m.PauseRecord.project_id==project.id,
         m.PauseRecord.end_date.is_(None)))
     pause_detail=db.get(m.ProjectPauseDetail,active_pause.subject_id) if active_pause else None
+    pending=_pending_pause_requests(db,project.id)
+    history=_pause_history(db,project.id)
     return {'id':project.id,'code':project.code,'name':project.name,'status':project.status,
         'row_version':project.row_version,'customer_due_date':profile.customer_due_date if profile else None,
         'active_plan':{'id':plan.id,'number':plan.number,'revision':plan.revision} if plan else None,
         'unfinished_tasks':tasks,'active_pause':({'pause_subject_id':active_pause.subject_id,
             'start_date':active_pause.start_date,'expected_resume_date':pause_detail.expected_resume_date if pause_detail else None,
             'reason':pause_detail.reason if pause_detail else None} if active_pause else None),
+        'pending_pause_requests':pending,'pause_history':history,
+        'allowed_during_pause':['资料补录','沟通记录','合同与结算核对','工程联络与恢复申请'],
+        'blocked_during_pause':['普通下单','报工','发料','计划执行'],
+        'derived_status':{'has_active_pause':bool(active_pause),'has_pending_pause_request':bool(pending),
+            'has_resume_shift_evidence':any(row['shift_applied'] and row['task_shift_count'] for row in history),
+            'customer_due_date_is_independent':True},
         'workflow_options':workflow_options(db,user,project)}
 
 
@@ -123,8 +235,20 @@ def execute_tool(db,user,key,arguments):
     if key=='query_project_control_context':
         try:data=ProjectContextInput.model_validate(arguments)
         except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效项目标识')
-        return jsonable_encoder({'data':[project_context(db,user,data.project_id)],'source':'agent_db','as_of':now(),
-            'limitations':['仅返回当前授权范围；ERP 项目执行事实尚未联调','暂停申请、审批通过、恢复和客户交期变更是不同事实']})
+        project,alternatives,truncated=resolve_project(db,user,data)
+        limitations=['仅返回当前授权范围；ERP 项目执行事实尚未联调',
+            '暂停通知、暂停申请、审批通过、暂停生效、恢复、节点顺延和客户交期变更是不同事实，不能相互替代',
+            '暂停期只限制普通下单、报工、发料和计划执行；资料补录、沟通记录、合同结算核对、工程联络和恢复申请仍按权限办理']
+        if truncated:limitations.append('最多检查前500个可见项目，结果可能未覆盖全部可见范围。')
+        if project:
+            return jsonable_encoder({'resolution':'RESOLVED','data':[project_context(db,user,project)],'source':'agent_db','as_of':now(),
+                'limitations':limitations})
+        if alternatives is None:
+            return jsonable_encoder({'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now(),'limitations':limitations})
+        if alternatives:
+            return jsonable_encoder({'resolution':'MULTIPLE_CANDIDATES','data':alternatives,'source':'agent_db','as_of':now(),
+                'limitations':limitations+['线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。']})
+        return jsonable_encoder({'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':now(),'limitations':limitations})
     action=key.removeprefix('prepare_project_')
     data=parse(action,arguments)
     _,display=preview(db,user,action,data)

@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from app import models as m,domains,domain_schemas as s
 from app.db import Base
 from app.errors import DomainError
+from app.tool_gateway import execute,tool_schema
 
 
 def database():
@@ -76,3 +77,50 @@ def test_resume_cannot_apply_twice():
     try:domains.apply(db,user,resume)
     except DomainError as error:assert error.code=='RESUME_STATE'
     else:raise AssertionError('resume must be idempotently blocked after first application')
+
+
+def test_project_control_context_resolves_identifier_and_returns_shift_evidence():
+    db=database();user,project,completed,pending=setup_project(db)
+    pause=domains.create(db,user,payload(project,'PAUSE',date(2026,9,10),expected_resume_date=date(2026,9,20)))
+    domains.apply(db,user,pause)
+    resume=domains.create(db,user,payload(project,'RESUME',date(2026,9,13),source_pause_subject_id=pause.id))
+    domains.apply(db,user,resume)
+
+    schema=tool_schema('query_project_control_context')['function']['parameters']
+    assert {'project_id','identifier'}<=set(schema['properties'])
+    result=execute(db,user,'query_project_control_context',{'identifier':'P-PAUSE'})
+    assert result['resolution']=='RESOLVED'
+    row=result['data'][0]
+    assert row['code']=='P-PAUSE'
+    assert row['derived_status']['has_resume_shift_evidence'] is True
+    assert row['derived_status']['customer_due_date_is_independent'] is True
+    assert row['customer_due_date']=='2026-10-31'
+    assert row['pause_history'][0]['shifted_days']==3
+    assert row['pause_history'][0]['task_shift_count']==1
+    assert row['pause_history'][0]['task_shifts'][0]['previous_start']=='2026-09-15'
+    assert row['pause_history'][0]['task_shifts'][0]['shifted_start']=='2026-09-18'
+    assert '普通下单' in ''.join(row['blocked_during_pause'])
+    assert '工程联络' in ''.join(row['allowed_during_pause'])
+    assert '不同事实' in ''.join(result['limitations'])
+
+
+def test_project_control_prepare_rejects_identifier_only():
+    db=database();user,project,_,_=setup_project(db)
+    try:
+        execute(db,user,'prepare_project_pause',{'identifier':'P-PAUSE','project_version':1,
+            'effective_date':'2026-09-10','reason':'客户通知','evidence':'邮件',
+            'workflow_definition_id':'wf'})
+    except DomainError as error:assert error.code=='INVALID_TOOL_INPUT'
+    else:raise AssertionError('write proposals must use the real project_id returned by query context')
+
+
+def test_project_control_context_reports_multiple_candidates_without_deciding():
+    db=database();user,project,_,_=setup_project(db)
+    other=m.Project(code='P-PAUSE-2',name='暂停恢复测试二',status='ACTIVE')
+    db.add(other);db.flush()
+    db.add(m.ProjectProfile(project_id=other.id,owner_user_id=user.id,execution_mode='INTERNAL'))
+    db.commit()
+    result=execute(db,user,'query_project_control_context',{'identifier':'暂停恢复'})
+    assert result['resolution']=='MULTIPLE_CANDIDATES'
+    assert {row['code'] for row in result['data']}=={'P-PAUSE','P-PAUSE-2'}
+    assert '请使用项目 ID' in ''.join(result['limitations'])

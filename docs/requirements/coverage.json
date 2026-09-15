@@ -1440,8 +1440,14 @@
       "module": "暂停与恢复",
       "agent_responsibility": "Agent 开发依据、受影响动作限制、区间与顺延、防重复及客户交期独立确认；既有对象状态衔接须核对接口",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_control_context 支持按项目号、项目名、模具号、工程联络和暂停恢复单号定位项目，返回项目版本、有效计划、未完成任务、当前暂停区间、待处理暂停/恢复申请和可选 Agent BPM",
+        "prepare_project_pause 仅准备暂停建议，冻结有效计划和未完成任务范围；本人确认后才创建暂停单并提交 BPM，审批生效后项目状态转为 PAUSED",
+        "domains.before_submit/apply 在暂停状态下阻断普通计划、下单、报工、发料等执行业务，同时保留工程联络、合同、结算和恢复等专用流程"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 覆盖暂停冻结未完成任务、计划范围变化阻断生效、按 identifier 查询上下文和暂停期限制/允许事项输出"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1450,8 +1456,13 @@
       "module": "暂停与恢复",
       "agent_responsibility": "Agent 开发依据、受影响动作限制、区间与顺延、防重复及客户交期独立确认；既有对象状态衔接须核对接口",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "prepare_project_resume 要求关联当前有效暂停记录、恢复依据和恢复日期；恢复生效时按实际暂停天数顺延暂停时冻结的未完成节点",
+        "PauseRecord.shift_applied、shifted_days 与 PauseTaskShift 保存每个任务前后计划日期；已完成节点不顺延，同一暂停区间恢复记录唯一防止重复顺延"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点保留原日期、同一恢复不能重复应用和查询返回顺延证据"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1460,8 +1471,14 @@
       "module": "暂停与恢复",
       "agent_responsibility": "Agent 开发依据、受影响动作限制、区间与顺延、防重复及客户交期独立确认；既有对象状态衔接须核对接口",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录",
+        "query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止",
+        "恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认"
+      ],
+      "verification_evidence": [
+        "tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
