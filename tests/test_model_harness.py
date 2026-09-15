@@ -148,6 +148,39 @@ def test_mixed_greeting_and_business_request_can_call_tools():
     assert gateway.physical_calls==1 and gateway.final['evidence_ids']==['e1']
 
 
+def test_duplicate_tool_call_enters_finalization_without_reexecuting():
+    duplicate = copy.deepcopy(PROPOSAL)
+    duplicate["tool_calls"][0]["id"] = "call2"
+    gateway = Gateway()
+    model = Model([PROPOSAL, duplicate, FINAL])
+    result = run_loop(context(), model, gateway)
+    assert result["summary"] == "one visible project"
+    assert gateway.physical_calls == 1
+    assert gateway.saved["finalizing"] is True
+    assert gateway.saved["protocol_repairs"] == 1
+
+
+def test_natural_language_final_after_evidence_gets_protocol_repair_not_wrapped():
+    gateway = Gateway()
+    result = run_loop(
+        context(),
+        Model([PROPOSAL, {"content": "根据已有证据，当前未见客户验收依据。"}, FINAL]),
+        gateway,
+    )
+    assert result["summary"] == "one visible project"
+    assert gateway.final["summary"] != "根据已有证据，当前未见客户验收依据。"
+    assert gateway.physical_calls == 1
+    assert gateway.saved["protocol_repairs"] == 1
+
+
+def test_protocol_repair_is_bounded_and_fails_closed():
+    gateway = Gateway()
+    invalid = {"content": "根据已有证据，当前未见客户验收依据。"}
+    with pytest.raises(RuntimeError, match="MODEL_OUTPUT_INVALID"):
+        run_loop(context(), Model([PROPOSAL, invalid, invalid, invalid]), gateway)
+    assert gateway.final is None
+
+
 def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
     gateway = Gateway()
 
@@ -159,6 +192,7 @@ def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
                 index = len(self.tool_catalog_sizes)
                 proposal = copy.deepcopy(PROPOSAL)
                 proposal['tool_calls'][0]['id'] = f'call{index}'
+                proposal['tool_calls'][0]['function']['arguments'] = json.dumps({'page': index})
                 return proposal
             assert '工具调用阶段现在结束' in messages[-1]['content']
             return {'content': json.dumps({'response_kind': 'BUSINESS', 'summary': '根据已有证据回答',

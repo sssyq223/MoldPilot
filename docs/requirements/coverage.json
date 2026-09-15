@@ -1019,8 +1019,14 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 按项目、发货、物流、签收或验收线索核对交付计划节点、正式订单发货、仓库收货、入库检验、库存移动、试模结果、结项清单和工程联络异常上下文",
+        "analysis.derived_status 区分 has_supplier_shipment、has_goods_receipt、has_receipt_inspection、has_stock_out_movement、has_trial_passed、has_customer_signature、has_customer_acceptance，防止把工序合格、供应商发货或试模通过等同于整套模具交付合格",
+        "工具 limitations 明确采购发货、仓库收货、入库检验、出库、客户签收和客户验收是不同事实，不能相互替代"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖供应商发货、仓库收货、入库检验、出库移动、试模通过、客户验收清单和质量联络异常聚合；真实出厂件检测、ERP 出入库/发货执行和客户验收联调尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1029,8 +1035,13 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 在 gaps 中明确未见结构化固定物流路线、承运商车型、物流报价有效期或本次结算价格时不能编造路线或价格",
+        "交付物流 Skill 要求区分模具物流实际路线与固定路线，当前只读上下文不创建物流路线、不维护报价"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖无结构化物流价格时返回缺口；固定路线维护、地点/重量/车型/历史价格结构化模型仍未实现"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1039,8 +1050,13 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 明确仓库收货、检验和物流结算依据缺口，不把供应商发货或仓库收货推断为已形成物流费用",
+        "工具 limitations 声明不维护物流报价、不生成本次结算价格，后续需单独适配固定路线或询比议价结果"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖物流报价/结算价格缺口提示；有效价格匹配、采购主管询比议价审批和对账依据尚未实现"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1049,8 +1065,13 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；同时标记 has_structured_logistics_price=false",
+        "交付物流 Skill 要求物流报价有效期、本次结算价格和对账依据缺失时只作为缺口说明，不编造承运商或价格"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖发货、收货、出库移动追溯和物流报价缺口；半年有效期、多家比价和物流费用对账模型尚未实现"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1059,8 +1080,13 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 将客户签收 has_customer_signature 与客户验收 has_customer_acceptance 分开；当前无签收结构化模型时不自动认定签收",
+        "项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仅作为客户验收依据之一展示，不把供应商发货、仓库收货或试模通过等同于客户验收"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖客户验收清单 DONE 可被识别，同时 has_customer_signature 仍为 false；真实签收日期、移模业务规则和回款归档联动尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1069,8 +1095,13 @@
       "module": "交付与物流",
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_delivery_logistics_context 汇总质量、交付、物流或验收相关工程联络事项，存在未关闭事项时 warnings 提醒不能认定整改闭环完成",
+        "收货检验不合格数量、试模未通过和客户验收/质量联络分别触发警示，要求关联退换货、扣款、整改或工程联络处理"
+      ],
+      "verification_evidence": [
+        "tests/test_delivery_logistics_tools.py 覆盖收货检验不合格、客户验收质量联络和开放整改事项提示；客户验收不通过后的复验、费用扣款、交期与合同变化同步尚未完整联调"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

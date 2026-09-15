@@ -16,9 +16,12 @@ SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用�
 
 
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
+PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请只依据已有证据，直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。"""
+DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
 SOFT_CONTEXT_LIMIT = 36000
 HARD_CONTEXT_LIMIT = 48000
 MAX_TOOL_TURNS_BEFORE_FINALIZE = 8
+MAX_PROTOCOL_REPAIRS = 2
 
 
 
@@ -38,6 +41,24 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
     model_elapsed_ms = context.get('model_elapsed_ms', 0)
     model_metrics = context.get('model_metrics', {})
     finalizing = context.get('finalizing', False)
+    protocol_repairs = context.get('protocol_repairs', 0)
+    executed_tool_signatures = list(context.get('executed_tool_signatures', []))
+
+    def tool_signature(call):
+        name = call["function"]["name"]
+        arguments = json.loads(call["function"]["arguments"])
+        if not isinstance(arguments, dict):
+            raise RuntimeError("INVALID_TOOL_INPUT")
+        return name + "\0" + json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")), arguments
+
+    def request_protocol_repair(reminder):
+        nonlocal finalizing, protocol_repairs
+        if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
+            raise RuntimeError("MODEL_OUTPUT_INVALID")
+        finalizing = True
+        protocol_repairs += 1
+        messages.append({"role": "system", "content": reminder})
+        save()
 
     def save():
         gateway.checkpoint({"messages": messages, "turn": turn, "tool_count": count,
@@ -45,7 +66,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                             "pending": pending, "pending_index": pending_index,
                             'phase': phase, 'model_started_at': model_started_at,
                             'model_elapsed_ms': model_elapsed_ms, 'model_metrics':model_metrics,
-                            'finalizing': finalizing})
+                            'finalizing': finalizing,
+                            'protocol_repairs': protocol_repairs,
+                            'executed_tool_signatures': executed_tool_signatures})
 
     def check_budget():
         if time.time() >= deadline:
@@ -65,11 +88,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                 if count >= max_tools: raise RuntimeError("BUDGET_EXCEEDED")
                 name = call["function"]["name"]
                 if name not in {t["function"]["name"] for t in tools}: raise RuntimeError("TOOL_FORBIDDEN")
-                arguments = json.loads(call["function"]["arguments"])
-                if not isinstance(arguments, dict): raise RuntimeError("INVALID_TOOL_INPUT")
+                signature, arguments = tool_signature(call)
                 phase = 'TOOL_RUNNING'; save()
                 result = gateway.execute(count, name, arguments)
                 evidence_ids.append(result["evidence_id"])
+                executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
@@ -110,7 +133,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         calls = message.get("tool_calls") or []
         if len(calls) > 5: raise RuntimeError("TOOL_BATCH_EXCEEDED")
         if calls:
-            if finalizing: raise RuntimeError("MODEL_OUTPUT_INVALID")
+            if finalizing:
+                request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
+                continue
+            signatures = []
+            for call in calls:
+                signature, _ = tool_signature(call)
+                signatures.append(signature)
+            if evidence_ids and any(signature in executed_tool_signatures for signature in signatures):
+                request_protocol_repair(DUPLICATE_TOOL_REMINDER)
+                continue
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
             pending, pending_index = calls, 0
             save()
@@ -118,13 +150,21 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         content = (message.get("content") or "{}").strip()
         if content.startswith("```json\n") and content.endswith("\n```"):
             content = content[8:-4]
-        try: result = json.loads(content)
-        except ValueError: raise RuntimeError("MODEL_OUTPUT_INVALID")
+        try:
+            result = json.loads(content)
+        except ValueError:
+            if evidence_ids or finalizing:
+                request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
+                continue
+            raise RuntimeError("MODEL_OUTPUT_INVALID")
         if (not isinstance(result, dict) or not isinstance(result.get("summary"), str)
                 or not isinstance(result.get("evidence_ids"), list)
                 or not all(isinstance(e, str) for e in result["evidence_ids"])
                 or not isinstance(result.get("suggestions", []), list)
                 or not all(isinstance(s, str) for s in result.get("suggestions", []))):
+            if evidence_ids or finalizing:
+                request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
+                continue
             raise RuntimeError("MODEL_OUTPUT_INVALID")
         if not set(result["evidence_ids"]) <= set(evidence_ids): raise RuntimeError("EVIDENCE_INVALID")
         kind = result.get('response_kind', 'BUSINESS')
