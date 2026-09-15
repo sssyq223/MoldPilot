@@ -555,20 +555,22 @@ def cancel(run_id: str, user=Depends(current_user), db=Depends(get_db)):
 
 @app.get("/api/capabilities")
 def capabilities(user=Depends(current_user), db=Depends(get_db)):
-    from .tool_gateway import TOOLS, SKILLS, available_tools, skill_context
-    return {"tools": [{"key": k, **TOOLS[k]} for k in available_tools(db, user)], "skills": [{"key": s["key"], "version": s["version"]} for s in skill_context(db, user)]}
+    from .tool_gateway import TOOLS, SKILLS, available_tools, capability_descriptor, skill_context
+    return {
+        "tools": [capability_descriptor("TOOL", k, TOOLS[k]) for k in available_tools(db, user)],
+        "skills": [{**capability_descriptor("SKILL", s["key"], SKILLS[s["key"]]), "version": s["version"]} for s in skill_context(db, user)],
+    }
 
 
 @app.get("/api/users/{user_id}/capabilities")
 def user_capabilities(user_id: str, user=Depends(current_user), db=Depends(get_db)):
-    from .tool_gateway import TOOLS, SKILLS, assigned, available_tools, skill_context
+    from .tool_gateway import TOOLS, SKILLS, assigned, available_tools, capability_descriptor, skill_context
     if not user.super_admin: raise DomainError("FORBIDDEN", "需要超级管理员", 403)
     target = db.get(m.User, user_id)
     if not target: raise DomainError("NOT_FOUND", "用户不存在", 404)
     effective_tools = set(available_tools(db, target))
     effective_skills = {item["key"] for item in skill_context(db, target)}
-    return [{"kind": kind, "key": key, "name": spec.get("name", key),
-             "description": spec.get("description", ""), "dependencies": spec.get("tools", []),
+    return [{**capability_descriptor(kind, key, spec),
              "enabled": assigned(db, target, kind, key), "effective": key in effective}
             for kind, catalog, effective in [("TOOL", TOOLS, effective_tools), ("SKILL", SKILLS, effective_skills)]
             for key, spec in catalog.items()]

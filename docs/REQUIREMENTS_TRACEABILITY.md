@@ -1099,8 +1099,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 按角色及项目授权控制查看、录入、修改、审批和导出；价格、成本、利润和项目资料采用适用数据权限。问答、页面、附件下载及导出应执行一致权限，不通过汇总或链接绕过限制。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文；tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总
-- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离
+- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文；tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总；后端 capability_descriptor 为工具/Skill 统一输出名称、业务类别、部门、类型、人工确认模式和依赖工具；/api/capabilities 与管理员能力分配接口共用同一目录，前端优先使用后端元数据，能力启用仍不扩大数据权限
+- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离；tests/test_capability_catalog.py 覆盖后端能力目录元数据，tests/test_agent_api.py 增加 /api/capabilities 元数据断言
 - 验收状态：NOT_VERIFIED
 
 ### FR-114

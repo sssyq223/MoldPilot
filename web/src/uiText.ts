@@ -10,7 +10,10 @@ Object.assign(verbs,{coordinate:'组织部门协作',assign:'分派处理人',re
 export function permissionName(value:string){if(commandNames[value])return commandNames[value];if(value==='project.dossier.read')return '项目业务档案 · 查询';const [kind,action]=value.split('.');return `${businessNames[kind]||'业务'} · ${verbs[action]||'操作权限'}`}
 export const capabilityNames:Record<string,string>={query_projects:'查询项目资料',query_purchase_requests:'查询采购申请',purchase_review:'采购资料核对',project_overview:'项目概况查询',query_orders:'查询采购订单',query_business_subjects:'查询业务材料',query_business_object_candidates:'查询业务对象候选',query_quote_acceptance_context:'读取报价承接上下文',query_quote_evaluation_context:'读取报价评估上下文',query_bid_intake_context:'读取中标接收上下文',query_contract_context:'读取合同上下文',query_internal_start_readiness:'核对正式开工条件',query_project_plan_context:'读取项目计划上下文',query_design_route_context:'读取设计BOM与路线上下文',query_manufacturing_quality_context:'读取制造质检上下文',query_assembly_trial_context:'读取装配试模上下文',query_delivery_logistics_context:'读取交付物流上下文',query_full_outsource_context:'读取整套委外上下文',query_change_intake_context:'读取设变承接上下文',query_finance_context:'读取财务节点上下文',query_procurement_price_context:'读取采购价格与订单上下文',analyze_delivery_risk:'分析发货延期风险'}
 Object.assign(capabilityNames,{purchase_request_review:'采购申请核对',business_object_matching:'业务对象候选匹配',quote_acceptance_review:'报价与承接上下文核对',quote_evaluation_review:'报价评估与加工方式核对',bid_intake_review:'中标接收与客户规则核对',contract_context_review:'合同上下文核对',internal_start_readiness:'正式开工条件核对',project_plan_context_review:'项目计划上下文核对',design_route_context_review:'设计BOM与路线上下文核对',manufacturing_quality_review:'制造工序与质检上下文核对',assembly_trial_review:'装配试模上下文核对',delivery_logistics_review:'交付物流上下文核对',full_outsource_review:'整套委外协同上下文核对',change_intake_review:'设变承接上下文核对',finance_context_review:'财务节点与收付款核对',governance_context_review:'治理权限与来源核对',query_governance_context:'读取治理权限与来源上下文',operations_readiness_review:'运行交付就绪核对',query_operations_readiness_context:'读取运行交付就绪上下文',procurement_price_context_review:'采购价格与订单上下文核对',delivery_risk_analysis:'供应商发货风险分析',business_status_review:'业务审批与执行核对',query_purchase_orders:'查询采购订单'})
-export function capabilityName(key:string,items:any[]=[]){return items.find(i=>i.key===key)?.name||capabilityNames[key]||(key.startsWith('query_')&&businessNames[key.slice(6)]?'查询'+businessNames[key.slice(6)]:'业务查询能力')}
+export function capabilityName(value:any,items:any[]=[]){
+ const key=typeof value==='string'?value:value?.key||''
+ return (typeof value==='object'&&value?.name)||items.find(i=>i.key===key)?.name||capabilityNames[key]||(key.startsWith('query_')&&businessNames[key.slice(6)]?'查询'+businessNames[key.slice(6)]:'业务查询能力')
+}
 Object.assign(capabilityNames,{query_contact_cases:'查询工程联络协作',contact_collaboration_review:'工程联络协作核对'})
 export const capabilityDepartmentNames:Record<string,string>={project:'项目管理',purchase:'采购部门',design:'设计部门',engineering:'工程部门',finance:'财务部门',warehouse:'仓储部门',assembly:'装配部门',trial:'试模部门',sales:'销售部门',system:'系统管理',agent:'智能体'}
 export const capabilityTypeNames:Record<string,string>={query:'查询',operation:'操作',approval:'审批',review:'核对'}
@@ -26,15 +29,15 @@ export function capabilityMeta(item:any){
  const key=typeof item==='string'?item:item?.key||''
  const permission=typeof item==='string'?'':item?.permission||''
  const business=capabilityBusinessKey(key,permission)
- const department=capabilityDepartments[key]||departmentByBusiness[business]||'agent'
+ const department=(typeof item==='object'&&item?.department)||capabilityDepartments[key]||departmentByBusiness[business]||'agent'
  const action=permission.split('.')[1]||''
- const type=capabilityTypes[key]||(
+ const type=(typeof item==='object'&&item?.type)||capabilityTypes[key]||(
   key.startsWith('query_')||action==='read'?'query':
   action==='approve'?'approval':
   key.includes('review')||key.endsWith('_review')?'review':
   'operation'
  )
- return {department,type,departmentName:capabilityDepartmentNames[department]||'业务部门',typeName:capabilityTypeNames[type]||'操作'}
+ return {department,type,departmentName:(typeof item==='object'&&item?.department_name)||capabilityDepartmentNames[department]||'业务部门',typeName:(typeof item==='object'&&item?.type_name)||capabilityTypeNames[type]||'操作'}
 }
 export function groupedCapabilities(items:any[]=[]){
  const departments:Record<string,{key:string;name:string;types:Record<string,{key:string;name:string;items:any[]}>}>={}

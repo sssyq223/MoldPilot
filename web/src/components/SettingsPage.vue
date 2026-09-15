@@ -20,7 +20,7 @@ function capabilityMatches(item:any){
  if(capabilityDepartment.value&&meta.department!==capabilityDepartment.value)return false
  if(capabilityType.value&&meta.type!==capabilityType.value)return false
  if(!keyword)return true
- return [item.key,capabilityName(item.key),item.description,item.permission,permissionName(item.permission||''),meta.departmentName,meta.typeName].some(value=>String(value||'').toLowerCase().includes(keyword))
+ return [item.key,capabilityName(item),item.description,item.permission,permissionName(item.permission||''),meta.departmentName,meta.typeName].some(value=>String(value||'').toLowerCase().includes(keyword))
 }
 const filteredTools=computed(()=>(props.capabilities.tools||[]).filter(capabilityMatches))
 const filteredSkills=computed(()=>(props.capabilities.skills||[]).filter(capabilityMatches))
@@ -207,7 +207,7 @@ async function unarchiveConversation(c:any){
       <h3>{{department.name}}</h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
        <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool.key)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">{{permissionName(tool.permission)}} · {{tool.key.startsWith('prepare_')?'需确认':'只读'}}</small></div></article>
+       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">{{permissionName(tool.permission)}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
       </div>
      </section>
     </div>
@@ -221,7 +221,7 @@ async function unarchiveConversation(c:any){
       <h3>{{department.name}}</h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
        <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill.key)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div></div></article>
+       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div></div></article>
       </div>
      </section>
     </div>

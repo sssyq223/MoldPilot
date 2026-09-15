@@ -37,6 +37,20 @@ def test_tool_assignment_cannot_grant_business_data_access(client, data):
     assert client.get('/api/projects').json() == []
 
 
+def test_capabilities_include_backend_catalog_metadata(client, data):
+    sign_in(client, 'test_buyer')
+    payload = client.get('/api/capabilities').json()
+    purchase_tool = next(item for item in payload['tools'] if item['key'] == 'query_purchase_requests')
+    assert purchase_tool['name'] == '查询采购申请'
+    assert purchase_tool['department'] == 'purchase'
+    assert purchase_tool['department_name'] == '采购部门'
+    assert purchase_tool['type'] == 'query'
+    assert purchase_tool['type_name'] == '查询'
+    assert purchase_tool['mode'] == 'read_only'
+    assert purchase_tool['business_key'] == 'purchase'
+    assert purchase_tool['dependencies'] == []
+
+
 def test_ordinary_user_cannot_change_tools_or_skills(client,data):
     ids,_=data;sign_in(client,'test_buyer')
     assert client.get(f"/api/users/{ids['buyer']}/capabilities").status_code == 403

@@ -81,6 +81,170 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'prepare_project_closure_checklist','prepare_project_termination','prepare_project_closure_item',
                    'prepare_project_normal_close','prepare_project_settlement_close']}})
 
+DEPARTMENT_NAMES = {
+    'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
+    'finance': '财务部门', 'warehouse': '仓储部门', 'assembly': '装配部门', 'trial': '试模部门',
+    'sales': '销售部门', 'system': '系统管理', 'agent': '智能体',
+}
+
+TYPE_NAMES = {'query': '查询', 'operation': '操作', 'approval': '审批', 'review': '核对'}
+
+BUSINESS_DEPARTMENTS = {
+    'project': 'project', 'project_control': 'project', 'project_close': 'project', 'pause_resume': 'project',
+    'project_dossier': 'project', 'purchase': 'purchase', 'purchase_request': 'purchase', 'order': 'purchase',
+    'supplier_payment': 'finance', 'purchase_price': 'purchase', 'design_route': 'design',
+    'engineering_change': 'engineering', 'contact': 'engineering', 'contact_resolution': 'engineering',
+    'finance_reversal': 'finance', 'finance_correction': 'finance', 'warehouse': 'warehouse',
+    'assembly_issue': 'assembly', 'trial_request': 'trial', 'quotation': 'sales', 'quote_acceptance': 'sales',
+    'sales_contract': 'sales', 'start_notice': 'project', 'internal_start': 'project',
+    'outsource_contract': 'purchase', 'full_outsource_contract': 'purchase', 'project_plan': 'project',
+    'plan_change': 'project', 'shipment': 'warehouse', 'receipt': 'warehouse', 'inspection': 'warehouse',
+    'stock': 'warehouse', 'risk': 'purchase', 'master': 'system', 'file': 'system', 'user': 'system',
+    'grant': 'system', 'workflow': 'system', 'audit': 'system', 'agent': 'agent',
+}
+
+CAPABILITY_NAMES = {
+    'query_projects': '查询项目资料',
+    'query_purchase_requests': '查询采购申请',
+    'query_business_object_candidates': '查询业务对象候选',
+    'query_quote_acceptance_context': '读取报价承接上下文',
+    'query_quote_evaluation_context': '读取报价评估上下文',
+    'query_bid_intake_context': '读取中标接收上下文',
+    'query_contract_context': '读取合同上下文',
+    'query_internal_start_readiness': '核对正式开工条件',
+    'query_project_plan_context': '读取项目计划上下文',
+    'query_design_route_context': '读取设计BOM与路线上下文',
+    'query_manufacturing_quality_context': '读取制造质检上下文',
+    'query_assembly_trial_context': '读取装配试模上下文',
+    'query_delivery_logistics_context': '读取交付物流上下文',
+    'query_full_outsource_context': '读取整套委外上下文',
+    'query_change_intake_context': '读取设变承接上下文',
+    'query_finance_context': '读取财务节点上下文',
+    'query_governance_context': '读取治理权限与来源上下文',
+    'query_operations_readiness_context': '读取运行交付就绪上下文',
+    'query_procurement_price_context': '读取采购价格与订单上下文',
+    'query_project_dossier': '查询项目业务档案',
+    'query_contact_cases': '查询工程联络协作',
+    'query_contact_context': '读取联络单办理资料',
+    'query_purchase_orders': '查询采购订单',
+    'query_project_control_context': '读取项目暂停恢复资料',
+    'query_project_closure_context': '读取项目终止与结项资料',
+    'query_uploaded_files': '查询当前会话附件',
+    'analyze_delivery_risk': '分析发货延期风险',
+    'prepare_project_pause': '准备项目整体暂停',
+    'prepare_project_resume': '准备项目整体恢复',
+    'prepare_project_closure_checklist': '准备正常结项清单',
+    'prepare_project_termination': '准备项目终止审批',
+    'prepare_project_closure_item': '准备更新结项事项',
+    'prepare_project_normal_close': '准备正常关闭审批',
+    'prepare_project_settlement_close': '准备终止结算关闭',
+    'prepare_contact_create': '准备发起联络单',
+    'prepare_contact_note': '准备补充联络记录',
+    'prepare_contact_task': '准备部门协作事项',
+    'prepare_contact_assign': '准备分派处理人',
+    'prepare_contact_respond': '准备提交联络反馈',
+    'prepare_contact_attach': '准备关联联络单附件',
+    'prepare_contact_resolution': '准备处理方案审批',
+    'prepare_contact_review': '准备复验处理结果',
+    'prepare_contact_close': '准备人工关闭联络单',
+    'prepare_contact_set_reviewer': '准备指定验收负责人',
+    'prepare_contact_cancel_task': '准备撤销联络事项',
+    **{key: value['name'] for key, value in SKILLS.items()},
+}
+
+CAPABILITY_DEPARTMENTS = {
+    'query_projects': 'project', 'query_project_dossier': 'project', 'query_business_object_candidates': 'project',
+    'project_dossier_review': 'project', 'business_object_matching': 'project',
+    'query_quote_acceptance_context': 'sales', 'query_quote_evaluation_context': 'sales',
+    'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
+    'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'contract_context_review': 'finance',
+    'query_finance_context': 'finance', 'finance_context_review': 'finance', 'query_governance_context': 'system',
+    'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
+    'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
+    'internal_start_readiness': 'project', 'query_project_plan_context': 'project',
+    'project_plan_context_review': 'project', 'query_design_route_context': 'design',
+    'design_route_context_review': 'design', 'query_manufacturing_quality_context': 'project',
+    'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
+    'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
+    'delivery_logistics_review': 'warehouse', 'query_full_outsource_context': 'purchase',
+    'full_outsource_review': 'purchase', 'query_change_intake_context': 'engineering',
+    'change_intake_review': 'engineering', 'query_procurement_price_context': 'purchase',
+    'procurement_price_context_review': 'purchase', 'query_purchase_requests': 'purchase',
+    'purchase_request_review': 'purchase', 'query_purchase_orders': 'purchase', 'analyze_delivery_risk': 'purchase',
+    'delivery_risk_analysis': 'purchase', 'business_status_review': 'purchase',
+    'query_project_control_context': 'project', 'prepare_project_pause': 'project',
+    'prepare_project_resume': 'project', 'project_pause_resume': 'project',
+    'query_project_closure_context': 'project', 'prepare_project_closure_checklist': 'project',
+    'prepare_project_termination': 'project', 'prepare_project_closure_item': 'project',
+    'prepare_project_normal_close': 'project', 'prepare_project_settlement_close': 'project',
+    'project_termination_closure': 'project', 'query_contact_cases': 'engineering',
+    'query_contact_context': 'engineering', 'contact_collaboration_review': 'engineering',
+    'prepare_contact_resolution': 'engineering', 'prepare_contact_review': 'engineering',
+    'prepare_contact_close': 'engineering', 'prepare_contact_set_reviewer': 'engineering',
+    'prepare_contact_cancel_task': 'engineering', 'prepare_contact_create': 'engineering',
+    'prepare_contact_note': 'engineering', 'prepare_contact_task': 'engineering',
+    'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
+    'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
+}
+
+CAPABILITY_TYPES = {
+    'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
+    'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
+    'finance_context_review': 'review', 'governance_context_review': 'review',
+    'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
+    'project_plan_context_review': 'review', 'design_route_context_review': 'review',
+    'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
+    'delivery_logistics_review': 'review', 'full_outsource_review': 'review',
+    'change_intake_review': 'review', 'procurement_price_context_review': 'review',
+    'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
+    'business_status_review': 'review', 'project_dossier_review': 'review',
+    'project_pause_resume': 'approval', 'project_termination_closure': 'approval',
+    'prepare_project_pause': 'approval', 'prepare_project_resume': 'approval',
+    'prepare_project_closure_checklist': 'operation', 'prepare_project_termination': 'approval',
+    'prepare_project_closure_item': 'operation', 'prepare_project_normal_close': 'approval',
+    'prepare_project_settlement_close': 'approval', 'prepare_contact_resolution': 'approval',
+    'prepare_contact_review': 'review', 'prepare_contact_close': 'operation',
+    'prepare_contact_set_reviewer': 'operation', 'prepare_contact_cancel_task': 'operation',
+}
+
+
+def capability_business_key(key, permission=''):
+    raw = key.removeprefix('query_').removeprefix('prepare_')
+    source = raw if raw in BUSINESS_DEPARTMENTS else (permission or '').split('.')[0]
+    return source or 'agent'
+
+
+def capability_descriptor(kind, key, spec):
+    permission = spec.get('permission', '')
+    business_key = capability_business_key(key, permission)
+    department = CAPABILITY_DEPARTMENTS.get(key) or BUSINESS_DEPARTMENTS.get(business_key, 'agent')
+    action = permission.split('.')[1] if '.' in permission else ''
+    capability_type = CAPABILITY_TYPES.get(key) or (
+        'query' if key.startswith('query_') or action == 'read' else
+        'approval' if action == 'approve' or key.startswith('prepare_project_') else
+        'review' if kind == 'SKILL' or key.endswith('_review') or 'review' in key else
+        'operation'
+    )
+    mode = (
+        'read_only' if capability_type in {'query', 'review'} and not key.startswith('prepare_') else
+        'human_confirmed_proposal' if key.startswith('prepare_') else
+        'assigned_skill'
+    )
+    return {
+        'kind': kind,
+        'key': key,
+        'name': CAPABILITY_NAMES.get(key, spec.get('name', key)),
+        'description': spec.get('description', ''),
+        'permission': permission,
+        'business_key': business_key,
+        'department': department,
+        'department_name': DEPARTMENT_NAMES.get(department, '业务部门'),
+        'type': capability_type,
+        'type_name': TYPE_NAMES.get(capability_type, '操作'),
+        'mode': mode,
+        'dependencies': spec.get('tools', []),
+    }
+
 
 def assigned(db, user, kind, key):
     if user.super_admin: return True
