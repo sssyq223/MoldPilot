@@ -314,7 +314,7 @@ def execute(db, user, key, arguments, run=None):
     elif key=='query_contact_cases':
         from sqlalchemy import func
         from .models import ContactCase,ContactTask,AssignmentGroup,User
-        from .contacts import permitted
+        from .contacts import permitted, progress_summary
         q=select(ContactCase).where(predicate(db,user,'contact.read',{'project_id':ContactCase.project_id,'category':ContactCase.category})).order_by(ContactCase.created_at.desc(),ContactCase.id).limit(100)
         data=[]
         for c in db.scalars(q):
@@ -332,7 +332,7 @@ def execute(db, user, key, arguments, run=None):
                 'customer_name':c.customer_name,'mold_number':c.mold_number,'product_ref':c.product_ref,
                 'problem_source':c.problem_source,'current_stage':c.current_stage,'change_type':c.change_type,'urgency':c.urgency,
                 'revision':c.revision,'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN',
-                'task_counts':counts,'recent_tasks':tasks,'tasks_truncated':sum(counts.values())>20})
+                'task_counts':counts,'progress_summary':progress_summary(db,c),'recent_tasks':tasks,'tasks_truncated':sum(counts.values())>20})
         return {'data':data,'source':'agent_db','as_of':now().isoformat(),'limit':100,
             'limitations':['仅当前用户可见范围','最多最新100张联络单，每单最多展示最近20项协作事项，计数包含全部事项',
                 '反馈或历史补录不是正式审批，不据此认定整改验收或联络单关闭','本工具只查询，不分派、不审批、不执行业务动作']}

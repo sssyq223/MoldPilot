@@ -1292,11 +1292,13 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验",
-        "query_change_intake_context 汇总 CUSTOMER_CHANGE、DESIGN_ISSUE、ASSEMBLY_ISSUE、MACHINING_ISSUE、PROCUREMENT_ISSUE、QUALITY_ISSUE、TRIAL_ISSUE、OUTSOURCE_DEFECT 等来源并关联当前环节"
+        "query_change_intake_context 汇总 CUSTOMER_CHANGE、DESIGN_ISSUE、ASSEMBLY_ISSUE、MACHINING_ISSUE、PROCUREMENT_ISSUE、QUALITY_ISSUE、TRIAL_ISSUE、OUTSOURCE_DEFECT 等来源并关联当前环节",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "tests/test_contact_impact.py：主数据必填与未来日期阻断",
-        "tests/test_change_intake_tools.py：客户设变联络单按当前加工环节被上下文工具聚合"
+        "tests/test_change_intake_tools.py：客户设变联络单按当前加工环节被上下文工具聚合",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1309,11 +1311,13 @@
       "implementation_evidence": [
         "contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源",
         "既有附件版本与方案审批记录",
-        "query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要"
+        "query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "tests/test_contact_impact.py：创建、反馈和不可覆盖规则",
-        "tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取"
+        "tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1326,11 +1330,13 @@
       "implementation_evidence": [
         "附件版本、过程记录、独立复验以及事项实际工时/金额/证据",
         "affected_type/ref 原生对象引用",
-        "query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代"
+        "query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "结构化影响与执行单测；财务正式计价未联调",
-        "tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调"
+        "tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1343,11 +1349,13 @@
       "implementation_evidence": [
         "项目负责人和责任部门负责人待办",
         "可配置方案 BPM、退回整改及生效通知",
-        "query_change_intake_context 返回 contact_resolutions 与 approved/effective 状态，并保留“方案审批不等于执行完成”的告警"
+        "query_change_intake_context 返回 contact_resolutions 与 approved/effective 状态，并保留“方案审批不等于执行完成”的告警",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "联络生命周期集成测试；完整生产岗位矩阵待验收",
-        "tests/test_change_intake_tools.py：有效处理方案和未完成复验同时返回，避免误判"
+        "tests/test_change_intake_tools.py：有效处理方案和未完成复验同时返回，避免误判",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1359,11 +1367,13 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点",
-        "query_change_intake_context 按 affected_type 和 planned_action 汇总图纸、物料、采购单、在制任务、供应商任务等影响，返回 CONTINUE/PAUSE/CANCEL/REWORK/REISSUE 及交期影响"
+        "query_change_intake_context 按 affected_type 和 planned_action 汇总图纸、物料、采购单、在制任务、供应商任务等影响，返回 CONTINUE/PAUSE/CANCEL/REWORK/REISSUE 及交期影响",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "tests/test_contact_impact.py：材料冻结和 ERP 来源约束",
-        "tests/test_change_intake_tools.py：WIP_TASK 返工和交期影响进入 planned_action_summary/affected_object_summary"
+        "tests/test_change_intake_tools.py：WIP_TASK 返工和交期影响进入 planned_action_summary/affected_object_summary",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1376,11 +1386,13 @@
       "implementation_evidence": [
         "方案冻结结构化影响材料",
         "RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具",
-        "query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整"
+        "query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "生效交接幂等单测；真实 ERP 更新和全部门通知未联调",
-        "tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回"
+        "tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1392,11 +1404,13 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "设计、采购、制造、装配、试模对象引用与执行/复验依据",
-        "query_change_intake_context 通过 ContactTask affected_type/ref、PlanTask、EngineeringChange impacts、销售/委外合同上下文关联设计、采购、制造、装配、试模、物流、合同和财务对象"
+        "query_change_intake_context 通过 ContactTask affected_type/ref、PlanTask、EngineeringChange impacts、销售/委外合同上下文关联设计、采购、制造、装配、试模、物流、合同和财务对象",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "原生引用和来源规则单测；正式对象执行工具端到端待完成",
-        "tests/test_change_intake_tools.py：计划任务和在制任务引用进入设变上下文"
+        "tests/test_change_intake_tools.py：计划任务和在制任务引用进入设变上下文",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1409,11 +1423,13 @@
       "implementation_evidence": [
         "项目节点、合同和其他原生对象引用及交期/金额影响结构",
         "方案交接不直接改写物流、合同或财务",
-        "query_change_intake_context 将交期影响、合同、委外合同、金额/费用影响和未落实事项聚合为只读上下文，并在 limitations 中声明不改写物流、合同或财务"
+        "query_change_intake_context 将交期影响、合同、委外合同、金额/费用影响和未落实事项聚合为只读上下文，并在 limitations 中声明不改写物流、合同或财务",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "结构与边界校验；物流/合同/财务/预警联动未验证",
-        "tests/test_change_intake_tools.py：合同、金额和交期影响被识别；物流/财务正式联动仍待验证"
+        "tests/test_change_intake_tools.py：合同、金额和交期影响被识别；物流/财务正式联动仍待验证",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1426,11 +1442,13 @@
       "implementation_evidence": [
         "方案审批、实际反馈、独立复验/整改及人工关闭分离",
         "最新方案下全事项复验关闭门禁和追加式实际数据",
-        "query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成"
+        "query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成",
+        "ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭"
       ],
       "verification_evidence": [
         "联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调",
-        "tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警"
+        "tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警",
+        "tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

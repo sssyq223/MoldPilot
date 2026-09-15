@@ -176,6 +176,62 @@ def assignee_eligible(db,person,g,c):
                 and permitted(db,person,'read',c) and permitted(db,person,'respond',c))
 
 
+def progress_summary(db,c):
+    tasks=list(db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==c.id).order_by(m.ContactTask.created_at,m.ContactTask.id)))
+    records=list(db.scalars(select(m.ContactRecord).where(m.ContactRecord.case_id==c.id).order_by(m.ContactRecord.created_at,m.ContactRecord.id)))
+    counts={state:sum(1 for task in tasks if task.status==state) for state in ('UNASSIGNED','ASSIGNED','RESPONDED','VERIFIED','CANCELLED')}
+    active=[task for task in tasks if task.status!='CANCELLED']
+    latest_resolution=None
+    resolution=db.scalar(select(m.ContactResolution).join(m.BusinessSubject).where(m.ContactResolution.case_id==c.id)
+        .order_by(m.BusinessSubject.created_at.desc(),m.BusinessSubject.id.desc()).limit(1))
+    if resolution:
+        subject=db.get(m.BusinessSubject,resolution.subject_id)
+        latest_resolution={'id':subject.id,'number':subject.number,'status':subject.status,'case_revision':resolution.case_revision}
+    blockers=[]
+    next_actions=[]
+    if c.closed_at:
+        state='CLOSED'
+        next_actions.append('联络单已人工关闭，仅可查看历史过程和附件版本。')
+    elif c.mode=='HISTORY':
+        state='HISTORY_RECORD'
+        offline=sum(1 for record in records if record.kind=='NOTE' and record.detail.get('source')=='OFFLINE')
+        if offline==0:
+            blockers.append('历史补录尚未登记线下过程记录。')
+            next_actions.append('补充线下发生时间、参与人员、内容和原始附件。')
+        next_actions.append('历史补录只归档已发生事实，不派发线上事项、不冒充审批、不自动认定最终关闭。')
+    elif not active:
+        state='DRAFTING'
+        blockers.append('尚未明确责任部门和处理事项。')
+        next_actions.append('由发起人选择责任部门并创建协作事项。')
+    elif counts['UNASSIGNED']:
+        state='WAITING_ASSIGNMENT'
+        blockers.append(f"{counts['UNASSIGNED']} 个事项尚未分派处理人。")
+        next_actions.append('由责任部门负责人或有权发起人分派处理人。')
+    elif counts['ASSIGNED']:
+        state='WAITING_FEEDBACK'
+        blockers.append(f"{counts['ASSIGNED']} 个事项等待处理反馈。")
+        next_actions.append('处理人提交执行结果、工时费用和执行依据。')
+    elif counts['RESPONDED']:
+        state='WAITING_REVIEW'
+        blockers.append(f"{counts['RESPONDED']} 个事项已反馈但尚未独立复验。")
+        next_actions.append('发起人或指定验收负责人按最新生效方案复验。')
+    elif not latest_resolution or latest_resolution['status']!='EFFECTIVE':
+        state='WAITING_RESOLUTION'
+        blockers.append('尚无已审批生效的最新处理方案。')
+        next_actions.append('发起人提交处理方案审批，审批生效后才能作为关闭依据。')
+    elif any(task.verified_plan_id!=latest_resolution['id'] for task in active):
+        state='REVIEW_STALE'
+        blockers.append('存在事项未在最新生效方案下复验合格。')
+        next_actions.append('按最新方案重新反馈或复验受影响事项。')
+    else:
+        state='READY_TO_CLOSE'
+        next_actions.append('所有有效事项已在最新生效方案下复验合格，可由发起人或指定验收负责人准备关闭。')
+    return {'state':state,'task_counts':counts,'active_task_count':len(active),'latest_resolution':latest_resolution,
+            'blockers':blockers,'next_actions':next_actions,
+            'limitations':['办理状态由当前联络记录、事项、方案和复验结果派生；不读取或修改 ERP 异常流程。',
+                           '线下记录、处理反馈或方案审批通过都不单独等同于整改完成、复验合格或联络单关闭。']}
+
+
 def serialize(db,c,details=False,user=None):
     creator=db.get(m.User,c.created_by)
     result={'id':c.id,'project_id':c.project_id,'category':c.category,'title':c.title,
@@ -184,7 +240,8 @@ def serialize(db,c,details=False,user=None):
             'customer_ref':c.customer_ref,'customer_name':c.customer_name,'mold_number':c.mold_number,
             'product_ref':c.product_ref,'application_date':c.application_date,'problem_source':c.problem_source,
             'current_stage':c.current_stage,'change_type':c.change_type,'urgency':c.urgency,
-            'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN'}
+            'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN',
+            'progress_summary':progress_summary(db,c)}
     if details:
         from .contact_lifecycle import context,record_detail
         if user:result.update(context(db,user,c))

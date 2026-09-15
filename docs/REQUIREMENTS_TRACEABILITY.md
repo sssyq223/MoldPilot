@@ -800,8 +800,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 客户设变、设计异常、组立异常、加工异常、采购异常、质检异常、试模异常、外协不良、降低成本及制程改善等，按业务适用情况通过工程联络单统一管理，并关联当前环节。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验；query_change_intake_context 汇总 CUSTOMER_CHANGE、DESIGN_ISSUE、ASSEMBLY_ISSUE、MACHINING_ISSUE、PROCUREMENT_ISSUE、QUALITY_ISSUE、TRIAL_ISSUE、OUTSOURCE_DEFECT 等来源并关联当前环节
-- 验证证据：tests/test_contact_impact.py：主数据必填与未来日期阻断；tests/test_change_intake_tools.py：客户设变联络单按当前加工环节被上下文工具聚合
+- 实现证据：ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验；query_change_intake_context 汇总 CUSTOMER_CHANGE、DESIGN_ISSUE、ASSEMBLY_ISSUE、MACHINING_ISSUE、PROCUREMENT_ISSUE、QUALITY_ISSUE、TRIAL_ISSUE、OUTSOURCE_DEFECT 等来源并关联当前环节；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：tests/test_contact_impact.py：主数据必填与未来日期阻断；tests/test_change_intake_tools.py：客户设变联络单按当前加工环节被上下文工具聚合；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-083
@@ -809,8 +809,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 联络单至少记录客户、项目号、模具号、产品料号或适用料品、申请日期、问题来源、责任部门、变更类别、紧急程度、说明、对策、要求及实际完成时间、工时、金额、附件、版本和审批记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录；query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要
-- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则；tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取
+- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录；query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则；tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-084
@@ -818,8 +818,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 原件附件、操作记录和复检结果一并留存，关联设变单、维修或返工任务、项目节点和成本记录；额外工时及其计价关联财务，计价方式和审批权限后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代
-- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调
+- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-085
@@ -827,8 +827,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 发起后向项目负责人和设计发送待办。设计评估问题并提出方案，项目负责人可退回方案或据此组织计划。工程联络单由总经理或后续明确的授权审批岗位审批；具体审核、批准、加签和退回路线按审批矩阵执行，退回到明确责任人。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目负责人和责任部门负责人待办；可配置方案 BPM、退回整改及生效通知；query_change_intake_context 返回 contact_resolutions 与 approved/effective 状态，并保留“方案审批不等于执行完成”的告警
-- 验证证据：联络生命周期集成测试；完整生产岗位矩阵待验收；tests/test_change_intake_tools.py：有效处理方案和未完成复验同时返回，避免误判
+- 实现证据：项目负责人和责任部门负责人待办；可配置方案 BPM、退回整改及生效通知；query_change_intake_context 返回 contact_resolutions 与 approved/effective 状态，并保留“方案审批不等于执行完成”的告警；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：联络生命周期集成测试；完整生产岗位矩阵待验收；tests/test_change_intake_tools.py：有效处理方案和未完成复验同时返回，避免误判；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-086
@@ -836,8 +836,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 评估应列明受影响图纸、物料、采购单、在制任务及供应商任务，明确继续执行、暂停、取消、返工或重新下达。判断当前环节的可变更性及交期影响，不能把所有设变都机械解释为全部任务从头重做。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点；query_change_intake_context 按 affected_type 和 planned_action 汇总图纸、物料、采购单、在制任务、供应商任务等影响，返回 CONTINUE/PAUSE/CANCEL/REWORK/REISSUE 及交期影响
-- 验证证据：tests/test_contact_impact.py：材料冻结和 ERP 来源约束；tests/test_change_intake_tools.py：WIP_TASK 返工和交期影响进入 planned_action_summary/affected_object_summary
+- 实现证据：ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点；query_change_intake_context 按 affected_type 和 planned_action 汇总图纸、物料、采购单、在制任务、供应商任务等影响，返回 CONTINUE/PAUSE/CANCEL/REWORK/REISSUE 及交期影响；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：tests/test_contact_impact.py：材料冻结和 ERP 来源约束；tests/test_change_intake_tools.py：WIP_TASK 返工和交期影响进入 planned_action_summary/affected_object_summary；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-087
@@ -845,8 +845,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变审批后按确认方案更新正式版本、受影响任务、节点计划及生产安排，通知设计、采购、生产、装配、试模、品质和验收等相关部门。未受影响的任务按批准计划继续；新旧版本及已发生执行记录均保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具；query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整
-- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调；tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回
+- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具；query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调；tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-088
@@ -854,8 +854,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变涉及设计时关联工艺分析、结构设计、出图及确认；涉及采购时关联请购、订单、价格审批及供应商合同；涉及制造、装配、试模时关联工单、报工、检测和复验结果。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：设计、采购、制造、装配、试模对象引用与执行/复验依据；query_change_intake_context 通过 ContactTask affected_type/ref、PlanTask、EngineeringChange impacts、销售/委外合同上下文关联设计、采购、制造、装配、试模、物流、合同和财务对象
-- 验证证据：原生引用和来源规则单测；正式对象执行工具端到端待完成；tests/test_change_intake_tools.py：计划任务和在制任务引用进入设变上下文
+- 实现证据：设计、采购、制造、装配、试模对象引用与执行/复验依据；query_change_intake_context 通过 ContactTask affected_type/ref、PlanTask、EngineeringChange impacts、销售/委外合同上下文关联设计、采购、制造、装配、试模、物流、合同和财务对象；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：原生引用和来源规则单测；正式对象执行工具端到端待完成；tests/test_change_intake_tools.py：计划任务和在制任务引用进入设变上下文；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-089
@@ -863,8 +863,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变影响出入库、物流路线、发货日期或运费时同步相关单据；影响金额、付款条件或交期时更新经确认的合同及财务记录。寄售料号、安全采购量及采购预警仅在已确认适配范围内联动。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目节点、合同和其他原生对象引用及交期/金额影响结构；方案交接不直接改写物流、合同或财务；query_change_intake_context 将交期影响、合同、委外合同、金额/费用影响和未落实事项聚合为只读上下文，并在 limitations 中声明不改写物流、合同或财务
-- 验证证据：结构与边界校验；物流/合同/财务/预警联动未验证；tests/test_change_intake_tools.py：合同、金额和交期影响被识别；物流/财务正式联动仍待验证
+- 实现证据：项目节点、合同和其他原生对象引用及交期/金额影响结构；方案交接不直接改写物流、合同或财务；query_change_intake_context 将交期影响、合同、委外合同、金额/费用影响和未落实事项聚合为只读上下文，并在 limitations 中声明不改写物流、合同或财务；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：结构与边界校验；物流/合同/财务/预警联动未验证；tests/test_change_intake_tools.py：合同、金额和交期影响被识别；物流/财务正式联动仍待验证；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-090
@@ -872,8 +872,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 异常处理须记录方案批准、执行结果及复检或复验结论，由适用责任角色确认关闭。工程联络单获批不表示整改完成；涉及节点、费用及合同事项未落实时应能识别未完成事项。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成
-- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警
+- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ## 暂停与恢复
@@ -1099,8 +1099,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 按角色及项目授权控制查看、录入、修改、审批和导出；价格、成本、利润和项目资料采用适用数据权限。问答、页面、附件下载及导出应执行一致权限，不通过汇总或链接绕过限制。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，治理上下文只返回当前可见附件元数据，不下载、不导出、不解析原文
-- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的运行隔离
+- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文；tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总
+- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离
 - 验收状态：NOT_VERIFIED
 
 ### FR-114
@@ -1121,7 +1121,7 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 待办和提醒关联业务对象、触发条件、接收角色及处理状态，支持确认与追踪。节点变更后更新适用提醒，避免对同一业务重复生成有效任务；手机、站内或其他消息渠道在适配阶段确定。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重；query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态
+- 实现证据：Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重；query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态，帮助识别重复或失败提醒
 - 验证证据：tests/test_governance_context_tools.py 覆盖通知投递、未读计数和关联业务对象；tests/test_messages.py 覆盖 Outbox 发布重试、Inbox 去重和 Notification 唯一投递；tests/test_contacts.py 覆盖工程联络分派通知生成
 - 验收状态：NOT_VERIFIED
 
@@ -1130,7 +1130,7 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 附件保留来源、上传人、时间、版本及对象关联，授权人员可查看和下载。文件格式、大小、保留期限及敏感数据范围后续确认；历史截图中的字段和按钮不自动扩大权限或功能。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态，不暴露对象存储 key，不读取文件内容
+- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容
 - 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见
 - 验收状态：NOT_VERIFIED
 
@@ -1143,7 +1143,7 @@ Agent 开发明确来源的受控调用、失败核对、Docker 部署、备份�
 各数据来源应明确录入或同步责任、确认环节及最终有效系统；同步失败或数据冲突应进入可见的待处理状态，不能静默认定成功。具体接口、重试和人工补录规则列入适配方案。
 
 - 最新口径：按权威来源直接查询/调用，不采用 ERP 镜像、CDC、投影、先本地后 ERP 的查找策略。
-- 实现证据：ContactTask、ProjectClosureItem 等来源字段保留 source_system/source_ref/source_as_of 和执行来源；ERPOperation 记录 native_id、state、request_hash、erp_user_id、response/error_code；query_governance_context 明示权威来源策略，返回来源字段、ERP 操作状态和 pending_or_failed_source_operations，UNKNOWN/REJECTED/DISPATCHING 不默认为成功
+- 实现证据：ContactTask、ProjectClosureItem 等来源字段保留 source_system/source_ref/source_as_of 和执行来源；ERPOperation 记录 native_id、state、request_hash、erp_user_id、response/error_code；query_governance_context 明示权威来源策略，返回来源字段、ERP 操作状态和 pending_or_failed_source_operations；UNKNOWN/REJECTED/DISPATCHING 不默认为成功
 - 验证证据：tests/test_governance_context_tools.py 覆盖 ERP UNKNOWN/TIMEOUT 进入待处理来源状态并展示不采用镜像/投影策略；tests/test_project_closure_tools.py 覆盖 ERP 来源结项事项必须带原记录引用和核对时点；tests/test_change_intake_tools.py 覆盖联络/设变来源字段可查
 - 验收状态：NOT_VERIFIED
 

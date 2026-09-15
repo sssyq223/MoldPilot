@@ -59,6 +59,9 @@ def test_create_retry_and_history_never_dispatches(client,data):
         assert db.scalar(select(func.count()).select_from(ContactTask))==0
         assert db.scalar(select(func.count()).select_from(ApprovalInstance))==0
         assert db.scalar(select(func.count()).select_from(ContactRecord))==1
+    detail=client.get('/api/contacts/'+c['id']).json()
+    assert detail['progress_summary']['state']=='HISTORY_RECORD'
+    assert any('不自动认定最终关闭' in item for item in detail['progress_summary']['next_actions'])
 
 
 def test_initiator_and_department_head_assignment_then_response(client,data):
@@ -128,6 +131,23 @@ def test_version_replay_conflicts_no_duplicate_tasks(client,data):
     assert len(client.post(url,json=p).json()['tasks'])==1
     assert client.post(url,json={**p,'request_key':str(uuid4())}).status_code==409
     assert client.post(url,json={**p,'title':'重用请求号不同内容'}).status_code==409
+
+
+def test_contact_progress_summary_guides_next_action_without_approval_guessing(client,data):
+    ids,factory=data;sign_in(client)
+    g=group(client,[ids['buyer']],kind='DEPARTMENT',name='进度诊断部门',heads=[ids['buyer']])
+    grant(factory,ids,ids['buyer'],['read','assign','respond'])
+    c,_=create(client,ids)
+    assert c['progress_summary']['state']=='DRAFTING'
+    c=add_task(client,c,g)
+    assert c['progress_summary']['state']=='WAITING_ASSIGNMENT'
+    tid=c['tasks'][0]['id']
+    c=client.post(f"/api/contacts/{c['id']}/tasks/{tid}/assign",json=operation(c,assignee_id=ids['buyer'],reason='负责人分派')).json()
+    assert c['progress_summary']['state']=='WAITING_FEEDBACK'
+    sign_in(client,'test_buyer')
+    c=client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=operation(c,**response_body())).json()
+    assert c['progress_summary']['state']=='WAITING_REVIEW'
+    assert any('不单独等同于整改完成' in item for item in c['progress_summary']['limitations'])
 
 
 def test_note_times_and_inputs_are_not_approval_state(client,data):

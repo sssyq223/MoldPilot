@@ -14,6 +14,7 @@ const actionNames:Record<string,string>={CONTINUE:'继续执行',PAUSE:'暂停',
 const urgencyNames:Record<string,string>={NORMAL:'普通',URGENT:'紧急',CRITICAL:'重大紧急'}
 const affectedNames:Record<string,string>={DRAWING:'图纸',MATERIAL:'物料',PURCHASE_ORDER:'采购单',WIP_TASK:'在制任务',SUPPLIER_TASK:'供应商任务',PLAN_NODE:'计划节点',CONTRACT:'合同',FINANCE:'财务事项',LOGISTICS:'物流',OTHER:'其他'}
 const changeNames:Record<string,string>={CHANGE:'设变',EXCEPTION:'异常',IMPROVEMENT:'改善'}
+const progressNames:Record<string,string>={CLOSED:'已关闭',HISTORY_RECORD:'历史补录',DRAFTING:'待明确责任事项',WAITING_ASSIGNMENT:'待分派处理人',WAITING_FEEDBACK:'待处理反馈',WAITING_REVIEW:'待独立复验',WAITING_RESOLUTION:'待处理方案审批',REVIEW_STALE:'复验需按最新方案重做',READY_TO_CLOSE:'可准备关闭'}
 async function load(){
  const token=++request;selected.value=null;failed.value=false
  if(!props.initialId){loading.value=false;return}
@@ -33,6 +34,13 @@ watch(()=>props.initialId,load,{immediate:true})
  <header><h3>{{selected.title}}</h3><p class="muted">发起人：{{selected.creator_name}} · {{shanghai(selected.created_at)}}</p><p class="muted">{{selected.collaboration_status==='CLOSED'?'已人工关闭':selected.mode==='HISTORY'?'历史补录':'线上协作中'}}</p></header>
  <dl class="contact-facts"><div><dt>客户</dt><dd>{{selected.customer_name}} · {{selected.customer_ref}}</dd></div><div><dt>模具 / 产品料品</dt><dd>{{selected.mold_number}} · {{selected.product_ref}}</dd></div><div><dt>来源 / 当前环节</dt><dd>{{sourceNames[selected.problem_source]||selected.problem_source}} · {{selected.current_stage}}</dd></div><div><dt>类别 / 紧急程度</dt><dd>{{changeNames[selected.change_type]||selected.change_type}} · {{urgencyNames[selected.urgency]||selected.urgency}}</dd></div></dl>
  <p class="preserve">{{selected.description}}</p>
+ <section v-if="selected.progress_summary" class="surface progress-summary" aria-label="办理诊断">
+  <div class="progress-summary-head"><strong>{{progressNames[selected.progress_summary.state]||selected.progress_summary.state}}</strong><small class="muted">有效事项 {{selected.progress_summary.active_task_count}} 个</small></div>
+  <p v-if="selected.progress_summary.latest_resolution" class="muted">最新方案：{{numberText(selected.progress_summary.latest_resolution.number)}} · {{statusName(selected.progress_summary.latest_resolution.status)}}</p>
+  <div v-if="selected.progress_summary.blockers?.length"><small class="muted">当前阻塞</small><ul><li v-for="item in selected.progress_summary.blockers" :key="'b'+item">{{item}}</li></ul></div>
+  <div v-if="selected.progress_summary.next_actions?.length"><small class="muted">建议下一步</small><ul><li v-for="item in selected.progress_summary.next_actions" :key="'n'+item">{{item}}</li></ul></div>
+  <p class="muted small">{{selected.progress_summary.limitations?.[1]}}</p>
+ </section>
  <h3>附件材料</h3><p v-if="!selected.attachments?.length" class="muted">暂无已关联附件。</p><FileMaterial v-for="file in selected.attachments||[]" :key="file.id" :file="file" @error="emit('error',$event)"/>
  <p v-if="selected.reviewer_name" class="muted">指定验收负责人：{{selected.reviewer_name}}</p>
  <p v-if="selected.closed_at" class="muted">关闭人：{{selected.closed_by_name}} · {{shanghai(selected.closed_at)}}</p>
@@ -71,4 +79,6 @@ watch(()=>props.initialId,load,{immediate:true})
 .contact-material .surface{padding:16px;display:grid;gap:10px}
 .contact-material .audit-row p{margin-top:8px}
 .contact-facts{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin:0}.contact-facts div{display:flex;gap:8px}.contact-facts dt{color:var(--muted);font-size:12px}.contact-facts dd{margin:0;font-size:12px}
+.progress-summary{border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+.progress-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.progress-summary ul{margin:4px 0 0 18px;padding:0}.progress-summary li{margin:2px 0}.progress-summary .small{font-size:12px}
 </style>
