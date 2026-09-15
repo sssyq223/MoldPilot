@@ -28,6 +28,7 @@ TOOLS.update({
     'query_manufacturing_quality_context':{'description':'按项目或工序线索核对制造计划任务、报工事实、设计路线、装配/试模、质检和整改上下文；只读，不登记报工或检验。','permission':'project_plan.read'},
     'query_assembly_trial_context':{'description':'按项目、装配任务或试模线索核对齐套前置、装配工单、完工确认、试模资源、试模报告和异常整改上下文；只读，不替代 ERP 装配/试模执行。','permission':'assembly_issue.read'},
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
+    'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
     'query_procurement_price_context':{'description':'按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；只读，不询价、不下单、不入库。','permission':'purchase_price.read'},
     'query_project_dossier':{'description':'按项目编号/名称、模具号、工程联络、合同或订单编号反查并汇总当前可见的项目业务档案；只读，不复制 ERP 单据。','permission':'project.dossier.read'},
     'query_contact_cases':{'description':'查询当前用户可见的工程联络单、客户/模具/当前环节、结构化影响项、责任部门、处理人和协作状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
@@ -62,6 +63,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'manufacturing_quality_review':{'name':'制造工序与质检上下文核对','tools':['query_manufacturing_quality_context']},
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context']},
                'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context']},
+               'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context']},
                'procurement_price_context_review':{'name':'采购价格与订单上下文核对','tools':['query_procurement_price_context']},
                'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
@@ -128,6 +130,9 @@ def tool_schema(key):
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_delivery_logistics_context':
+        from .plan_tools import ProjectPlanContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
+    if key=='query_full_outsource_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_procurement_price_context':
@@ -238,6 +243,13 @@ def execute(db, user, key, arguments, run=None):
         from .delivery_logistics_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','交付物流上下文参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_full_outsource_context':
+        from pydantic import ValidationError
+        from .plan_tools import ProjectPlanContextInput
+        from .full_outsource_tools import query
+        try:data=ProjectPlanContextInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','整套委外上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_procurement_price_context':
         from pydantic import ValidationError

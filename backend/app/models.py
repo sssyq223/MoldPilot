@@ -228,6 +228,8 @@ class Conversation(IdentityMixin, Base):
     __tablename__ = "ai_conversation"
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
     title: Mapped[str] = mapped_column(String(150))
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Run(IdentityMixin, Base):

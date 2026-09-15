@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import timedelta, datetime
+import json
 import secrets
 from fastapi import FastAPI, Depends, Request, Response, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, func, text, delete, literal
 from sqlalchemy.exc import IntegrityError
 from .db import get_db, SessionLocal, now, aware
-from .config import settings
+from .config import settings, model_settings, public_model_config, save_model_config
 from . import models as m, schemas as s, authorization as auth, business, bpm
 from .security import current_user, login, public_user, hasher, normalize_username, digest
 from .errors import DomainError
@@ -23,6 +24,88 @@ from .contacts import router as contact_router
 app.include_router(contact_router)
 from .files import router as file_router
 app.include_router(file_router)
+
+_conversation_flags_checked = False
+
+
+def ensure_conversation_flags(db):
+    """Local dev fixtures may predate pinned/archived conversation columns."""
+    global _conversation_flags_checked
+    if _conversation_flags_checked:
+        return
+    dialect = db.bind.dialect.name
+    if dialect == "sqlite":
+        columns = {row[1] for row in db.execute(text("PRAGMA table_info(ai_conversation)"))}
+        if "pinned" not in columns:
+            db.execute(text("ALTER TABLE ai_conversation ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0"))
+        if "archived" not in columns:
+            db.execute(text("ALTER TABLE ai_conversation ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"))
+        db.commit()
+    elif dialect == "postgresql":
+        db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false"))
+        db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
+        db.commit()
+    _conversation_flags_checked = True
+
+
+def run_trace(run, steps):
+    """Project the model checkpoint into a visible ReAct-style transcript.
+
+    The chain is derived from persisted model messages and tool observations;
+    it intentionally does not invent hidden reasoning.
+    """
+    step_by_id = {step.id: step for step in steps}
+    messages = run.checkpoint.get("messages", []) if isinstance(run.checkpoint, dict) else []
+    tool_result_call_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")}
+    trace = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant":
+            text = (msg.get("content") or "").strip()
+            if text:
+                trace.append({"type": "message", "text": text})
+            for call in msg.get("tool_calls") or []:
+                call_id = call.get("id")
+                if call_id in tool_result_call_ids:
+                    continue
+                name = (call.get("function") or {}).get("name") or "业务工具"
+                trace.append({"type": "tool_pending", "tool": name, "call_id": call_id})
+        elif role == "tool":
+            try:
+                payload = json.loads(msg.get("content") or "{}")
+            except ValueError:
+                payload = {}
+            step = step_by_id.get(payload.get("evidence_id"))
+            if step:
+                trace.append({"type": "tool", "id": step.id, "tool": step.tool, **step.result})
+            else:
+                trace.append({"type": "tool", "tool": "业务工具", "data": []})
+    result = run.result if isinstance(run.result, dict) else {}
+    if result:
+        trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),
+                      "suggestions": result.get("suggestions", []), "error_code": result.get("error_code")})
+    return trace
+
+
+def run_duration_seconds(run, steps):
+    if run.status in {"QUEUED", "RUNNING"}:
+        return max(0, int((now() - aware(run.created_at)).total_seconds()))
+    checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+    completed_at = checkpoint.get("completed_at")
+    end = None
+    if isinstance(completed_at, str):
+        try:
+            end = aware(datetime.fromisoformat(completed_at.replace("Z", "+00:00")))
+        except ValueError:
+            end = None
+    if end is None and steps:
+        end = max(aware(step.created_at) for step in steps)
+    if end is None:
+        model_elapsed_ms = checkpoint.get("model_elapsed_ms", 0)
+        if isinstance(model_elapsed_ms, (int, float)) and model_elapsed_ms > 0:
+            return max(1, int(round(model_elapsed_ms / 1000)))
+        end = aware(run.created_at)
+    return max(0, int((end - aware(run.created_at)).total_seconds()))
 
 
 @app.exception_handler(DomainError)
@@ -72,9 +155,27 @@ def sign_out(request: Request, response: Response, user=Depends(current_user), d
 @app.get("/api/me")
 def me(user=Depends(current_user), db=Depends(get_db)):
     permissions = list(auth.PERMISSIONS) if user.super_admin else [p for p in auth.PERMISSIONS if any(g.effect == "ALLOW" for g in auth.grants_for(db, user, p))]
+    model_config = model_settings()
     return {"user": {**public_user(user), "authorization_hash": auth.fingerprint(db, user)},
-            "permissions": permissions, "llm_configured": settings().llm_enabled,
-            "model": settings().active_model if settings().llm_enabled else None}
+            "permissions": permissions, "llm_configured": model_config.llm_enabled,
+            "model": model_config.active_model if model_config.llm_enabled else None}
+
+
+@app.get("/api/model-config")
+def model_config(user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    return public_model_config()
+
+
+@app.put("/api/model-config")
+def update_model_config(data: s.ModelConfigInput, user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    try:
+        return save_model_config(data.model_dump())
+    except ValueError as exc:
+        raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
 
 
 @app.get("/api/catalog")
@@ -322,19 +423,59 @@ def audit(user=Depends(current_user), db=Depends(get_db)):
 
 
 @app.get("/api/conversations")
-def conversations(user=Depends(current_user), db=Depends(get_db)):
-    return [{"id": c.id, "title": c.title} for c in db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id).order_by(m.Conversation.created_at.desc()).limit(100))]
+def conversations(archived: bool = Query(False), user=Depends(current_user), db=Depends(get_db)):
+    ensure_conversation_flags(db)
+    rows = db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id, m.Conversation.archived == archived)
+                      .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).limit(100))
+    return [{"id": c.id, "title": c.title, "pinned": c.pinned, "archived": c.archived, "created_at": c.created_at.isoformat()} for c in rows]
+
+
+@app.post("/api/conversations/{conversation_id}/pin")
+def pin_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
+    ensure_conversation_flags(db)
+    conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
+    if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
+    conversation.pinned = not conversation.pinned
+    conversation.archived = False
+    record(db, user, "agent.conversation.pinned" if conversation.pinned else "agent.conversation.unpinned", conversation.id)
+    db.commit()
+    return {"id": conversation.id, "title": conversation.title, "pinned": conversation.pinned, "archived": conversation.archived}
+
+
+@app.post("/api/conversations/{conversation_id}/archive")
+def archive_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
+    ensure_conversation_flags(db)
+    conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
+    if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
+    conversation.archived = True
+    conversation.pinned = False
+    record(db, user, "agent.conversation.archived", conversation.id)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/conversations/{conversation_id}/unarchive")
+def unarchive_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
+    ensure_conversation_flags(db)
+    conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
+    if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
+    conversation.archived = False
+    record(db, user, "agent.conversation.unarchived", conversation.id)
+    db.commit()
+    return {"id": conversation.id, "title": conversation.title, "pinned": conversation.pinned, "archived": conversation.archived, "created_at": conversation.created_at.isoformat()}
 
 
 @app.post("/api/runs")
 def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db)):
+    ensure_conversation_flags(db)
     if data.conversation_id:
-        conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id))
+        conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id, m.Conversation.archived == False))
         if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     else:
         conversation = m.Conversation(user_id=user.id, title=data.prompt[:60]); db.add(conversation); db.flush()
+    model_config = model_settings()
     run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=data.prompt,
-                status="QUEUED" if settings().llm_enabled else "WAITING_CONFIGURATION")
+                status="QUEUED" if model_config.llm_enabled else "WAITING_CONFIGURATION")
     db.add(run); db.flush()
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
@@ -351,8 +492,11 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
         visible = r.security_version == user.security_version and (not r.checkpoint or r.checkpoint.get("authorization_hash") == current_hash)
         steps = list(db.scalars(select(m.Step).where(m.Step.run_id == r.id).order_by(m.Step.sequence))) if visible else []
         result.append({"id": r.id, "prompt": r.prompt, "status": r.status,
+                       "created_at": r.created_at,
+                       "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
                        "files": run_files(db,user,r) if visible else [],
                        "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
+                       "trace": run_trace(r, steps) if visible else [],
                        "progress": {"turn": r.checkpoint.get("turn", 0),
                                     "phase": r.checkpoint.get('phase'),
                                     "model_elapsed_ms": r.checkpoint.get('model_elapsed_ms', 0),
@@ -365,7 +509,9 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
 def cancel(run_id: str, user=Depends(current_user), db=Depends(get_db)):
     run = db.scalar(select(m.Run).where(m.Run.id == run_id, m.Run.user_id == user.id).with_for_update())
     if not run: raise DomainError("NOT_FOUND", "任务不存在", 404)
-    if run.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}: run.status = "CANCELLED"; run.lease_epoch += 1
+    if run.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        run.status = "CANCELLED"; run.lease_epoch += 1
+        run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
     db.commit(); return {"status": run.status}
 
 

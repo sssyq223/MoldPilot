@@ -1110,8 +1110,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 读取项目档案 execution_mode、有效 quote_acceptance 承接决定和 full_outsource_contract 上下文，derived_status.has_full_outsource_mode 区分整套委外路径依据",
+        "工具 limitations 明确报价委外金额、整套委外合同、供应商节点上报、我方收货、客户验收、扣款和结算是不同事实，不能相互替代"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖有效整套委外加工方式、合同与委外计划节点聚合；不重复下达内部制造任务和真实 ERP 加工方式变更审批尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1120,8 +1125,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "不开发供应商门户；保留授权人员录入/导入上报证据和采购、项目协同。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并把供应商执行跟踪与订单/发货/收货事实分开展示",
+        "full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合；供应商填报频率、证据模板和真实协同流程尚未适配验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1130,8 +1140,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 返回已生效整套委外合同、供应商发货/收货/检验、工程联络质量延期问题、设变整改影响和客户验收/关闭清单上下文",
+        "analysis.warnings 在未关闭委外质量、延期、验收或扣款相关事项存在时阻止认定异常闭环"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖供应商收货检验不合格、工程联络整改扣款线索和客户验收清单；客户资料交接依据、采购向供应商提供资料留痕和真实合同节点尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1140,8 +1155,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "在线电子签署已由用户取消；保留模板、人工审核签订及签署文件上传。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数和生效状态；合同草稿、模板生成或报价依据不会被认定为已签署合同",
+        "full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖已生效委外合同上下文；合同模板生成、人工签署文件上传、审批签订流程和正式合同附件管理尚未完整验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1150,8 +1170,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 汇总 engineering_change 记录中的委外、质量、延期、合同、整改和复验影响，并标记未实施或未复验的影响项",
+        "工程联络/设变和整套委外合同、当前计划节点、订单执行跟踪在同一上下文中展示，便于核对客户设变对供应商、采购合同和进度的影响"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖工程联络质量延期扣款事项进入委外上下文；客户设变追加合同、原版本保留和完整审批链尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1160,8 +1185,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 将设变/整改影响项、供应商执行跟踪、委外计划节点和费用/扣款线索分开返回，避免把方案批准当作新增费用或交期影响已落实",
+        "analysis.warnings 对未执行/未复验影响项提示不能把方案批准等同于整改完成"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖质量延期与扣款线索提示；设变后的委外议价、交期重排、客户报价和供应商当前执行评估尚未完整联调验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1170,8 +1200,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索",
+        "full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；责任确认、复验关闭、客户对我方/我方对供应商扣款联动及结算写入尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1180,8 +1215,13 @@
       "module": "整套委外协同",
       "agent_responsibility": "Agent 开发加工方式控制、节点协同、审批、异常及结算衔接；已有委外业务执行复用 ERP，不调用旧异常/审批流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_full_outsource_context 关联整套委外合同、供应商付款申请与已付款、供应商发货/收货、客户验收/关闭清单和结算事项，用于追溯委外交付、验收、回款/付款与关闭上下文",
+        "derived_status.has_supplier_payment_request 和 has_customer_acceptance_or_close_evidence 分别标记供应商付款与客户验收/关闭依据，避免把交付、验收、付款、关闭混为同一事实"
+      ],
+      "verification_evidence": [
+        "tests/test_full_outsource_tools.py 覆盖委外合同、供应商付款申请/确认、交付验收清单聚合；真实财务回款、扣款、整套交期、合同号与 ERP 结算记录联调尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

@@ -13,7 +13,7 @@ async function save(){busy.value=true;try{const t=editor.value;const result=t.id
 async function publish(t:any){busy.value=true;try{selected.value=await post(`/material-templates/${t.id}/publish`);notice.value=`资料模板第 ${t.version} 版已发布，原版本保持不变`;await load();emit('changed')}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 </script>
 <template>
-<button @click="toggle">{{opened?'收起资料模板':'管理资料模板'}}</button>
+<button class="workflow-tool-button" @click="toggle">{{opened?'收起资料模板':'管理资料模板'}}</button>
 <section v-if="opened" class="surface form-stack" aria-label="资料模板管理">
   <div class="section-heading"><h3>资料模板与字段版本</h3><button @click="edit()">新增资料模板</button></div>
   <p class="muted">设计清单、核算清单等可分别维护。表头字段描述整份资料，明细表字段描述每一行。已发布版本可被多个审批模板复用。</p>

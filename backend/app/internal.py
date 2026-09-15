@@ -3,7 +3,7 @@ from datetime import timedelta
 from fastapi import Depends, Request
 from sqlalchemy import select, or_, and_
 from .db import get_db, now, aware
-from .config import settings
+from .config import settings, model_settings
 from .errors import DomainError
 from .models import Run, User, Step
 from . import tool_gateway as tools
@@ -66,7 +66,7 @@ def install(app):
     install_mcp(app,worker_auth,fence,execute_step)
     @app.post("/internal/runs/claim", dependencies=[Depends(worker_auth)])
     def claim(db=Depends(get_db)):
-        if not settings().llm_enabled: return {"run": None}
+        if not model_settings().llm_enabled: return {"run": None}
         run = db.scalar(select(Run).where(or_(Run.status == "QUEUED", and_(Run.status == "RUNNING", Run.lease_until < now()))).order_by(Run.created_at).with_for_update(skip_locked=True).limit(1))
         if not run: return {"run": None}
         user = db.get(User, run.user_id)
@@ -104,6 +104,7 @@ def install(app):
         if not set(result.get("evidence_ids", [])) <= {step.id for step in steps}:
             raise DomainError("EVIDENCE_INVALID", "结果证据不属于本次任务")
         run.result = {**result, "evidence": [{"id": step.id, "tool": step.tool, **step.result} for step in steps]}
+        run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
         run.status = "SUCCEEDED"; run.lease_until = None; db.commit(); return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/fail", dependencies=[Depends(worker_auth)])
@@ -118,5 +119,6 @@ def install(app):
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
                        "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
             run.status = "FAILED"; run.result = {"message": message, "error_code": code}
+            run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()
         return {"ok": True}

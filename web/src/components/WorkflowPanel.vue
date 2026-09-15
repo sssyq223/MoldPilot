@@ -46,7 +46,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
   <div class="section-heading"><div><h2>审批流程配置</h2><p class="muted">配置人员、条件和路线，保存版本并重复使用。</p></div><button class="primary" @click="create"><Plus :size="16"/>新建模板</button></div>
   <MaterialTemplatePanel @changed="refreshMaterials" @error="emit('error',$event)"/>
   <WorkflowCategoryPanel :categories="flowCategories" @changed="refreshCategories" @error="emit('error',$event)"/>
-  <label>按类别查看<select v-model="categoryFilter"><option value="">全部类别</option><option v-for="c in flowCategories" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
+  <label class="workflow-category-filter">按类别查看<select v-model="categoryFilter"><option value="">全部类别</option><option v-for="c in flowCategories" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
   <p v-if="notice" role="status">{{notice}}</p>
   <section v-if="selected" class="surface form-stack" aria-label="流程详情">
     <div class="section-heading"><h3>{{selected.name}} · 第 {{selected.version}} 版 · {{selected.status==='PUBLISHED'?'已发布':'草稿'}}</h3><button @click="selected=null">关闭详情</button></div>

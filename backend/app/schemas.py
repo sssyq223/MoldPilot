@@ -103,3 +103,28 @@ class CapabilityInput(StrictModel):
     enabled: bool
     reason: str = Field(min_length=1, max_length=500)
     expected_security_version: int
+
+
+class CompanyModelConfigInput(StrictModel):
+    base_url: str = Field(default="", max_length=500)
+    model: str = Field(default="", max_length=160)
+    trusted_http_origin: str = Field(default="", max_length=500)
+    api_key: str = Field(default="", max_length=4000)
+    clear_api_key: bool = False
+    proxy_url: str = Field(default="", max_length=500)
+
+
+class OllamaModelConfigInput(StrictModel):
+    base_url: str = Field(default="http://127.0.0.1:11434", max_length=500)
+    model: str = Field(default="", max_length=160)
+
+
+class ModelConfigInput(StrictModel):
+    enabled: bool = True
+    provider: Literal["company", "ollama"] = "company"
+    company: CompanyModelConfigInput = Field(default_factory=CompanyModelConfigInput)
+    ollama: OllamaModelConfigInput = Field(default_factory=OllamaModelConfigInput)
+    max_output_tokens: int = Field(default=2048, ge=256, le=8192)
+    max_turns: int = Field(default=12, ge=1, le=30)
+    connect_timeout: float = Field(default=10, gt=0, le=20)
+    read_timeout: float = Field(default=60, gt=0, le=120)

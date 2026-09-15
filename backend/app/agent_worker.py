@@ -1,6 +1,6 @@
 import time
 import httpx
-from .config import settings
+from .config import settings, model_settings
 from .harness import ModelAdapter, run_loop
 from .model_adapter import ModelError
 from .ollama_adapter import OllamaAdapter
@@ -57,10 +57,16 @@ def create_model(config):
 
 def main():
     config = settings()
-    model = create_model(config)
+    runtime_config = model_settings()
+    model = create_model(runtime_config)
+    model_config_version = runtime_config.config_version
     with httpx.Client(base_url=config.api_base_url, headers={"Authorization": "Bearer "+config.worker_secret}, timeout=30, trust_env=False) as client:
         while True:
             try:
+                runtime_config = model_settings()
+                if runtime_config.config_version != model_config_version:
+                    model = create_model(runtime_config)
+                    model_config_version = runtime_config.config_version
                 response = client.post("/internal/runs/claim"); response.raise_for_status()
                 context = response.json()["run"]
                 if not context: time.sleep(0.5); continue
