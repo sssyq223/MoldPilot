@@ -1572,8 +1572,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_finance_context 汇总有效开工通知、项目/模具/合同资料和财务交接上下文，不创建同义财务台账",
+        "销售合同和整套委外合同返回合同号、金额、预计日期、付款节点及替代关系；合同晚到/缺失通过 gaps/limitations 提醒核对"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖开工通知、项目模具、销售合同和委外合同进入财务上下文"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1582,8 +1587,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "ContractDetail/PaymentStage 独立保存合同金额、节点名称、条件、金额、币种、条件确认状态和依据",
+        "query_finance_context 将销售合同收款节点作为 customer_receivable_nodes 返回，明确节点条件需以合同和财务确认为准"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖 DFM 认证收款节点、金额、条件和未确认状态读取"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1592,8 +1602,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_finance_context 按合同实际 PaymentStage 条件返回节点，不把 T0、DFM、试模、签收、验收或账期示例套用为统一规则",
+        "工具 warnings 标识未确认条件和未接入客户实际回款台账，区分节点条件、提醒和实际收款"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖合同节点条件未确认时的派生告警；到期提醒算法和真实回款状态联调待完成"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1602,8 +1617,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_finance_context 将客户付款节点与客户实际回款台账明确分离，derived_status.has_customer_actual_receipt_ledger 当前为 false",
+        "finance_context_review Skill 要求未接入客户实际回款台账时不得声称客户已回款"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 验证客户合同节点存在但 has_customer_actual_receipt_ledger 为 false，并输出未接入实际回款台账限制"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1612,8 +1632,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认",
+        "query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1622,8 +1647,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "不开发银行自动转账；保留付款流程、人工实际支付确认及凭证。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果",
+        "query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1632,8 +1662,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "finance_correction 业务保存原付款、原因、冲正依据、冲正日期和反向付款记录；重复冲正由 ALREADY_REVERSED 阻断",
+        "query_finance_context 返回 finance_corrections，并按正负 PaymentConfirmation 汇总供应商实付，避免覆盖原付款或重复累计"
+      ],
+      "verification_evidence": [
+        "tests/test_manufacturing.py 覆盖财务冲正保留原付款并恢复占用；tests/test_finance_context_tools.py 覆盖冲正后净实付 8000.00 汇总"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1642,8 +1677,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "ProjectProfile 保存内部/整套委外属性；整套委外合同返回合同号、金额和预计交期；工程联络 ContactTask 保存额外工时、金额、扣款或成本影响线索",
+        "query_finance_context 汇总 execution_mode、full_outsource_contracts、cost_and_change_impacts，不把报价成本或回款金额直接当实际成本"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖整套委外合同金额、供应商合同节点、设变扣款和额外工时线索聚合"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1652,8 +1692,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_finance_context 汇总客户合同收款节点、供应商已付款、未释放付款占用、财务冲正、费用/扣款线索和关闭清单财务事项",
+        "工具 gaps 明确收入确认、含税口径、工时计价、费用分摊和占用资金公式尚未适配，不能以回款金额替代收入或报价成本替代实际成本"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖供应商净实付、付款占用、费用线索和收入成本利润口径限制"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1662,8 +1707,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "合同上下文保留 replaces_id 和合同状态；财务上下文按当前可见有效事实读取，不重复累计替代合同的付款节点",
+        "财务冲正以追加记录保存前后关系；query_finance_context 在缺少销售合同/付款等权限时不返回合同号、金额或付款明细"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖无金额/合同权限用户无法看到合同号、金额和供应商付款明细；合同替代真实收付款分配仍待联调验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1672,8 +1722,13 @@
       "module": "财务节点与核对",
       "agent_responsibility": "Agent 开发财务需求缺失能力、合同节点、审批、实际确认、核对及汇总；已有 ERP 财务事实不另建同义总账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_finance_context 读取 ProjectClosureCase/ProjectClosureItem 中发票、客户回款、供应商结算、财务归档及终止收付款核对事项",
+        "项目关闭后业务历史不删除，财务上下文通过项目档案与业务记录继续只读查询合同、发票/回款清单和供应商付款记录"
+      ],
+      "verification_evidence": [
+        "tests/test_finance_context_tools.py 覆盖结项财务清单项进入上下文；正常/终止关闭完整财务端到端验收仍待执行"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

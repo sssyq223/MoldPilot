@@ -30,6 +30,7 @@ TOOLS.update({
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
     'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
     'query_change_intake_context':{'description':'按项目、模具、客户设变、工程联络或合同线索核对设变承接、收费/合同/开工依据、原模具/原项目、影响任务、执行复验和关闭上下文；只读，不替代 ERP 执行。','permission':'engineering_change.read'},
+    'query_finance_context':{'description':'按项目、合同、付款节点、供应商付款、回款、发票、费用或结项线索核对财务节点与收付款上下文；只读，不确认回款付款、不生成财务台账。','permission':'project.dossier.read'},
     'query_procurement_price_context':{'description':'按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；只读，不询价、不下单、不入库。','permission':'purchase_price.read'},
     'query_project_dossier':{'description':'按项目编号/名称、模具号、工程联络、合同或订单编号反查并汇总当前可见的项目业务档案；只读，不复制 ERP 单据。','permission':'project.dossier.read'},
     'query_contact_cases':{'description':'查询当前用户可见的工程联络单、客户/模具/当前环节、结构化影响项、责任部门、处理人和协作状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
@@ -66,6 +67,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context']},
                'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context']},
+               'finance_context_review':{'name':'财务节点与收付款核对','tools':['query_finance_context']},
                'procurement_price_context_review':{'name':'采购价格与订单上下文核对','tools':['query_procurement_price_context']},
                'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
@@ -140,6 +142,9 @@ def tool_schema(key):
     if key=='query_change_intake_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
+    if key=='query_finance_context':
+        from .project_dossier import ProjectDossierInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
     if key=='query_procurement_price_context':
         from .procurement_tools import ProcurementPriceContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProcurementPriceContextInput.model_json_schema()}}
@@ -262,6 +267,13 @@ def execute(db, user, key, arguments, run=None):
         from .change_intake_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设变承接上下文参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_finance_context':
+        from pydantic import ValidationError
+        from .project_dossier import ProjectDossierInput
+        from .finance_context_tools import query
+        try:data=ProjectDossierInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','财务节点上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_procurement_price_context':
         from pydantic import ValidationError

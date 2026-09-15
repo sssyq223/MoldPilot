@@ -11,7 +11,7 @@ const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:Color
 const page=ref('account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
 const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('tools')
-const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref('')
+const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
 const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
@@ -29,6 +29,21 @@ const groupedSkills=computed(()=>groupedCapabilities(filteredSkills.value))
 const showCapabilityTools=computed(()=>capabilityTab.value==='tools'||capabilityTab.value==='all')
 const showCapabilitySkills=computed(()=>capabilityTab.value==='skills'||capabilityTab.value==='all')
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
+const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
+const activeModelName=computed(()=>{
+ if(!modelConfig.value)return props.modelName||'未配置模型'
+ return modelConfig.value.model||modelConfig.value[modelConfig.value.provider]?.model||'未配置模型'
+})
+const modelEndpoint=computed(()=>{
+ if(!modelConfig.value)return '—'
+ const source=modelConfig.value.provider==='ollama'?modelConfig.value.ollama:modelConfig.value.company
+ return source?.base_url||'未配置服务地址'
+})
+const modelCredentialState=computed(()=>{
+ if(!modelConfig.value)return '—'
+ if(modelConfig.value.provider==='ollama')return '本机服务无需 API Key'
+ return modelConfig.value.company?.api_key_configured?'API Key 已配置':'API Key 未配置'
+})
 const navigation=computed(()=>[
  {key:'account',name:'账号与模型',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
@@ -52,7 +67,7 @@ async function select(key:string){
 async function loadModelConfig(){
  if(!props.me.super_admin)return
  modelLoading.value=true;modelSaved.value=''
- try{modelConfig.value=await api('/model-config');modelApiKey.value='';clearModelApiKey.value=false}catch(e:any){emit('error',e.message)}finally{modelLoading.value=false}
+ try{modelConfig.value=await api('/model-config');modelApiKey.value='';clearModelApiKey.value=false;modelDetailsOpen.value=false}catch(e:any){emit('error',e.message)}finally{modelLoading.value=false}
 }
 async function saveModelConfig(){
  if(!modelConfig.value||modelSaving.value)return
@@ -100,39 +115,54 @@ async function unarchiveConversation(c:any){
     <div class="section-heading model-config-heading"><div><h2>模型配置</h2><p class="muted">配置工作台智能体调用的模型服务。API Key 只会保存，不会回显明文。</p></div><small class="muted">{{modelConfig?.enabled?'已启用':'未启用'}}</small></div>
     <p v-if="modelLoading" role="status">正在读取模型配置…</p>
     <form v-else-if="modelConfig" class="model-config-form surface" @submit.prevent="saveModelConfig">
-     <div class="model-config-row">
-      <label class="check-label model-enabled"><input v-model="modelConfig.enabled" type="checkbox"/>启用模型</label>
-      <label>服务类型<select v-model="modelConfig.provider"><option value="company">OpenAI 兼容接口</option><option value="ollama">本机 Ollama</option></select></label>
-     </div>
-     <template v-if="modelConfig.provider==='company'">
-      <div class="form-grid compact">
-       <label>Base URL<input v-model="modelConfig.company.base_url" placeholder="https://api.example.com/v1"/></label>
-       <label>模型名称<input v-model="modelConfig.company.model" placeholder="Qwen3-30B-A3B-Instruct"/></label>
+     <button type="button" class="model-summary-card" :aria-expanded="modelDetailsOpen" @click="modelDetailsOpen=!modelDetailsOpen">
+      <span class="model-summary-icon"><BrainCircuit :size="19"/></span>
+      <span class="model-summary-main">
+       <strong>{{activeModelName}}</strong>
+       <small>{{modelProviderName}} · {{modelConfig.enabled?'模型已启用':'模型未启用'}}</small>
+      </span>
+      <span class="model-summary-meta">
+       <span>{{modelCredentialState}}</span>
+       <small>{{modelEndpoint}}</small>
+      </span>
+      <span class="model-summary-action">{{modelDetailsOpen?'收起详细配置':'查看 / 编辑详细配置'}}</span>
+     </button>
+     <div v-if="modelDetailsOpen" class="model-config-details">
+      <div class="model-config-row">
+       <label class="check-label model-enabled"><input v-model="modelConfig.enabled" type="checkbox"/>启用模型</label>
+       <label>服务类型<select v-model="modelConfig.provider"><option value="company">OpenAI 兼容接口</option><option value="ollama">本机 Ollama</option></select></label>
       </div>
+      <template v-if="modelConfig.provider==='company'">
+       <div class="form-grid compact">
+        <label>Base URL<input v-model="modelConfig.company.base_url" placeholder="https://api.example.com/v1"/></label>
+        <label>模型名称<input v-model="modelConfig.company.model" placeholder="Qwen3-30B-A3B-Instruct"/></label>
+       </div>
+       <div class="form-grid compact">
+        <label>可信 HTTP Origin<input v-model="modelConfig.company.trusted_http_origin" placeholder="仅内网 HTTP 模型需要填写"/></label>
+        <label>代理地址<input v-model="modelConfig.company.proxy_url" placeholder="可选"/></label>
+       </div>
+       <div class="form-grid compact">
+        <label>API Key<input v-model="modelApiKey" type="password" autocomplete="new-password" :placeholder="modelConfig.company.api_key_configured?'已配置，留空则不修改':'请输入 API Key（可为空）'"/></label>
+        <label class="check-label model-clear-key"><input v-model="clearModelApiKey" type="checkbox"/>清空已保存 API Key</label>
+       </div>
+      </template>
+      <template v-else>
+       <div class="form-grid compact">
+        <label>Ollama 地址<input v-model="modelConfig.ollama.base_url" placeholder="http://127.0.0.1:11434"/></label>
+        <label>模型名称<input v-model="modelConfig.ollama.model" placeholder="qwen2.5:7b"/></label>
+       </div>
+      </template>
       <div class="form-grid compact">
-       <label>可信 HTTP Origin<input v-model="modelConfig.company.trusted_http_origin" placeholder="仅内网 HTTP 模型需要填写"/></label>
-       <label>代理地址<input v-model="modelConfig.company.proxy_url" placeholder="可选"/></label>
+       <label>最大输出 token<input v-model.number="modelConfig.max_output_tokens" type="number" min="256" max="8192"/></label>
+       <label>最大 ReAct 轮次<input v-model.number="modelConfig.max_turns" type="number" min="1" max="30"/></label>
+       <label>连接超时（秒）<input v-model.number="modelConfig.connect_timeout" type="number" min="1" max="20" step="0.5"/></label>
+       <label>读取超时（秒）<input v-model.number="modelConfig.read_timeout" type="number" min="1" max="120" step="0.5"/></label>
       </div>
-      <div class="form-grid compact">
-       <label>API Key<input v-model="modelApiKey" type="password" autocomplete="new-password" :placeholder="modelConfig.company.api_key_configured?'已配置，留空则不修改':'请输入 API Key（可为空）'"/></label>
-       <label class="check-label model-clear-key"><input v-model="clearModelApiKey" type="checkbox"/>清空已保存 API Key</label>
-      </div>
-     </template>
-     <template v-else>
-      <div class="form-grid compact">
-       <label>Ollama 地址<input v-model="modelConfig.ollama.base_url" placeholder="http://127.0.0.1:11434"/></label>
-       <label>模型名称<input v-model="modelConfig.ollama.model" placeholder="qwen2.5:7b"/></label>
-      </div>
-     </template>
-     <div class="form-grid compact">
-      <label>最大输出 token<input v-model.number="modelConfig.max_output_tokens" type="number" min="256" max="8192"/></label>
-      <label>最大 ReAct 轮次<input v-model.number="modelConfig.max_turns" type="number" min="1" max="30"/></label>
-      <label>连接超时（秒）<input v-model.number="modelConfig.connect_timeout" type="number" min="1" max="20" step="0.5"/></label>
-      <label>读取超时（秒）<input v-model.number="modelConfig.read_timeout" type="number" min="1" max="120" step="0.5"/></label>
      </div>
      <div class="model-config-footer">
       <span class="muted small">当前生效模型：{{modelConfig.model||'未配置'}}</span>
-      <button class="primary" :disabled="modelSaving">{{modelSaving?'正在保存…':'保存模型配置'}}</button>
+      <button v-if="modelDetailsOpen" class="primary" :disabled="modelSaving">{{modelSaving?'正在保存…':'保存模型配置'}}</button>
+      <button v-else type="button" @click="modelDetailsOpen=true">编辑配置</button>
      </div>
      <p v-if="modelSaved" class="muted small">{{modelSaved}}</p>
     </form>
