@@ -33,7 +33,7 @@ def validate(config):
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target"}:
+        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval"}:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
@@ -41,6 +41,8 @@ def validate(config):
         keys.add(key)
         if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
             raise DomainError("INVALID_WORKFLOW", "必须设置节点名称和会签模式")
+        if "agent_auto_approval" in node and not isinstance(node["agent_auto_approval"], bool):
+            raise DomainError("INVALID_WORKFLOW", "Agent 自动审批节点标记必须为布尔值")
         from .assignments import validate_assignment
         validate_assignment(node)
         if not isinstance(node.get('reject_rules', []), list) or len(node.get('reject_rules', [])) > 20:

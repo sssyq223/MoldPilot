@@ -429,6 +429,63 @@ def decision_intent(data: s.DecisionInput, user=Depends(current_user), db=Depend
     db.commit(); return result
 
 
+def delegation_data(row: m.AgentApprovalDelegation):
+    return {"id": row.id, "process_key": row.process_key, "node_key": row.node_key, "decision": row.decision,
+            "active": row.active and row.revoked_at is None, "reason": row.reason,
+            "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+            "valid_to": row.valid_to.isoformat() if row.valid_to else None,
+            "created_at": row.created_at.isoformat(), "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+            "revoke_reason": row.revoke_reason}
+
+
+@app.get("/api/agent-approval-delegations")
+def approval_delegations(user=Depends(current_user), db=Depends(get_db)):
+    rows = db.scalars(select(m.AgentApprovalDelegation).where(
+        m.AgentApprovalDelegation.user_id == user.id).order_by(m.AgentApprovalDelegation.created_at.desc(), m.AgentApprovalDelegation.id))
+    return [delegation_data(row) for row in rows]
+
+
+@app.post("/api/agent-approval-delegations")
+def create_approval_delegation(data: s.AgentApprovalDelegationInput, user=Depends(current_user), db=Depends(get_db)):
+    if data.valid_from and data.valid_to and data.valid_to <= data.valid_from:
+        raise DomainError("DATE_INVALID", "自动审批委托结束时间必须晚于开始时间", 400)
+    if data.valid_to and data.valid_to <= now():
+        raise DomainError("DATE_INVALID", "自动审批委托结束时间必须晚于当前时间", 400)
+    row = db.scalar(select(m.AgentApprovalDelegation).where(
+        m.AgentApprovalDelegation.user_id == user.id,
+        m.AgentApprovalDelegation.process_key == data.process_key,
+        m.AgentApprovalDelegation.node_key == data.node_key,
+        m.AgentApprovalDelegation.decision == data.decision).with_for_update())
+    if not row:
+        row = m.AgentApprovalDelegation(user_id=user.id, process_key=data.process_key, node_key=data.node_key,
+                                        decision=data.decision, reason=data.reason, valid_from=data.valid_from,
+                                        valid_to=data.valid_to, created_by=user.id)
+        db.add(row)
+    else:
+        row.active = True; row.reason = data.reason; row.valid_from = data.valid_from; row.valid_to = data.valid_to
+        row.revoked_at = None; row.revoked_by = None; row.revoke_reason = None
+    user.security_version += 1
+    db.flush()
+    record(db, user, "agent.approval_delegation.enabled", row.id,
+           {"process_key": row.process_key, "node_key": row.node_key, "decision": row.decision})
+    db.commit()
+    return delegation_data(row)
+
+
+@app.post("/api/agent-approval-delegations/{delegation_id}/revoke")
+def revoke_approval_delegation(delegation_id: str, data: s.AgentApprovalDelegationRevokeInput, user=Depends(current_user), db=Depends(get_db)):
+    row = db.scalar(select(m.AgentApprovalDelegation).where(
+        m.AgentApprovalDelegation.id == delegation_id, m.AgentApprovalDelegation.user_id == user.id).with_for_update())
+    if not row: raise DomainError("NOT_FOUND", "自动审批委托不存在", 404)
+    if row.revoked_at is None:
+        row.active = False; row.revoked_at = now(); row.revoked_by = user.id; row.revoke_reason = data.reason
+        user.security_version += 1
+        record(db, user, "agent.approval_delegation.revoked", row.id,
+               {"process_key": row.process_key, "node_key": row.node_key, "reason": data.reason})
+    db.commit()
+    return delegation_data(row)
+
+
 @app.post("/api/human-actions/{intent_id}/confirm")
 def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user), db=Depends(get_db)):
     result = business.confirm_intent(db, user, intent_id, data.challenge)

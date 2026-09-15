@@ -1,0 +1,41 @@
+<svg width="960" height="260" viewBox="0 0 960 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="960" height="260" rx="28" fill="#F6F8FA"/>
+
+  <!-- Concept 1: mold split + pilot point -->
+  <g transform="translate(60 30)">
+    <rect width="200" height="200" rx="46" fill="#172334"/>
+    <path d="M64 55C86 55 101 73 101 99C101 125 86 145 64 145" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+    <path d="M136 55C114 55 99 73 99 99C99 125 114 145 136 145" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+    <path d="M100 45V155" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-dasharray="4 12"/>
+    <circle cx="100" cy="100" r="12" fill="#9FD0FF"/>
+    <circle cx="100" cy="100" r="4" fill="#172334"/>
+  </g>
+
+  <!-- Concept 2: mold cavity + route -->
+  <g transform="translate(280 30)">
+    <rect width="200" height="200" rx="46" fill="#172334"/>
+    <path d="M56 68H144V132H56V68Z" stroke="#FFFFFF" stroke-width="11" stroke-linejoin="round"/>
+    <path d="M78 90H122V110H78V90Z" fill="#172334" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M60 153C86 130 113 153 140 128" stroke="#9FD0FF" stroke-width="9" stroke-linecap="round"/>
+    <circle cx="60" cy="153" r="7" fill="#9FD0FF"/>
+    <circle cx="140" cy="128" r="7" fill="#9FD0FF"/>
+  </g>
+
+  <!-- Concept 3: precision blocks + decision core -->
+  <g transform="translate(500 30)">
+    <rect width="200" height="200" rx="46" fill="#172334"/>
+    <path d="M55 70L100 46L145 70V121L100 146L55 121V70Z" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M100 46V94M55 70L100 94L145 70M100 94V146" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="100" cy="94" r="13" fill="#9FD0FF"/>
+    <path d="M132 131L154 153M154 153H136M154 153V135" stroke="#9FD0FF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Concept 4: clamp + smart spark -->
+  <g transform="translate(720 30)">
+    <rect width="200" height="200" rx="46" fill="#172334"/>
+    <path d="M58 76H142M58 124H142" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <path d="M74 76V124M126 76V124" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/>
+    <path d="M100 58L109 87L138 96L109 105L100 134L91 105L62 96L91 87L100 58Z" fill="#9FD0FF"/>
+    <circle cx="100" cy="96" r="9" fill="#172334"/>
+  </g>
+</svg>

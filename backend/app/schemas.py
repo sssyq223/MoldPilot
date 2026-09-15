@@ -87,6 +87,25 @@ class DecisionInput(StrictModel):
     comment: str = Field(min_length=1, max_length=2000)
 
 
+class AgentApprovalDelegationInput(StrictModel):
+    process_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
+    node_key: str = Field(min_length=1, max_length=80)
+    decision: Literal["APPROVE"] = "APPROVE"
+    reason: str = Field(min_length=1, max_length=500)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+
+    @field_validator("valid_from", "valid_to")
+    @classmethod
+    def aware(cls, value):
+        if value is not None and value.tzinfo is None: raise ValueError("时间必须携带时区偏移")
+        return value
+
+
+class AgentApprovalDelegationRevokeInput(StrictModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class ConfirmationInput(StrictModel):
     challenge: str = Field(min_length=32, max_length=200)
 

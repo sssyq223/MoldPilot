@@ -175,6 +175,26 @@ class ApprovalAction(IdentityMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(String(64))
 
 
+class AgentApprovalDelegation(IdentityMixin, Base):
+    __tablename__ = "agent_approval_delegation"
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    process_key: Mapped[str] = mapped_column(String(80))
+    node_key: Mapped[str] = mapped_column(String(80))
+    decision: Mapped[str] = mapped_column(String(20), default="APPROVE")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    reason: Mapped[str] = mapped_column(Text)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"))
+    revoke_reason: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        UniqueConstraint("user_id", "process_key", "node_key", "decision"),
+        CheckConstraint("decision IN ('APPROVE')", name="agent_approval_delegation_decision"),
+    )
+
+
 class HumanIntent(IdentityMixin, Base):
     __tablename__ = "human_action_intent"
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))

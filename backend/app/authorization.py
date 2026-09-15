@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from sqlalchemy import select, and_, or_, false, true
 from .db import now
-from .models import Grant, User, Capability
+from .models import Grant, User, Capability, AgentApprovalDelegation
 from .errors import DomainError
 
 PERMISSIONS = {
@@ -91,8 +91,14 @@ def fingerprint(db, user):
         or_(Grant.valid_to.is_(None), Grant.valid_to > current)).order_by(Grant.id)))
     capabilities = list(db.scalars(select(Capability).where(
         Capability.user_id == user.id, Capability.enabled.is_(True)).order_by(Capability.id)))
+    delegations = list(db.scalars(select(AgentApprovalDelegation).where(
+        AgentApprovalDelegation.user_id == user.id, AgentApprovalDelegation.active.is_(True),
+        AgentApprovalDelegation.revoked_at.is_(None),
+        or_(AgentApprovalDelegation.valid_from.is_(None), AgentApprovalDelegation.valid_from <= current),
+        or_(AgentApprovalDelegation.valid_to.is_(None), AgentApprovalDelegation.valid_to > current)).order_by(AgentApprovalDelegation.id)))
     return content_hash({"user": user.id, "version": user.security_version, "active": user.active,
                          "super_admin": user.super_admin,
                          "grants": [{"id": g.id, "permission": g.permission, "effect": g.effect,
                                      "scope": g.scope, "fields": sorted(g.fields)} for g in grants],
-                         "capabilities": [(c.kind, c.key) for c in capabilities]})
+                         "capabilities": [(c.kind, c.key) for c in capabilities],
+                         "agent_approval_delegations": [(d.id, d.process_key, d.node_key, d.decision) for d in delegations]})

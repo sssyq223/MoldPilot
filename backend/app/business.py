@@ -1,11 +1,11 @@
 from datetime import timedelta
 from decimal import Decimal
 import secrets
-from sqlalchemy import select, exists, and_
+from sqlalchemy import select, exists, and_, or_
 from . import bpm
 from .db import now,aware
 from .models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
-                     ApprovalInstance, ApprovalSeat, ApprovalAction, HumanIntent)
+                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation, HumanIntent)
 from .models import BusinessSubject
 from .authorization import require, predicate, select_fields, access
 from .errors import DomainError
@@ -102,6 +102,76 @@ def enter_stage(db, instance, definition, req):
     record(db, None, "approval.pending", instance.id, recipients=eligible)
 
 
+def _active_delegation(db, user_id, definition, node):
+    if not node.get("agent_auto_approval"):
+        return None
+    current = now()
+    return db.scalar(select(AgentApprovalDelegation).where(
+        AgentApprovalDelegation.user_id == user_id,
+        AgentApprovalDelegation.process_key == definition.process_key,
+        AgentApprovalDelegation.node_key == node["key"],
+        AgentApprovalDelegation.decision == "APPROVE",
+        AgentApprovalDelegation.active.is_(True),
+        AgentApprovalDelegation.revoked_at.is_(None),
+        or_(AgentApprovalDelegation.valid_from.is_(None), AgentApprovalDelegation.valid_from <= current),
+        or_(AgentApprovalDelegation.valid_to.is_(None), AgentApprovalDelegation.valid_to > current),
+    ))
+
+
+def process_agent_auto_approvals(db, instance_id, limit=12):
+    """Apply explicit user delegations for auto-approvable nodes only.
+
+    This is not a model decision. It uses the same approval_detail/decide gates as
+    a human decision and only fills the current user's already assigned seat.
+    """
+    applied = []
+    for _ in range(limit):
+        instance = db.scalar(select(ApprovalInstance).where(ApprovalInstance.id == instance_id).with_for_update())
+        if not instance or instance.status != "RUNNING":
+            break
+        definition = db.get(WorkflowDefinition, instance.definition_id)
+        if instance.stage_index >= len(definition.config["nodes"]):
+            break
+        node = definition.config["nodes"][instance.stage_index]
+        if not node.get("agent_auto_approval"):
+            break
+        seats = list(db.scalars(select(ApprovalSeat).where(
+            ApprovalSeat.instance_id == instance.id,
+            ApprovalSeat.stage_index == instance.stage_index,
+            ApprovalSeat.status == "PENDING",
+        ).order_by(ApprovalSeat.created_at, ApprovalSeat.id)))
+        if not seats:
+            break
+        progressed = False
+        for seat in seats:
+            delegated_user = db.get(User, seat.user_id)
+            delegation = _active_delegation(db, seat.user_id, definition, node)
+            if not delegated_user or not delegation:
+                continue
+            try:
+                detail = approval_detail(db, delegated_user, instance)
+                if "APPROVE" not in detail["allowed_actions"]:
+                    continue
+                payload = {
+                    "instance_id": instance.id,
+                    "seat_id": detail["seat_id"],
+                    "seat_version": detail["seat_version"],
+                    "version": detail["version"],
+                    "snapshot_hash": detail["snapshot_hash"],
+                    "decision": "APPROVE",
+                    "comment": "Agent 根据用户预授权自动同意；未跳过权限、材料和节点规则校验。",
+                }
+                result = _decide(db, delegated_user, payload, actor_type="AGENT_DELEGATED", delegation_id=delegation.id)
+                applied.append({"delegation_id": delegation.id, "user_id": delegated_user.id, "node": node["key"], "result": result})
+                progressed = True
+                break
+            except DomainError:
+                continue
+        if not progressed:
+            break
+    return applied
+
+
 def submit_request(db, user, req_id, revision, definition_id):
     req = db.scalar(select(PurchaseRequest).where(PurchaseRequest.id == req_id).with_for_update())
     if not req: raise DomainError("NOT_FOUND", "申请不存在或无权访问", 404)
@@ -124,8 +194,9 @@ def submit_request(db, user, req_id, revision, definition_id):
                                 engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance); db.flush()
     enter_stage(db, instance, definition, req)
+    auto_approved = process_agent_auto_approvals(db, instance.id)
     record(db, user, "purchase.submitted", req.id, {"instance_id": instance.id})
-    return {"request_id": req.id, "instance_id": instance.id, "status": "SUBMITTED"}
+    return {"request_id": req.id, "instance_id": instance.id, "status": req.status, "agent_auto_approved": auto_approved}
 
 
 def approval_detail(db, user, instance):
@@ -176,7 +247,7 @@ def approval_detail(db, user, instance):
                          "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))]}
 
 
-def decide(db, user, payload):
+def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     instance = db.scalar(select(ApprovalInstance).where(ApprovalInstance.id == payload["instance_id"]).with_for_update())
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
     req = load_subject(db,instance,lock=True)
@@ -190,8 +261,11 @@ def decide(db, user, payload):
     if seat.id != payload["seat_id"] or seat.version != payload["seat_version"]:
         raise DomainError("VERSION_CONFLICT", "审批席位已变化", 409)
     seat.status, seat.version = payload["decision"], seat.version + 1
+    user_snapshot = {"name": user.display_name, "username": user.username, "department": user.department, "actor_type": actor_type}
+    if delegation_id:
+        user_snapshot["delegation_id"] = delegation_id
     db.add(ApprovalAction(instance_id=instance.id, seat_id=seat.id, user_id=user.id,
-                         user_snapshot={"name": user.display_name, "username": user.username, "department": user.department},
+                         user_snapshot=user_snapshot,
                          decision=payload["decision"], comment=payload["comment"], snapshot_hash=instance.snapshot_hash))
     definition = db.get(WorkflowDefinition, instance.definition_id)
     node = definition.config["nodes"][instance.stage_index]
@@ -225,8 +299,17 @@ def decide(db, user, payload):
                 create_execution_order(db,req)
         else: enter_stage(db, instance, definition, req)
     instance.version += 1
-    record(db, user, "approval.decided", instance.id, {"decision": payload["decision"], "business_status": req.status}, [req.created_by])
+    detail = {"decision": payload["decision"], "business_status": req.status, "actor_type": actor_type}
+    if delegation_id:
+        detail["delegation_id"] = delegation_id
+    record(db, user, "approval.decided", instance.id, detail, [req.created_by])
     return {"instance_id": instance.id, "status": instance.status, "business_status": req.status}
+
+
+def decide(db, user, payload):
+    result = _decide(db, user, payload)
+    auto_approved = process_agent_auto_approvals(db, payload["instance_id"])
+    return {**result, "agent_auto_approved": auto_approved}
 
 
 def create_intent(db, user, action, resource_id, payload):
@@ -322,5 +405,6 @@ def submit_subject(db,user,subject_id,revision,definition_id):
                               round_no=subject.round_no,snapshot=snapshot,snapshot_hash=bpm.content_hash(snapshot),
                               engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance);db.flush();enter_stage(db,instance,definition,subject)
+    auto_approved=process_agent_auto_approvals(db,instance.id)
     record(db,user,'business.submitted',subject.id,{'instance_id':instance.id})
-    return {'subject_id':subject.id,'instance_id':instance.id,'status':subject.status}
+    return {'subject_id':subject.id,'instance_id':instance.id,'status':subject.status,'agent_auto_approved':auto_approved}
