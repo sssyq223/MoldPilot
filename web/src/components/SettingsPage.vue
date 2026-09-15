@@ -3,12 +3,27 @@ import {computed,ref,watch} from 'vue'
 import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,shanghai} from '../api'
-import {capabilityName,permissionName,auditName} from '../uiText'
+import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme}>()
 const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme]}>()
 const page=ref('account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
+const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref('')
+const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
+const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
+const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
+function capabilityMatches(item:any){
+ const meta=capabilityMeta(item),keyword=capabilitySearch.value.trim().toLowerCase()
+ if(capabilityDepartment.value&&meta.department!==capabilityDepartment.value)return false
+ if(capabilityType.value&&meta.type!==capabilityType.value)return false
+ if(!keyword)return true
+ return [item.key,capabilityName(item.key),item.description,item.permission,permissionName(item.permission||''),meta.departmentName,meta.typeName].some(value=>String(value||'').toLowerCase().includes(keyword))
+}
+const filteredTools=computed(()=>(props.capabilities.tools||[]).filter(capabilityMatches))
+const filteredSkills=computed(()=>(props.capabilities.skills||[]).filter(capabilityMatches))
+const groupedTools=computed(()=>groupedCapabilities(filteredTools.value))
+const groupedSkills=computed(()=>groupedCapabilities(filteredSkills.value))
 const navigation=computed(()=>[
  {key:'account',name:'账号与模型',icon:Settings,allow:true},
  {key:'capabilities',name:'工具与技能',icon:Wrench,allow:true},
@@ -53,11 +68,34 @@ async function select(key:string){
    <template v-else-if="page==='capabilities'">
     <h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。</p>
     <button v-if="permissions.includes('user.manage')" @click="select('admin')"><Users :size="16"/>管理用户的工具与权限</button>
+    <div class="capability-filter surface">
+     <label>查找能力<input v-model="capabilitySearch" placeholder="输入工具、权限或说明关键词"/></label>
+     <label>部门<select v-model="capabilityDepartment"><option value="">全部部门</option><option v-for="[key,name] in capabilityDepartments" :key="key" :value="key">{{name}}</option></select></label>
+     <label>类型<select v-model="capabilityType"><option value="">全部类型</option><option v-for="[key,name] in capabilityTypes" :key="key" :value="key">{{name}}</option></select></label>
+    </div>
     <h3 class="settings-section-title">工具</h3>
-    <article v-for="tool in capabilities.tools" :key="tool.key" class="surface"><h3><Wrench :size="16"/>{{capabilityName(tool.key)}}</h3><p>{{tool.description}}</p><small class="muted">所需权限：{{permissionName(tool.permission)}} · {{tool.key.startsWith('prepare_')?'准备建议，须本人确认':'只读'}}</small></article>
+    <div class="capability-groups capability-grid">
+     <section v-for="department in groupedTools" :key="department.key" class="capability-department">
+      <h3>{{department.name}}</h3>
+      <div v-for="type in department.types" :key="type.key" class="capability-type-block">
+       <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
+       <article v-for="tool in type.items" :key="tool.key" class="surface capability-card"><h3><Wrench :size="16"/>{{capabilityName(tool.key)}}</h3><p>{{tool.description}}</p><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">所需权限：{{permissionName(tool.permission)}} · {{tool.key.startsWith('prepare_')?'准备建议，须本人确认':'只读'}}</small></article>
+      </div>
+     </section>
+    </div>
     <p v-if="!capabilities.tools.length" class="muted">还没有分配可用工具，请联系管理员。</p>
+    <p v-else-if="!filteredTools.length" class="muted">没有匹配的工具。</p>
     <h3 class="settings-section-title">技能</h3>
-    <article v-for="skill in capabilities.skills" :key="skill.key" class="surface"><h3><Layers :size="16"/>{{capabilityName(skill.key)}}</h3><small class="muted">第 {{skill.version}} 版 · 使用当前授权工具</small></article>
+    <div class="capability-groups capability-grid">
+     <section v-for="department in groupedSkills" :key="department.key" class="capability-department">
+      <h3>{{department.name}}</h3>
+      <div v-for="type in department.types" :key="type.key" class="capability-type-block">
+       <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
+       <article v-for="skill in type.items" :key="skill.key" class="surface capability-card"><h3><Layers :size="16"/>{{capabilityName(skill.key)}}</h3><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div><small class="muted">第 {{skill.version}} 版 · 使用当前授权工具</small></article>
+      </div>
+     </section>
+    </div>
+    <p v-if="capabilities.skills.length&&!filteredSkills.length" class="muted">没有匹配的技能。</p>
    </template>
    <AdminPanel v-else-if="page==='admin'&&permissions.includes('user.manage')" @error="emit('error',$event)"/>
    <WorkflowPanel v-else-if="page==='workflows'&&permissions.includes('workflow.design')" @error="emit('error',$event)"/>

@@ -17,6 +17,7 @@ TOOLS.update({f'query_{key}': {'description':f'查询当前人员授权范围内
                               'permission':f'{key}.read','business_kind':key} for key,name in CATALOG.items()})
 TOOLS['query_engineering_change']['description']='查询已有工程联络方案审批材料及生效状态；独立联络协作、责任部门和人员进度请使用工程联络协作查询工具。'
 TOOLS.update({
+    'query_project_dossier':{'description':'按项目编号/名称、模具号、工程联络、合同或订单编号反查并汇总当前可见的项目业务档案；只读，不复制 ERP 单据。','permission':'project.dossier.read'},
     'query_contact_cases':{'description':'查询当前用户可见的工程联络单、客户/模具/当前环节、结构化影响项、责任部门、处理人和协作状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
     'query_purchase_orders':{'description':'查询正式订单与草稿、发货数量和供应商异常，禁止把草稿视为已下单。','permission':'order.read'},
     'analyze_delivery_risk':{'description':'用户主动询问延期风险时，按当前责任域分析上报异常或临期未发货；结论不代表整套模具总体延期。','permission':'risk.read'},
@@ -40,6 +41,7 @@ SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["q
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
+               'project_dossier_review':{'name':'项目业务档案核对','tools':['query_project_dossier']},
                'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context','prepare_project_pause','prepare_project_resume']},
                'project_termination_closure':{'name':'项目终止、结算与关闭','tools':['query_projects','query_project_closure_context',
                    'prepare_project_closure_checklist','prepare_project_termination','prepare_project_closure_item',
@@ -68,6 +70,9 @@ def tool_schema(key):
         from .project_control_tools import ProjectContextInput,schema
         parameters=ProjectContextInput.model_json_schema() if key=='query_project_control_context' else schema(key.removeprefix('prepare_project_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key=='query_project_dossier':
+        from .project_dossier import ProjectDossierInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
     return {"type": "function", "function": {"name": key, "description": TOOLS[key]["description"],
              "parameters": {"type": "object", "properties": {}, "additionalProperties": False}, "strict": True}}
 
@@ -94,6 +99,12 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments)
+    if key=='query_project_dossier':
+        from pydantic import ValidationError
+        from .project_dossier import ProjectDossierInput,query
+        try:data=ProjectDossierInput.model_validate(arguments or {})
+        except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目档案查询参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
     if arguments: raise DomainError("INVALID_TOOL_INPUT", "该工具不接受额外参数")
     if key=='query_uploaded_files':
         from .files import conversation_files

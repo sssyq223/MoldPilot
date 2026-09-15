@@ -7,11 +7,45 @@ Object.assign(businessNames,{finance_correction:'财务冲正',quote_acceptance:
 Object.assign(verbs,{edit:'编辑',reference:'查看身份关联'})
 Object.assign(businessNames,{contact:'工程联络协作'})
 Object.assign(verbs,{coordinate:'组织部门协作',assign:'分派处理人',respond:'提交处理反馈',record:'追加过程记录'})
-export function permissionName(value:string){if(commandNames[value])return commandNames[value];const [kind,action]=value.split('.');return `${businessNames[kind]||'业务'} · ${verbs[action]||'操作权限'}`}
+export function permissionName(value:string){if(commandNames[value])return commandNames[value];if(value==='project.dossier.read')return '项目业务档案 · 查询';const [kind,action]=value.split('.');return `${businessNames[kind]||'业务'} · ${verbs[action]||'操作权限'}`}
 export const capabilityNames:Record<string,string>={query_projects:'查询项目资料',query_purchase_requests:'查询采购申请',purchase_review:'采购资料核对',project_overview:'项目概况查询',query_orders:'查询采购订单',query_business_subjects:'查询业务材料',analyze_delivery_risk:'分析发货延期风险'}
 Object.assign(capabilityNames,{purchase_request_review:'采购申请核对',delivery_risk_analysis:'供应商发货风险分析',business_status_review:'业务审批与执行核对',query_purchase_orders:'查询采购订单'})
 export function capabilityName(key:string,items:any[]=[]){return items.find(i=>i.key===key)?.name||capabilityNames[key]||(key.startsWith('query_')&&businessNames[key.slice(6)]?'查询'+businessNames[key.slice(6)]:'业务查询能力')}
 Object.assign(capabilityNames,{query_contact_cases:'查询工程联络协作',contact_collaboration_review:'工程联络协作核对'})
+export const capabilityDepartmentNames:Record<string,string>={project:'项目管理',purchase:'采购部门',design:'设计部门',engineering:'工程部门',finance:'财务部门',warehouse:'仓储部门',assembly:'装配部门',trial:'试模部门',sales:'销售部门',system:'系统管理',agent:'智能体'}
+export const capabilityTypeNames:Record<string,string>={query:'查询',operation:'操作',approval:'审批',review:'核对'}
+const departmentByBusiness:Record<string,string>={project:'project',project_control:'project',project_close:'project',pause_resume:'project',project_dossier:'project',purchase:'purchase',purchase_request:'purchase',order:'purchase',supplier_payment:'finance',purchase_price:'purchase',design_route:'design',engineering_change:'engineering',contact:'engineering',contact_resolution:'engineering',finance_reversal:'finance',finance_correction:'finance',warehouse:'warehouse',assembly_issue:'assembly',trial_request:'trial',quotation:'sales',quote_acceptance:'sales',sales_contract:'sales',start_notice:'project',internal_start:'project',outsource_contract:'purchase',full_outsource_contract:'purchase',project_plan:'project',plan_change:'project',shipment:'warehouse',receipt:'warehouse',inspection:'warehouse',stock:'warehouse',risk:'purchase',master:'system',file:'system',user:'system',grant:'system',workflow:'system',audit:'system',agent:'agent'}
+const capabilityDepartments:Record<string,string>={query_projects:'project',query_project_dossier:'project',project_dossier_review:'project',query_purchase_requests:'purchase',purchase_request_review:'purchase',purchase_review:'purchase',query_orders:'purchase',query_purchase_orders:'purchase',analyze_delivery_risk:'purchase',delivery_risk_analysis:'purchase',business_status_review:'purchase',query_business_subjects:'project',project_overview:'project',query_project_control_context:'project',prepare_project_pause:'project',prepare_project_resume:'project',project_pause_resume:'project',query_project_closure_context:'project',prepare_project_closure_checklist:'project',prepare_project_termination:'project',prepare_project_closure_item:'project',prepare_project_normal_close:'project',prepare_project_settlement_close:'project',project_termination_closure:'project',query_contact_cases:'engineering',query_contact_context:'engineering',contact_collaboration_review:'engineering',query_contact_resolution:'engineering',prepare_contact_resolution:'engineering',prepare_contact_review:'engineering',prepare_contact_close:'engineering',prepare_contact_set_reviewer:'engineering',prepare_contact_cancel_task:'engineering',prepare_contact_create:'engineering',prepare_contact_note:'engineering',prepare_contact_task:'engineering',prepare_contact_assign:'engineering',prepare_contact_respond:'engineering',prepare_contact_attach:'engineering',query_uploaded_files:'system'}
+const capabilityTypes:Record<string,string>={purchase_request_review:'review',delivery_risk_analysis:'review',contact_collaboration_review:'review',business_status_review:'review',project_dossier_review:'review',project_pause_resume:'approval',project_termination_closure:'approval',prepare_project_pause:'approval',prepare_project_resume:'approval',prepare_project_closure_checklist:'operation',prepare_project_termination:'approval',prepare_project_closure_item:'operation',prepare_project_normal_close:'approval',prepare_project_settlement_close:'approval',prepare_contact_resolution:'approval',prepare_contact_review:'review',prepare_contact_close:'operation',prepare_contact_set_reviewer:'operation',prepare_contact_cancel_task:'operation'}
+function capabilityBusinessKey(key:string,permission=''){
+ const raw=key.startsWith('query_')?key.slice(6):key.startsWith('prepare_')?key.slice(8):key
+ const fromPermission=permission.split('.')[0]
+ return raw in departmentByBusiness?raw:fromPermission
+}
+export function capabilityMeta(item:any){
+ const key=typeof item==='string'?item:item?.key||''
+ const permission=typeof item==='string'?'':item?.permission||''
+ const business=capabilityBusinessKey(key,permission)
+ const department=capabilityDepartments[key]||departmentByBusiness[business]||'agent'
+ const action=permission.split('.')[1]||''
+ const type=capabilityTypes[key]||(
+  key.startsWith('query_')||action==='read'?'query':
+  key.includes('review')||action==='approve'?'approval':
+  key.endsWith('_review')?'review':
+  'operation'
+ )
+ return {department,type,departmentName:capabilityDepartmentNames[department]||'业务部门',typeName:capabilityTypeNames[type]||'操作'}
+}
+export function groupedCapabilities(items:any[]=[]){
+ const departments:Record<string,{key:string;name:string;types:Record<string,{key:string;name:string;items:any[]}>}>={}
+ for(const item of items){
+  const meta=capabilityMeta(item)
+  const department=departments[meta.department]||(departments[meta.department]={key:meta.department,name:meta.departmentName,types:{}})
+  const type=department.types[meta.type]||(department.types[meta.type]={key:meta.type,name:meta.typeName,items:[]})
+  type.items.push(item)
+ }
+ return Object.values(departments).map(department=>({...department,types:Object.values(department.types)}))
+}
 const auditNames:Record<string,string>={'auth.login':'用户登录','user.created':'创建用户','permission.changed':'变更用户权限','permission.revoked':'撤销用户权限','capability.changed':'变更工具或技能授权','workflow.draft.created':'创建审批流程草稿','workflow.draft.updated':'修改审批流程草稿','workflow.published':'发布审批流程','purchase.draft.created':'创建采购草稿','purchase.submitted':'提交采购审批','approval.assignment.blocked':'审批人员分配待处理','approval.pending':'收到待审批事项','approval.decided':'提交审批决定','approval.routed':'审批流转至后续节点','human.confirmed':'人工确认操作','business.draft.created':'创建业务草稿','business.submitted':'提交业务审批','business.effective':'业务正式生效','agent.run.created':'创建智能体任务','project.created':'创建项目','master.created':'维护基础资料','risk.policy.published':'发布预警规则','order.execution.draft.created':'生成订单执行草稿','order.draft.updated':'修改订单草稿'}
 export function auditName(value:string){return auditNames[value]||commandNames[value]||'业务操作记录'}
 Object.assign(auditNames,{'contact.created':'创建工程联络单','contact.note':'追加联络过程记录','contact.task_created':'新增联络协作事项','contact.assigned':'分派联络事项','contact.responded':'提交联络处理反馈'})
@@ -40,6 +74,8 @@ export function scopeText(scope:any,projects:any[]=[]){if(scope.all===true)retur
 Object.assign(capabilityNames,{query_contact_context:"读取联络单办理资料",prepare_contact_create:"准备发起联络单",prepare_contact_note:"准备补充联络记录",prepare_contact_task:"准备部门协作事项",prepare_contact_assign:"准备分派处理人",prepare_contact_respond:"准备提交联络反馈"})
 
 Object.assign(capabilityNames,{query_project_control_context:'读取项目暂停恢复资料',prepare_project_pause:'准备项目整体暂停',prepare_project_resume:'准备项目整体恢复',project_pause_resume:'项目暂停与恢复'})
+
+Object.assign(capabilityNames,{query_project_dossier:'查询项目业务档案',project_dossier_review:'项目业务档案核对'})
 
 Object.assign(capabilityNames,{query_project_closure_context:'读取项目终止与结项资料',prepare_project_closure_checklist:'准备正常结项清单',prepare_project_termination:'准备项目终止审批',prepare_project_closure_item:'准备更新结项事项',prepare_project_normal_close:'准备正常关闭审批',prepare_project_settlement_close:'准备终止结算关闭',project_termination_closure:'项目终止、结算与关闭'})
 

@@ -7,6 +7,7 @@ from .errors import DomainError
 
 PERMISSIONS = {
     "project.read": ["id", "code", "name", "status"],
+    "project.dossier.read": ["*"],
     "purchase.read": ["id", "number", "project_id", "material_id", "material_name", "category", "quantity", "unit", "due_date", "remark", "status", "created_at", "revision", "created_by"],
     "purchase.create": ["project_id", "material_id", "quantity", "due_date", "remark"],
     "purchase.submit": ["*"], "purchase.approve": ["*"],
