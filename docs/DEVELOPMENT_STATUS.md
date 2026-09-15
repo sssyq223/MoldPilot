@@ -2,6 +2,13 @@
 
 更新：2026-09-15。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：报价与承接上下文核对工具（2026-09-15）
+
+- 新增 `query_quote_acceptance_context` 只读工具和“报价与承接上下文核对”Skill。用户按项目 ID、项目编号/名称或合同、模具、业务单据等线索提问时，模型可先定位当前授权可见的项目，再汇总报价承接决定、拒单记录、内部正式开工和销售合同上下文。
+- 项目定位同时要求 `project.read` 与 `quote_acceptance.read`；业务对象候选匹配只在用户已拥有 `query_business_object_candidates` 时参与。报价承接记录由本工具读取；正式开工和销售合同仍分别要求对应查询工具与业务权限，不能借上下文工具绕过金额、合同或开工资料限制。
+- 返回口径明确区分 `RESOLVED`、`MULTIPLE_CANDIDATES`、`NOT_FOUND` 和 `NOT_FOUND_OR_FORBIDDEN`，并给出 `has_effective_acceptance`、`has_effective_rejection`、`has_formal_start`、`has_sales_contract` 等派生状态。工具只汇总事实，不创建报价、不承接、不拒单、不正式开工，也不把销售合同等同于承接。
+- 新增 SQLite 单元测试覆盖有效承接/正式开工/合同摘要、多候选不自动决定、销售合同权限边界。FR-006～019 仍为 NOT_VERIFIED：完整资料接收、报价版本、承接/拒单审批、客户分类、中标接收、同一开工草稿延续和真实 ERP/业务验收尚未完成。
+
 ## 持续开发：业务对象候选匹配工具（2026-09-15）
 
 - 新增 `query_business_object_candidates` 只读工具和“业务对象候选匹配”Skill。模型可用项目编号/名称、客户名称、模具号、合同号、采购单号或任意线索查询当前权限内候选项目，并返回命中字段、来源和 EXACT/PARTIAL 口径。
