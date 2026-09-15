@@ -120,6 +120,17 @@ class MaterialTemplate(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint('template_key','version'),CheckConstraint("status IN ('DRAFT','PUBLISHED')"))
 
 
+class MaterialTemplateXlsxMapping(IdentityMixin, Base):
+    __tablename__ = 'material_template_xlsx_mapping'
+    template_id: Mapped[str] = mapped_column(ForeignKey('material_template.id'), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(150))
+    mapping: Mapped[dict] = mapped_column(J)
+    mapping_hash: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (UniqueConstraint('template_id','version'),)
+
+
 class WorkflowDefinition(IdentityMixin, Base):
     __tablename__ = "workflow_definition"
     process_key: Mapped[str] = mapped_column(String(80))

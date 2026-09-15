@@ -23,6 +23,7 @@ NS = {
 }
 CELL_RE = re.compile(r"^([A-Z]{1,3})([1-9][0-9]{0,6})$")
 MAX_CELLS = 100_000
+MAX_ROW = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -172,7 +173,57 @@ def _column_for(selector: str, header: dict[str, int]) -> int | None:
     return header.get(selector.casefold())
 
 
+def _mapping_invalid(message):
+    raise DomainError("INVALID_XLSX_MAPPING", message, 400)
+
+
+def validate_xlsx_mapping(contract: dict, mapping: dict):
+    headers, tables = validate_contract(contract)
+    if not isinstance(mapping, dict) or set(mapping) - {"sheet", "fields", "tables"}:
+        _mapping_invalid("Excel 映射只能包含默认工作表、表头字段和明细表配置")
+    if "sheet" in mapping and (not isinstance(mapping["sheet"], str) or not 1 <= len(mapping["sheet"].strip()) <= 80):
+        _mapping_invalid("默认工作表名称无效")
+    fields = mapping.get("fields", {})
+    if not isinstance(fields, dict) or set(fields) - set(headers):
+        _mapping_invalid("表头字段映射包含未登记字段")
+    for key, cell in fields.items():
+        if not isinstance(cell, str) or len(cell) > 100 or ("!" in cell and len(cell.split("!", 1)[0]) > 80):
+            _mapping_invalid("表头字段单元格映射无效")
+        target = cell.split("!", 1)[-1]
+        if not _cell_ref(target):
+            _mapping_invalid("表头字段单元格坐标无效")
+    table_mapping = mapping.get("tables", {})
+    if not isinstance(table_mapping, dict) or set(table_mapping) - set(tables):
+        _mapping_invalid("明细表映射包含未登记明细表")
+    for table_key, tm in table_mapping.items():
+        if not isinstance(tm, dict) or set(tm) - {"sheet", "header_row", "first_data_row", "last_data_row", "columns", "row_id_column"}:
+            _mapping_invalid("明细表映射结构无效")
+        if "sheet" in tm and (not isinstance(tm["sheet"], str) or not 1 <= len(tm["sheet"].strip()) <= 80):
+            _mapping_invalid("明细表工作表名称无效")
+        header_row = tm.get("header_row", 1)
+        first_data_row = tm.get("first_data_row", header_row + 1 if isinstance(header_row, int) else None)
+        last_data_row = tm.get("last_data_row")
+        if not isinstance(header_row, int) or not 1 <= header_row <= MAX_ROW:
+            _mapping_invalid("表头行号无效")
+        if not isinstance(first_data_row, int) or not header_row < first_data_row <= MAX_ROW:
+            _mapping_invalid("首个数据行号必须大于表头行")
+        if last_data_row is not None and (not isinstance(last_data_row, int) or not first_data_row <= last_data_row <= MAX_ROW):
+            _mapping_invalid("末尾数据行号无效")
+        columns = tm.get("columns", {})
+        if columns is not None:
+            if not isinstance(columns, dict) or set(columns) - set(tables[table_key]["fields"]):
+                _mapping_invalid("明细列映射包含未登记字段")
+            for selector in columns.values():
+                if not isinstance(selector, str) or not 1 <= len(selector.strip()) <= 100:
+                    _mapping_invalid("明细列映射值无效")
+        row_id = tm.get("row_id_column")
+        if row_id is not None and (not isinstance(row_id, str) or not 1 <= len(row_id.strip()) <= 100):
+            _mapping_invalid("稳定行标识列映射无效")
+    return mapping
+
+
 def preview_xlsx(data: bytes, contract: dict, mapping: dict):
+    validate_xlsx_mapping(contract, mapping)
     headers, tables = validate_contract(contract)
     try:
         with ZipFile(BytesIO(data)) as archive:

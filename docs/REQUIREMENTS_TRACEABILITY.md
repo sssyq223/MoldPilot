@@ -1130,8 +1130,8 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 附件保留来源、上传人、时间、版本及对象关联，授权人员可查看和下载。文件格式、大小、保留期限及敏感数据范围后续确认；历史截图中的字段和按钮不自动扩大权限或功能。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容；/api/material-templates/{id}/xlsx-preview 可基于本人可见 XLSX 原件、资料模板版本和临时列映射生成待人工核对的 material_data 草稿；解析器不执行宏、外部链接或公式，含公式、缺列、类型错误或重复行标识时返回 NEEDS_REVIEW，不创建业务材料绑定
-- 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见；tests/test_material_templates.py 覆盖 XLSX 资料预览成功解析，以及公式单元格、重复行标识进入待核对状态
+- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容；/api/material-templates/{id}/xlsx-preview 可基于本人可见 XLSX 原件、资料模板版本和临时列映射生成待人工核对的 material_data 草稿；解析器不执行宏、外部链接或公式，含公式、缺列、类型错误或重复行标识时返回 NEEDS_REVIEW，不创建业务材料绑定；material_template_xlsx_mapping 与 /api/material-templates/{id}/xlsx-mappings 保存已发布资料模板的 Excel 映射版本、映射哈希、创建人和时间；预览未传临时映射时使用最新保存映射并记录所用映射版本
+- 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见；tests/test_material_templates.py 覆盖 XLSX 资料预览成功解析、保存映射版本后复用预览、模板哈希冲突阻断，以及公式单元格、重复行标识进入待核对状态
 - 验收状态：NOT_VERIFIED
 
 ## 来源与运行交付

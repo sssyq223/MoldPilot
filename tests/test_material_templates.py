@@ -138,6 +138,28 @@ def test_xlsx_preview_parses_template_mapping_without_binding_materials(client,d
     assert 'MATERIALS_NOT_BOUND' in ' '.join(body['limitations'])
 
 
+def test_versioned_xlsx_mapping_can_be_reused_for_preview(client,data,local_file_storage):
+    sign_in(client);template=create(client,XLSX_CONTRACT)
+    published=client.post('/api/material-templates/'+template['id']+'/publish').json()
+    file=upload_xlsx(client,xlsx([
+        (1,'B',False),(2,'B','2026-09-21'),(4,'A','料号'),(4,'B','数量'),(4,'C','币种'),(4,'D','单价'),
+        (5,'A','MAT-B'),(5,'B',3),(5,'C','CNY'),(5,'D','18.5')])).json()
+    mapping={'fields':{'urgent':'数据!B1','needed_on':'数据!B2'},'tables':{'design':{'sheet':'数据','header_row':4,'first_data_row':5}}}
+    missing=client.post(f"/api/material-templates/{template['id']}/xlsx-preview",json={'file_id':file['id']})
+    assert missing.status_code==409 and missing.json()['error']['code']=='XLSX_MAPPING_REQUIRED'
+    saved=client.post(f"/api/material-templates/{template['id']}/xlsx-mappings",
+        json={'name':'设计清单默认映射','mapping':mapping,'expected_template_hash':published['package_hash']})
+    assert saved.status_code==200,saved.text
+    assert saved.json()['version']==1
+    preview=client.post(f"/api/material-templates/{template['id']}/xlsx-preview",json={'file_id':file['id']}).json()
+    assert preview['mapping']['id']==saved.json()['id']
+    assert preview['material_data']['tables']['design'][0]['values']['item']=='MAT-B'
+    assert client.get(f"/api/material-templates/{template['id']}/xlsx-mappings").json()[0]['id']==saved.json()['id']
+    stale=client.post(f"/api/material-templates/{template['id']}/xlsx-mappings",
+        json={'name':'过期映射','mapping':mapping,'expected_template_hash':'0'*64})
+    assert stale.status_code==409 and stale.json()['error']['code']=='VERSION_CONFLICT'
+
+
 def test_xlsx_preview_flags_formula_and_unstable_or_duplicate_rows(client,data,local_file_storage):
     sign_in(client);template=create(client,XLSX_CONTRACT)
     client.post('/api/material-templates/'+template['id']+'/publish')
