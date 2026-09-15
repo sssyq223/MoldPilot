@@ -60,8 +60,14 @@
       "module": "业务对象与匹配",
       "agent_responsibility": "Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_business_object_candidates 只读工具按项目号、项目名、客户名、模具号、合同号、订单号等线索返回候选项目、命中字段和来源",
+        "候选匹配限定在当前用户同时具备 project.read 与 project.dossier.read 的项目范围内；订单、合同和联络线索还要求对应查询工具可用",
+        "多候选返回 MULTIPLE_CANDIDATES，未找到返回 NOT_FOUND，不自动创建、合并或承接业务对象"
+      ],
+      "verification_evidence": [
+        "tests/test_business_matching.py 覆盖多项目同模号候选、隐藏项目不可见和合同号按授权工具参与匹配"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -70,8 +76,13 @@
       "module": "业务对象与匹配",
       "agent_responsibility": "Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "业务对象候选匹配可在创建或接收业务资料前提示当前权限内已有候选，降低重复建项目或重复关联风险",
+        "工具只返回候选与来源，不执行去重、合并、收付款累计或业务纠正；正式纠错仍需后续流程和人工确认"
+      ],
+      "verification_evidence": [
+        "tests/test_business_matching.py 覆盖候选不自动合并及权限边界；重复邮件/合同/付款的完整去重流程尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
