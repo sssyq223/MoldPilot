@@ -438,6 +438,35 @@ def delegation_data(row: m.AgentApprovalDelegation):
             "revoke_reason": row.revoke_reason}
 
 
+def agent_approval_node_options(db):
+    rows = db.scalars(select(m.WorkflowDefinition).where(
+        m.WorkflowDefinition.status == "PUBLISHED").order_by(m.WorkflowDefinition.process_key, m.WorkflowDefinition.version.desc()))
+    options, seen = [], set()
+    for definition in rows:
+        for node in definition.config.get("nodes", []):
+            if not node.get("agent_auto_approval"):
+                continue
+            key = (definition.process_key, node["key"])
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append({"process_key": definition.process_key, "process_name": definition.name,
+                            "definition_id": definition.id, "version": definition.version,
+                            "business_type": definition.config.get("business_type"),
+                            "node_key": node["key"], "node_name": node.get("name", node["key"])})
+    return options
+
+
+def require_agent_approval_node(db, process_key, node_key):
+    if not any(option["process_key"] == process_key and option["node_key"] == node_key for option in agent_approval_node_options(db)):
+        raise DomainError("AGENT_APPROVAL_NODE_DISABLED", "该流程节点未发布或未允许 Agent 自动审批，不能授权", 400)
+
+
+@app.get("/api/agent-approval-delegations/options")
+def approval_delegation_options(user=Depends(current_user), db=Depends(get_db)):
+    return agent_approval_node_options(db)
+
+
 @app.get("/api/agent-approval-delegations")
 def approval_delegations(user=Depends(current_user), db=Depends(get_db)):
     rows = db.scalars(select(m.AgentApprovalDelegation).where(
@@ -451,6 +480,7 @@ def create_approval_delegation(data: s.AgentApprovalDelegationInput, user=Depend
         raise DomainError("DATE_INVALID", "自动审批委托结束时间必须晚于开始时间", 400)
     if data.valid_to and data.valid_to <= now():
         raise DomainError("DATE_INVALID", "自动审批委托结束时间必须晚于当前时间", 400)
+    require_agent_approval_node(db, data.process_key, data.node_key)
     row = db.scalar(select(m.AgentApprovalDelegation).where(
         m.AgentApprovalDelegation.user_id == user.id,
         m.AgentApprovalDelegation.process_key == data.process_key,

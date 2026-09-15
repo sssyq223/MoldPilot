@@ -4,16 +4,20 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
 
 from app import bpm, business, models as m, schemas as s
 from app.authorization import PERMISSIONS, fingerprint
 from app.db import Base, now
+from app.db import get_db
+from app.api import app
 from app.security import hasher
 
 
 @pytest.fixture()
 def sqlite_session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     with factory() as db:
@@ -108,3 +112,49 @@ def test_delegation_changes_authorization_fingerprint(sqlite_session):
     delegation.revoked_at = now()
     reviewer.security_version += 1
     assert fingerprint(db, reviewer) != before
+
+
+def test_delegation_api_only_exposes_and_accepts_explicit_auto_nodes(sqlite_session):
+    db = sqlite_session
+    password = "SyntheticPassword-2026!"
+    user = m.User(username="reviewer-api", display_name="接口审批人", password_hash=hasher.hash(password))
+    db.add(user)
+    db.flush()
+    config = {"business_type": "purchase_request", "nodes": [
+        {"key": "auto_review", "name": "低风险自动审批", "users": [user.id], "mode": "ALL", "reject_rules": [], "agent_auto_approval": True},
+        {"key": "manual_review", "name": "高风险人工审批", "users": [user.id], "mode": "ALL", "reject_rules": []},
+    ]}
+    db.add(m.WorkflowDefinition(process_key="api_auto_purchase", version=1, name="接口授权流程", config=config,
+                                bpmn_xml=bpm.compile_bpmn(config), status="PUBLISHED",
+                                package_hash=bpm.content_hash({"config": config})))
+    db.commit()
+
+    def override():
+        yield db
+
+    app.dependency_overrides[get_db] = override
+    try:
+        with TestClient(app) as client:
+            login = client.post("/api/auth/login", json={"username": user.username, "password": password})
+            assert login.status_code == 200, login.text
+            client.headers["X-CSRF-Token"] = login.json()["csrf"]
+            options = client.get("/api/agent-approval-delegations/options")
+            assert options.status_code == 200, options.text
+            assert [(item["process_key"], item["node_key"]) for item in options.json()] == [
+                ("api_auto_purchase", "auto_review")
+            ]
+            enabled = client.post("/api/agent-approval-delegations", json={
+                "process_key": "api_auto_purchase",
+                "node_key": "auto_review",
+                "reason": "低风险节点授权给 Agent 自动同意",
+            })
+            assert enabled.status_code == 200, enabled.text
+            blocked = client.post("/api/agent-approval-delegations", json={
+                "process_key": "api_auto_purchase",
+                "node_key": "manual_review",
+                "reason": "尝试授权人工节点",
+            })
+            assert blocked.status_code == 400, blocked.text
+            assert blocked.json()["error"]["code"] == "AGENT_APPROVAL_NODE_DISABLED"
+    finally:
+        app.dependency_overrides.clear()

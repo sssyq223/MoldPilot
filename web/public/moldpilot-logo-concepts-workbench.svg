@@ -1,0 +1,40 @@
+<svg width="960" height="260" viewBox="0 0 960 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="960" height="260" rx="28" fill="#F6F8FA"/>
+
+  <!-- 1: compact workbench -->
+  <g transform="translate(60 30)">
+    <rect width="200" height="200" rx="48" fill="#111827"/>
+    <rect x="52" y="80" width="96" height="54" rx="14" stroke="#FFFFFF" stroke-width="11"/>
+    <path d="M72 80V62H128V80" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M68 149H132" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round"/>
+    <circle cx="100" cy="107" r="12" fill="#9FD0FF"/>
+  </g>
+
+  <!-- 2: smart mold press -->
+  <g transform="translate(280 30)">
+    <rect width="200" height="200" rx="48" fill="#111827"/>
+    <path d="M61 67H139" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <path d="M72 92H128" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <path d="M61 132H139" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <path d="M72 67V132M128 67V132" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+    <path d="M100 86L107 101L123 108L107 115L100 130L93 115L77 108L93 101L100 86Z" fill="#9FD0FF"/>
+  </g>
+
+  <!-- 3: friendly machine face -->
+  <g transform="translate(500 30)">
+    <rect width="200" height="200" rx="48" fill="#111827"/>
+    <rect x="54" y="72" width="92" height="68" rx="18" stroke="#FFFFFF" stroke-width="11"/>
+    <path d="M82 72V58H118V72" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="82" cy="107" r="7" fill="#FFFFFF"/>
+    <circle cx="118" cy="107" r="7" fill="#FFFFFF"/>
+    <path d="M85 128H115" stroke="#9FD0FF" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- 4: workcell + pilot cursor -->
+  <g transform="translate(720 30)">
+    <rect width="200" height="200" rx="48" fill="#111827"/>
+    <rect x="55" y="72" width="74" height="74" rx="16" stroke="#FFFFFF" stroke-width="11"/>
+    <path d="M75 94H109M75 122H103" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+    <path d="M121 114L153 146L132 151L126 170L113 121L121 114Z" fill="#9FD0FF" stroke="#111827" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>

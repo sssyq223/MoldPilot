@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,MessageSquare,RotateCcw,BrainCircuit} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,MessageSquare,RotateCcw,BrainCircuit,ShieldCheck,ShieldOff} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
@@ -12,6 +12,8 @@ const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([])
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
 const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('tools')
 const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
+const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
+const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
 const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
@@ -34,6 +36,8 @@ const activeModelName=computed(()=>{
  if(!modelConfig.value)return props.modelName||'未配置模型'
  return modelConfig.value.model||modelConfig.value[modelConfig.value.provider]?.model||'未配置模型'
 })
+const delegationOptionMap=computed(()=>Object.fromEntries(delegationOptions.value.map((item:any)=>[item.process_key+'::'+item.node_key,item])))
+const selectedDelegationOption=computed(()=>delegationOptionMap.value[delegationNode.value])
 const modelEndpoint=computed(()=>{
  if(!modelConfig.value)return '—'
  const source=modelConfig.value.provider==='ollama'?modelConfig.value.ollama:modelConfig.value.company
@@ -47,6 +51,7 @@ const modelCredentialState=computed(()=>{
 const navigation=computed(()=>[
  {key:'account',name:'账号与模型',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
+ {key:'agent-approvals',name:'Agent 自动审批',icon:ShieldCheck,allow:true},
  {key:'archived',name:'已归档的聊天',icon:Archive,allow:true},
  {key:'capabilities',name:'工具与技能',icon:Wrench,allow:true},
  {key:'admin',name:'人员与权限',icon:Users,allow:props.permissions.includes('user.manage')},
@@ -63,6 +68,7 @@ async function select(key:string){
  }
  if(key==='archived')await loadArchived()
  if(key==='model')await loadModelConfig()
+ if(key==='agent-approvals')await loadAgentDelegations()
 }
 watch(()=>props.initialPage,key=>{if(key)select(key)},{immediate:true})
 async function loadModelConfig(){
@@ -86,6 +92,39 @@ async function loadArchived(){
 }
 async function unarchiveConversation(c:any){
  try{await post(`/conversations/${c.id}/unarchive`);await loadArchived()}catch(e:any){emit('error',e.message)}
+}
+async function loadAgentDelegations(){
+ delegationsLoading.value=true;delegationNotice.value=''
+ try{
+  const [options,rows]=await Promise.all([api('/agent-approval-delegations/options'),api('/agent-approval-delegations')])
+  delegationOptions.value=options;delegations.value=rows
+  if(!delegationNode.value&&options.length)delegationNode.value=options[0].process_key+'::'+options[0].node_key
+ }catch(e:any){emit('error',e.message)}finally{delegationsLoading.value=false}
+}
+function apiDate(value:string){
+ if(!value)return null
+ const date=new Date(value)
+ return Number.isNaN(date.getTime())?null:date.toISOString()
+}
+async function saveAgentDelegation(){
+ const option=selectedDelegationOption.value
+ if(!option||delegationSaving.value)return
+ delegationSaving.value=true;delegationNotice.value=''
+ try{
+  await post('/agent-approval-delegations',{process_key:option.process_key,node_key:option.node_key,decision:'APPROVE',
+   reason:delegationReason.value||'用户在设置中授权 Agent 对该节点自动同意',valid_to:apiDate(delegationValidTo.value)})
+  delegationReason.value='';delegationValidTo.value='';delegationNotice.value='自动审批授权已保存。'
+  await loadAgentDelegations()
+ }catch(e:any){emit('error',e.message)}finally{delegationSaving.value=false}
+}
+async function revokeDelegation(row:any){
+ if(delegationSaving.value)return
+ delegationSaving.value=true;delegationNotice.value=''
+ try{await post(`/agent-approval-delegations/${row.id}/revoke`,{reason:'用户在设置中撤销 Agent 自动审批授权'});delegationNotice.value='自动审批授权已撤销。';await loadAgentDelegations()}catch(e:any){emit('error',e.message)}finally{delegationSaving.value=false}
+}
+function delegationLabel(row:any){
+ const option=delegationOptionMap.value[row.process_key+'::'+row.node_key]
+ return option?`${option.process_name} · ${option.node_name}`:`${row.process_key} · ${row.node_key}`
 }
 </script>
 <template>
@@ -170,7 +209,34 @@ async function unarchiveConversation(c:any){
       <button v-if="modelDetailsOpen" class="primary" :disabled="modelSaving">{{modelSaving?'正在保存…':'保存模型配置'}}</button>
      </div>
      <p v-if="modelSaved" class="muted small">{{modelSaved}}</p>
-    </form>
+   </form>
+   </template>
+   <template v-else-if="page==='agent-approvals'">
+    <div class="section-heading"><div><h2>Agent 自动审批</h2><p class="muted">你可以把明确允许自动审批的低风险节点授权给 Agent。授权只代表自动同意，不会自动驳回，也不会跳过审批席位、权限、资料版本和流程规则。</p></div><small class="muted">{{delegations.filter(d=>d.active).length}} 个有效授权</small></div>
+    <p v-if="delegationsLoading" role="status">正在读取自动审批授权…</p>
+    <template v-else>
+     <section class="surface agent-approval-card">
+      <div class="agent-approval-copy"><ShieldCheck :size="22"/><div><strong>授权一个流程节点</strong><small class="muted">只有流程设计中打开了 Agent 自动审批的节点会出现在这里；高风险或强制人工节点不会接受授权。</small></div></div>
+      <div v-if="delegationOptions.length" class="agent-delegation-form">
+       <label>可授权节点<select v-model="delegationNode"><option v-for="option in delegationOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版）</option></select></label>
+       <label>授权原因<textarea v-model="delegationReason" rows="2" placeholder="例如：低风险辅材采购金额小、资料齐全时允许自动同意"/></label>
+       <label>有效期至<input v-model="delegationValidTo" type="datetime-local"/><small class="muted">留空表示长期有效，撤销后立即失效。</small></label>
+       <button class="primary" :disabled="delegationSaving||!selectedDelegationOption" @click="saveAgentDelegation">{{delegationSaving?'正在保存…':'授权 Agent 自动同意'}}</button>
+      </div>
+      <p v-else class="muted">当前没有可授权节点。请先在审批流程配置中为低风险节点启用 Agent 自动审批，再由审批人本人在这里授权。</p>
+     </section>
+     <p v-if="delegationNotice" class="muted small">{{delegationNotice}}</p>
+     <section class="surface agent-delegation-list" aria-label="我的自动审批授权">
+      <div class="section-heading"><h3>我的授权记录</h3><small class="muted">授权和撤销都会进入审计</small></div>
+      <article v-for="row in delegations" :key="row.id" class="agent-delegation-row" :class="{inactive:!row.active}">
+       <div><strong>{{delegationLabel(row)}}</strong><p class="muted small">{{row.reason}}</p><small class="muted">创建于 {{shanghai(row.created_at)}}<span v-if="row.valid_to"> · 有效期至 {{shanghai(row.valid_to)}}</span><span v-if="row.revoked_at"> · 已于 {{shanghai(row.revoked_at)}} 撤销</span></small></div>
+       <span v-if="row.active" class="status-pill ok"><ShieldCheck :size="14"/>有效</span>
+       <span v-else class="status-pill muted-pill"><ShieldOff :size="14"/>已撤销</span>
+       <button v-if="row.active" class="danger-outline" :disabled="delegationSaving" @click="revokeDelegation(row)">撤销授权</button>
+      </article>
+      <p v-if="!delegations.length" class="muted archived-empty">还没有自动审批授权。</p>
+     </section>
+    </template>
    </template>
    <template v-else-if="page==='archived'">
     <div class="section-heading archived-heading"><div><h2>已归档的聊天</h2><p class="muted">归档后的会话会从最近对话隐藏，但仍可在这里查看或取消归档。</p></div><small class="muted">{{archived.length}} 个聊天</small></div>
