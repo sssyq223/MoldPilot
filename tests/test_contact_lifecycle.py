@@ -5,7 +5,7 @@ from app.errors import DomainError
 from uuid import uuid4
 import pytest
 from conftest import sign_in
-from test_contacts import create,add_task,grant,operation
+from test_contacts import create,add_task,grant,operation,response_body,task_body
 from test_bpm_assignments import group
 from test_contact_proposals import propose,intent,confirm
 from test_agent_api import start,worker_headers
@@ -37,7 +37,7 @@ def plan(client,ctx,case,definition,seq=0):
 
 def feedback(client,case,tid):
     sign_in(client,'test_buyer')
-    r=client.post(f"/api/contacts/{case['id']}/tasks/{tid}/respond",json=operation(case,content='已经完成尺寸复测，测量记录合格'))
+    r=client.post(f"/api/contacts/{case['id']}/tasks/{tid}/respond",json=operation(case,**response_body()))
     assert r.status_code==200,r.text
     sign_in(client)
     return client.get('/api/contacts/'+case['id']).json()
@@ -51,6 +51,7 @@ def test_bpm_feedback_rework_verification_and_manual_close(client,data,monkeypat
     detail=client.get('/api/approvals/'+iid).json()
     assert detail['snapshot']['detail']['material_snapshot']['tasks'][0]['id']==tid
     assert approve(client,iid)['business_status']=='EFFECTIVE'
+    case=client.get('/api/contacts/'+case['id']).json()
     case=feedback(client,case,tid)
     with data[1]() as db:
         with pytest.raises(DomainError,match='复验合格'):
@@ -62,7 +63,7 @@ def test_bpm_feedback_rework_verification_and_manual_close(client,data,monkeypat
     assert case['tasks'][0]['status']=='VERIFIED' and case['collaboration_status']=='OPEN'
     case=execute(client,ctx,case,'close',3,evidence='方案批准、措施完成、独立复验合格，确认关闭')
     assert case['collaboration_status']=='CLOSED' and case['closed_by_name']=='测试管理员'
-    assert client.post(f"/api/contacts/{case['id']}/tasks",json=operation(case,department_id=case['tasks'][0]['department_id'],title='关闭后不可新增')).status_code==409
+    assert client.post(f"/api/contacts/{case['id']}/tasks",json=operation(case,department_id=case['tasks'][0]['department_id'],**task_body(title='关闭后不可新增'))).status_code==409
     assert len([r for r in case['records'] if r['kind']=='CLOSED'])==1
 
 
@@ -110,7 +111,7 @@ def test_cancel_keeps_history_and_blocks_assignment(client,data,monkeypatch):
 
 def test_independent_recheck_and_confirmation_revalidate(client,data,monkeypatch):
     case,tid,definition,ctx,_=setup(client,data,monkeypatch)
-    case=plan(client,ctx,case,definition);approve(client,case['resolutions'][0]['instance_id'])
+    case=plan(client,ctx,case,definition);approve(client,case['resolutions'][0]['instance_id']);case=client.get('/api/contacts/'+case['id']).json()
     case=feedback(client,case,tid)
     with data[1].begin() as db:
         buyer=db.get(m.User,data[0]['buyer']);buyer.super_admin=True
@@ -140,7 +141,7 @@ def test_designated_reviewer_can_close_with_required_permissions(client,data,mon
     case,tid,definition,ctx,_=setup(client,data,monkeypatch);ids,factory=data
     grant(factory,ids,ids['reviewer'],['read','review','close'])
     case=execute(client,ctx,case,'set_reviewer',0,reviewer_id=ids['reviewer'],evidence='指定验收责任')
-    case=plan(client,ctx,case,definition,1);approve(client,case['resolutions'][0]['instance_id'])
+    case=plan(client,ctx,case,definition,1);approve(client,case['resolutions'][0]['instance_id']);case=client.get('/api/contacts/'+case['id']).json()
     case=feedback(client,case,tid)
     case=execute(client,ctx,case,'review',2,task_id=tid,decision='PASS',evidence='独立验收合格')
     with factory.begin() as db:

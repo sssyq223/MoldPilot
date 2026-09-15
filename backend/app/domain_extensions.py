@@ -73,8 +73,8 @@ def apply(db,user,subject):
     from .domains import rows,require_source
     kind=subject.kind
     if kind=='contact_resolution':
-        from .contact_lifecycle import ensure_materials
-        ensure_materials(db,db.get(m.ContactResolution,subject.id))
+        from .contact_lifecycle import activate_resolution
+        activate_resolution(db,user,db.get(m.ContactResolution,subject.id))
     elif kind=='design_route':
         detail=db.get(m.DesignDetail,subject.id)
         reviewer_approved=db.scalar(select(m.ApprovalAction.id).join(m.ApprovalInstance).where(

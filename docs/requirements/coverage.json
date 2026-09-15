@@ -819,8 +819,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["ContactCase 问题来源、当前环节、变更类别与紧急程度字段及创建校验"],
+      "verification_evidence": ["tests/test_contact_impact.py：主数据必填与未来日期阻断"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -829,8 +829,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源", "既有附件版本与方案审批记录"],
+      "verification_evidence": ["tests/test_contact_impact.py：创建、反馈和不可覆盖规则"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -839,8 +839,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["附件版本、过程记录、独立复验以及事项实际工时/金额/证据", "affected_type/ref 原生对象引用"],
+      "verification_evidence": ["结构化影响与执行单测；财务正式计价未联调"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -849,8 +849,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["项目负责人和责任部门负责人待办", "可配置方案 BPM、退回整改及生效通知"],
+      "verification_evidence": ["联络生命周期集成测试；完整生产岗位矩阵待验收"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -859,8 +859,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["ContactTask 受影响对象/原生编号、五类处置动作、交期、金额与 ERP 来源时点"],
+      "verification_evidence": ["tests/test_contact_impact.py：材料冻结和 ERP 来源约束"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -869,8 +869,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["方案冻结结构化影响材料", "RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具"],
+      "verification_evidence": ["生效交接幂等单测；真实 ERP 更新和全部门通知未联调"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -879,8 +879,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["设计、采购、制造、装配、试模对象引用与执行/复验依据"],
+      "verification_evidence": ["原生引用和来源规则单测；正式对象执行工具端到端待完成"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -889,8 +889,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["项目节点、合同和其他原生对象引用及交期/金额影响结构", "方案交接不直接改写物流、合同或财务"],
+      "verification_evidence": ["结构与边界校验；物流/合同/财务/预警联动未验证"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -899,8 +899,8 @@
       "module": "工程联络单与异常闭环",
       "agent_responsibility": "Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关闭；执行动作按能力目录调用，禁止旧 ERP 异常流程",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": ["方案审批、实际反馈、独立复验/整改及人工关闭分离", "最新方案下全事项复验关闭门禁和追加式实际数据"],
+      "verification_evidence": ["联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调"],
       "acceptance_status": "NOT_VERIFIED"
     },
     {

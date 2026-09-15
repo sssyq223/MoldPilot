@@ -51,6 +51,11 @@ SPECS={'resolution':(ResolutionInput,'plan','提交联络单处理方案审批')
        'set_reviewer':(ReviewerInput,'set_reviewer','指定联络单验收负责人'),
        'cancel_task':(CloseInput,'cancel_task','撤销未反馈的联络事项')}
 
+AFFECTED_NAMES={'DRAWING':'图纸','MATERIAL':'物料','PURCHASE_ORDER':'采购单','WIP_TASK':'在制任务',
+                'SUPPLIER_TASK':'供应商任务','PLAN_NODE':'计划节点','CONTRACT':'合同',
+                'FINANCE':'财务事项','LOGISTICS':'物流','OTHER':'其他对象'}
+ACTION_NAMES={'CONTINUE':'继续执行','PAUSE':'暂停','CANCEL':'取消','REWORK':'返工','REISSUE':'重新下达'}
+
 
 def ensure_open(case):
     if case.closed_at:raise DomainError('CONTACT_CLOSED','联络单已关闭，不能继续修改',409)
@@ -59,8 +64,18 @@ def ensure_open(case):
 def materials(db,case):
     from .files import case_attachments
     return {'case_id':case.id,'title':case.title,'description':case.description,
+            'customer_ref':case.customer_ref,'customer_name':case.customer_name,'mold_number':case.mold_number,
+            'product_ref':case.product_ref,'application_date':case.application_date.isoformat() if case.application_date else None,
+            'problem_source':case.problem_source,'current_stage':case.current_stage,
+            'change_type':case.change_type,'urgency':case.urgency,
             'tasks':[{'id':t.id,'title':t.title,'department_id':t.department_id,
-                      'department_name':db.get(m.AssignmentGroup,t.department_id).name}
+                      'department_name':db.get(m.AssignmentGroup,t.department_id).name,
+                      'affected_type':t.affected_type,'affected_ref':t.affected_ref,
+                      'impact_description':t.impact_description,'planned_action':t.planned_action,
+                      'delivery_impact_days':t.delivery_impact_days,
+                      'estimated_amount':str(t.estimated_amount) if t.estimated_amount is not None else None,
+                      'currency':t.currency,'source_system':t.source_system,'source_ref':t.source_ref,
+                      'source_as_of':t.source_as_of.isoformat() if t.source_as_of else None}
                      for t in db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==case.id,
                          m.ContactTask.status!='CANCELLED').order_by(m.ContactTask.id))],
             'attachments':sorted([f for f in case_attachments(db,case) if f['is_current']],key=lambda f:f['id'])}
@@ -74,6 +89,35 @@ def ensure_materials(db,resolution):
     from fastapi.encoders import jsonable_encoder
     if content_hash(jsonable_encoder(materials(db,case)))!=content_hash(resolution.material_snapshot):
         raise DomainError('RESOLUTION_STALE','方案关联的事项或附件已变化，须重新核对并审批方案',409)
+
+
+def activate_resolution(db,user,resolution):
+    """Record a durable effective-plan handoff; never pretend to execute referenced ERP work."""
+    from .bpm import content_hash
+    ensure_materials(db,resolution)
+    case=db.scalar(select(m.ContactCase).where(m.ContactCase.id==resolution.case_id).with_for_update())
+    existing=db.scalar(select(m.ContactRecord.id).where(m.ContactRecord.case_id==case.id,
+        m.ContactRecord.kind=='RESOLUTION_EFFECTIVE',m.ContactRecord.request_key==resolution.subject_id))
+    if existing:return
+    subject=db.get(m.BusinessSubject,resolution.subject_id);recipients=set()
+    tasks=list(db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==case.id,m.ContactTask.status!='CANCELLED')))
+    for task in tasks:
+        if task.assignee_id:
+            person=db.get(m.User,task.assignee_id)
+            if person and c.permitted(db,person,'read',case):recipients.add(person.id)
+        group=db.get(m.AssignmentGroup,task.department_id)
+        if group:
+            for member in db.scalars(select(m.AssignmentMember).where(m.AssignmentMember.group_id==group.id,m.AssignmentMember.is_head.is_(True))):
+                person=db.get(m.User,member.user_id)
+                if person and person.active and c.permitted(db,person,'read',case):recipients.add(person.id)
+    recipients.discard(user.id);case.revision+=1
+    detail={'subject_id':subject.id,'number':subject.number,'case_revision':case.revision,
+        'task_ids':[task.id for task in tasks],
+        'limitations':'方案已生效并通知相关人员；引用的ERP任务、订单和合同仍须通过各自业务回执确认执行。'}
+    db.add(m.ContactRecord(case_id=case.id,author_id=user.id,request_key=subject.id,
+        request_hash=content_hash(detail),kind='RESOLUTION_EFFECTIVE',occurred_at=now(),detail=detail))
+    from .events import record
+    record(db,user,'contact.resolution_effective',case.id,{'subject_id':subject.id,'revision':case.revision},list(recipients))
 
 
 def latest(db,case):
@@ -140,9 +184,12 @@ def preview(db,user,case,tid,action,data):
     if case.mode!='ONLINE':raise DomainError('HISTORY_NO_DISPATCH','历史补录仅记录已发生过程，不能派发或关闭线上流程',409)
     if action=='resolution':
         definition=validate_plan(db,user,case,data)
+        task_materials=materials(db,case)['tasks']
         return {'处理方案':data.solution,'审批流程':definition.name,'流程版本':definition.version,
                 '影响客户交期':data.customer_due_affected,'客户确认依据':data.customer_evidence or '不适用',
-                '责任事项':'; '.join(t['department_name']+'：'+t['title'] for t in materials(db,case)['tasks']),
+                '责任事项':'; '.join(t['department_name']+'：'+t['title'] for t in task_materials),
+                '影响与动作':'\n'.join(AFFECTED_NAMES.get(t['affected_type'],t['affected_type'])+' '+t['affected_ref']+' → '+ACTION_NAMES.get(t['planned_action'],t['planned_action'])+'：'+t['impact_description'] for t in task_materials),
+                '预计交期影响天数':max((t['delivery_impact_days'] for t in task_materials),default=0),
                 '附件版本':'; '.join(f["filename"]+' 第'+str(f["version"])+'版' for f in materials(db,case)['attachments']) or '无关联附件','说明':'本人确认后创建正式审批待办，不会自动执行方案。'}
     if action=='set_reviewer':
         auth.require(db,user,'grant.manage');person=db.get(m.User,data.reviewer_id)

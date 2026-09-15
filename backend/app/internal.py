@@ -2,7 +2,7 @@ import secrets
 from datetime import timedelta
 from fastapi import Depends, Request
 from sqlalchemy import select, or_, and_
-from .db import get_db, now
+from .db import get_db, now, aware
 from .config import settings
 from .errors import DomainError
 from .models import Run, User, Step
@@ -20,7 +20,7 @@ def worker_auth(request: Request):
 
 def fence(db, run_id, epoch):
     run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
-    if not run or run.status != "RUNNING" or run.lease_epoch != epoch or run.lease_until <= now():
+    if not run or run.status != "RUNNING" or run.lease_epoch != epoch or aware(run.lease_until) <= now():
         raise DomainError("LEASE_LOST", "任务已停止或执行租约失效", 409)
     user = db.scalar(select(User).where(User.id == run.user_id).with_for_update(read=True))
     if not user or not user.active or user.security_version != run.security_version:

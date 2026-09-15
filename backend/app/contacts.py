@@ -1,8 +1,10 @@
 """Human collaboration API. No endpoint here grants approvals or executes ERP writes."""
 from typing import Literal
+from decimal import Decimal
+from datetime import date
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query
-from pydantic import Field, AwareDatetime, field_validator
+from pydantic import Field, AwareDatetime, field_validator, model_validator
 from sqlalchemy import select, text
 from . import models as m, authorization as auth
 from .schemas import StrictModel
@@ -25,6 +27,15 @@ class CreateInput(StrictModel):
     title:str=Field(min_length=1,max_length=150)
     description:str=Field(min_length=1,max_length=10000)
     mode:Literal['HISTORY','ONLINE']
+    customer_ref:str=Field(min_length=1,max_length=200)
+    customer_name:str=Field(min_length=1,max_length=200)
+    mold_number:str=Field(min_length=1,max_length=100)
+    product_ref:str=Field(min_length=1,max_length=200)
+    application_date:date
+    problem_source:Literal['CUSTOMER_CHANGE','DESIGN_ISSUE','ASSEMBLY_ISSUE','MACHINING_ISSUE','PROCUREMENT_ISSUE','QUALITY_ISSUE','TRIAL_ISSUE','OUTSOURCE_DEFECT','COST_REDUCTION','PROCESS_IMPROVEMENT','OTHER']
+    current_stage:str=Field(min_length=1,max_length=200)
+    change_type:Literal['CHANGE','EXCEPTION','IMPROVEMENT']
+    urgency:Literal['NORMAL','URGENT','CRITICAL']
 
     @field_validator('category')
     @classmethod
@@ -32,11 +43,16 @@ class CreateInput(StrictModel):
         # Normalize business data labels, never route a user's conversational intent.
         return {name:key for key,name in CATEGORY_NAMES.items()}.get(v,v)
 
-    @field_validator('title','description')
+    @field_validator('title','description','customer_ref','customer_name','mold_number','product_ref','current_stage')
     @classmethod
     def nonblank(cls,v):
         if not v.strip():raise ValueError('内容不能为空')
         return v.strip()
+
+    @model_validator(mode='after')
+    def application_not_future(self):
+        if self.application_date>now().date():raise ValueError('申请日期不能晚于当前日期')
+        return self
 
 
 class Mutation(StrictModel):
@@ -60,12 +76,30 @@ class NoteInput(Mutation):
 class TaskInput(Mutation):
     department_id:str=Field(min_length=1,max_length=36)
     title:str=Field(min_length=1,max_length=150)
+    affected_type:Literal['DRAWING','MATERIAL','PURCHASE_ORDER','WIP_TASK','SUPPLIER_TASK','PLAN_NODE','CONTRACT','FINANCE','LOGISTICS','OTHER']
+    affected_ref:str=Field(min_length=1,max_length=300)
+    impact_description:str=Field(min_length=1,max_length=4000)
+    planned_action:Literal['CONTINUE','PAUSE','CANCEL','REWORK','REISSUE']
+    delivery_impact_days:int=Field(ge=0,le=3650)
+    estimated_amount:Decimal|None=Field(default=None,ge=0,max_digits=18,decimal_places=2)
+    currency:str|None=Field(default=None,pattern=r'^[A-Z]{3}$')
+    source_system:Literal['AGENT','ERP','MANUAL']
+    source_ref:str|None=Field(default=None,max_length=300)
+    source_as_of:AwareDatetime|None=None
 
-    @field_validator('title')
+    @field_validator('title','affected_ref','impact_description')
     @classmethod
     def nonblank(cls,v):
         if not v.strip():raise ValueError('事项不能为空')
         return v.strip()
+
+    @model_validator(mode='after')
+    def source_and_amount(self):
+        if (self.estimated_amount is None)!=(self.currency is None):raise ValueError('预计金额与币种须同时填写')
+        if self.source_system=='ERP' and (not (self.source_ref or '').strip() or self.source_as_of is None):
+            raise ValueError('ERP影响事实须包含原记录引用和核对时点')
+        if self.source_as_of and self.source_as_of>now():raise ValueError('影响事实核对时点不能晚于当前时间')
+        return self
 
 
 class AssignInput(Mutation):
@@ -81,12 +115,29 @@ class AssignInput(Mutation):
 
 class ResponseInput(Mutation):
     content:str=Field(min_length=1,max_length=10000)
+    actual_completed_at:AwareDatetime
+    actual_hours:Decimal=Field(ge=0,max_digits=12,decimal_places=2)
+    actual_amount:Decimal|None=Field(default=None,ge=0,max_digits=18,decimal_places=2)
+    currency:str|None=Field(default=None,pattern=r'^[A-Z]{3}$')
+    execution_evidence:str=Field(min_length=1,max_length=4000)
+    source_system:Literal['AGENT','ERP','MANUAL']
+    source_ref:str|None=Field(default=None,max_length=300)
+    source_as_of:AwareDatetime|None=None
 
-    @field_validator('content')
+    @field_validator('content','execution_evidence')
     @classmethod
     def nonblank(cls,v):
         if not v.strip():raise ValueError('反馈不能为空')
         return v.strip()
+
+    @model_validator(mode='after')
+    def source_and_amount(self):
+        if (self.actual_amount is None)!=(self.currency is None):raise ValueError('实际金额与币种须同时填写')
+        if self.source_system=='ERP' and (not (self.source_ref or '').strip() or self.source_as_of is None):
+            raise ValueError('ERP执行结果须包含原记录引用和核对时点')
+        if self.actual_completed_at>now():raise ValueError('实际完成时间不能晚于当前时间')
+        if self.source_as_of and self.source_as_of>now():raise ValueError('执行结果核对时点不能晚于当前时间')
+        return self
 
 
 def scope(c):return {'project_id':c.project_id,'category':c.category}
@@ -130,6 +181,9 @@ def serialize(db,c,details=False,user=None):
     result={'id':c.id,'project_id':c.project_id,'category':c.category,'title':c.title,
             'description':c.description,'mode':c.mode,'revision':c.revision,'created_at':c.created_at,
             'created_by':c.created_by,'creator_name':creator.display_name,
+            'customer_ref':c.customer_ref,'customer_name':c.customer_name,'mold_number':c.mold_number,
+            'product_ref':c.product_ref,'application_date':c.application_date,'problem_source':c.problem_source,
+            'current_stage':c.current_stage,'change_type':c.change_type,'urgency':c.urgency,
             'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN'}
     if details:
         from .contact_lifecycle import context,record_detail
@@ -144,6 +198,13 @@ def serialize(db,c,details=False,user=None):
             result['tasks'].append({'id':t.id,'title':t.title,'department_id':g.id,'department_name':g.name,
                 'department_active':g.active,'assignee_id':t.assignee_id,'assignee_name':person.display_name if person else None,
                 'status':t.status,'response':t.response,'verified_plan_id':t.verified_plan_id,
+                'affected_type':t.affected_type,'affected_ref':t.affected_ref,'impact_description':t.impact_description,
+                'planned_action':t.planned_action,'delivery_impact_days':t.delivery_impact_days,
+                'estimated_amount':t.estimated_amount,'currency':t.currency,'source_system':t.source_system,
+                'source_ref':t.source_ref,'source_as_of':t.source_as_of,'actual_completed_at':t.actual_completed_at,
+                'actual_hours':t.actual_hours,'actual_amount':t.actual_amount,'actual_currency':t.actual_currency,
+                'execution_evidence':t.execution_evidence,'execution_source_system':t.execution_source_system,
+                'execution_source_ref':t.execution_source_ref,'execution_source_as_of':t.execution_source_as_of,
                 'can_assign':bool(user and not c.closed_at and g.active and t.status in {'UNASSIGNED','ASSIGNED'} and permitted(db,user,'assign',c)
                     and (user.id==c.created_by or is_head(db,user,g))),
                 'can_respond':bool(user and not c.closed_at and g.active and t.status=='ASSIGNED' and t.assignee_id==user.id
@@ -196,7 +257,13 @@ def create(data:CreateInput,user=Depends(current_user),db=Depends(get_db)):
         if old.request_hash!=c.request_hash:raise DomainError('IDEMPOTENCY_CONFLICT','同一次创建的内容已变化',409)
         return serialize(db,old,True,user)
     db.add(c);db.flush()
-    record(db,user,'contact.created',c.id,{'mode':c.mode})
+    profile=db.get(m.ProjectProfile,c.project_id)
+    recipients=[]
+    if profile and profile.owner_user_id!=user.id:
+        owner=db.get(m.User,profile.owner_user_id)
+        if owner and permitted(db,owner,'read',c):recipients.append(owner.id)
+    record(db,user,'contact.created',c.id,{'mode':c.mode,'problem_source':c.problem_source,
+        'current_stage':c.current_stage,'urgency':c.urgency},recipients)
     db.flush();return serialize(db,c,True,user)
 
 
@@ -232,13 +299,17 @@ def add_task(cid:str,data:TaskInput,user=Depends(current_user),db=Depends(get_db
     digest,done=replay(db,user,c,data,'TASK_CREATED')
     if done:return serialize(db,c,True,user)
     g=department(db,data.department_id)
-    t=m.ContactTask(case_id=c.id,department_id=g.id,title=data.title,created_by=user.id)
+    t=m.ContactTask(case_id=c.id,department_id=g.id,created_by=user.id,**data.model_dump(exclude={'request_key','revision','department_id'}))
     db.add(t);db.flush()
     heads=list(db.scalars(select(m.User).join(m.AssignmentMember,m.AssignmentMember.user_id==m.User.id).where(
         m.AssignmentMember.group_id==g.id,m.AssignmentMember.is_head.is_(True),m.User.active.is_(True))))
     recipients=[u.id for u in heads if permitted(db,u,'read',c) and permitted(db,u,'assign',c)]
     return append(db,user,c,data,'TASK_CREATED',digest,{'task_id':t.id,'title':t.title,
-        'department_id':g.id,'department_name':g.name,'department_version':g.version,'eligible_heads':recipients},recipients=recipients)
+        'department_id':g.id,'department_name':g.name,'department_version':g.version,'eligible_heads':recipients,
+        'affected_type':t.affected_type,'affected_ref':t.affected_ref,'planned_action':t.planned_action,
+        'impact_description':t.impact_description,'delivery_impact_days':t.delivery_impact_days,
+        'estimated_amount':str(t.estimated_amount) if t.estimated_amount is not None else None,'currency':t.currency,
+        'source_system':t.source_system,'source_ref':t.source_ref,'source_as_of':t.source_as_of.isoformat() if t.source_as_of else None},recipients=recipients)
 
 
 def task_and_assigner(db,user,c,tid):
@@ -278,9 +349,15 @@ def respond(cid:str,tid:str,data:ResponseInput,user=Depends(current_user),db=Dep
     digest,done=replay(db,user,c,data,'RESPOND:'+tid)
     if done:return serialize(db,c,True,user)
     if t.status!='ASSIGNED':raise DomainError('TASK_FINISHED','该事项已有反馈，不能覆盖',409)
-    t.status='RESPONDED';t.response=data.content
+    if data.actual_completed_at>now():raise DomainError('INVALID_TIME','实际完成时间不能晚于当前时间')
+    t.status='RESPONDED';t.response=data.content;t.actual_completed_at=data.actual_completed_at;t.actual_hours=data.actual_hours
+    t.actual_amount=data.actual_amount;t.actual_currency=data.currency;t.execution_evidence=data.execution_evidence
+    t.execution_source_system=data.source_system;t.execution_source_ref=data.source_ref;t.execution_source_as_of=data.source_as_of
     recipients=[c.created_by] if permitted(db,db.get(m.User,c.created_by),'read',c) else []
-    return append(db,user,c,data,'RESPONDED',digest,{'task_id':t.id,'content':data.content,'is_approval':False},recipients=recipients)
+    return append(db,user,c,data,'RESPONDED',digest,{'task_id':t.id,'content':data.content,'actual_completed_at':data.actual_completed_at.isoformat(),
+        'actual_hours':str(data.actual_hours),'actual_amount':str(data.actual_amount) if data.actual_amount is not None else None,
+        'currency':data.currency,'execution_evidence':data.execution_evidence,'source_system':data.source_system,
+        'source_ref':data.source_ref,'source_as_of':data.source_as_of.isoformat() if data.source_as_of else None,'is_approval':False},recipients=recipients)
 
 
 # Transaction ownership stays at the HTTP/confirmation boundary. The same services

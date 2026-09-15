@@ -17,7 +17,7 @@ TOOLS.update({f'query_{key}': {'description':f'查询当前人员授权范围内
                               'permission':f'{key}.read','business_kind':key} for key,name in CATALOG.items()})
 TOOLS['query_engineering_change']['description']='查询已有工程联络方案审批材料及生效状态；独立联络协作、责任部门和人员进度请使用工程联络协作查询工具。'
 TOOLS.update({
-    'query_contact_cases':{'description':'查询当前用户可见的工程联络单、责任部门、当前处理人和协作任务状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
+    'query_contact_cases':{'description':'查询当前用户可见的工程联络单、客户/模具/当前环节、结构化影响项、责任部门、处理人和协作状态。已反馈不是正式批准，历史补录不代表事项已关闭。','permission':'contact.read'},
     'query_purchase_orders':{'description':'查询正式订单与草稿、发货数量和供应商异常，禁止把草稿视为已下单。','permission':'order.read'},
     'analyze_delivery_risk':{'description':'用户主动询问延期风险时，按当前责任域分析上报异常或临期未发货；结论不代表整套模具总体延期。','permission':'risk.read'},
     'query_project_control_context':{'description':'查询指定项目的执行状态、有效计划、未完成任务、当前暂停区间及可选审批流程；区分内部计划与客户承诺交期。','permission':'project.read'},
@@ -32,7 +32,7 @@ TOOLS.update({
 })
 from . import contact_tools
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
-TOOLS['query_contact_context']={'description':'读取指定工程联络单的详细材料、事项标识，以及当前人员可用的责任部门或指定事项的候选处理人。','permission':'contact.read'}
+TOOLS['query_contact_context']={'description':'读取指定工程联络单的主信息、结构化影响与动作、实际执行/复验材料、事项标识，以及可用责任部门或候选处理人。','permission':'contact.read'}
 for action,(_,permission,title) in contact_tools.SPECS.items():
     TOOLS['prepare_contact_'+action]={'description':title+'的操作建议。仅在用户要求办理时使用；先查询真实项目、联络单、事项和人员标识；不执行业务，等待用户核对确认。','permission':'contact.'+permission}
 
@@ -119,8 +119,14 @@ def execute(db, user, key, arguments, run=None):
             tasks=[]
             for t in db.scalars(select(ContactTask).where(ContactTask.case_id==c.id).order_by(ContactTask.created_at.desc(),ContactTask.id).limit(20)):
                 g=db.get(AssignmentGroup,t.department_id);p=db.get(User,t.assignee_id) if t.assignee_id else None
-                tasks.append({'title':t.title,'department':g.name,'assignee':p.display_name if p else None,'status':t.status})
+                tasks.append({'id':t.id,'title':t.title,'department':g.name,'assignee':p.display_name if p else None,'status':t.status,
+                    'affected_type':t.affected_type,'affected_ref':t.affected_ref,'planned_action':t.planned_action,
+                    'delivery_impact_days':t.delivery_impact_days,'estimated_amount':str(t.estimated_amount) if t.estimated_amount is not None else None,
+                    'currency':t.currency,'actual_completed_at':t.actual_completed_at,'actual_hours':str(t.actual_hours) if t.actual_hours is not None else None,
+                    'actual_amount':str(t.actual_amount) if t.actual_amount is not None else None,'actual_currency':t.actual_currency})
             data.append({'id':c.id,'title':c.title,'project_id':c.project_id,'category':c.category,'mode':c.mode,
+                'customer_name':c.customer_name,'mold_number':c.mold_number,'product_ref':c.product_ref,
+                'problem_source':c.problem_source,'current_stage':c.current_stage,'change_type':c.change_type,'urgency':c.urgency,
                 'revision':c.revision,'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN',
                 'task_counts':counts,'recent_tasks':tasks,'tasks_truncated':sum(counts.values())>20})
         return {'data':data,'source':'agent_db','as_of':now().isoformat(),'limit':100,

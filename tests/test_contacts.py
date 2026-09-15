@@ -7,7 +7,10 @@ from test_bpm_assignments import group
 
 def create(client,ids,mode='ONLINE',category='hardware',**overrides):
     payload={'request_key':str(uuid4()),'project_id':ids['project'],'category':category,
-        'title':'模具装配问题协作（合成）','description':'核对尺寸与处理意见','mode':mode,**overrides}
+        'title':'模具装配问题协作（合成）','description':'核对尺寸与处理意见','mode':mode,
+        'customer_ref':'ERP-CUSTOMER-001','customer_name':'合成客户','mold_number':'MOLD-T001','product_ref':'PART-T001',
+        'application_date':'2026-09-10','problem_source':'ASSEMBLY_ISSUE','current_stage':'装配阶段',
+        'change_type':'EXCEPTION','urgency':'URGENT',**overrides}
     r=client.post('/api/contacts',json=payload)
     assert r.status_code==200,r.text
     return r.json(),payload
@@ -23,8 +26,20 @@ def grant(factory,ids,uid,actions,scope=None):
 def operation(case,**body):return {'request_key':str(uuid4()),'revision':case['revision'],**body}
 
 
+def task_body(**overrides):
+    return {'title':'核对图纸','affected_type':'DRAWING','affected_ref':'DRAWING-T001-R2',
+        'impact_description':'装配尺寸与第二版图纸不一致','planned_action':'REWORK','delivery_impact_days':2,
+        'estimated_amount':'1200.00','currency':'CNY','source_system':'AGENT','source_ref':None,'source_as_of':None,**overrides}
+
+
+def response_body(**overrides):
+    return {'content':'已经完成尺寸复测，测量记录合格','actual_completed_at':'2026-09-10T12:00:00+08:00',
+        'actual_hours':'3.50','actual_amount':'1180.00','currency':'CNY','execution_evidence':'返工记录与尺寸复测报告',
+        'source_system':'AGENT','source_ref':None,'source_as_of':None,**overrides}
+
+
 def add_task(client,c,g):
-    r=client.post(f"/api/contacts/{c['id']}/tasks",json=operation(c,department_id=g['id'],title='核对图纸'))
+    r=client.post(f"/api/contacts/{c['id']}/tasks",json=operation(c,department_id=g['id'],**task_body()))
     assert r.status_code==200,r.text
     return r.json()
 
@@ -34,7 +49,7 @@ def test_create_retry_and_history_never_dispatches(client,data):
     assert client.post('/api/contacts',json=p).json()['id']==c['id']
     assert client.post('/api/contacts',json={**p,'title':'不同内容'}).status_code==409
     g=group(client,[ids['admin']],kind='DEPARTMENT',name='设计',heads=[ids['admin']])
-    r=client.post(f"/api/contacts/{c['id']}/tasks",json=operation(c,department_id=g['id'],title='不允许派单'))
+    r=client.post(f"/api/contacts/{c['id']}/tasks",json=operation(c,department_id=g['id'],**task_body(title='不允许派单')))
     assert r.status_code==409 and r.json()['error']['code']=='HISTORY_NO_DISPATCH'
     note=operation(c,source='OFFLINE',occurred_at='2026-09-10T10:00:00+08:00',participants='纸面记载：设计和采购',content='线下讨论记录，未代表在线审批')
     r=client.post(f"/api/contacts/{c['id']}/records",json=note);assert r.status_code==200,r.text
@@ -58,11 +73,11 @@ def test_initiator_and_department_head_assignment_then_response(client,data):
     r=client.post(f"/api/contacts/{c['id']}/tasks/{tid}/assign",json=body);assert r.status_code==200,r.text
     c=r.json();assert c['tasks'][0]['status']=='ASSIGNED'
     assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/assign",json=body).json()['revision']==c['revision']
-    sign_in(client,'test_buyer');body=operation(c,content='已核对，建议进一步人工评审')
+    sign_in(client,'test_buyer');body=operation(c,**response_body(content='已核对并完成整改，建议进一步人工复验'))
     r=client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=body);assert r.status_code==200,r.text
     c=r.json();assert c['tasks'][0]['status']=='RESPONDED' and c['collaboration_status']=='OPEN'
     assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=body).json()['revision']==c['revision']
-    assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=operation(c,content='覆盖')).status_code==409
+    assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=operation(c,**response_body(content='覆盖'))).status_code==409
     with factory() as db:assert db.scalar(select(func.count()).select_from(ApprovalInstance))==0
 
 
@@ -99,14 +114,14 @@ def test_revoke_and_membership_change_block_processing(client,data):
     c=client.post(f"/api/contacts/{c['id']}/tasks/{tid}/assign",json=operation(c,assignee_id=ids['buyer'],reason='指定')).json()
     with factory.begin() as db:db.delete(db.get(AssignmentMember,(g['id'],ids['buyer'])))
     sign_in(client,'test_buyer')
-    assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=operation(c,content='成员已移除')).status_code==403
+    assert client.post(f"/api/contacts/{c['id']}/tasks/{tid}/respond",json=operation(c,**response_body(content='成员已移除'))).status_code==403
     with factory.begin() as db:db.execute(update(Grant).where(Grant.user_id==ids['buyer'],Grant.permission=='contact.read').values(active=False))
     assert client.get('/api/contacts/'+c['id']).status_code==403
 
 
 def test_version_replay_conflicts_no_duplicate_tasks(client,data):
     ids,_=data;sign_in(client);g=group(client,[],kind='DEPARTMENT',name='无负责人部门')
-    c,_=create(client,ids);p=operation(c,department_id=g['id'],title='待分派任务')
+    c,_=create(client,ids);p=operation(c,department_id=g['id'],**task_body(title='待分派任务'))
     url=f"/api/contacts/{c['id']}/tasks"
     r=client.post(url,json=p);assert r.status_code==200,r.text
     assert r.json()['tasks'][0]['status']=='UNASSIGNED'

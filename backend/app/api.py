@@ -5,7 +5,7 @@ from fastapi import FastAPI, Depends, Request, Response, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, func, text, delete, literal
 from sqlalchemy.exc import IntegrityError
-from .db import get_db, SessionLocal, now
+from .db import get_db, SessionLocal, now, aware
 from .config import settings
 from . import models as m, schemas as s, authorization as auth, business, bpm
 from .security import current_user, login, public_user, hasher, normalize_username, digest
@@ -356,7 +356,7 @@ def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
                        "progress": {"turn": r.checkpoint.get("turn", 0),
                                     "phase": r.checkpoint.get('phase'),
                                     "model_elapsed_ms": r.checkpoint.get('model_elapsed_ms', 0),
-                                    "elapsed_seconds": max(0, int((now()-r.created_at).total_seconds())) if r.status in {'QUEUED','RUNNING'} else None,
+                                    "elapsed_seconds": max(0, int((now()-aware(r.created_at)).total_seconds())) if r.status in {'QUEUED','RUNNING'} else None,
                                     "tools": [{"id": step.id, "name": step.tool} for step in steps]} if visible else None})
     return result
 

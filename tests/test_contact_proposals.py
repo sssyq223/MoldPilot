@@ -25,7 +25,9 @@ def intent(client,evidence):
 def confirm(client,i):return client.post('/api/human-actions/'+i['id']+'/confirm',json={'challenge':i['challenge']})
 
 
-def create_args(ids):return {'project_id':ids['project'],'category':'hardware','mode':'ONLINE','title':'会话发起合成验证','description':'本人核对后记录'}
+def create_args(ids):return {'project_id':ids['project'],'category':'hardware','mode':'ONLINE','title':'会话发起合成验证','description':'本人核对后记录',
+    'customer_ref':'ERP-CUSTOMER-001','customer_name':'合成客户','mold_number':'MOLD-T001','product_ref':'PART-T001',
+    'application_date':'2026-09-10','problem_source':'QUALITY_ISSUE','current_stage':'质量检验阶段','change_type':'EXCEPTION','urgency':'URGENT'}
 
 
 def test_proposal_no_business_write_confirmation_and_retry(client,data,monkeypatch):
@@ -98,13 +100,18 @@ def test_department_dispatch_assignment_and_feedback_via_proposals(client,data,m
     ids,factory=data;sign_in(client);case,_=create(client,ids)
     g=group(client,[ids['admin']],kind='DEPARTMENT',name='合成设计部门',heads=[ids['admin']])
     _,ctx=start(client,monkeypatch,'admin')
-    e=propose(client,ctx,'task',{'case_id':case['id'],'revision':1,'department_id':g['id'],'title':'核对规格'})
+    e=propose(client,ctx,'task',{'case_id':case['id'],'revision':1,'department_id':g['id'],'title':'核对规格',
+        'affected_type':'DRAWING','affected_ref':'DRAWING-T001-R2','impact_description':'核对变更尺寸',
+        'planned_action':'REWORK','delivery_impact_days':2,'estimated_amount':'1200.00','currency':'CNY',
+        'source_system':'AGENT','source_ref':None,'source_as_of':None})
     assert confirm(client,intent(client,e)).status_code==200
     case=client.get('/api/contacts/'+case['id']).json();tid=case['tasks'][0]['id']
     e=propose(client,ctx,'assign',{'case_id':case['id'],'task_id':tid,'revision':case['revision'],'assignee_id':ids['admin'],'reason':'本人确认分派'},1)
     assert confirm(client,intent(client,e)).status_code==200
     case=client.get('/api/contacts/'+case['id']).json()
-    e=propose(client,ctx,'respond',{'case_id':case['id'],'task_id':tid,'revision':case['revision'],'content':'尺寸待进一步评审'},2)
+    e=propose(client,ctx,'respond',{'case_id':case['id'],'task_id':tid,'revision':case['revision'],'content':'尺寸复核与返工已经完成',
+        'actual_completed_at':'2026-09-10T12:00:00+08:00','actual_hours':'3.50','actual_amount':'1180.00','currency':'CNY',
+        'execution_evidence':'返工记录与尺寸复测报告','source_system':'AGENT','source_ref':None,'source_as_of':None},2)
     assert confirm(client,intent(client,e)).status_code==200
     case=client.get('/api/contacts/'+case['id']).json()
     assert case['tasks'][0]['status']=='RESPONDED' and case['collaboration_status']=='OPEN'

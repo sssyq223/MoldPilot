@@ -11,6 +11,16 @@ from .security import current_user
 from .bpm import content_hash
 from .authorization import fingerprint
 
+PROBLEM_NAMES={'CUSTOMER_CHANGE':'客户设变','DESIGN_ISSUE':'设计异常','ASSEMBLY_ISSUE':'组立异常','MACHINING_ISSUE':'加工异常',
+    'PROCUREMENT_ISSUE':'采购异常','QUALITY_ISSUE':'质检异常','TRIAL_ISSUE':'试模异常','OUTSOURCE_DEFECT':'外协不良',
+    'COST_REDUCTION':'降低成本','PROCESS_IMPROVEMENT':'制程改善','OTHER':'其他'}
+CHANGE_NAMES={'CHANGE':'设变','EXCEPTION':'异常','IMPROVEMENT':'改善'}
+URGENCY_NAMES={'NORMAL':'普通','URGENT':'紧急','CRITICAL':'重大紧急'}
+AFFECTED_NAMES={'DRAWING':'图纸','MATERIAL':'物料','PURCHASE_ORDER':'采购单','WIP_TASK':'在制任务','SUPPLIER_TASK':'供应商任务',
+    'PLAN_NODE':'计划节点','CONTRACT':'合同','FINANCE':'财务事项','LOGISTICS':'物流','OTHER':'其他'}
+ACTION_NAMES={'CONTINUE':'继续执行','PAUSE':'暂停','CANCEL':'取消','REWORK':'返工','REISSUE':'重新下达'}
+SOURCE_NAMES={'AGENT':'Agent本地','ERP':'ERP原生','MANUAL':'人工核对'}
+
 
 class ContextInput(StrictModel):
     case_id:str=Field(min_length=1,max_length=36)
@@ -59,7 +69,11 @@ def preview(db,user,action,cid,tid,data):
         c.require(db,user,'create',case);c.require(db,user,'read',case)
         project=db.get(m.Project,data.project_id)
         if not project:raise DomainError('NOT_FOUND','项目不存在',404)
-        return {'操作':SPECS[action][2],'项目':project.code,'标题':data.title,'内容':data.description,
+        return {'操作':SPECS[action][2],'项目':project.code,'客户':data.customer_name,'客户引用':data.customer_ref,
+                '模具号':data.mold_number,'产品或料品':data.product_ref,'申请日期':data.application_date.isoformat(),
+                '问题来源':PROBLEM_NAMES[data.problem_source],'当前环节':data.current_stage,
+                '变更类别':CHANGE_NAMES[data.change_type],'紧急程度':URGENCY_NAMES[data.urgency],
+                '标题':data.title,'内容':data.description,
                 '方式':'补录线下过程' if data.mode=='HISTORY' else '继续线上办理',
                 '责任域':c.CATEGORY_NAMES.get(data.category,data.category or '未指定')}
     case=c.load(db,user,cid,True)
@@ -83,7 +97,12 @@ def preview(db,user,action,cid,tid,data):
         if case.created_by!=user.id:raise DomainError('FORBIDDEN','由发起人组织协作事项',403)
         if case.mode!='ONLINE':raise DomainError('HISTORY_NO_DISPATCH','历史补录不能派发线上任务',409)
         group=c.department(db,data.department_id)
-        result.update({'责任部门':group.name,'部门版本':group.version,'事项':data.title})
+        result.update({'责任部门':group.name,'部门版本':group.version,'事项':data.title,'影响对象类型':AFFECTED_NAMES[data.affected_type],
+                       '影响对象引用':data.affected_ref,'影响说明':data.impact_description,'计划动作':ACTION_NAMES[data.planned_action],
+                       '预计交期影响天数':data.delivery_impact_days,
+                       '预计金额':(str(data.estimated_amount)+' '+data.currency) if data.estimated_amount is not None else '不涉及',
+                       '事实来源':SOURCE_NAMES[data.source_system],'来源引用':data.source_ref or 'Agent本地记录',
+                       '核对时点':data.source_as_of.isoformat() if data.source_as_of else '本次确认'})
     else:
         task=db.get(m.ContactTask,tid)
         if not task or task.case_id!=case.id:raise DomainError('NOT_FOUND','协作事项不存在',404)
@@ -98,7 +117,11 @@ def preview(db,user,action,cid,tid,data):
         else:
             if task.assignee_id!=user.id or not c.assignee_eligible(db,user,group,case):raise DomainError('FORBIDDEN','只能由当前有权处理人提交反馈',403)
             if task.status!='ASSIGNED':raise DomainError('TASK_FINISHED','该事项已有反馈，不能覆盖',409)
-            result.update({'处理人':user.display_name,'反馈':data.content})
+            if data.actual_completed_at>now():raise DomainError('INVALID_TIME','实际完成时间不能晚于当前时间')
+            result.update({'处理人':user.display_name,'反馈':data.content,'实际完成时间':data.actual_completed_at.isoformat(),
+                           '实际工时':str(data.actual_hours),'实际金额':(str(data.actual_amount)+' '+data.currency) if data.actual_amount is not None else '不涉及',
+                           '执行依据':data.execution_evidence,'事实来源':SOURCE_NAMES[data.source_system],'来源引用':data.source_ref or 'Agent本地记录',
+                           '核对时点':data.source_as_of.isoformat() if data.source_as_of else '本次确认'})
     result['说明']='协作记录和反馈不等于正式审批，也不代表事项已验收或关闭。'
     return result
 

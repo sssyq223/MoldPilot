@@ -148,6 +148,31 @@ def test_mixed_greeting_and_business_request_can_call_tools():
     assert gateway.physical_calls==1 and gateway.final['evidence_ids']==['e1']
 
 
+def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
+    gateway = Gateway()
+
+    class LoopingModel:
+        def __init__(self): self.tool_catalog_sizes = []
+        def generate(self, messages, tools):
+            self.tool_catalog_sizes.append(len(tools))
+            if tools:
+                index = len(self.tool_catalog_sizes)
+                proposal = copy.deepcopy(PROPOSAL)
+                proposal['tool_calls'][0]['id'] = f'call{index}'
+                return proposal
+            assert '工具调用阶段现在结束' in messages[-1]['content']
+            return {'content': json.dumps({'response_kind': 'BUSINESS', 'summary': '根据已有证据回答',
+                                           'evidence_ids': ['e1'], 'suggestions': []})}
+
+    model = LoopingModel()
+    result = run_loop(context(), model, gateway)
+
+    assert result['summary'] == '根据已有证据回答'
+    assert gateway.physical_calls == 8
+    assert model.tool_catalog_sizes == [1] * 8 + [0]
+    assert gateway.saved['finalizing'] is True
+
+
 def test_failed_model_call_records_timing_and_does_not_fake_result():
     class TimeoutModel:
         last_metrics={'tool_count':1,'total_ms':60000}

@@ -1,6 +1,7 @@
 """Collaboration facts are separate from binding approval decisions."""
-from datetime import datetime
-from sqlalchemy import String, Text, Integer, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Boolean
+from datetime import date, datetime
+from decimal import Decimal
+from sqlalchemy import String, Text, Integer, Date, DateTime, Numeric, ForeignKey, UniqueConstraint, CheckConstraint, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base, IdentityMixin, J
 
@@ -19,7 +20,19 @@ class ContactCase(IdentityMixin, Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
     reviewer_id: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
-    __table_args__ = (UniqueConstraint('created_by','request_key'), CheckConstraint("mode IN ('HISTORY','ONLINE')"))
+    customer_ref: Mapped[str | None] = mapped_column(String(200))
+    customer_name: Mapped[str | None] = mapped_column(String(200))
+    mold_number: Mapped[str | None] = mapped_column(String(100))
+    product_ref: Mapped[str | None] = mapped_column(String(200))
+    application_date: Mapped[date | None] = mapped_column(Date)
+    problem_source: Mapped[str | None] = mapped_column(String(40))
+    current_stage: Mapped[str | None] = mapped_column(String(200))
+    change_type: Mapped[str | None] = mapped_column(String(30))
+    urgency: Mapped[str | None] = mapped_column(String(20))
+    __table_args__ = (UniqueConstraint('created_by','request_key'), CheckConstraint("mode IN ('HISTORY','ONLINE')"),
+        CheckConstraint("problem_source IS NULL OR problem_source IN ('CUSTOMER_CHANGE','DESIGN_ISSUE','ASSEMBLY_ISSUE','MACHINING_ISSUE','PROCUREMENT_ISSUE','QUALITY_ISSUE','TRIAL_ISSUE','OUTSOURCE_DEFECT','COST_REDUCTION','PROCESS_IMPROVEMENT','OTHER')",name='contact_problem_source'),
+        CheckConstraint("change_type IS NULL OR change_type IN ('CHANGE','EXCEPTION','IMPROVEMENT')",name='contact_change_type'),
+        CheckConstraint("urgency IS NULL OR urgency IN ('NORMAL','URGENT','CRITICAL')",name='contact_urgency'))
 
 
 class ContactTask(IdentityMixin, Base):
@@ -32,7 +45,33 @@ class ContactTask(IdentityMixin, Base):
     status: Mapped[str] = mapped_column(String(30), default='UNASSIGNED')
     response: Mapped[str | None] = mapped_column(Text)
     verified_plan_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
-    __table_args__ = (CheckConstraint("status IN ('UNASSIGNED','ASSIGNED','RESPONDED','VERIFIED','CANCELLED')",name='contact_task_state'),)
+    affected_type: Mapped[str] = mapped_column(String(40))
+    affected_ref: Mapped[str] = mapped_column(String(300))
+    impact_description: Mapped[str] = mapped_column(Text)
+    planned_action: Mapped[str] = mapped_column(String(30))
+    delivery_impact_days: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    source_system: Mapped[str] = mapped_column(String(20), default='AGENT')
+    source_ref: Mapped[str | None] = mapped_column(String(300))
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_hours: Mapped[Decimal | None] = mapped_column(Numeric(12,2))
+    actual_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    actual_currency: Mapped[str | None] = mapped_column(String(3))
+    execution_evidence: Mapped[str | None] = mapped_column(Text)
+    execution_source_system: Mapped[str | None] = mapped_column(String(20))
+    execution_source_ref: Mapped[str | None] = mapped_column(String(300))
+    execution_source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (CheckConstraint("status IN ('UNASSIGNED','ASSIGNED','RESPONDED','VERIFIED','CANCELLED')",name='contact_task_state'),
+        CheckConstraint("affected_type IN ('DRAWING','MATERIAL','PURCHASE_ORDER','WIP_TASK','SUPPLIER_TASK','PLAN_NODE','CONTRACT','FINANCE','LOGISTICS','OTHER')",name='contact_task_affected_type'),
+        CheckConstraint("planned_action IN ('CONTINUE','PAUSE','CANCEL','REWORK','REISSUE')",name='contact_task_planned_action'),
+        CheckConstraint("source_system IN ('AGENT','ERP','MANUAL')",name='contact_task_source'),
+        CheckConstraint("execution_source_system IS NULL OR execution_source_system IN ('AGENT','ERP','MANUAL')",name='contact_task_execution_source'),
+        CheckConstraint('delivery_impact_days >= 0',name='contact_task_delivery_days'),
+        CheckConstraint('estimated_amount IS NULL OR estimated_amount >= 0',name='contact_task_estimated_amount'),
+        CheckConstraint('actual_hours IS NULL OR actual_hours >= 0',name='contact_task_actual_hours'),
+        CheckConstraint('actual_amount IS NULL OR actual_amount >= 0',name='contact_task_actual_amount'))
 
 
 class ContactRecord(IdentityMixin, Base):
