@@ -454,8 +454,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本",
+        "工具只读核对，不制定或重编计划，不代替部门确认和审批"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖有效计划分析和未完成计划变更权限边界；计划重编审批流程尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -464,8 +469,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "项目计划上下文返回任务计划开始/结束、状态、实际开始/结束字段和客户承诺交期风险",
+        "profile.customer_due_date 与计划节点分开展示，不把内部计划顺延直接改为客户承诺交期"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖计划结束晚于客户承诺日期的风险识别；市场合同跟踪和财务回款节点尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -474,8 +484,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_plan_context 的 limitations 明确 55 天周期、自然日/工作日、节假日和周期模板仍须适配确认，不能作为固定承诺",
+        "大节点覆盖仅按当前计划任务事实辅助核对"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖计划任务事实分析；周期模板和日历适配尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -484,8 +499,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口",
+        "对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖大节点缺口识别；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -494,8 +514,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "项目计划上下文返回任务负责人、计划时间、实际时间、状态和依赖，供进度与实际执行核对",
+        "工具不登记实际执行、不计算人员设备排班或工时"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖运行中、已完成和计划中任务分析；实际工时追溯和 ERP 工单成果关联尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -504,8 +529,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成",
+        "limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖依赖阻塞任务；装配齐套率和关键件口径尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -514,8 +544,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对",
+        "普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖 open_plan_changes 和逾期节点分析；异常调整审批联动尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -524,8 +559,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围",
+        "工具只读，不更新相应计划及任务，不上传审批附件"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖计划变更权限隔离；节点调整审批附件和受影响部门通知尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -534,8 +574,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "客户承诺日期与内部计划节点分开返回，并用 customer_due_risk_tasks 标识晚于客户承诺日期的未完成节点",
+        "工具不无依据等量顺延全部任务，也不修改客户承诺交期"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖客户交期风险任务识别；客户确认依据和跨部门调整执行尚未验收"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -544,8 +589,13 @@
       "module": "项目大节点与计划",
       "agent_responsibility": "Agent 开发大节点维护、部门确认、审批、依赖、日期、计划版本、影响调整及看板；引用 ERP 实际执行记录",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
-      "implementation_evidence": [],
-      "verification_evidence": [],
+      "implementation_evidence": [
+        "query_project_plan_context 支持查看有效计划、计划变更、实际进度和依赖阻塞；暂停恢复仍由 project_pause_resume 独立工具处理",
+        "对话中新增计划任务表格依据展示，但甘特图和完整进度看板样式仍待适配"
+      ],
+      "verification_evidence": [
+        "tests/test_plan_tools.py 覆盖有效计划与计划变更查询；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证"
+      ],
       "acceptance_status": "NOT_VERIFIED"
     },
     {
@@ -1357,14 +1407,17 @@
         "query_contract_context 在合同语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在权限不足时写入 limitations",
         "合同上下文按对应合同工具隔离明细，防止用汇总绕过合同号或金额权限",
         "query_internal_start_readiness 在正式开工语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少承接/合同/计划工具时写入 limitations",
-        "工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接"
+        "工具在未授权承接查询时不泄露承接单号或把缺失资料编造成未承接",
+        "query_project_plan_context 在计划语境中返回 RESOLVED、MULTIPLE_CANDIDATES、NOT_FOUND、NOT_FOUND_OR_FORBIDDEN，并在缺少计划变更工具时写入 limitations",
+        "工具不把无有效计划推断为项目无进度，明确 warning 需要核对有效计划"
       ],
       "verification_evidence": [
         "tests/test_project_dossier.py 覆盖同号歧义与无权不可见",
         "tests/test_delivery_risk_tool.py 覆盖项目聚焦和歧义口径",
         "tests/test_quote_tools.py 覆盖多候选要求指定项目 ID、无合同工具时不泄露合同号和有效承接摘要",
         "tests/test_contract_tools.py 覆盖多项目候选、合同权限隔离和晚到合同派生状态",
-        "tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态"
+        "tests/test_start_tools.py 覆盖多候选、承接依据权限隔离和已开工派生状态",
+        "tests/test_plan_tools.py 覆盖多候选、无有效计划和计划变更权限隔离"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
