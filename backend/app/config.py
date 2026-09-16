@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MOLD_", env_file=".env", extra="ignore")
     database_url: str = "postgresql+psycopg://agent_app@127.0.0.1:55432/agent_db"
     redis_url: str = "redis://127.0.0.1:56379/0"
+    restore_database_url: str = ""
     origin: str = "http://127.0.0.1:5173"
     cookie_secure: bool = True
     environment: str = "development"

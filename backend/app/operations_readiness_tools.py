@@ -271,10 +271,13 @@ def _tool_path(name: str) -> dict:
 
 def _backup_restore_status() -> dict:
     backup_script = REPO_ROOT / "scripts" / "backup_postgres.py"
+    restore_script = REPO_ROOT / "scripts" / "restore_postgres.py"
     pg_dump = _tool_path("pg_dump")
     pg_restore = _tool_path("pg_restore")
+    cfg = settings()
+    restore_target = _safe_url(cfg.restore_database_url)
     can_backup = backup_script.exists() and pg_dump["available"]
-    can_restore_rehearse = pg_restore["available"]
+    can_restore_rehearse = restore_script.exists() and pg_restore["available"] and restore_target.get("configured") is True
     return {
         "backup_script": {
             "path": "scripts/backup_postgres.py",
@@ -282,12 +285,18 @@ def _backup_restore_status() -> dict:
             "mode": "logical_pg_dump_custom_format",
             "default_output_dir": ".local/backups",
         },
+        "restore_script": {
+            "path": "scripts/restore_postgres.py",
+            "exists": restore_script.exists(),
+            "mode": "pg_restore_custom_format_to_isolated_database",
+            "target": restore_target,
+        },
         "pg_dump": pg_dump,
         "pg_restore": pg_restore,
         "can_run_local_backup": can_backup,
         "can_rehearse_restore": can_restore_rehearse,
         "status": "BACKUP_TOOLING_READY" if can_backup and can_restore_rehearse else "BACKUP_TOOLING_INCOMPLETE",
-        "note": "备份脚本只读取本机 .env，拒绝 SQLite，并通过 PGPASSWORD 环境变量传递密码；正式 RTO/RPO 仍需隔离恢复演练证明。",
+        "note": "备份/恢复脚本只读取本机 .env，拒绝 SQLite；恢复默认要求隔离库 MOLD_RESTORE_DATABASE_URL，正式 RTO/RPO 仍需隔离恢复演练证明。",
     }
 
 
@@ -520,7 +529,7 @@ def _readiness_summary(
     if backup_restore.get("status") == "BACKUP_TOOLING_READY":
         ready_items.append("postgres_backup_restore_tooling")
     else:
-        block("backup_restore", "PostgreSQL 备份/恢复工具链", backup_restore.get("status"), "安装 PostgreSQL 客户端或指定 pg_dump/pg_restore，执行备份并在隔离库恢复演练。")
+        block("backup_restore", "PostgreSQL 备份/恢复工具链", backup_restore.get("status"), "安装 PostgreSQL 客户端或指定 pg_dump/pg_restore，配置 MOLD_RESTORE_DATABASE_URL，执行备份并在隔离库恢复演练。")
 
     if log_retention.get("policy_fully_configured"):
         ready_items.append("log_retention_policy")
