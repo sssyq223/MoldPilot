@@ -171,19 +171,47 @@ def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
     ]
 
 
-def test_on_demand_prompt_lists_bounded_capability_catalog_not_every_tool():
+def test_business_query_mentioning_model_still_allows_tool_search():
+    class InspectingModel(Model):
+        def generate(self, messages, tools):
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
+            return {'content': json.dumps({'response_kind': 'CLARIFICATION',
+                                           'summary': '请提供项目编号。',
+                                           'evidence_ids': [], 'suggestions': []})}
+    run_loop(context(prompt='用模型查询项目计划，看看项目大节点', core_tool_names=[],
+                     tools=[OTHER_TOOL], skills=[]), InspectingModel([]), Gateway())
+
+
+def test_workbench_support_request_hides_tool_search_and_business_catalog():
     many_tools = [{'type': 'function', 'function': {'name': f'query_dummy_{index}', 'description': f'虚拟工具 {index}'}} for index in range(30)]
     class PromptInspectingModel:
         def generate(self, messages, tools):
             prompt = messages[0]['content']
+            assert tools == []
+            assert '按需工具' not in prompt
+            assert 'query_dummy_0' not in prompt
+            return {'content': json.dumps({'response_kind': 'CONVERSATION',
+                                           'summary': '这是技术排障，不调用业务工具。',
+                                           'evidence_ids': [], 'suggestions': []})}
+    result = run_loop(context(prompt='测试 500 定位', core_tool_names=['query_dummy_0'], tools=many_tools, skills=[]),
+                      PromptInspectingModel(), Gateway())
+    assert result['response_kind'] == 'CONVERSATION'
+
+
+def test_business_request_on_demand_prompt_lists_bounded_capability_catalog_not_every_tool():
+    many_tools = [{'type': 'function', 'function': {'name': f'query_dummy_{index}', 'description': f'虚拟工具 {index}'}} for index in range(30)]
+    class PromptInspectingModel:
+        def generate(self, messages, tools):
+            prompt = messages[0]['content']
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
             assert 'query_dummy_0' in prompt
             assert 'query_dummy_11' in prompt
             assert 'query_dummy_12' not in prompt
             assert '还有 18 个能力/工具' in prompt
             return {'content': json.dumps({'response_kind': 'CONVERSATION',
-                                           'summary': '这是技术排障，不调用业务工具。',
+                                           'summary': '请说明要查询的项目。',
                                            'evidence_ids': [], 'suggestions': []})}
-    result = run_loop(context(prompt='测试 500 定位', core_tool_names=[], tools=many_tools, skills=[]),
+    result = run_loop(context(prompt='查询项目当前状态', core_tool_names=[], tools=many_tools, skills=[]),
                       PromptInspectingModel(), Gateway())
     assert result['response_kind'] == 'CONVERSATION'
 

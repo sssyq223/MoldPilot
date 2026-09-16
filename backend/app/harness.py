@@ -7,6 +7,23 @@ TOOL_SEARCH_NAME = "ToolSearch"
 MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES = 12
 MAX_TOOL_SEARCH_MATCHES = 4
 MAX_ACTIVATED_TOOLS_PER_SEARCH = 8
+WORKBENCH_SUPPORT_HINTS = (
+    "harness", "toolsearch", "工具调用", "工具选择", "模型", "model", "llm", "qwen", "30b",
+    "上下文窗口", "context", "token", "tokens", "压缩", "配置", "接口", "api", "http", "500", "404",
+    "报错", "错误", "异常", "定位", "调试", "debug", "前端", "后端", "页面", "ui", "样式",
+    "白天模式", "暗色", "浏览器", "测试", "build", "构建", "数据库", "postgres", "postgresql",
+    "sqlite", "redis", "docker", "navicat", "github", "提交", "部署", "日志", "开发进度",
+)
+BUSINESS_OBJECT_HINTS = (
+    "项目", "模具", "工程联络", "联络单", "采购", "订单", "报价", "承接", "拒单", "合同",
+    "开工", "计划", "大节点", "设计", "bom", "加工", "装配", "试模", "发货", "物流",
+    "签收", "验收", "委外", "供应商", "财务", "回款", "付款", "结项", "关闭", "暂停",
+    "恢复", "终止", "审批", "smoke-", "test-m",
+)
+BUSINESS_ACTION_HINTS = (
+    "查询", "核对", "办理", "准备", "创建", "提交", "审批", "确认", "分析", "查看",
+    "看看", "生成", "调整", "变更", "关闭", "暂停", "恢复", "承接", "开工",
+)
 
 
 SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用户完成任务。
@@ -42,6 +59,18 @@ def _tool_description(tool):
 def _compact_description(text, limit=80):
     compact = " ".join((text or "").split())
     return compact if len(compact) <= limit else compact[:limit - 3] + "..."
+
+
+def _contains_any(text, hints):
+    folded = (text or "").lower()
+    return any(hint in folded for hint in hints)
+
+
+def _business_tool_activation_allowed(context):
+    prompt = (context.get("prompt") or "") + "\n" + "\n".join(context.get("recent_requests") or [])
+    has_workbench_support = _contains_any(prompt, WORKBENCH_SUPPORT_HINTS)
+    has_business_task = _contains_any(prompt, BUSINESS_OBJECT_HINTS) and _contains_any(prompt, BUSINESS_ACTION_HINTS)
+    return not has_workbench_support or has_business_task
 
 
 def _tool_search_schema():
@@ -213,11 +242,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
     core_tool_names = set(context.get("core_tool_names", []))
     active_tool_names = set(context.get("active_tool_names", [])) & set(all_tools)
     active_tool_names |= core_tool_names & set(all_tools)
+    business_tools_allowed = _business_tool_activation_allowed(context)
+    if not business_tools_allowed:
+        active_tool_names.clear()
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
-    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups)
+    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups) if business_tools_allowed else ""
 
     def active_tools():
+        if not business_tools_allowed:
+            return []
         tools = [all_tools[name] for name in all_tools if name in active_tool_names]
         if deferred_tools:
             tools.insert(0, _tool_search_schema())
