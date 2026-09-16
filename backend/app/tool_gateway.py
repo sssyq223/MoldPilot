@@ -396,7 +396,8 @@ def skill_context(db, user):
             path = Path(__file__).resolve().parents[1] / "skills" / key / "SKILL.md"
             content = path.read_text(encoding="utf-8")
             result.append({"key": key, "version": "1.0.0", "hash": content_hash(content), "instructions": content,
-                           "agent_description": skill_agent_description(content)})
+                           "agent_description": skill_agent_description(content),
+                           "tools": spec["tools"], "optional_tools": spec.get("optional_tools", [])})
     return result
 
 

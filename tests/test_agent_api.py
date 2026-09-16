@@ -47,7 +47,12 @@ def test_run_persists_agent_permission_mode_for_worker_context(client, data, mon
 
 def test_tool_assignment_cannot_grant_business_data_access(client, data):
     ids, _ = data; sign_in(client)
-    user = client.post('/api/users', json={'username':'empty_user','display_name':'无业务权限测试','password':'SyntheticPassword-2026!'}).json()
+    department = client.post('/api/organization/groups', json={
+        'kind': 'DEPARTMENT', 'name': '无业务权限部门', 'members': [], 'active': True, 'reason': '测试创建用户需选择有效部门'
+    }).json()
+    assert department['name'] == '无业务权限部门'
+    user = client.post('/api/users', json={'username':'empty_user','display_name':'无业务权限测试',
+        'department':'无业务权限部门','password':'SyntheticPassword-2026!'}).json()
     r = client.post(f"/api/users/{user['id']}/capabilities", json={'kind':'TOOL','key':'query_projects','enabled':True,'reason':'测试能力与数据权限取交集','expected_security_version':user['security_version']})
     assert r.status_code == 200
     client.post('/api/auth/logout')

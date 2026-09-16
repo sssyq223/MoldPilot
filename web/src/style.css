@@ -1269,3 +1269,34 @@ html[data-theme="light"] .audit-pagination button{background:#fff;border-color:#
  .audit-page-head,.audit-card,.audit-pagination{align-items:flex-start;flex-direction:column}
  .audit-card time{padding-left:20px}
 }
+
+/* Home layout polish: softer canvas, calmer sidebar, and aligned central content. */
+.chat{background:
+ radial-gradient(circle at 50% 18%,color-mix(in srgb,var(--accent) 6%,transparent),transparent 30%),
+ linear-gradient(180deg,color-mix(in srgb,var(--bg) 98%,#fff),var(--bg))!important}
+.chat-scroll{padding-bottom:24px!important}
+.welcome{max-width:660px!important;margin-top:clamp(48px,13vh,132px)!important}
+.welcome .agent-mark{width:54px;height:54px;border-radius:15px;box-shadow:0 18px 44px color-mix(in srgb,var(--shadow) 18%,transparent)}
+.welcome h1{margin-top:20px!important;letter-spacing:-.02em}
+.welcome>p{line-height:1.9!important}
+.suggestions{gap:12px!important}
+.suggestions button{width:min(420px,100%)!important;min-height:46px!important;border-radius:12px!important;padding:0 15px!important;box-shadow:0 8px 26px color-mix(in srgb,var(--shadow) 8%,transparent)}
+.suggestions button:hover{transform:translateY(-1px);box-shadow:0 12px 32px color-mix(in srgb,var(--shadow) 11%,transparent)}
+.composer{border-radius:18px!important;box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent),0 1px 0 color-mix(in srgb,#fff 78%,transparent) inset!important}
+.composer:focus-within{box-shadow:0 22px 58px color-mix(in srgb,var(--shadow) 20%,transparent),0 0 0 3px color-mix(in srgb,var(--accent) 9%,transparent)!important}
+.conversation-list{padding-right:3px}
+.conversation-row{min-height:34px!important;border-radius:9px!important;margin:1px 0!important}
+.conversation-row:not(.active):hover{background:color-mix(in srgb,var(--accent) 6%,transparent)!important}
+.conversation-main{height:32px!important;padding-left:9px!important;font-size:12.5px!important}
+.conversation-main svg{opacity:.62}
+.conversation-list::-webkit-scrollbar{width:5px}
+.conversation-list::-webkit-scrollbar-track{background:transparent}
+.conversation-list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 28%,transparent);border-radius:999px}
+.conversation-list:hover::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 42%,transparent)}
+html[data-theme="light"] .chat{background:
+ radial-gradient(circle at 50% 18%,#eef2f6 0,transparent 30%),
+ linear-gradient(180deg,#fbfcfd,#f7f8fa 62%,#f5f7fa)!important}
+html[data-theme="light"] .suggestions button{background:#fff;border-color:#dbe3ec;box-shadow:0 8px 26px #52667d0d}
+html[data-theme="light"] .suggestions button:hover{background:#fff;border-color:#cfd9e4;box-shadow:0 12px 32px #52667d14}
+html[data-theme="light"] .composer{border-color:#d7e1eb!important;box-shadow:0 18px 50px #52667d14,0 1px 0 #fff inset!important}
+html[data-theme="light"] .composer:focus-within{border-color:#b9c6d3!important;box-shadow:0 22px 58px #52667d1b,0 0 0 3px rgba(23,35,52,.07)!important}

@@ -63,8 +63,14 @@ def test_invalid_or_truncated_model_output_fails_closed(body):
 TOOL = {'type': 'function', 'function': {'name': 'query_projects'}}
 OTHER_TOOL = {'type': 'function', 'function': {'name': 'query_project_plan_context',
                                                'description': '按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读。'}}
+BASELINE_TOOL = {'type': 'function', 'function': {'name': 'prepare_project_plan_baseline',
+                                                  'description': '准备项目基线计划审批建议。'}}
+PLAN_CHANGE_TOOL = {'type': 'function', 'function': {'name': 'prepare_project_plan_change',
+                                                     'description': '准备项目计划变更审批建议。'}}
 TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search1', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': 'query_projects'})}}]}
+PLAN_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-plan', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目计划'})}}]}
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
+PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -127,6 +133,59 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_tool_search_activates_bounded_skill_tool_pack_for_next_turn():
+    gateway = Gateway()
+    model = InspectingRepliesModel([PLAN_TOOL_SEARCH, PLAN_PROPOSAL, FINAL])
+    result = run_loop(context(core_tool_names=[], tools=[TOOL, OTHER_TOOL, BASELINE_TOOL, PLAN_CHANGE_TOOL],
+                              skills=[{'key': 'project_plan_context_review',
+                                       'agent_description': '项目计划上下文核对',
+                                       'tools': ['query_project_plan_context'],
+                                       'optional_tools': ['prepare_project_plan_baseline']}]),
+                      model, gateway)
+    assert result['summary'] == 'one visible project'
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
+        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
+    ]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['active_tool_names'] == ['prepare_project_plan_baseline', 'query_project_plan_context']
+
+
+def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
+    exact = {'role': 'assistant', 'tool_calls': [{'id': 'search-plan-tool', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': 'query_project_plan_context'})}}]}
+    gateway = Gateway()
+    model = InspectingRepliesModel([exact, PLAN_PROPOSAL, FINAL])
+    run_loop(context(core_tool_names=[], tools=[OTHER_TOOL, BASELINE_TOOL],
+                     skills=[{'key': 'project_plan_context_review',
+                              'agent_description': '项目计划上下文核对',
+                              'tools': ['query_project_plan_context'],
+                              'optional_tools': ['prepare_project_plan_baseline']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_project_plan_context'],
+        ['ToolSearch', 'query_project_plan_context'],
+    ]
+
+
+def test_on_demand_prompt_lists_bounded_capability_catalog_not_every_tool():
+    many_tools = [{'type': 'function', 'function': {'name': f'query_dummy_{index}', 'description': f'虚拟工具 {index}'}} for index in range(30)]
+    class PromptInspectingModel:
+        def generate(self, messages, tools):
+            prompt = messages[0]['content']
+            assert 'query_dummy_0' in prompt
+            assert 'query_dummy_11' in prompt
+            assert 'query_dummy_12' not in prompt
+            assert '还有 18 个能力/工具' in prompt
+            return {'content': json.dumps({'response_kind': 'CONVERSATION',
+                                           'summary': '这是技术排障，不调用业务工具。',
+                                           'evidence_ids': [], 'suggestions': []})}
+    result = run_loop(context(prompt='测试 500 定位', core_tool_names=[], tools=many_tools, skills=[]),
+                      PromptInspectingModel(), Gateway())
+    assert result['response_kind'] == 'CONVERSATION'
 
 
 def test_recovery_reuses_persisted_proposal_and_idempotent_receipt():

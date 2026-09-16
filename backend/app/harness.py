@@ -4,8 +4,9 @@ import time
 from .context_budget import compact_messages_for_model, usage_snapshot
 
 TOOL_SEARCH_NAME = "ToolSearch"
-MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES = 48
+MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES = 12
 MAX_TOOL_SEARCH_MATCHES = 4
+MAX_ACTIVATED_TOOLS_PER_SEARCH = 8
 
 
 SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用户完成任务。
@@ -53,17 +54,73 @@ def _tool_search_schema():
         "strict": True}}
 
 
-def _optional_tools_prompt(deferred_tools):
-    entries = [(name, _tool_description(tool)) for name, tool in deferred_tools.items()]
-    if not entries:
+def _registered_skill_catalog():
+    try:
+        from .tool_gateway import SKILLS
+        return SKILLS
+    except Exception:
+        return {}
+
+
+def _skill_tool_groups(skills, all_tools):
+    registered = _registered_skill_catalog()
+    result = []
+    seen = set()
+    for skill in skills or []:
+        key = skill.get("key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        spec = registered.get(key, {})
+        required = skill.get("tools") or skill.get("dependencies") or spec.get("tools", [])
+        optional = skill.get("optional_tools") or skill.get("optional_dependencies") or spec.get("optional_tools", [])
+        tool_names = [name for name in [*required, *optional] if name in all_tools]
+        if not tool_names:
+            continue
+        description = skill.get("agent_description") or spec.get("description") or spec.get("name") or ""
+        result.append({"key": key, "name": spec.get("name", key), "description": description,
+                       "tools": tool_names, "required": [name for name in required if name in all_tools],
+                       "optional": [name for name in optional if name in all_tools]})
+    return result
+
+
+def _score_search_candidate(query, terms, *fields):
+    score = 0
+    for raw in fields:
+        text = str(raw or "").lower()
+        if not text:
+            continue
+        if text == query:
+            score += 10000
+        elif query and query in text:
+            score += 1200
+        for term in terms:
+            if term in text:
+                score += 80
+    return score
+
+
+def _optional_tools_prompt(deferred_tools, tool_groups):
+    grouped_tools = {name for group in tool_groups for name in group["tools"]}
+    group_entries = [group for group in tool_groups if any(name in deferred_tools for name in group["tools"])]
+    loose_entries = [(name, _tool_description(tool)) for name, tool in deferred_tools.items() if name not in grouped_tools]
+    if not group_entries and not loose_entries:
         return ""
-    visible = entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES]
-    lines = [f"- {name}: {_compact_description(description, 72)}" for name, description in visible]
-    if len(entries) > len(visible):
-        lines.append(f"- ... 还有 {len(entries) - len(visible)} 个工具；请用准确工具名或能力描述搜索")
+    visible_groups = group_entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES]
+    lines = [f"- {group['key']}（{group['name']}）: {_compact_description(group['description'], 72)}；工具包 {', '.join(group['tools'])}"
+             for group in visible_groups]
+    remaining = len(group_entries) - len(visible_groups)
+    if loose_entries and len(lines) < MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES:
+        for name, description in loose_entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES - len(lines)]:
+            lines.append(f"- {name}: {_compact_description(description, 72)}")
+        remaining += max(0, len(loose_entries) - (MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES - len(visible_groups)))
+    else:
+        remaining += len(loose_entries)
+    if remaining:
+        lines.append(f"- ... 还有 {remaining} 个能力/工具；请用准确工具名或简短能力描述搜索")
     return "\n".join([
         "# 按需工具",
-        "以下能力可按需激活。只有当本次请求明确需要业务查询或业务操作时，才调用 ToolSearch；ToolSearch 只让对应工具在下一轮可用，不代表已经取得业务事实。",
+        "以下能力按场景包激活。只有当本次请求明确需要业务查询或业务操作时，才调用 ToolSearch；ToolSearch 只让小工具集在下一轮可用，不代表已经取得业务事实。准确工具名只激活单个工具，能力/场景描述会激活对应工具包。",
         *lines,
     ])
 
@@ -76,11 +133,32 @@ def _compact_skills(skills):
     return result
 
 
-def _find_deferred_tools(query, deferred_tools):
+def _find_deferred_tools(query, deferred_tools, tool_groups=None):
     normalized = (query or "").strip().lower()
     if not normalized:
-        return []
+        return [], [], []
     terms = [term for term in normalized.replace("/", " ").replace("|", " ").replace(";", " ").replace(",", " ").split() if term]
+    if normalized in deferred_tools:
+        return [normalized], [normalized], []
+    group_scores = []
+    for group in tool_groups or []:
+        searchable_tools = " ".join(group["tools"])
+        searchable_tool_descriptions = " ".join(_tool_description(deferred_tools[name]) for name in group["tools"] if name in deferred_tools)
+        score = _score_search_candidate(normalized, terms, group["key"], group["name"], group["description"],
+                                        searchable_tools, searchable_tool_descriptions)
+        deferred_group_tools = [name for name in group["tools"] if name in deferred_tools]
+        if score > 0 and deferred_group_tools:
+            group_scores.append((score, group["key"], deferred_group_tools))
+    if group_scores:
+        matches, activated = [], []
+        for _, key, tool_names in sorted(group_scores, reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
+            matches.append(key)
+            for name in tool_names:
+                if name not in activated:
+                    activated.append(name)
+                if len(activated) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
+                    return matches, activated, matches
+        return matches, activated, matches
     scored = []
     for name, tool in deferred_tools.items():
         lname = name.lower()
@@ -99,7 +177,8 @@ def _find_deferred_tools(query, deferred_tools):
                 score += 50
         if score > 0:
             scored.append((score, name))
-    return [name for _, name in sorted(scored, reverse=True)[:MAX_TOOL_SEARCH_MATCHES]]
+    matches = [name for _, name in sorted(scored, reverse=True)[:MAX_TOOL_SEARCH_MATCHES]]
+    return matches, matches, []
 
 
 def _debug_model_message(message):
@@ -135,7 +214,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
     active_tool_names = set(context.get("active_tool_names", [])) & set(all_tools)
     active_tool_names |= core_tool_names & set(all_tools)
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
-    optional_prompt = _optional_tools_prompt(deferred_tools)
+    tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
+    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups)
 
     def active_tools():
         tools = [all_tools[name] for name in all_tools if name in active_tool_names]
@@ -238,11 +318,12 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                 signature, arguments = tool_signature(call)
                 phase = 'TOOL_RUNNING'; save()
                 if name == TOOL_SEARCH_NAME:
-                    matches = _find_deferred_tools(arguments.get("query", ""), deferred_tools)
-                    activated = [match for match in matches if match not in active_tool_names]
+                    matches, candidates, matched_groups = _find_deferred_tools(arguments.get("query", ""), deferred_tools, tool_groups)
+                    activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
                     result = {"source": "harness", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                               "query": arguments.get("query", ""), "matches": matches, "activated": activated,
+                              "matched_groups": matched_groups,
                               "message": ("已激活按需工具：" + "、".join(activated) + "。下一轮可调用。") if activated else
                                          ("匹配工具已处于激活状态：" + "、".join(matches)) if matches else "未找到匹配的按需工具。"}
                 else:
