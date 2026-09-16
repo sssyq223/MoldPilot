@@ -1960,6 +1960,7 @@
         "scripts/verify_postgres_baseline.py 与运行时工具调用已在本机实际 PostgreSQL moldpilot 库通过，返回 dialect=postgresql、current_database=moldpilot、alembic_version=d2f0a9b1c3e4 且仓库 head 相同",
         "scripts/backup_postgres.py --dry-run 已核对 PostgreSQL 配置并如实报告当前缺少 pg_dump",
         "scripts/restore_postgres.py dry-run 已核对恢复目标配置和 pg_restore 可用性缺口，不会修改数据库",
+        "scripts/dev_redis.py status/start/init-stream 已验证本机 Redis 端口仍未开放，初始化脚本在 Redis 不可达时返回错误类型而非异常堆栈",
         "运行就绪工具已返回 log_retention.status=LOG_RETENTION_POLICY_INCOMPLETE",
         "Redis 运行探测返回明确状态并保持未就绪警告直到 stream/group 验证通过",
         "部署运行前提探测返回明确状态并保持未就绪警告直到 Docker/Node/构建产物全部验证通过",

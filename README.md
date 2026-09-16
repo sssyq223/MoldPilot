@@ -64,6 +64,17 @@ $env:PYTHONPATH='backend'
 
 运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
 
+本地 Redis 可用 Docker 单独启动，不要求与应用共用 Compose：
+
+```powershell
+$env:PYTHONPATH='backend'
+.venv/Scripts/python.exe scripts/dev_redis.py status
+.venv/Scripts/python.exe scripts/dev_redis.py start --execute
+.venv/Scripts/python.exe scripts/dev_redis.py init-stream --execute
+```
+
+`status` 只读；`start` 会使用 [docker-compose.redis.yml](docker-compose.redis.yml) 启动绑定到 `127.0.0.1:56379` 的 Redis；`init-stream` 只创建 `message_worker` 所需的业务事件 stream 和通知消费组，不发布业务消息。
+
 部署运行前提也由同一个工具只读核对：Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。该核对不会启动服务、不会构建前端、不会执行 Docker 操作；缺失项会保持 FR-118 部署拓扑门槛未通过。
 
 运行就绪返回中的 `readiness_summary` 会把机器可验证阻断项和仍需人工/实施验收的门槛分开列出。模型回答交付状态时应引用该汇总，不能只因为某个配置存在或某个本机探测通过就宣称整体已交付。

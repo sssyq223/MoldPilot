@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: moldpilot-redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - moldpilot_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  moldpilot_redis_data:

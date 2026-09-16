@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：本地 Redis 启动与 stream 初始化脚本（2026-09-16）
+
+- 新增 `docker-compose.redis.yml`，提供独立本地 Redis 7 容器，绑定 `127.0.0.1:56379`，开启 AOF 持久化，与 `.env.example` 的 `MOLD_REDIS_URL` 保持一致。
+- 新增 `scripts/dev_redis.py`，默认 `status` 只读核对 Docker daemon、端口、Redis PING、业务事件 stream 和通知消费组；`start --execute` 才会启动容器，`init-stream --execute` 才会创建 `message_worker` 所需 stream/group。
+- 当前环境 `scripts/dev_redis.py start --execute` 未能成功启动 Redis，`127.0.0.1:56379` 仍未开放；`init-stream --execute` 已改为在 Redis 不可达时返回错误类型和操作提示，不再输出异常堆栈。
+- 该脚本用于消除 `readiness_summary.machine_blockers.redis` 的本机运行阻断；正式交付仍需目标环境 Redis 持久化、容量、告警、重试、死信和故障恢复演练。
+
 ## 持续开发：PostgreSQL 隔离恢复脚本基线（2026-09-16）
 
 - 新增 `scripts/restore_postgres.py`，默认 dry-run，只读取 `MOLD_RESTORE_DATABASE_URL` 指向的隔离恢复库，拒绝 SQLite，并默认拒绝恢复到主库 `moldpilot`。
