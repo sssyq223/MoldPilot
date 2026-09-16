@@ -110,9 +110,24 @@ def test_plan_context_schema_and_progress_analysis():
             assert analysis['dependency_blocked_tasks'][0]['key']=='assembly'
             assert 'trial' in analysis['milestone_coverage']['missing']
             assert any(task['key']=='delivery' for task in analysis['customer_due_risk_tasks'])
+            visualization=analysis['visualization']
+            assert visualization['kind']=='project_plan_visualization_v1'
+            assert [row['key'] for row in visualization['timeline']]==['design','purchase','assembly','delivery']
+            purchase_row=next(row for row in visualization['timeline'] if row['key']=='purchase')
+            assembly_row=next(row for row in visualization['timeline'] if row['key']=='assembly')
+            delivery_row=next(row for row in visualization['timeline'] if row['key']=='delivery')
+            assert purchase_row['lane']=='running'
+            assert 'OVERDUE' in purchase_row['risk_flags']
+            assert 'BLOCKED_BY_PREREQUISITE' in assembly_row['risk_flags']
+            assert assembly_row['waiting_for']==['purchase']
+            assert 'CUSTOMER_DUE_RISK' in delivery_row['risk_flags']
+            assert [row['key'] for row in visualization['kanban']['columns']['done']]==['design']
+            assert [row['key'] for row in visualization['kanban']['columns']['running']]==['purchase']
+            assert {row['key'] for row in visualization['kanban']['risk_lanes']['blocked']}=={'assembly','delivery'}
             erp=result['data'][0]['erp_execution_progress']
             assert erp['status']=='NOT_CONFIGURED'
             assert erp['records'] is None
+            assert visualization['external_progress']=={'source':'ERP','status':'NOT_CONFIGURED','available':False}
             assert 'ERP 服务地址未配置' in ''.join(result['limitations'])
     finally:
         engine.dispose()
@@ -143,6 +158,8 @@ def test_plan_context_reads_erp_progress_as_reference_without_mirroring(monkeypa
             schedule=erp['records'][0]['production_schedules'][0]
             assert row['source_ref']=='system/projectNode/list:NODE-1'
             assert schedule['source_ref']=='system/productionSchedule/list:WO-1'
+            visualization=result['data'][0]['analysis']['visualization']
+            assert visualization['external_progress']=={'source':'ERP','status':'RESOLVED','available':True}
             assert 'secretField' not in str(erp)
             assert 'internalCost' not in str(erp)
             assert not list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==base.id,m.PlanTask.actual_end.is_not(None))))

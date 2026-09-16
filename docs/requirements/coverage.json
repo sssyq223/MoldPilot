@@ -553,10 +553,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口",
-        "对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖"
+        "对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖",
+        "analysis.visualization.timeline 按当前有效计划输出可渲染节点时间线，供对话和右侧材料展示大节点顺序"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖大节点缺口识别；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表"
+        "tests/test_plan_tools.py 覆盖大节点缺口识别和时间线顺序；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -568,10 +569,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "项目计划上下文返回任务负责人、计划时间、实际时间、状态和依赖，供进度与实际执行核对",
+        "analysis.visualization.kanban.columns 将计划任务按未开始、进行中和已完成三类输出，避免模型按自然语言自行归类",
         "工具不登记实际执行、不计算人员设备排班或工时"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖运行中、已完成和计划中任务分析；实际工时追溯和 ERP 工单成果关联尚未验收"
+        "tests/test_plan_tools.py 覆盖运行中、已完成和计划中任务分析及看板列；实际工时追溯和 ERP 工单成果关联尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -583,10 +585,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成",
+        "analysis.visualization.kanban.risk_lanes.blocked 输出依赖阻塞节点及等待前置任务，供看板直接展示而非模型猜测",
         "limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖依赖阻塞任务；装配齐套率和关键件口径尚未验收"
+        "tests/test_plan_tools.py 覆盖依赖阻塞任务及风险泳道；装配齐套率和关键件口径尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -598,11 +601,12 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对",
+        "analysis.visualization.kanban.risk_lanes.overdue 将逾期节点输出为结构化风险泳道，便于后续异常协同入口引用",
         "prepare_project_plan_change 可把影响节点的调整方案封装为本人确认后的 plan_change BPM 提案",
         "普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析和计划变更 proposal 确认链路；异常来源到计划变更的完整部门协同仍未验收"
+        "tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析、逾期风险泳道和计划变更 proposal 确认链路；异常来源到计划变更的完整部门协同仍未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -633,10 +637,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "客户承诺日期与内部计划节点分开返回，并用 customer_due_risk_tasks 标识晚于客户承诺日期的未完成节点",
+        "analysis.visualization.kanban.risk_lanes.customer_due_risk 将客户交期风险节点结构化输出，供看板高亮但不改客户承诺日期",
         "工具不无依据等量顺延全部任务，也不修改客户承诺交期"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖客户交期风险任务识别；客户确认依据和跨部门调整执行尚未验收"
+        "tests/test_plan_tools.py 覆盖客户交期风险任务识别及客户交期风险泳道；客户确认依据和跨部门调整执行尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -649,10 +654,11 @@
       "implementation_evidence": [
         "query_project_plan_context 支持查看有效计划、计划变更、实际进度和依赖阻塞；暂停恢复仍由 project_pause_resume 独立工具处理",
         "query_project_plan_context 新增 erp_execution_progress，只读引用 ERP /system/projectNode/list 与 /system/productionSchedule/list 的节点、工单、状态、计划/实际时间、进度和原生引用；未配置、未登录、无模具引用或 ERP 异常会明确返回状态，不把未知进度当作无待办",
-        "对话中新增计划任务表格依据展示，但甘特图和完整进度看板样式仍待适配"
+        "analysis.visualization 输出 project_plan_visualization_v1：包含任务时间线、未开始/进行中/已完成看板列、逾期/依赖阻塞/客户交期风险泳道，以及 ERP 外部进度可用状态；该结构只供渲染，不直接修改批准计划",
+        "对话中新增计划任务表格依据展示；完整交互式甘特图样式、工作日/节假日、资源负荷和拖拽改期规则仍待适配"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖有效计划与计划变更查询、ERP 未配置状态、Mock ERP 进度只读引用和非契约字段过滤；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证"
+        "tests/test_plan_tools.py 覆盖有效计划与计划变更查询、计划时间线/看板数据契约、ERP 未配置状态、Mock ERP 进度只读引用和非契约字段过滤；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

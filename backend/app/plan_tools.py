@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import date
 from pydantic import Field, ValidationError, model_validator
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, and_
@@ -149,6 +150,71 @@ def _milestone_coverage(tasks):
         'note':'大节点覆盖按任务名称/标识作辅助核对，不能替代项目负责人按实际模具类型确认。'}
 
 
+def _parse_date(value):
+    if not value:return None
+    if isinstance(value,date):return value
+    try:return date.fromisoformat(str(value)[:10])
+    except ValueError:return None
+
+
+def _duration_days(start,end):
+    start_date=_parse_date(start);end_date=_parse_date(end)
+    if not start_date or not end_date:return None
+    return max((end_date-start_date).days+1,0)
+
+
+def _task_lane(task):
+    if task.get('status')=='DONE' or task.get('actual_end'):return 'done'
+    if task.get('status')=='RUNNING' or task.get('actual_start'):return 'running'
+    return 'not_started'
+
+
+def _compact_plan_card(row):
+    return {'id':row.get('id'),'key':row.get('key'),'name':row.get('name'),'status':row.get('status'),
+        'planned_start':row.get('planned_start'),'planned_end':row.get('planned_end'),
+        'risk_flags':row.get('risk_flags',[])}
+
+
+def _plan_visualization(analysis,erp_execution_progress=None):
+    tasks=analysis.get('tasks') or []
+    blocked_waits={row.get('key'):row.get('waiting_for',[]) for row in analysis.get('dependency_blocked_tasks',[])}
+    overdue_keys={row.get('key') for row in analysis.get('overdue_tasks',[])}
+    due_risk_keys={row.get('key') for row in analysis.get('customer_due_risk_tasks',[])}
+    columns={'not_started':[],'running':[],'done':[]}
+    risk_lanes={'overdue':[],'blocked':[],'customer_due_risk':[]}
+    timeline=[]
+    for task in sorted(tasks,key=lambda item:(str(item.get('planned_start') or ''),str(item.get('planned_end') or ''),str(item.get('key') or ''))):
+        key=task.get('key')
+        risk_flags=[]
+        if key in overdue_keys:risk_flags.append('OVERDUE')
+        if key in blocked_waits:risk_flags.append('BLOCKED_BY_PREREQUISITE')
+        if key in due_risk_keys:risk_flags.append('CUSTOMER_DUE_RISK')
+        row={'id':task.get('id'),'key':key,'name':task.get('name'),'status':task.get('status'),
+            'lane':_task_lane(task),'owner_user_id':task.get('owner_user_id'),
+            'planned_start':task.get('planned_start'),'planned_end':task.get('planned_end'),
+            'actual_start':task.get('actual_start'),'actual_end':task.get('actual_end'),
+            'duration_days':_duration_days(task.get('planned_start'),task.get('planned_end')),
+            'prerequisites':task.get('prerequisites',[]),
+            'waiting_for':blocked_waits.get(key,[]),
+            'risk_flags':risk_flags}
+        timeline.append(row)
+        columns[row['lane']].append(_compact_plan_card(row))
+        if 'OVERDUE' in risk_flags:risk_lanes['overdue'].append(_compact_plan_card(row))
+        if 'BLOCKED_BY_PREREQUISITE' in risk_flags:risk_lanes['blocked'].append(_compact_plan_card(row))
+        if 'CUSTOMER_DUE_RISK' in risk_flags:risk_lanes['customer_due_risk'].append(_compact_plan_card(row))
+    erp_status=(erp_execution_progress or {}).get('status')
+    return {'kind':'project_plan_visualization_v1','timeline':timeline,
+        'kanban':{'columns':columns,'risk_lanes':risk_lanes},
+        'external_progress':{'source':'ERP','status':erp_status or 'NOT_QUERIED',
+            'available':bool(erp_status=='RESOLVED' and (erp_execution_progress or {}).get('records'))},
+        'legend':{'lanes':{'not_started':'未开始','running':'进行中','done':'已完成'},
+            'risk_flags':{'OVERDUE':'计划结束日早于今天且未完成',
+                'BLOCKED_BY_PREREQUISITE':'前置节点未完成',
+                'CUSTOMER_DUE_RISK':'计划结束日晚于客户承诺日期且未完成'}},
+        'limitations':['该结构用于对话和右侧面板渲染时间线/看板，不等同于最终交互式甘特图。',
+            '工作日、节假日、资源负荷、齐套率和拖拽改期规则仍需按项目适配确认。']}
+
+
 def _analysis(project,profile,records):
     today=now().date().isoformat()
     plans=records['project_plan']+records['plan_change']
@@ -173,7 +239,7 @@ def _analysis(project,profile,records):
     if not active:warnings.append('当前可见范围未见有效项目计划，不能判断实际节点进度。')
     if open_changes:warnings.append('存在未完成的计划变更申请，当前计划可能即将变化。')
     if due_risk:warnings.append('存在计划结束晚于客户承诺日期的未完成节点，需项目负责人核对交期风险。')
-    return {'active_plan':active,'tasks':tasks,'running_tasks':running[:20],'overdue_tasks':overdue[:20],
+    analysis={'active_plan':active,'tasks':tasks,'running_tasks':running[:20],'overdue_tasks':overdue[:20],
         'dependency_blocked_tasks':blocked[:20],'open_plan_changes':open_changes[:20],
         'customer_due_risk_tasks':due_risk[:20],'milestone_coverage':_milestone_coverage(tasks),
         'warnings':warnings,'derived_status':{
@@ -182,6 +248,8 @@ def _analysis(project,profile,records):
             'has_overdue_task':bool(overdue),
             'has_customer_due_risk':bool(due_risk),
             'project_status':project.status}}
+    analysis['visualization']=_plan_visualization(analysis)
+    return analysis
 
 
 def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
@@ -207,6 +275,7 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         except DomainError as error:limitations.append('当前人员缺少计划变更读取权限，未返回部门确认状态：'+error.message)
         from . import erp_progress
         erp_execution_progress=erp_progress.query_project_progress(db,user,project)
+        analysis['visualization']=_plan_visualization(analysis,erp_execution_progress)
         limitations.extend(erp_execution_progress.get('limitations',[]))
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':profile,'project_plans':records['project_plan'],'plan_changes':records['plan_change'],
