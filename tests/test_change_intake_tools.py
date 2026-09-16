@@ -283,6 +283,15 @@ def test_change_intake_schema_and_context_summary():
             assert candidate["matched_plan_tasks"][0]["key"] == "machining_rework"
             assert candidate["evidence_gaps"] == []
             assert candidate["recommended_next_tools"] == ["query_project_plan_context", "prepare_project_plan_change"]
+            seed = candidate["plan_change_prepare_seed"]
+            assert seed["status"] == "READY_TO_QUERY_PLAN_CONTEXT"
+            assert seed["project_id"] == result["data"][0]["project"]["id"]
+            assert seed["project_version"] == 1
+            assert seed["previous_id"] == candidate["matched_plan_tasks"][0]["plan_id"]
+            assert seed["previous_plan_number"] == "PLAN-CHG-M001"
+            assert seed["candidate_task_keys"] == ["machining_rework"]
+            assert seed["change_intent"][0]["planned_action"] == "REWORK"
+            assert "完整任务列表" in "".join(seed["required_before_prepare"])
             assert "不会自动改计划" in candidate["guardrail"]
             assert "不能把方案审批" in "".join(analysis["warnings"])
             assert "不同事实" in "".join(result["limitations"])
@@ -337,6 +346,8 @@ def test_change_intake_marks_plan_adjustment_candidate_context_gaps():
             candidate = result["data"][0]["analysis"]["plan_adjustment_candidates"][0]
             assert candidate["candidate_status"] == "NEEDS_CONTEXT"
             assert candidate["matched_plan_tasks"] == []
+            assert candidate["plan_change_prepare_seed"]["status"] == "NEEDS_CONTEXT"
+            assert candidate["plan_change_prepare_seed"]["previous_id"] is None
             assert "已审批生效的联络单处理方案" in "".join(candidate["evidence_gaps"])
             assert "未精确匹配当前可见计划任务" in "".join(candidate["evidence_gaps"])
             assert candidate["recommended_next_tools"] == ["query_project_plan_context", "prepare_project_plan_change"]

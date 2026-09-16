@@ -347,7 +347,7 @@ def _plan_task_matches(contact_task, plan_tasks):
     if not ref:
         return []
     matches = []
-    for task in plan_tasks:
+    for task in sorted(plan_tasks, key=lambda row: (0 if row.get("plan_status") == "EFFECTIVE" else 1, str(row.get("plan_number") or ""), str(row.get("key") or ""))):
         values = {str(task.get("task_id") or "").casefold(), str(task.get("key") or "").casefold(), str(task.get("name") or "").casefold()}
         if ref in values:
             matches.append(task)
@@ -367,7 +367,46 @@ def _plan_task_matches(contact_task, plan_tasks):
     ]
 
 
-def _plan_adjustment_candidates(contacts, plan_tasks, resolutions, allowed_tools):
+def _plan_change_prepare_seed(project, case, contact_task, matched_tasks, evidence_gaps, recommended_tools):
+    plan_ids = {task.get("plan_id") for task in matched_tasks if task.get("plan_id")}
+    effective_matches = [task for task in matched_tasks if task.get("plan_status") == "EFFECTIVE"]
+    primary_matches = effective_matches or matched_tasks
+    previous_id = primary_matches[0].get("plan_id") if len(plan_ids) == 1 and primary_matches else None
+    previous_number = primary_matches[0].get("plan_number") if previous_id else None
+    seed_status = "READY_TO_QUERY_PLAN_CONTEXT" if previous_id and not evidence_gaps and "query_project_plan_context" in recommended_tools else "NEEDS_CONTEXT"
+    return {
+        "status": seed_status,
+        "project_id": project.id,
+        "project_version": project.row_version,
+        "previous_id": previous_id,
+        "previous_plan_number": previous_number,
+        "source_contact_case_id": case.get("id"),
+        "source_contact_task_id": contact_task.get("id"),
+        "candidate_task_keys": [task.get("key") for task in primary_matches if task.get("key")],
+        "change_intent": [
+            {
+                "task_key": task.get("key"),
+                "task_name": task.get("name"),
+                "planned_action": contact_task.get("planned_action"),
+                "delivery_impact_days": contact_task.get("delivery_impact_days"),
+                "impact_description": contact_task.get("impact_description"),
+            }
+            for task in primary_matches
+        ],
+        "reason_basis": "工程联络单《{case_title}》事项《{task_title}》：{impact}".format(
+            case_title=case.get("title") or "",
+            task_title=contact_task.get("title") or "",
+            impact=contact_task.get("impact_description") or "",
+        ),
+        "required_before_prepare": [
+            "必须先调用 query_project_plan_context，以当前有效计划 previous_id、project_version、完整任务清单和 workflow_options 为准。",
+            "prepare_project_plan_change 的 tasks 必须提交变更后的完整任务列表；未受影响节点保持原值。",
+            "delivery_impact_days 只是项目负责人评估依据，不能自动等量顺延全部节点或修改客户承诺交期。",
+        ],
+    }
+
+
+def _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools):
     effective_resolution_cases = {row.get("case_id") for row in resolutions if row.get("status") == "EFFECTIVE"}
     recommended_tools = []
     if "query_project_plan_context" in allowed_tools:
@@ -413,6 +452,7 @@ def _plan_adjustment_candidates(contacts, plan_tasks, resolutions, allowed_tools
                     "candidate_status": "READY_FOR_PLAN_CHANGE_PREPARE" if matched_tasks and not evidence_gaps else "NEEDS_CONTEXT",
                     "evidence_gaps": evidence_gaps,
                     "recommended_next_tools": recommended_tools,
+                    "plan_change_prepare_seed": _plan_change_prepare_seed(project, case, task, matched_tasks, evidence_gaps, recommended_tools),
                     "guardrail": "只提示项目负责人核对并准备计划变更；不会自动改计划、自动顺延任务或跳过 BPM 审批。",
                 }
             )
@@ -457,7 +497,7 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
     effective_starts = [row for row in starts if row.get("status") == "EFFECTIVE"]
     external_or_customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE" or case.get("customer_ref")]
     outsource_cases = [case for case in contacts if case.get("category") == "outsource" or case.get("problem_source") == "OUTSOURCE_DEFECT"]
-    plan_adjustment_candidates = _plan_adjustment_candidates(contacts, plan_tasks, resolutions, allowed_tools)
+    plan_adjustment_candidates = _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools)
 
     gaps = []
     warnings = []

@@ -6,8 +6,9 @@
 
 - `query_change_intake_context` 新增 `analysis.plan_adjustment_candidates`，把工程联络事项中影响计划节点、WIP 任务、返工/重发/暂停/取消或登记交期影响天数的记录结构化为计划调整候选。
 - 候选只做事实桥接：精确匹配当前可见计划任务 ID、任务标识或任务名称，返回联络单、事项、影响说明、交期影响、匹配计划任务、候选状态、证据缺口和推荐下一步工具；不按模糊文本猜任务，不自动顺延计划，不跳过项目负责人核对和 BPM 审批。
-- 若缺少已审批生效的联络单处理方案、未精确匹配计划任务或责任部门尚未反馈执行依据，候选状态保持 `NEEDS_CONTEXT` 并输出缺口；证据齐全时才标记 `READY_FOR_PLAN_CHANGE_PREPARE`，供模型随后读取 `query_project_plan_context` 并准备 `prepare_project_plan_change`。
-- 新增 SQLite 单元测试覆盖客户设变联络事项映射到计划返工任务、按权限推荐计划变更工具、无联络读取权限时不泄露候选，以及缺处理方案/缺计划匹配时只返回证据缺口。
+- 每个候选新增 `plan_change_prepare_seed`：冻结项目 ID、项目版本、匹配到的当前计划 `previous_id`、候选任务 key、联络事项来源和变更意图，并强制说明必须先调用 `query_project_plan_context` 获取完整任务清单和 `workflow_options`；不会直接拼装 `prepare_project_plan_change.tasks`。
+- 若缺少已审批生效的联络单处理方案、未精确匹配计划任务或责任部门尚未反馈执行依据，候选状态保持 `NEEDS_CONTEXT` 并输出缺口；证据齐全时才标记 `READY_FOR_PLAN_CHANGE_PREPARE`，其 seed 也只到 `READY_TO_QUERY_PLAN_CONTEXT`，供模型随后读取真实计划上下文再准备 `prepare_project_plan_change`。
+- 新增 SQLite 单元测试覆盖客户设变联络事项映射到计划返工任务、按权限推荐计划变更工具、准备种子包含 `previous_id`/项目版本/完整任务列表约束、无联络读取权限时不泄露候选，以及缺处理方案/缺计划匹配时 seed 保持 `NEEDS_CONTEXT`。
 
 ## 持续开发：项目计划时间线与看板数据契约（2026-09-16）
 
