@@ -277,10 +277,15 @@ def preview_plan_change(db,user,data:PlanChangeProposalInput):
                 ' → '+task.planned_start.isoformat()+'~'+task.planned_end.isoformat()+'）')
     for key,old in previous_tasks.items():
         if key not in incoming:removed.append(old.name+'（'+old.key+'）')
+    impact,_=domains.plan_change_impact_from_tasks(db,previous_tasks,incoming,data.previous_id,data.reason)
+    affected_departments=[' · '.join([row['department'],
+        '节点：'+('、'.join(row['task_keys']) or '无'),
+        '责任人：'+'、'.join(user['name'] for user in row['users'])]) for row in impact.get('affected_departments',[])]
     display={'操作':'项目计划变更','项目':project.code+' · '+project.name,'项目版本':project.row_version,
         '原计划':previous.number+' · 第'+str(previous.revision)+'版','变更原因':data.reason,
         '计划任务数':len(data.tasks),'变更节点':changed or ['未调整已有节点日期或名称'],
         '新增节点':new or ['无'],'删除节点':removed or ['无'],
+        '受影响部门':affected_departments or ['无'],
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建计划变更材料并提交 Agent BPM；审批生效前不会关闭原计划、不会重排执行任务，也不会修改客户承诺交期。'}
     if selected.get('material_required'):

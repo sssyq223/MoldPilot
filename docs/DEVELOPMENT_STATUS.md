@@ -1,6 +1,6 @@
 # 开发覆盖情况
 
-更新：2026-09-15。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
+更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
 ## 持续开发：工程联络附件关联通知与审计（2026-09-16）
 
@@ -18,8 +18,9 @@
 - 计划变更预览重新执行领域校验：必须关联有效原计划，项目版本和审批模板必须匹配，已开工任务不能删除，已完成任务不能重排，任务依赖不能成环或违反日期顺序。确认前再次对比 display 哈希，资料变化会阻断旧提案。
 - 计划变更提案已接入通用资料核对包：`workflow_options` 会返回资料模板流程并标记 `material_required`；若审批模板要求资料，`prepare_project_plan_change` 必须传入本人已确认且与模板匹配的 `material_review_id`，确认提交后由 `submit_subject` 生成 `MaterialBinding` 并把资料哈希、文件 sha256、review_hash 和 material_data 冻结进审批快照。
 - 计划变更审批生效时新增 `plan.change.effective` 事件，按新增、删除、日期/名称/负责人变化的任务计算受影响节点负责人并写入 Outbox；消息 worker 会在投递通知前重新校验收件人对该 `plan_change` 的读取权限。
+- 计划变更影响范围新增 `affected_departments` 结构化矩阵：按新增、删除、责任人变更和日期/名称调整汇总部门、责任人、任务标识和变更类型。提案预览会展示受影响部门，审批生效事件和审计详情会冻结同一份矩阵，后续可用于部门确认卡、通知和看板渲染。
 - `/api/project-plan-proposals/{step_id}` 和 `/intent` 提供浏览器确认入口，并把来源 Run 的 `agent_permission_mode` 传递到 BPM 提交；显式授权模式下仅在后续流程节点满足委托条件时才可能自动同意。
-- 新增 SQLite 测试覆盖计划变更上下文返回有效变更计划和审批流程、proposal 不写业务、HumanIntent 确认后才创建 `plan_change` 并提交 BPM、`delegated_auto` 传递到 `submit_subject`，资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 `material_binding`，以及计划变更生效后通知受影响节点负责人。真实部门确认矩阵、ERP 执行进度联调、甘特图/看板完整样式仍待验收。
+- 新增 SQLite 测试覆盖计划变更上下文返回有效变更计划和审批流程、proposal 不写业务、HumanIntent 确认后才创建 `plan_change` 并提交 BPM、`delegated_auto` 传递到 `submit_subject`，资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 `material_binding`，以及计划变更生效后通知受影响节点负责人并输出部门影响矩阵。真人部门会签、ERP 执行进度联调、甘特图/看板完整样式仍待验收。
 
 ## 持续开发：资料模板 XLSX 解析与核对确认（2026-09-15）
 

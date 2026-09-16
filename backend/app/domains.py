@@ -131,37 +131,66 @@ def validate_plan(db,project_id,detail):
                     raise DomainError('TASK_HISTORY_PROTECTED','已完成任务不能重排')
 
 
-def plan_change_impact(db,subject):
-    detail=db.get(m.PlanDetail,subject.id)
-    if not detail or not detail.previous_id:return {},[]
-    previous={task.key:task for task in rows(db,m.PlanTask,plan_id=detail.previous_id)}
-    current={task.key:task for task in rows(db,m.PlanTask,plan_id=subject.id)}
+def plan_change_impact_from_tasks(db,previous,current,previous_id,reason):
     recipients=set();added=[];removed=[];changed=[]
+    department_users={}
+    def user_card(user_id):
+        user=db.get(m.User,user_id) if user_id else None
+        department=(user.department if user else '') or '未设置部门'
+        return {'user_id':user_id,'username':user.username if user else None,
+            'name':user.display_name if user else '未知责任人','department':department}
+    def add_department(user_id,task,change_type):
+        if not user_id:return
+        recipients.add(user_id)
+        user=user_card(user_id);bucket=department_users.setdefault(user['department'],{})
+        row=bucket.setdefault(user_id,{**user,'task_keys':set(),'change_types':set()})
+        row['task_keys'].add(task.key);row['change_types'].add(change_type)
     def task_card(task):
         return {'key':task.key,'name':task.name,'owner_user_id':task.owner_user_id,
             'planned_start':task.planned_start.isoformat(),'planned_end':task.planned_end.isoformat()}
     for key,task in current.items():
         old=previous.get(key)
         if not old:
-            added.append(task_card(task));recipients.add(task.owner_user_id);continue
+            added.append(task_card(task));add_department(task.owner_user_id,task,'ADDED');continue
         changes={}
         if old.name!=task.name:changes['name']={'from':old.name,'to':task.name}
         if old.owner_user_id!=task.owner_user_id:
             changes['owner_user_id']={'from':old.owner_user_id,'to':task.owner_user_id}
-            recipients.add(old.owner_user_id)
+            add_department(old.owner_user_id,task,'OWNER_REMOVED')
+            add_department(task.owner_user_id,task,'OWNER_ASSIGNED')
         if old.planned_start!=task.planned_start:
             changes['planned_start']={'from':old.planned_start.isoformat(),'to':task.planned_start.isoformat()}
         if old.planned_end!=task.planned_end:
             changes['planned_end']={'from':old.planned_end.isoformat(),'to':task.planned_end.isoformat()}
         if changes:
             changed.append({'key':task.key,'name':task.name,'changes':changes})
-            recipients.add(task.owner_user_id)
+            add_department(task.owner_user_id,task,'UPDATED')
     for key,task in previous.items():
         if key not in current:
-            removed.append(task_card(task));recipients.add(task.owner_user_id)
-    return {'previous_id':detail.previous_id,'reason':detail.reason,'added_tasks':added,
+            removed.append(task_card(task));add_department(task.owner_user_id,task,'REMOVED')
+    matrix=[]
+    for department,users in department_users.items():
+        user_rows=[]
+        task_keys=set();change_types=set()
+        for row in users.values():
+            keys=sorted(row.pop('task_keys'));types=sorted(row.pop('change_types'))
+            user_rows.append({**row,'task_keys':keys,'change_types':types})
+            task_keys.update(keys);change_types.update(types)
+        matrix.append({'department':department,'task_keys':sorted(task_keys),
+            'change_types':sorted(change_types),'users':sorted(user_rows,key=lambda item:(item['name'],item['user_id'] or ''))})
+    matrix=sorted(matrix,key=lambda item:item['department'])
+    return {'previous_id':previous_id,'reason':reason,'added_tasks':added,
         'removed_tasks':removed,'changed_tasks':changed,'changed_task_keys':sorted(
-            {item['key'] for item in added+removed}|{item['key'] for item in changed})},sorted(recipients)
+            {item['key'] for item in added+removed}|{item['key'] for item in changed}),
+        'affected_departments':matrix},sorted(recipients)
+
+
+def plan_change_impact(db,subject):
+    detail=db.get(m.PlanDetail,subject.id)
+    if not detail or not detail.previous_id:return {},[]
+    previous={task.key:task for task in rows(db,m.PlanTask,plan_id=detail.previous_id)}
+    current={task.key:task for task in rows(db,m.PlanTask,plan_id=subject.id)}
+    return plan_change_impact_from_tasks(db,previous,current,detail.previous_id,detail.reason)
 
 
 def active_plan(db,project_id):

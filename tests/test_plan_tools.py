@@ -22,8 +22,9 @@ def factory():
     return engine,Session
 
 
-def user(db,username='operator',super_admin=False):
-    row=m.User(username=username,display_name=username,password_hash='test',super_admin=super_admin)
+def user(db,username='operator',super_admin=False,department=''):
+    row=m.User(username=username,display_name=username,password_hash='test',
+        super_admin=super_admin,department=department)
     db.add(row);db.flush();return row
 
 
@@ -179,7 +180,9 @@ def test_plan_change_effective_notifies_changed_task_owners():
     engine,Session=factory()
     try:
         with Session.begin() as db:
-            admin=user(db,'admin',True);old_owner=user(db,'old_owner');new_owner=user(db,'new_owner')
+            admin=user(db,'admin',True,department='项目部')
+            old_owner=user(db,'old_owner',department='加工部')
+            new_owner=user(db,'new_owner',department='试模部')
             p=project(db,'PLAN-NOTIFY')
             baseline=plan(db,p,admin,'PLAN-NOTIFY-BASE')
             task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
@@ -200,6 +203,11 @@ def test_plan_change_effective_notifies_changed_task_owners():
             assert audit.detail['previous_id']==baseline.id
             assert audit.detail['changed_task_keys']==['machining','trial']
             assert audit.detail['changed_tasks'][0]['changes']['owner_user_id']=={'from':old_owner.id,'to':new_owner.id}
+            assert {row['department'] for row in audit.detail['affected_departments']}=={'加工部','试模部'}
+            machining_departments=[row for row in audit.detail['affected_departments'] if 'machining' in row['task_keys']]
+            assert {row['department'] for row in machining_departments}=={'加工部','试模部'}
+            trial=[row for row in audit.detail['affected_departments'] if row['department']=='试模部'][0]
+            assert set(trial['task_keys'])=={'machining','trial'}
             assert db.get(m.BusinessSubject,baseline.id).status=='CLOSED'
     finally:
         engine.dispose()
@@ -240,6 +248,8 @@ def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(clien
     assert evidence['proposal']['kind']=='project_plan_change'
     assert evidence['proposal']['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
     assert '2026-09-06~2026-09-20 → 2026-09-08~2026-09-23' in str(evidence['proposal']['display'])
+    assert '受影响部门' in evidence['proposal']['display']
+    assert 'machining' in str(evidence['proposal']['display']['受影响部门'])
     with factory() as db:
         assert not list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change')))
     intent_response=client.post('/api/project-plan-proposals/'+evidence['evidence_id']+'/intent')
