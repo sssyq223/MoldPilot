@@ -213,6 +213,29 @@ def supplier_progress(db, project, creator, sup, task=None, status="AT_RISK"):
     return row
 
 
+def material_handoff(db, project, creator, sup, contract=None, status="APPROVED"):
+    row = m.SupplierMaterialHandoff(
+        project_id=project.id,
+        supplier_id=sup.id,
+        contract_subject_id=contract.id if contract else None,
+        file_id=None,
+        document_title="客户原始资料包",
+        document_type="CUSTOMER_MATERIAL",
+        approval_status=status,
+        provided_date=date.today(),
+        provided_to="供应商项目经理",
+        handoff_channel="EMAIL",
+        evidence="邮件交接回执",
+        source_system="MANUAL",
+        source_ref="HANDOFF-" + project.code,
+        provided_by=creator.id,
+        verified_by=creator.id if status == "APPROVED" else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def contact_issue(db, project, creator):
     group = m.AssignmentGroup(kind="DEPARTMENT", name="采购部")
     db.add(group)
@@ -280,7 +303,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         sup = supplier(db)
         wh = warehouse(db)
         acceptance(db, p, admin)
-        outsource_contract(db, p, admin, sup)
+        contract = outsource_contract(db, p, admin, sup)
+        material_handoff(db, p, admin, sup, contract)
         _, task = plan(db, p, admin)
         supplier_progress(db, p, admin, sup, task)
         order_flow(db, p, admin, material(db), sup, wh)
@@ -300,6 +324,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert status["has_supplier_progress_report"] is True
         assert status["has_supplier_progress_risk"] is True
         assert status["has_overdue_supplier_progress_followup"] is True
+        assert status["has_approved_supplier_material_handoff"] is True
+        assert status["has_draft_or_revoked_supplier_material_handoff"] is False
         assert status["has_supplier_shipment_or_receipt"] is True
         assert status["has_rejected_receipt"] is True
         assert status["has_open_outsource_issue"] is True
@@ -308,6 +334,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert status["has_customer_acceptance_or_close_evidence"] is True
         assert analysis["supplier_progress_reports"][0]["stage_name"] == "供应商试模与整改"
         assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
+        assert analysis["supplier_material_handoffs"][0]["document_title"] == "客户原始资料包"
+        assert analysis["supplier_material_handoffs"][0]["approval_status"] == "APPROVED"
         assert "供应商门户" in "".join(analysis["gaps"])
         warnings = "".join(analysis["warnings"])
         assert "不合格" in warnings
@@ -324,8 +352,9 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         full_outsource_profile(db, p, admin)
         sup = supplier(db)
         wh = warehouse(db)
-        outsource_contract(db, p, admin, sup)
+        contract = outsource_contract(db, p, admin, sup)
         supplier_progress(db, p, admin, sup)
+        material_handoff(db, p, admin, sup, contract)
         order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
         grant(db, admin, operator, "project.read", project_id=p.id)
         grant(db, admin, operator, "full_outsource_contract.read", project_id=p.id, category="outsource")
@@ -336,11 +365,13 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         analysis = result["data"][0]["analysis"]
         assert analysis["derived_status"]["has_effective_full_outsource_contract"] is True
         assert analysis["derived_status"]["has_supplier_progress_report"] is True
+        assert analysis["derived_status"]["has_approved_supplier_material_handoff"] is True
         assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
         assert "SHIP-OUT-SECRET" not in str(result)
         assert "PO-OUT-OUT-LIMITED" not in str(result)
         assert result["data"][0]["analysis"]["supplier_execution_tracking"]["orders"] == []
         assert analysis["supplier_progress_reports"][0]["source_ref"] == "SPR-OUT-LIMITED"
+        assert analysis["supplier_material_handoffs"][0]["source_ref"] == "HANDOFF-OUT-LIMITED"
         assert "正式订单" in "".join(result["limitations"])
 
 

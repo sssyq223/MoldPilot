@@ -247,6 +247,33 @@ class SupplierProgressReport(IdentityMixin, Base):
     )
 
 
+class SupplierMaterialHandoff(IdentityMixin, Base):
+    """Customer/design material handoff evidence from project/design/purchase to supplier."""
+    __tablename__ = 'supplier_material_handoff'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    file_id: Mapped[str | None] = mapped_column(ForeignKey('file_object.id'), index=True)
+    document_title: Mapped[str] = mapped_column(String(200))
+    document_type: Mapped[str] = mapped_column(String(40), default='CUSTOMER_MATERIAL')
+    approval_status: Mapped[str] = mapped_column(String(30), default='APPROVED')
+    provided_date: Mapped[date] = mapped_column(Date)
+    provided_to: Mapped[str] = mapped_column(String(150))
+    handoff_channel: Mapped[str] = mapped_column(String(40), default='MANUAL')
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    provided_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    verified_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('project_id','supplier_id','document_title','provided_date','source_ref', name='supplier_material_handoff_unique_source'),
+        CheckConstraint("document_type IN ('CUSTOMER_MATERIAL','DESIGN_DRAWING','TECHNICAL_SPEC','QUALITY_STANDARD','OTHER')", name='supplier_material_handoff_document_type'),
+        CheckConstraint("approval_status IN ('DRAFT','APPROVED','REVOKED')", name='supplier_material_handoff_approval_status'),
+        CheckConstraint("handoff_channel IN ('MANUAL','EMAIL','IMPORT','ERP','OTHER')", name='supplier_material_handoff_channel'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_material_handoff_source_system'),
+    )
+
+
 class ReceiptInspection(IdentityMixin, Base):
     __tablename__ = 'receipt_inspection'
     receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)

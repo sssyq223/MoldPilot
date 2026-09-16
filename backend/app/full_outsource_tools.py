@@ -288,6 +288,43 @@ def _supplier_progress_reports(db, user, project_id, allowed_tools):
     return rows
 
 
+def _material_handoffs(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    q = (
+        select(m.SupplierMaterialHandoff, m.Supplier)
+        .join(m.Supplier, m.SupplierMaterialHandoff.supplier_id == m.Supplier.id)
+        .where(m.SupplierMaterialHandoff.project_id == project_id)
+        .order_by(m.SupplierMaterialHandoff.provided_date.desc(), m.SupplierMaterialHandoff.created_at.desc(), m.SupplierMaterialHandoff.id)
+        .limit(100)
+    )
+    for handoff, supplier in db.execute(q):
+        rows.append(
+            {
+                "id": handoff.id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": handoff.contract_subject_id,
+                "file_id": handoff.file_id,
+                "document_title": handoff.document_title,
+                "document_type": handoff.document_type,
+                "approval_status": handoff.approval_status,
+                "provided_date": handoff.provided_date.isoformat(),
+                "provided_to": handoff.provided_to,
+                "handoff_channel": handoff.handoff_channel,
+                "evidence": handoff.evidence,
+                "source_system": handoff.source_system,
+                "source_ref": handoff.source_ref,
+                "provided_by": handoff.provided_by,
+                "verified_by": handoff.verified_by,
+            }
+        )
+    return rows
+
+
 def _engineering_changes(rows):
     result = []
     for row in rows:
@@ -406,13 +443,15 @@ def _closure_items(db, user, project_id, allowed_tools):
     return rows[:100]
 
 
-def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_tasks, supplier_progress_reports, order_tracking, engineering_changes, contacts, payments, closure_items):
+def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, order_tracking, engineering_changes, contacts, payments, closure_items):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     totals = order_tracking["totals"]
     open_contacts = [row for row in contacts if row.get("collaboration_status") != "CLOSED"]
     open_change_impacts = [impact for row in engineering_changes for impact in row.get("unimplemented_impacts") or []]
     risky_reports = [row for row in supplier_progress_reports if row.get("status") in {"AT_RISK", "BLOCKED", "REWORK"}]
     overdue_reports = [row for row in supplier_progress_reports if row.get("overdue_followup")]
+    approved_handoffs = [row for row in material_handoffs if row.get("approval_status") == "APPROVED"]
+    draft_or_revoked_handoffs = [row for row in material_handoffs if row.get("approval_status") != "APPROVED"]
     deduction_tasks = [
         task
         for issue in contacts
@@ -432,6 +471,10 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
         warnings.append("有效承接为整套委外，但项目档案加工方式不是整套委外，需核对是否已有后续变更依据。")
     if not contract_effective:
         gaps.append("未见已生效整套委外合同；不能把合同草稿或报价委外金额当成合同已签署。")
+    if contract_effective and not approved_handoffs:
+        gaps.append("未见按合同或业务需要向供应商提供获准客户资料/设计资料的交接依据。")
+    if draft_or_revoked_handoffs:
+        warnings.append("存在草稿或已撤回的供应商资料交接记录，不能作为正式获准交接依据。")
     if not active_plan:
         warnings.append("当前可见范围未见有效项目计划，无法核对供应商节点上报与项目同步节奏。")
     if not plan_tasks:
@@ -467,6 +510,7 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
         ),
         "outsource_plan_tasks": plan_tasks,
         "supplier_progress_reports": supplier_progress_reports,
+        "supplier_material_handoffs": material_handoffs,
         "supplier_execution_tracking": order_tracking,
         "engineering_changes": engineering_changes,
         "outsource_quality_delay_contacts": contacts,
@@ -483,6 +527,8 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
             "has_supplier_progress_report": bool(supplier_progress_reports),
             "has_supplier_progress_risk": bool(risky_reports),
             "has_overdue_supplier_progress_followup": bool(overdue_reports),
+            "has_approved_supplier_material_handoff": bool(approved_handoffs),
+            "has_draft_or_revoked_supplier_material_handoff": bool(draft_or_revoked_handoffs),
             "has_supplier_shipment_or_receipt": bool(totals.get("supplier_shipments") or totals.get("goods_receipts")),
             "has_rejected_receipt": bool(totals.get("rejected_receipt_lines")),
             "has_open_outsource_issue": bool(open_contacts or open_change_impacts),
@@ -509,6 +555,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         plan_rows = _subject_rows(db, user, project.id, "project_plan", allowed_tools) + _subject_rows(db, user, project.id, "plan_change", allowed_tools)
         active_plan, plan_tasks = _plan_tasks(plan_rows)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
+        material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         payments = _payment_summary(_subject_rows(db, user, project.id, "supplier_payment", allowed_tools))
@@ -547,6 +594,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         active_plan,
                         plan_tasks,
                         supplier_progress_reports,
+                        material_handoffs,
                         order_tracking,
                         engineering_changes,
                         contacts,

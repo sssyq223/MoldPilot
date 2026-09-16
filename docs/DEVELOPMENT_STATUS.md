@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：FR-072 客户资料交接与供应商核验上下文（2026-09-16）
+
+- 新增 `supplier_material_handoff` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人。
+- `query_full_outsource_context` 新增 `analysis.supplier_material_handoffs`，将客户资料/设计资料交接与委外合同、供应商节点上报、订单发货收货、验收整改分开展示。
+- 派生状态新增 `has_approved_supplier_material_handoff` 与 `has_draft_or_revoked_supplier_material_handoff`；有生效委外合同但无获准资料交接依据时返回 gaps，草稿或撤回记录进入 warnings，不作为正式交接依据。
+- PostgreSQL `moldpilot_test` 验证覆盖有效资料交接、订单权限隔离下仍可按合同权限查看资料交接依据，以及整套委外上下文汇总。
+- FR-072 仍为 NOT_VERIFIED：真实客户资料上传、附件安全、采购向供应商提供资料的正式审批/回执、供应商核验反馈和 ERP/文件存储联调尚未完成正式验收。
+
 ## 持续开发：FR-071 供应商节点上报与采购跟进上下文（2026-09-16）
 
 - 新增 `supplier_progress_report` PostgreSQL 迁移与领域模型，用于保存授权人员录入/导入的供应商阶段上报，不默认要求供应商门户。

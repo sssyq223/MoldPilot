@@ -58,6 +58,11 @@ SELECT
     'supplier_progress_report',
     COUNT(*)
 FROM supplier_progress_report
+UNION ALL
+SELECT
+    'supplier_material_handoff',
+    COUNT(*)
+FROM supplier_material_handoff
 ORDER BY table_name;
 
 SELECT
