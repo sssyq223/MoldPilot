@@ -14,7 +14,7 @@
 
 - 网页：http://127.0.0.1:5173
 - FastAPI：http://127.0.0.1:8000/api/health
-- 独立 PostgreSQL：127.0.0.1:55432，业务库 `agent_db`，专用测试库 `agent_test`。
+- 独立 PostgreSQL：以本机 `.env` 的 `MOLD_DATABASE_URL` 为准；当前开发库为 `127.0.0.1:5432/moldpilot`。Navicat 连接后可运行 [verify_moldpilot_navicat.sql](database/verify_moldpilot_navicat.sql) 核对当前库、连接用户、admin 超级管理员和关键表行数。
 - 本地模拟账号保存在 `.local/test-accounts.txt`。该文件、`.env` 和 `.local` 原目录不得提交或打包。交接包仅单独导出数据库备份及已登记业务原件，不包含本机密码和运行目录。
 - ERP 源码、结构文件只作为关联参考，没有导入旧业务数据，没有修改 ERP，没有建立转发或投影数据库。
 
@@ -37,7 +37,7 @@ npm.cmd run dev -- --host 127.0.0.1
 
 Python 使用 3.12；首次搭建可用 `requirements.lock` 安装本次验证的依赖，前端使用 `npm ci`。复制 `.env.example` 后填写独立环境凭据；不要覆盖已有 `.env`。迁移通过 `alembic upgrade head` 执行，必须显式配置迁移账号，运行账号不得持有迁移权限。首次超级管理员使用 `python -m app.bootstrap --username admin --name 管理员` 在终端交互创建。
 
-本机 PostgreSQL 二进制位于 `.local/pg/pgsql/bin`，数据目录为 `.local/pgdata-test`；名称带 test 的目录中也保存当前开发业务库，不得随意删除。当前环境已初始化，不要重复 initdb 或重新播种。
+本机 PostgreSQL 以 `.env` 为唯一权威配置；不要再使用 SQLite 作为开发业务库。当前环境已初始化，不要重复 initdb 或重新播种；如需核对数据库，用 Navicat 连接 `moldpilot` 后运行 `database/verify_moldpilot_navicat.sql`。
 
 ## 模型接入
 
