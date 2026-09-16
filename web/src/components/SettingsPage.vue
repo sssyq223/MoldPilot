@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import {computed,ref,watch} from 'vue'
+import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
-import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
+import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName} from '../uiText'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
 const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme];openConversation:[conversation:any];modelUpdated:[model:string]}>()
 const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
-const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('tools')
+const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('all')
+const capabilityDropdown=ref<'department'|'type'|''>(''),capabilityToolbar=ref<HTMLElement|null>(null)
 const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
 const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
 const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
@@ -19,6 +20,16 @@ const selectedCapability=ref<{kind:'tool'|'skill';item:any}|null>(null)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
 const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
+const capabilityDepartmentLabel=computed(()=>String(capabilityDepartments.value.find(([key])=>key===capabilityDepartment.value)?.[1]||'全部部门'))
+const capabilityTypeLabel=computed(()=>String(capabilityTypes.value.find(([key])=>key===capabilityType.value)?.[1]||'全部类型'))
+function toggleCapabilityDropdown(kind:'department'|'type'){capabilityDropdown.value=capabilityDropdown.value===kind?'':kind}
+function setCapabilityDepartment(value:string){capabilityDepartment.value=value;capabilityDropdown.value=''}
+function setCapabilityType(value:string){capabilityType.value=value;capabilityDropdown.value=''}
+function closeCapabilityDropdown(event:PointerEvent){
+ if(capabilityToolbar.value&&!capabilityToolbar.value.contains(event.target as Node))capabilityDropdown.value=''
+}
+onMounted(()=>document.addEventListener('pointerdown',closeCapabilityDropdown))
+onBeforeUnmount(()=>document.removeEventListener('pointerdown',closeCapabilityDropdown))
 function capabilityMatches(item:any){
  const meta=capabilityMeta(item),keyword=capabilitySearch.value.trim().toLowerCase()
  if(capabilityDepartment.value&&meta.department!==capabilityDepartment.value)return false
@@ -59,12 +70,45 @@ function capabilityUsageText(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''
  return detail.kind==='tool'?toolUsageText(detail.item):skillUsageText()
 }
+function escapePattern(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+function localizeCapabilityText(value:string){
+ let text=value.replace(/\bAgent\b/g,'智能体').replace(/\bBOM\b/g,'物料清单')
+ for(const [key,name] of Object.entries(capabilityNames))text=text.replace(new RegExp(`\\b${escapePattern(key)}\\b`,'g'),name)
+ text=text.replace(/\b[a-z][a-z0-9_]{2,}\b/gi,word=>capabilityName({key:word}))
+ return text
+}
+function capabilityDescription(detail:{kind:'tool'|'skill';item:any}|null){
+ if(!detail)return ''
+ if(detail.kind==='skill')return localizeCapabilityText(String(detail.item.agent_description||detail.item.description||'该技能会按当前授权工具组合完成任务。')
+  .split('\n')
+  .filter(line=>!line.trim().startsWith('版本：')&&!/^第\s*[\d.]+\s*版/.test(line.trim()))
+  .join('\n')
+  .trim())
+ return detail.item.description||''
+}
+function dependencyNames(item:any,optional=false){
+ const keys=optional?(item.optional_dependencies||[]):(item.dependencies||[])
+ return keys.map((key:string)=>capabilityName({key})).join('、')
+}
+function capabilityExample(detail:{kind:'tool'|'skill';item:any}|null){
+ if(!detail)return ''
+ const name=capabilityName(detail.item)
+ const category=capabilityCategoryName(detail.item)
+ if(detail.kind==='skill')return `请帮我做${name}，项目号 M250238，模具号 M250238-P4，重点核对当前状态、依据和风险。`
+ return detail.item.mode==='human_confirmed_proposal'
+  ? `准备一份${category}相关建议，项目号 M250238，模具号 M250238-P4，先给我核对，不要直接提交。`
+  : `查询${category}，项目号 M250238，模具号 M250238-P4，返回当前状态、来源和需要注意的问题。`
+}
 function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''
  const item=detail.item
  return detail.kind==='tool'
   ? `${permissionName(item.permission)} · ${capabilityMeta(item).typeName} · ${item.mode==='human_confirmed_proposal'?'需确认':'只读'}`
   : `技能 · 第 ${item.version} 版`
+}
+function auditSummary(entry:any){
+ if(entry.summary)return entry.summary
+ return entry.resource_id?`记录编号：${String(entry.resource_id).slice(0,8)}…`:'系统记录'
 }
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
 const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
@@ -87,7 +131,7 @@ const modelCredentialState=computed(()=>{
 const navigation=computed(()=>[
  {key:'account',name:'账号信息',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
- {key:'agent-approvals',name:'Agent 自动审批',icon:ShieldCheck,allow:true},
+ {key:'agent-approvals',name:'自动审批',icon:ShieldCheck,allow:true},
  {key:'archived',name:'已归档的聊天',icon:Archive,allow:true},
  {key:'capabilities',name:'工具与技能',icon:Wrench,allow:true},
  {key:'admin',name:'人员与权限',icon:Users,allow:props.permissions.includes('user.manage')},
@@ -295,30 +339,30 @@ async function clearAvatar(){
    </form>
    </template>
    <template v-else-if="page==='agent-approvals'">
-    <div class="agent-approval-head"><h2>Agent 自动审批</h2><span>{{delegations.filter(d=>d.active).length}} 个有效授权</span></div>
+    <div class="agent-approval-head"><div><h2>智能体自动审批</h2><p class="muted">把低风险审批节点交给智能体自动同意；高风险节点仍由人工处理。</p></div><span>{{delegations.filter(d=>d.active).length}} 个有效授权</span></div>
     <p v-if="delegationsLoading" role="status">正在读取自动审批授权…</p>
     <template v-else>
      <div class="agent-approval-grid">
      <section class="surface agent-approval-card">
-      <div class="agent-approval-copy"><ShieldCheck :size="22"/><div><strong>授权一个流程节点</strong><small class="muted">只有流程设计中打开了 Agent 自动审批的节点会出现在这里；高风险或强制人工节点不会接受授权。</small></div></div>
+      <div class="agent-card-title"><span><ShieldCheck :size="18"/></span><div><h3>授权节点</h3><p class="muted">仅显示流程里已开启自动审批的低风险节点。</p></div></div>
       <div v-if="delegationOptions.length" class="agent-delegation-form">
        <label>可授权节点<select v-model="delegationNode"><option v-for="option in delegationOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版{{option.has_auto_policy?' · 已设安全条件':''}}）</option></select></label>
        <label>授权原因<textarea v-model="delegationReason" rows="2" placeholder="例如：低风险辅材采购金额小、资料齐全时允许自动同意"/></label>
        <label>有效期至<input v-model="delegationValidTo" type="datetime-local"/><small class="muted">留空表示长期有效，撤销后立即失效。</small></label>
-       <button class="primary" :disabled="delegationSaving||!selectedDelegationOption" @click="saveAgentDelegation">{{delegationSaving?'正在保存…':'授权 Agent 自动同意'}}</button>
+       <button class="primary" :disabled="delegationSaving||!selectedDelegationOption" @click="saveAgentDelegation">{{delegationSaving?'正在保存…':'授权自动同意'}}</button>
       </div>
-      <p v-else class="muted">当前没有可授权节点。请先在审批流程配置中为低风险节点启用 Agent 自动审批，再由审批人本人在这里授权。</p>
+      <div v-else class="agent-empty-state"><ShieldOff :size="22"/><strong>暂无可授权节点</strong><p class="muted">先在审批流程里为低风险节点开启自动审批，再回到这里授权。</p><button v-if="permissions.includes('workflow.design')" type="button" @click="select('workflows')">去配置流程</button></div>
      </section>
      <p v-if="delegationNotice" class="muted small">{{delegationNotice}}</p>
      <section class="surface agent-delegation-list" aria-label="我的自动审批授权">
-      <div class="section-heading"><h3>我的授权记录</h3><small class="muted">授权和撤销都会进入审计</small></div>
+      <div class="section-heading"><h3>授权记录</h3><small class="muted">{{delegations.length}} 条记录</small></div>
       <article v-for="row in delegations" :key="row.id" class="agent-delegation-row" :class="{inactive:!row.active}">
        <div><strong>{{delegationLabel(row)}}</strong><p class="muted small">{{row.reason}}</p><small class="muted">创建于 {{shanghai(row.created_at)}}<span v-if="row.valid_to"> · 有效期至 {{shanghai(row.valid_to)}}</span><span v-if="row.revoked_at"> · 已于 {{shanghai(row.revoked_at)}} 撤销</span></small></div>
        <span v-if="row.active" class="status-pill ok"><ShieldCheck :size="14"/>有效</span>
        <span v-else class="status-pill muted-pill"><ShieldOff :size="14"/>已撤销</span>
       <button v-if="row.active" class="danger-outline" :disabled="delegationSaving" @click="revokeDelegation(row)">撤销授权</button>
      </article>
-      <p v-if="!delegations.length" class="muted archived-empty">还没有自动审批授权。</p>
+      <div v-if="!delegations.length" class="agent-empty-state record"><ShieldOff :size="20"/><strong>还没有授权记录</strong><p class="muted">授权后会显示节点、有效期和撤销状态。</p></div>
      </section>
      </div>
     </template>
@@ -338,16 +382,27 @@ async function clearAvatar(){
    </template>
    <template v-else-if="page==='capabilities'">
     <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。使用时在对话里说“查询/准备 + 项目、单号、模号或关键词”；需确认的工具会先生成建议，不会直接提交。</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
-    <div class="capability-toolbar capability-toolbar-v2">
-     <button v-if="permissions.includes('user.manage')" class="capability-manage-button" @click="select('admin')"><Users :size="16"/>管理用户的工具与权限</button>
+    <div ref="capabilityToolbar" class="capability-toolbar capability-toolbar-v2">
      <div class="capability-tabs" role="tablist" aria-label="能力类型">
+      <button role="tab" :class="{active:capabilityTab==='all'}" :aria-selected="capabilityTab==='all'" @click="capabilityTab='all'">全部<span>{{filteredTools.length+filteredSkills.length}}</span></button>
       <button role="tab" :class="{active:capabilityTab==='tools'}" :aria-selected="capabilityTab==='tools'" @click="capabilityTab='tools'"><Wrench :size="15"/>工具<span>{{filteredTools.length}}</span></button>
       <button role="tab" :class="{active:capabilityTab==='skills'}" :aria-selected="capabilityTab==='skills'" @click="capabilityTab='skills'"><Layers :size="15"/>技能<span>{{filteredSkills.length}}</span></button>
-      <button role="tab" :class="{active:capabilityTab==='all'}" :aria-selected="capabilityTab==='all'" @click="capabilityTab='all'">全部<span>{{filteredTools.length+filteredSkills.length}}</span></button>
      </div>
-     <label class="capability-filter-control">部门<select v-model="capabilityDepartment"><option value="">全部部门</option><option v-for="[key,name] in capabilityDepartments" :key="key" :value="key">{{name}}</option></select></label>
-     <label class="capability-filter-control">类型<select v-model="capabilityType"><option value="">全部类型</option><option v-for="[key,name] in capabilityTypes" :key="key" :value="key">{{name}}</option></select></label>
-     <label class="capability-search-pill"><Search :size="15"/><input v-model="capabilitySearch" placeholder="查询工具、权限或说明"/></label>
+     <label class="capability-search-pill"><Search :size="15"/><input v-model="capabilitySearch" placeholder="查询工具、权限或说明" @focus="capabilityDropdown=''"/></label>
+     <div class="capability-select" :class="{open:capabilityDropdown==='department'}">
+      <button type="button" class="capability-select-button" @click="toggleCapabilityDropdown('department')"><span>部门</span><strong>{{capabilityDepartmentLabel}}</strong><i aria-hidden="true"></i></button>
+      <div v-if="capabilityDropdown==='department'" class="capability-select-menu">
+       <button type="button" :class="{active:!capabilityDepartment}" @click="setCapabilityDepartment('')">全部部门</button>
+       <button v-for="[key,name] in capabilityDepartments" :key="key" type="button" :class="{active:capabilityDepartment===key}" @click="setCapabilityDepartment(String(key))">{{name}}</button>
+      </div>
+     </div>
+     <div class="capability-select" :class="{open:capabilityDropdown==='type'}">
+      <button type="button" class="capability-select-button" @click="toggleCapabilityDropdown('type')"><span>类型</span><strong>{{capabilityTypeLabel}}</strong><i aria-hidden="true"></i></button>
+      <div v-if="capabilityDropdown==='type'" class="capability-select-menu">
+       <button type="button" :class="{active:!capabilityType}" @click="setCapabilityType('')">全部类型</button>
+       <button v-for="[key,name] in capabilityTypes" :key="key" type="button" :class="{active:capabilityType===key}" @click="setCapabilityType(String(key))">{{name}}</button>
+      </div>
+     </div>
     </div>
     <template v-if="showCapabilityTools">
     <h3 class="settings-section-title">工具</h3>
@@ -370,7 +425,7 @@ async function clearAvatar(){
       <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('skills',department)==='all'}" @click="setCapabilityGroupTab('skills',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('skills',department)===type.key}" @click="setCapabilityGroupTab('skills',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
       <div v-for="category in visibleCapabilityCategoryGroups('skills',department)" :key="category.name" class="capability-category-block">
        <div class="capability-category-heading"><strong>{{category.name}}</strong><small class="muted">{{category.items.length}} 项</small></div>
-       <article v-for="skill in category.items" :key="skill.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'skill',item:skill}" @keydown.enter.prevent="selectedCapability={kind:'skill',item:skill}" @keydown.space.prevent="selectedCapability={kind:'skill',item:skill}"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3></div><div class="capability-row-meta"><small class="muted">第 {{skill.version}} 版</small></div></article>
+       <article v-for="skill in category.items" :key="skill.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'skill',item:skill}" @keydown.enter.prevent="selectedCapability={kind:'skill',item:skill}" @keydown.space.prevent="selectedCapability={kind:'skill',item:skill}"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3></div><div class="capability-row-meta"><small class="muted">技能 · 可用</small></div></article>
       </div>
      </section>
     </div>
@@ -381,14 +436,17 @@ async function clearAvatar(){
     <section class="modal capability-detail-modal" role="dialog" aria-modal="true" aria-label="能力详情">
      <div class="capability-detail-head"><div><h2>{{capabilityName(selectedCapability.item)}}</h2><p class="muted">{{capabilityDetailMeta(selectedCapability)}}</p></div><button type="button" class="icon-button" aria-label="关闭详情" @click="selectedCapability=null">×</button></div>
      <dl class="capability-detail-facts"><dt>所属部门</dt><dd>{{capabilityMeta(selectedCapability.item).departmentName}}</dd><dt>业务类别</dt><dd>{{capabilityCategoryName(selectedCapability.item)}}</dd><dt>能力类型</dt><dd>{{selectedCapability.kind==='tool'?'工具':'技能'}}</dd></dl>
-     <section><h3>说明</h3><p>{{selectedCapability.item.description||('第 '+selectedCapability.item.version+' 版 · 使用当前授权工具')}}</p></section>
+     <section><h3>{{selectedCapability.kind==='skill'?'智能体技能说明':'说明'}}</h3><p class="preserve">{{capabilityDescription(selectedCapability)}}</p></section>
+     <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.dependencies?.length"><h3>会调用的工具</h3><p>{{dependencyNames(selectedCapability.item)}}</p></section>
+     <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.optional_dependencies?.length"><h3>可选工具</h3><p>{{dependencyNames(selectedCapability.item,true)}}</p></section>
      <section><h3>怎么用</h3><p>{{capabilityUsageText(selectedCapability)}}</p></section>
+     <section><h3>使用示例</h3><p class="capability-example">{{capabilityExample(selectedCapability)}}</p></section>
     </section>
    </div>
    </template>
    <AdminPanel v-else-if="page==='admin'&&permissions.includes('user.manage')" @error="emit('error',$event)"/>
    <WorkflowPanel v-else-if="page==='workflows'&&permissions.includes('workflow.design')" @error="emit('error',$event)"/>
-   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><h2>操作审计</h2><p v-if="auditLoading" role="status">正在读取审计记录…</p><article v-for="entry in audit" :key="entry.id" class="audit-row"><strong>{{auditName(entry.action)}}</strong><small>{{shanghai(entry.created_at)}}</small><p class="muted small">{{entry.resource_id}}</p></article></template>
+   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><h2>操作审计</h2><p v-if="auditLoading" role="status">正在读取审计记录…</p><article v-for="entry in audit" :key="entry.id" class="audit-row"><strong>{{auditName(entry.action)}}</strong><small>{{shanghai(entry.created_at)}}</small><p class="muted small">{{auditSummary(entry)}}<span v-if="entry.actor_name"> · 操作人：{{entry.actor_name}}</span></p></article></template>
   </div>
  </section>
 </main>

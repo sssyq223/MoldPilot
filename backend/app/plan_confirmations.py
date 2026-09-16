@@ -101,7 +101,7 @@ def _is_department_head(db, user, department):
     return bool(group and db.get(m.AssignmentMember, (group.id, user.id)) and db.get(m.AssignmentMember, (group.id, user.id)).is_head)
 
 
-def confirm(db, user, confirmation_id, expected_version, note):
+def require_confirmable(db, user, confirmation_id, expected_version):
     row = db.scalar(select(m.PlanDepartmentConfirmation).where(
         m.PlanDepartmentConfirmation.id == confirmation_id).with_for_update())
     if not row:
@@ -117,6 +117,11 @@ def confirm(db, user, confirmation_id, expected_version, note):
         raise DomainError('INVALID_STATE', '部门确认项已完成，不能重复确认', 409)
     if not (user.super_admin or user.id in set(row.assigned_user_ids or []) or _is_department_head(db, user, row.department)):
         raise DomainError('FORBIDDEN', '只有该部门负责人或指定确认人可确认计划影响', 403)
+    return subject, row
+
+
+def confirm(db, user, confirmation_id, expected_version, note):
+    subject, row = require_confirmable(db, user, confirmation_id, expected_version)
     row.status = 'CONFIRMED'
     row.version += 1
     row.confirmed_by = user.id

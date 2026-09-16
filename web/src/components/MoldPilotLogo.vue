@@ -10,6 +10,6 @@ defineProps<{size?:number}>()
   <path d="M16 17h10M38 17h10M32 12v8" stroke="var(--logo-line,#fff)" stroke-width="4" stroke-linecap="round"/>
   <circle cx="18" cy="17" r="3.2" fill="var(--logo-line,#fff)"/>
   <circle cx="46" cy="17" r="3.2" fill="var(--logo-line,#fff)"/>
-  <path d="M46 41l5-5m0 0h-8m8 0v8" stroke="var(--logo-accent,#9fd0ff)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M46 41l5-5m0 0h-8m8 0v8" stroke="var(--logo-accent,#172334)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
  </svg>
 </template>

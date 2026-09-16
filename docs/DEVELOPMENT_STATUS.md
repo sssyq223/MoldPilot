@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：项目计划变更部门影响确认会话闭环（2026-09-16）
+
+- 新增 `prepare_plan_department_confirmation` 工具，部门负责人或指定确认人可基于 `query_project_plan_context` 返回的真实 `department_confirmations.id/version` 准备确认 proposal。
+- 该能力不新增传统 ERP 菜单页面：仍走对话框内 proposal 卡片与人工确认链路；本人确认后只写入 `plan_department_confirmation=CONFIRMED`，不修改项目计划、不替代计划变更 BPM、不写入 ERP 执行进度。
+- 计划变更 Skill 已补充约束：不得凭自然语言、部门名称或历史对话构造确认项，必须先查询计划上下文取得确认项 ID 和版本。
+- Proposal 状态查询已支持非审批类 `CONFIRMED` 回执，避免部门确认完成后前端仍显示为未完成。
+- PostgreSQL `moldpilot_test` 覆盖工具 schema、部门负责人确认、人工确认后写库、版本冲突拒绝确认；前端构建与内置浏览器加载/控制台错误检查通过。
+
 ## 持续开发：FR-077 委外交付、客户验收、付款扣款和关闭追溯上下文（2026-09-16）
 
 - `query_full_outsource_context` 复用交付物流侧已有的 `customer_delivery_signature` 与 `customer_acceptance_record` 数据，不新增重复业务表；整套委外上下文新增 `analysis.customer_delivery_acceptance`。

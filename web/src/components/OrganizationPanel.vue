@@ -11,10 +11,19 @@ async function save(){busy.value=true;try{const g=editing.value;const data={kind
 </script>
 <template>
 <section class="surface form-stack organization-compact" aria-label="部门与角色管理">
-  <div class="admin-card-title"><div><h3>部门与角色</h3><p class="muted">先维护部门，再选择部门创建用户；角色仅用于审批候选人。</p></div><div class="organization-actions"><button @click="edit(undefined,'DEPARTMENT')">新增部门</button><button @click="edit(undefined,'ROLE')">新增角色</button></div></div>
+  <div class="organization-board">
+    <section class="organization-column">
+      <div class="organization-column-head"><h3>部门</h3><button type="button" aria-label="新增部门" title="新增部门" @click="edit(undefined,'DEPARTMENT')">+</button></div>
+      <p v-if="!groups.filter(g=>g.kind==='DEPARTMENT').length&&!editing" class="admin-empty compact">暂无部门</p>
+      <div v-for="g in groups.filter(g=>g.kind==='DEPARTMENT')" :key="g.id" class="grant-row organization-row"><div><strong>{{g.name}}</strong><small>{{g.members.length}} 位成员 · {{g.active?'启用':'停用'}}</small></div><button title="维护" aria-label="维护" @click="edit(g)">···</button></div>
+    </section>
+    <section class="organization-column">
+      <div class="organization-column-head"><h3>角色</h3><button type="button" aria-label="新增角色" title="新增角色" @click="edit(undefined,'ROLE')">+</button></div>
+      <p v-if="!groups.filter(g=>g.kind==='ROLE').length&&!editing" class="admin-empty compact">暂无角色</p>
+      <div v-for="g in groups.filter(g=>g.kind==='ROLE')" :key="g.id" class="grant-row organization-row"><div><strong>{{g.name}}</strong><small>{{g.members.length}} 位成员 · {{g.active?'启用':'停用'}}</small></div><button title="维护" aria-label="维护" @click="edit(g)">···</button></div>
+    </section>
+  </div>
   <p v-if="notice" class="admin-inline-notice" role="status">{{notice}}</p>
-  <p v-if="!groups.length&&!editing" class="admin-empty">还没有部门或角色规则。</p>
-  <div v-for="g in groups" :key="g.id" class="grant-row organization-row"><div><strong>{{g.name}} · {{g.kind==='ROLE'?'角色':'部门'}}</strong><small>{{g.members.length}} 位成员 · {{g.active?'启用':'停用'}}</small></div><button @click="edit(g)">维护</button></div>
   <form v-if="editing" class="form-stack organization-editor" @submit.prevent="save">
     <label>类型<select v-model="editing.kind" :disabled="!!editing.id"><option value="ROLE">角色</option><option value="DEPARTMENT">部门</option></select></label>
     <label>名称<input v-model="editing.name" required maxlength="100"/></label>

@@ -476,3 +476,100 @@ def test_plan_change_proposal_postgres_confirm_chain(monkeypatch):
     finally:
         engine.dispose()
 
+
+def test_department_confirmation_proposal_requires_human_confirmation():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True,department='项目部')
+            head=user(db,'trial_head',department='试模部')
+            group=m.AssignmentGroup(kind='DEPARTMENT',name='试模部')
+            db.add(group);db.flush()
+            db.add(m.AssignmentMember(group_id=group.id,user_id=head.id,is_head=True))
+            p=project(db,'PLAN-DEPT-CONFIRM')
+            change=plan(db,p,admin,'PLAN-CHANGE-CONFIRM',kind='plan_change',status='EFFECTIVE')
+            confirmation=m.PlanDepartmentConfirmation(plan_change_id=change.id,project_id=p.id,
+                department='试模部',assigned_user_ids=[head.id],task_keys=['trial'],
+                change_types=['added'])
+            db.add(confirmation)
+            conversation=m.Conversation(user_id=head.id,title='计划影响确认')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=head.id,security_version=head.security_version,
+                prompt='试模部已核对计划影响',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,head),'agent_permission_mode':'ask'})
+            db.add(run)
+            for permission in ('plan_change.read','plan_change.execute'):
+                grant(db,admin,head,permission,p.id)
+            capability(db,head,'prepare_plan_department_confirmation')
+            run.checkpoint={'authorization_hash':fingerprint(db,head),'agent_permission_mode':'ask'}
+            confirmation_id=confirmation.id;version=confirmation.version
+        schema=tool_schema('prepare_plan_department_confirmation')
+        assert 'confirmation_id' in schema['function']['parameters']['properties']
+        with Session.begin() as db:
+            head=db.query(m.User).filter_by(username='trial_head').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==head.id))
+            evidence=execute(db,head,'prepare_plan_department_confirmation',{
+                'confirmation_id':confirmation_id,
+                'expected_version':version,
+                'note':'试模部已核对新增试模节点资源影响',
+            },run=run)
+            assert evidence['proposal']['kind']=='plan_department_confirmation'
+            assert evidence['proposal']['requires_approval'] is False
+            assert evidence['proposal']['display']['确认部门']=='试模部'
+            assert db.get(m.PlanDepartmentConfirmation,confirmation_id).status=='PENDING'
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_plan_department_confirmation',
+                request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,head,'project_plan.execute',step.id,payload)
+            receipt=business.confirm_intent(db,head,intent['id'],intent['challenge'])
+            row=db.get(m.PlanDepartmentConfirmation,confirmation_id)
+            assert receipt['status']=='CONFIRMED'
+            assert receipt['action']=='department_confirmation'
+            assert row.status=='CONFIRMED'
+            assert row.confirmed_by==head.id
+            assert row.note=='试模部已核对新增试模节点资源影响'
+    finally:
+        engine.dispose()
+
+
+def test_department_confirmation_proposal_detects_version_conflict_on_confirm():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True,department='项目部')
+            head=user(db,'trial_head',department='试模部')
+            p=project(db,'PLAN-DEPT-CONFLICT')
+            change=plan(db,p,admin,'PLAN-CHANGE-CONFLICT',kind='plan_change',status='EFFECTIVE')
+            confirmation=m.PlanDepartmentConfirmation(plan_change_id=change.id,project_id=p.id,
+                department='试模部',assigned_user_ids=[head.id],task_keys=['trial'],
+                change_types=['added'])
+            db.add(confirmation)
+            conversation=m.Conversation(user_id=head.id,title='计划影响确认')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=head.id,security_version=head.security_version,
+                prompt='试模部已核对计划影响',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,head),'agent_permission_mode':'ask'})
+            db.add(run)
+            for permission in ('plan_change.read','plan_change.execute'):
+                grant(db,admin,head,permission,p.id)
+            capability(db,head,'prepare_plan_department_confirmation')
+            run.checkpoint={'authorization_hash':fingerprint(db,head),'agent_permission_mode':'ask'}
+            evidence=execute(db,head,'prepare_plan_department_confirmation',{
+                'confirmation_id':confirmation.id,
+                'expected_version':confirmation.version,
+                'note':'试模部已核对新增试模节点资源影响',
+            },run=run)
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_plan_department_confirmation',
+                request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,head,'project_plan.execute',step.id,payload)
+            confirmation.version += 1
+            with pytest.raises(DomainError) as conflict:
+                business.confirm_intent(db,head,intent['id'],intent['challenge'])
+            assert conflict.value.code=='VERSION_CONFLICT'
+            assert confirmation.status=='PENDING'
+    finally:
+        engine.dispose()
+

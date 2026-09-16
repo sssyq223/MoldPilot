@@ -596,8 +596,26 @@ def read_notification(notification_id: str, user=Depends(current_user), db=Depen
 @app.get("/api/audit")
 def audit(user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "audit.read")
-    return [{"id": a.id, "action": a.action, "resource_id": a.resource_id, "created_at": a.created_at.isoformat(), "detail": a.detail}
-            for a in db.scalars(select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).limit(100))]
+    events = list(db.scalars(select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).limit(100)))
+    user_ids = {value for event in events for value in (event.user_id, event.resource_id) if value}
+    users_by_id = {row.id: row for row in db.scalars(select(m.User).where(m.User.id.in_(user_ids)))} if user_ids else {}
+    def summary(event):
+        actor = users_by_id.get(event.user_id)
+        target = users_by_id.get(event.resource_id)
+        if event.action == "auth.login":
+            return f"{(actor or target).display_name if (actor or target) else '用户'} 登录工作台"
+        if event.action in {"user.created", "permission.changed", "permission.revoked", "capability.changed", "user.avatar.updated"} and target:
+            return f"目标用户：{target.display_name}（{target.username}）"
+        detail = event.detail or {}
+        if "reason" in detail:
+            return f"原因：{detail['reason']}"
+        if "kind" in detail:
+            return f"类型：{detail['kind']}"
+        return ""
+    return [{"id": a.id, "action": a.action, "resource_id": a.resource_id, "created_at": a.created_at.isoformat(),
+             "detail": a.detail, "actor_name": users_by_id[a.user_id].display_name if a.user_id in users_by_id else "系统",
+             "summary": summary(a)}
+            for a in events]
 
 
 @app.get("/api/conversations")
@@ -705,7 +723,7 @@ def capabilities(user=Depends(current_user), db=Depends(get_db)):
     from .tool_gateway import TOOLS, SKILLS, available_tools, capability_descriptor, skill_context
     return {
         "tools": [capability_descriptor("TOOL", k, TOOLS[k]) for k in available_tools(db, user)],
-        "skills": [{**capability_descriptor("SKILL", s["key"], SKILLS[s["key"]]), "version": s["version"]} for s in skill_context(db, user)],
+        "skills": [{**capability_descriptor("SKILL", s["key"], SKILLS[s["key"]]), "version": s["version"], "agent_description": s["agent_description"]} for s in skill_context(db, user)],
     }
 
 

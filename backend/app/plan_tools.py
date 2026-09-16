@@ -39,6 +39,15 @@ class PlanChangeProposalInput(StrictModel):
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
 
 
+class PlanDepartmentConfirmationProposalInput(StrictModel):
+    confirmation_id: str = Field(min_length=1, max_length=36,
+        description='query_project_plan_context 返回的待确认部门影响项 ID。')
+    expected_version: int = Field(ge=1,
+        description='query_project_plan_context 返回的部门确认项 version。')
+    note: str = Field(min_length=1, max_length=1000,
+        description='本部门已核对计划变更影响的说明或依据。')
+
+
 def _strength(value,needle):
     if value is None:return 0
     value=str(value).casefold();needle=str(needle).casefold()
@@ -316,9 +325,18 @@ def plan_change_schema():
     return PlanChangeProposalInput.model_json_schema()
 
 
+def department_confirmation_schema():
+    return PlanDepartmentConfirmationProposalInput.model_json_schema()
+
+
 def parse_plan_change(arguments):
     try:return PlanChangeProposalInput.model_validate(arguments or {})
     except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','计划变更参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def parse_department_confirmation(arguments):
+    try:return PlanDepartmentConfirmationProposalInput.model_validate(arguments or {})
+    except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','部门确认参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
 
 
 def _task_label(task):
@@ -371,16 +389,41 @@ def preview_plan_change(db,user,data:PlanChangeProposalInput):
     return detail,display
 
 
+def preview_department_confirmation(db,user,data:PlanDepartmentConfirmationProposalInput):
+    from . import plan_confirmations
+    subject,row=plan_confirmations.require_confirmable(db,user,data.confirmation_id,data.expected_version)
+    project=db.get(m.Project,row.project_id)
+    return {'操作':'确认计划变更影响已核对',
+        '项目':(project.code+' · '+project.name) if project else row.project_id,
+        '计划变更单':subject.number+' · 第'+str(subject.revision)+'版',
+        '确认部门':row.department,
+        '确认项版本':row.version,
+        '影响节点':row.task_keys or ['未列出'],
+        '影响类型':row.change_types or ['未列出'],
+        '当前候选确认人':'、'.join(person['name'] for person in plan_confirmations.serialize(db,row)['assigned_people']) or '部门负责人或超级管理员',
+        '核对说明':data.note,
+        '说明':'本人确认后只记录本部门影响已核对，不修改计划、不替代计划变更审批，也不修改 ERP 执行进度。'}
+
+
 def execute_plan_tool(db,user,key,arguments,run=None):
-    if key!='prepare_project_plan_change':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
-    data=parse_plan_change(arguments)
-    _,display=preview_plan_change(db,user,data)
     from .confirmation_policy import proposal_confirmation_policy
-    proposal={'kind':'project_plan_change','action':'plan_change','requires_approval':True,
-        'input':data.model_dump(mode='json'),'display':display,
-        'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
-    return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
-        'limitations':['仅准备计划变更操作建议；本人确认后才创建业务材料并提交审批，审批完成前不改变原计划或执行任务。']}
+    if key=='prepare_project_plan_change':
+        data=parse_plan_change(arguments)
+        _,display=preview_plan_change(db,user,data)
+        proposal={'kind':'project_plan_change','action':'plan_change','requires_approval':True,
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+        return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+            'limitations':['仅准备计划变更操作建议；本人确认后才创建业务材料并提交审批，审批完成前不改变原计划或执行任务。']}
+    if key=='prepare_plan_department_confirmation':
+        data=parse_department_confirmation(arguments)
+        display=preview_department_confirmation(db,user,data)
+        proposal={'kind':'plan_department_confirmation','action':'department_confirmation','requires_approval':False,
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=False)}
+        return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+            'limitations':['仅准备部门影响确认建议；本人确认后才记录确认结果，不修改计划、不提交 ERP。']}
+    raise DomainError('TOOL_UNKNOWN','工具未实现',403)
 
 
 def source(db,user,step_id):
@@ -391,7 +434,8 @@ def source(db,user,step_id):
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
-    if step.tool not in available_tools(db,user) or step.tool!='prepare_project_plan_change' or not proposal:
+    allowed={'prepare_project_plan_change','prepare_plan_department_confirmation'}
+    if step.tool not in available_tools(db,user) or step.tool not in allowed or not proposal:
         raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
     return proposal
 
@@ -399,8 +443,12 @@ def source(db,user,step_id):
 def validate_intent(db,user,payload):
     proposal=source(db,user,payload['step_id'])
     if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
-    data=parse_plan_change(proposal['input'])
-    _,display=preview_plan_change(db,user,data)
+    if proposal.get('action')=='department_confirmation':
+        data=parse_department_confirmation(proposal['input'])
+        display=preview_department_confirmation(db,user,data)
+    else:
+        data=parse_plan_change(proposal['input'])
+        _,display=preview_plan_change(db,user,data)
     if content_hash(display)!=content_hash(proposal['display']):
         raise DomainError('VERSION_CONFLICT','项目、计划或流程资料已变化，请重新准备',409)
     return proposal,data
@@ -409,6 +457,12 @@ def validate_intent(db,user,payload):
 def confirm(db,user,payload):
     from .confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload)
+    if proposal.get('action')=='department_confirmation':
+        from . import plan_confirmations
+        result=plan_confirmations.confirm(db,user,data.confirmation_id,data.expected_version,data.note)
+        return {'project_id':result['project_id'],'confirmation_id':result['id'],
+            'plan_change_id':result['plan_change_id'],'department':result['department'],
+            'action':'department_confirmation','status':result['status']}
     subject=domains.create(db,user,s.SubjectInput(kind='plan_change',project_id=data.project_id,
         remark=data.reason,detail={'previous_id':data.previous_id,'reason':data.reason,
             'tasks':[task.model_dump(mode='json') for task in data.tasks]}))
@@ -428,7 +482,7 @@ def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
     source(db,user,step_id)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='project_plan.execute',m.HumanIntent.resource_id==step_id,
-        m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))
+        m.HumanIntent.receipt.is_not(None)).order_by(m.HumanIntent.created_at.desc()))
     return {'receipt':intent.receipt if intent else None}
 
 
