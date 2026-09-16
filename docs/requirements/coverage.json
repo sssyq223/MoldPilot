@@ -1949,12 +1949,14 @@
         "新增 query_operations_readiness_context 只读工具和 operations_readiness_review Skill，核对部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界的当前事实与验收缺口",
         "数据库核对明确返回 PostgreSQL/moldpilot/Navicat 交付基线、实际 SQLAlchemy 方言、PostgreSQL 当前库名和 Alembic 迁移版本一致性，未满足时提示不得用 SQLite 作为交付依据",
         "备份恢复核对返回受控备份脚本、pg_dump/pg_restore 可用性和本机演练前提",
+        "日志保留核对返回审计、应用、访问、模型调用日志保留天数配置状态和审计表时间范围",
         "工具只返回脱敏配置形态、健康检查和运行计数，不泄露数据库密码、Redis 密码、API Key、S3 密钥或 Worker 密钥；未确认前显式禁止承诺 SLA、性能、准确率、RTO 或 RPO"
       ],
       "verification_evidence": [
         "tests/test_operations_readiness_tools.py 覆盖工具/Skill 注册、超级管理员可用性、FR-118 七项门槛未验收状态和敏感信息脱敏",
         "scripts/verify_postgres_baseline.py 与运行时工具调用已在本机实际 PostgreSQL moldpilot 库通过，返回 dialect=postgresql、current_database=moldpilot、alembic_version=d2f0a9b1c3e4 且仓库 head 相同",
-        "scripts/backup_postgres.py --dry-run 已核对 PostgreSQL 配置并如实报告当前缺少 pg_dump"
+        "scripts/backup_postgres.py --dry-run 已核对 PostgreSQL 配置并如实报告当前缺少 pg_dump",
+        "运行就绪工具已返回 log_retention.status=LOG_RETENTION_POLICY_INCOMPLETE"
       ],
       "acceptance_status": "NOT_VERIFIED"
     }

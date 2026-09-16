@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     origin: str = "http://127.0.0.1:5173"
     cookie_secure: bool = True
     environment: str = "development"
+    audit_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    app_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    access_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    model_log_retention_days: int = Field(default=0, ge=0, le=3650)
     llm_base_url: str = ""
     # Explicit HTTP origin for a trusted private-IP model service; empty requires HTTPS.
     llm_trusted_http_origin: str = ""

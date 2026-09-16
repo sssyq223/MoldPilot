@@ -215,6 +215,40 @@ def _backup_restore_status() -> dict:
     }
 
 
+def _retention_item(days: int) -> dict:
+    return {
+        "configured": days > 0,
+        "days": days if days > 0 else None,
+    }
+
+
+def _log_retention_status(db, cfg) -> dict:
+    audit_total = db.scalar(select(func.count()).select_from(AuditEvent)) or 0
+    oldest = db.scalar(select(func.min(AuditEvent.created_at)))
+    newest = db.scalar(select(func.max(AuditEvent.created_at)))
+    policy = {
+        "audit_log": _retention_item(cfg.audit_log_retention_days),
+        "application_log": _retention_item(cfg.app_log_retention_days),
+        "access_log": _retention_item(cfg.access_log_retention_days),
+        "model_log": _retention_item(cfg.model_log_retention_days),
+    }
+    configured_keys = [key for key, value in policy.items() if value["configured"]]
+    missing_keys = [key for key, value in policy.items() if not value["configured"]]
+    return {
+        "policy": policy,
+        "configured_keys": configured_keys,
+        "missing_keys": missing_keys,
+        "policy_fully_configured": not missing_keys,
+        "audit_event_table": {
+            "row_count": audit_total,
+            "oldest_created_at": oldest.isoformat() if oldest else None,
+            "newest_created_at": newest.isoformat() if newest else None,
+        },
+        "status": "LOG_RETENTION_POLICY_CONFIGURED" if not missing_keys else "LOG_RETENTION_POLICY_INCOMPLETE",
+        "note": "这里只核对保留期限配置和审计表事实；正式验收仍需确认应用日志、访问日志、模型调用日志的采集位置、脱敏、归档、检索和删除策略。",
+    }
+
+
 def _counts(db, include: bool) -> dict:
     if not include:
         return {"included": False}
@@ -235,9 +269,10 @@ def _counts(db, include: bool) -> dict:
     }
 
 
-def _gates(cfg, model_cfg, backup_restore: dict) -> list[dict]:
+def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict) -> list[dict]:
     s3_ready = cfg.file_backend == "s3" and _configured(cfg.file_s3_bucket) and _configured(cfg.file_s3_endpoint)
     backup_tooling_ready = backup_restore.get("status") == "BACKUP_TOOLING_READY"
+    log_policy_ready = log_retention.get("policy_fully_configured") is True
     return [
         {
             "key": "deployment_topology",
@@ -285,7 +320,7 @@ def _gates(cfg, model_cfg, backup_restore: dict) -> list[dict]:
             "key": "log_retention",
             "name": "日志保留期限",
             "confirmed": False,
-            "current_evidence": "系统有审计事件表；正式应用日志、访问日志、模型调用日志和审计日志保留期限尚未确认。",
+            "current_evidence": "审计日志、应用日志、访问日志和模型调用日志保留天数均已配置；正式采集、脱敏、归档、检索和删除策略仍待验收。" if log_policy_ready else "系统有审计事件表；审计日志、应用日志、访问日志或模型调用日志保留期限尚未全部配置。",
             "required_test": "按合规要求确认日志种类、脱敏规则、保留期限、检索方式和删除策略。",
         },
         {
@@ -309,7 +344,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
     model_cfg = model_settings()
     backup_restore = _backup_restore_status()
-    gates = _gates(cfg, model_cfg, backup_restore)
+    log_retention = _log_retention_status(db, cfg)
+    gates = _gates(cfg, model_cfg, backup_restore, log_retention)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
@@ -326,6 +362,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         warnings.append("当前数据库迁移版本没有确认等于仓库 Alembic head；请先用迁移账号核对或执行 alembic upgrade head 后再验收。")
     if backup_restore.get("status") != "BACKUP_TOOLING_READY":
         warnings.append("当前备份/恢复工具链未完整就绪；请安装 PostgreSQL 客户端工具或提供 pg_dump/pg_restore 路径后再做备份恢复演练。")
+    if not log_retention.get("policy_fully_configured"):
+        warnings.append("当前日志保留期限尚未全部配置；请明确审计、应用访问和模型调用日志的保留天数、脱敏、归档和删除策略。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -359,6 +397,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                     "daily_bytes": cfg.file_daily_bytes,
                 },
                 "backup_restore": backup_restore,
+                "log_retention": log_retention,
                 "security_runtime": {
                     "worker_secret_configured": _configured(cfg.worker_secret),
                     "credential_encryption_key_configured": _configured(cfg.credential_encryption_key),

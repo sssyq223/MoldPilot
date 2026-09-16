@@ -58,6 +58,8 @@ $env:PYTHONPATH='backend'
 
 脚本只支持 PostgreSQL，拒绝 SQLite，默认输出到 `.local/backups`，不会提交到 Git。数据库密码只通过 `PGPASSWORD` 环境变量传给 `pg_dump`，不会打印到控制台或写入命令参数。若本机未安装 PostgreSQL 客户端工具，dry-run 会提示 `pg_dump_available=False`，需安装客户端或通过 `--pg-dump` 指定路径后再执行正式备份和隔离恢复演练。
 
+日志保留期限也通过 `.env` 显式配置。`MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS` 默认为 `0`，表示尚未确认，不会被运行就绪工具视为已验收。设置具体天数后，仍需补充日志采集位置、脱敏、归档、检索和删除策略的验收证据。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。

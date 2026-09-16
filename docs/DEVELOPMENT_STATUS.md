@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：日志保留期限运行基线（2026-09-16）
+
+- 新增运行配置 `MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS`；默认值为 `0`，表示尚未确认，不会被当作交付验收通过。
+- `query_operations_readiness_context` 新增 `log_retention`，只读返回审计日志、应用日志、访问日志、模型调用日志保留天数是否已配置，并返回当前 `audit_event` 表行数、最早和最新审计时间。
+- 当任一日志保留期限未配置时，工具会写入 limitations，要求明确保留天数、脱敏、归档、检索和删除策略；配置天数本身仍不代表日志采集链路或合规验收完成。
+- 本机实际核对显示四类日志保留期限仍为未配置，因此 FR-118 的日志保留门槛继续保持 NOT_VERIFIED。
+
 ## 持续开发：PostgreSQL 备份工具链基线（2026-09-16）
 
 - 新增 `scripts/backup_postgres.py`，只读取本机 `.env`，拒绝 SQLite，默认将 PostgreSQL 逻辑备份写入 `.local/backups`，通过 `PGPASSWORD` 环境变量向 `pg_dump` 传递密码，不在控制台或命令参数中暴露数据库密码。
