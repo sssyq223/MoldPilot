@@ -1000,8 +1000,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 付款流程为：申请→适用条件核验→审批→待支付及支付执行→实际付款确认。不符合适用条件时补充资料或特殊审批；审批通过仅代表允许支付，不计入已付款金额。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清
-- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警
+- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清；prepare_supplier_payment_confirmation 基于已审批付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation
+- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用、审批/实付区分告警，以及供应商实付确认卡片本人确认后才写库
 - 验收状态：NOT_VERIFIED
 
 ### FR-104
@@ -1009,8 +1009,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 实际支付完成并经财务确认后，生成或确认实际付款记录并计入供应商已付款，关联项目、合同、采购单、客户回款条件、费用和发票凭证。付款执行渠道另行适配，不默认为本系统自动操作银行转账。
 
 - 最新口径：不开发银行自动转账；保留付款流程、人工实际支付确认及凭证。
-- 实现证据：PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果；query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请
-- 验证证据：tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发
+- 实现证据：PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果；query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请；prepare_supplier_payment_confirmation 在准备和确认阶段重新校验项目版本、付款申请归属、生效状态、币种、授权余额和重复付款流水号，确认后通过 finance.confirm 登记实付
+- 验证证据：tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发；供应商实付确认卡片覆盖重复流水号和超额付款阻断
 - 验收状态：NOT_VERIFIED
 
 ### FR-105

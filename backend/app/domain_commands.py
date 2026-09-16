@@ -163,6 +163,22 @@ def validate_customer_receipt(db, resource, data: CustomerReceipt):
     return detail,stage
 
 
+def validate_supplier_payment(db, resource, data: Payment):
+    if resource.kind!='supplier_payment' or resource.status!='EFFECTIVE':
+        raise DomainError('PAYMENT_NOT_AUTHORIZED','付款申请尚未审批生效')
+    detail=db.get(m.PaymentRequestDetail,resource.id)
+    if not detail:
+        raise DomainError('PAYMENT_DETAIL_MISSING','付款申请明细不存在',404)
+    stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())
+    if not stage:
+        raise DomainError('PAYMENT_STAGE_MISSING','付款申请节点不存在',404)
+    if detail.currency!=data.currency or data.amount>detail.reservation:
+        raise DomainError('PAYMENT_OVERFLOW','币种不一致或实付超出本次授权余额',409)
+    if db.scalar(select(m.PaymentConfirmation.id).where(m.PaymentConfirmation.reference==data.reference)):
+        raise DomainError('PAYMENT_DUPLICATE','该付款流水号已登记',409)
+    return detail
+
+
 def execute_command(db,user,key,resource_id,payload):
     resource,data,context=validate_command(db,user,key,resource_id,payload,lock=True)
     result={'resource_id':resource_id,'action':key}
@@ -217,10 +233,7 @@ def execute_command(db,user,key,resource_id,payload):
         require_source(db,resource.contract_id,context['project_id'],{'full_outsource_contract'})
         resource.condition_confirmed=True;resource.condition_evidence=data.evidence
     elif key=='finance.confirm':
-        if resource.kind!='supplier_payment' or resource.status!='EFFECTIVE':raise DomainError('PAYMENT_NOT_AUTHORIZED','付款申请尚未审批生效')
-        detail=db.get(m.PaymentRequestDetail,resource.id)
-        db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())
-        if detail.currency!=data.currency or data.amount>detail.reservation:raise DomainError('PAYMENT_OVERFLOW','币种不一致或实付超出本次授权余额',409)
+        detail=validate_supplier_payment(db,resource,data)
         confirmation=m.PaymentConfirmation(request_id=resource.id,confirmed_by=user.id,**data.model_dump());db.add(confirmation);db.flush()
         detail.reservation-=data.amount;result['payment_confirmation_id']=confirmation.id
     elif key=='customer_receipt.confirm':

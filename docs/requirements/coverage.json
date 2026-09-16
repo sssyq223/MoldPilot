@@ -1673,10 +1673,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认",
-        "query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清"
+        "query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清",
+        "prepare_supplier_payment_confirmation 基于已审批供应商付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation"
       ],
       "verification_evidence": [
-        "tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警"
+        "tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警，并覆盖供应商实付确认卡片本人确认后才写库"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1688,10 +1689,11 @@
       "latest_decision": "不开发银行自动转账；保留付款流程、人工实际支付确认及凭证。",
       "implementation_evidence": [
         "PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果",
-        "query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请"
+        "query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请",
+        "prepare_supplier_payment_confirmation 在准备和确认阶段重新校验项目版本、付款申请归属、生效状态、币种、授权余额和重复付款流水号，确认后通过 finance.confirm 登记实付"
       ],
       "verification_evidence": [
-        "tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发"
+        "tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发；供应商实付确认卡片覆盖重复流水号和超额付款阻断"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

@@ -351,3 +351,91 @@ def test_prepare_customer_receipt_rejects_duplicate_reference_and_stage_overflow
     finally:
         engine.dispose()
 
+
+def test_prepare_supplier_payment_requires_confirmation_then_records_payment():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-PAY-PREPARE")
+            payment = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "supplier_payment"))
+            conversation = m.Conversation(user_id=admin.id, title="供应商实付确认")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记供应商实际付款", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            args = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "payment_subject_id": payment.id,
+                "amount": "5000.00",
+                "currency": "CNY",
+                "paid_date": date.today().isoformat(),
+                "reference": "PAY-PREPARE-001",
+                "evidence": "财务付款回单",
+            }
+        schema = tool_schema("prepare_supplier_payment_confirmation")["function"]["parameters"]
+        assert {"project_id", "project_version", "payment_subject_id", "amount", "reference"} <= set(schema["properties"])
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            evidence = execute(db, admin, "prepare_supplier_payment_confirmation", args, run=run)
+            assert evidence["proposal"]["kind"] == "supplier_payment_confirmation"
+            assert evidence["proposal"]["requires_approval"] is False
+            assert evidence["proposal"]["display"]["付款流水/凭证号"] == "PAY-PREPARE-001"
+            assert db.scalar(select(m.PaymentConfirmation).where(m.PaymentConfirmation.reference == "PAY-PREPARE-001")) is None
+            step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_payment_confirmation", request_hash="hash", result=evidence)
+            db.add(step)
+            db.flush()
+            payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+            intent = business.create_intent(db, admin, "finance.execute", step.id, payload)
+            receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            assert receipt["status"] == "CONFIRMED"
+            row = db.get(m.PaymentConfirmation, receipt["payment_confirmation_id"])
+            assert row.reference == "PAY-PREPARE-001"
+            assert row.amount == Decimal("5000.00")
+            detail = db.get(m.PaymentRequestDetail, args["payment_subject_id"])
+            assert detail.reservation == Decimal("20000.00")
+    finally:
+        engine.dispose()
+
+
+def test_prepare_supplier_payment_rejects_duplicate_reference_and_reservation_overflow():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-PAY-BLOCK")
+            payment = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "supplier_payment"))
+            conversation = m.Conversation(user_id=admin.id, title="供应商实付阻断")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记供应商实际付款", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            base = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "payment_subject_id": payment.id,
+                "amount": "1000.00",
+                "currency": "CNY",
+                "paid_date": date.today().isoformat(),
+                "reference": "PAY-FIN-FIN-PAY-BLOCK",
+                "evidence": "重复付款回单",
+            }
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            with pytest.raises(Exception) as duplicate:
+                execute(db, admin, "prepare_supplier_payment_confirmation", base, run=run)
+            assert getattr(duplicate.value, "code", None) == "PAYMENT_DUPLICATE"
+            overflow = {**base, "reference": "PAY-OVERFLOW-001", "amount": "25000.01"}
+            with pytest.raises(Exception) as over:
+                execute(db, admin, "prepare_supplier_payment_confirmation", overflow, run=run)
+            assert getattr(over.value, "code", None) == "PAYMENT_OVERFLOW"
+    finally:
+        engine.dispose()
+

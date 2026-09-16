@@ -62,6 +62,7 @@ TOOLS.update({
     'query_change_intake_context':{'description':'按项目、模具、客户设变、工程联络或合同线索核对设变承接、收费/合同/开工依据、原模具/原项目、影响任务、执行复验和关闭上下文；只读，不替代 ERP 执行。','permission':'engineering_change.read'},
     'query_finance_context':{'description':'按项目、合同、付款节点、供应商付款、回款、发票、费用或结项线索核对财务节点与收付款上下文；只读，不确认回款付款、不生成财务台账。','permission':'project.dossier.read'},
     'prepare_customer_receipt_confirmation':{'description':'准备客户实际回款确认登记建议；必须使用查询返回的真实项目版本、已生效销售合同和收款节点，本人确认后才写入回款确认台账。','permission':'customer_receipt.confirm'},
+    'prepare_supplier_payment_confirmation':{'description':'准备供应商实际付款确认登记建议；必须使用查询返回的真实项目版本、已审批供应商付款申请和授权余额，本人确认后才写入付款确认记录。','permission':'finance.confirm'},
     'query_governance_context':{'description':'按项目线索核对权限矩阵、审计事件、站内通知、附件版本和 ERP 来源操作状态；只读，不授权、不下载、不导出。','permission':'audit.read'},
     'query_operations_readiness_context':{'description':'核对部署、容量、响应时间、可用性、备份恢复和日志保留等运行交付验收缺口；只读，不承诺未经确认的 SLA 或性能指标。','permission':'audit.read'},
     'query_procurement_price_context':{'description':'按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；只读，不询价、不下单、不入库。','permission':'purchase_price.read'},
@@ -121,7 +122,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
                    'activation_queries':['客户设变','设变承接','工程设变','收费变更','原模具']},
                'finance_context_review':{'name':'财务节点与收付款核对','tools':['query_finance_context'],
-                   'optional_tools':['prepare_customer_receipt_confirmation'],
+                   'optional_tools':['prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation'],
                    'activation_queries':['财务节点','收付款','回款','付款','发票','结算']},
                'governance_context_review':{'name':'治理权限与来源核对','tools':['query_governance_context'],
                    'activation_queries':['治理上下文','权限矩阵','审计','附件版本','来源治理']},
@@ -195,6 +196,7 @@ CAPABILITY_NAMES = {
     'query_change_intake_context': '读取设变承接上下文',
     'query_finance_context': '读取财务节点上下文',
     'prepare_customer_receipt_confirmation': '准备客户回款确认',
+    'prepare_supplier_payment_confirmation': '准备供应商实付确认',
     'query_governance_context': '读取治理权限与来源上下文',
     'query_operations_readiness_context': '读取运行交付就绪上下文',
     'query_procurement_price_context': '读取采购价格与订单上下文',
@@ -410,9 +412,10 @@ def tool_schema(key):
     if key=='query_finance_context':
         from .project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
-    if key=='prepare_customer_receipt_confirmation':
-        from .finance_context_tools import customer_receipt_schema
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':customer_receipt_schema()}}
+    if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation'}:
+        from .finance_context_tools import customer_receipt_schema, supplier_payment_confirmation_schema
+        parameters=customer_receipt_schema() if key=='prepare_customer_receipt_confirmation' else supplier_payment_confirmation_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_governance_context':
         from .governance_context_tools import GovernanceContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':GovernanceContextInput.model_json_schema()}}
@@ -466,7 +469,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_contract_record':
         from .contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)
-    if key=='prepare_customer_receipt_confirmation':
+    if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation'}:
         from .finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':

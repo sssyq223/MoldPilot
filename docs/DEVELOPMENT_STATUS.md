@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：供应商实际付款确认对话办理闭环（2026-09-16）
+
+- 新增 `prepare_supplier_payment_confirmation` 工具，基于 `query_finance_context` 返回的真实项目、项目版本、已审批供应商付款申请和授权占用余额，准备供应商实际付款确认 proposal。
+- 该能力不新增传统财务页面：仍在对话框内展示 proposal 卡片，用户本人确认后才调用人工命令 `finance.confirm` 写入 `PaymentConfirmation` 并扣减本次付款申请 `reservation`；不会执行银行转账，不把付款申请审批通过当成已付款，也不代表供应商全部付清或项目关闭。
+- 准备和确认阶段都会重新校验项目版本、付款申请归属、申请生效状态、币种、授权余额、重复付款流水号以及当前用户的 `supplier_payment.read` / `finance.confirm` 精确项目分类权限，避免过期卡片或越权确认继续写入。
+- 前端通用 proposal 卡片已映射 `supplier_payment_confirmation` 到 `/api/finance-proposals`，沿用对话内确认流程；财务上下文 Skill 只在财务场景小工具集中暴露该准备工具，避免一次性把大量工具喂给模型。
+- 验证：`tests/test_finance_context_tools.py` 覆盖供应商实付确认 proposal 不直接写库、本人确认后写入付款确认并扣减授权余额、重复流水号阻断和实付超出授权余额阻断；`tests/test_domains.py tests/test_manufacturing.py tests/test_finance_context_tools.py tests/test_capability_catalog.py` 共 25 项通过，前端 `npm run build` 通过，内置浏览器加载工作台、权限模式框内切换不跳转且控制台无 warn/error。
+
 ## 持续开发：客户实际回款确认对话办理闭环（2026-09-16）
 
 - 新增 `prepare_customer_receipt_confirmation` 工具，基于 `query_finance_context` 可见事实中的真实项目、项目版本、已生效销售合同和收款节点，准备客户实际回款确认 proposal。

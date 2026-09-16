@@ -11,7 +11,7 @@ from .authorization import access, fingerprint, predicate, require, select_field
 from .bpm import content_hash
 from .confirmation_policy import proposal_confirmation_policy
 from .db import get_db, now
-from .domain_commands import CustomerReceipt, validate_customer_receipt
+from .domain_commands import CustomerReceipt, Payment, validate_customer_receipt, validate_supplier_payment
 from .errors import DomainError
 from .project_dossier import ProjectDossierInput
 from .schemas import StrictModel
@@ -33,6 +33,17 @@ class CustomerReceiptProposalInput(StrictModel):
     evidence: str = Field(min_length=1, max_length=4000)
     source_ref: str | None = Field(default=None, max_length=120)
     note: str | None = Field(default=None, max_length=4000)
+
+
+class SupplierPaymentConfirmationProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    payment_subject_id: str = Field(min_length=1, max_length=36)
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    paid_date: date
+    reference: str = Field(min_length=1, max_length=100)
+    evidence: str = Field(min_length=1, max_length=4000)
 
 
 def _strength(value, needle):
@@ -465,6 +476,10 @@ def customer_receipt_schema():
     return CustomerReceiptProposalInput.model_json_schema()
 
 
+def supplier_payment_confirmation_schema():
+    return SupplierPaymentConfirmationProposalInput.model_json_schema()
+
+
 def parse_customer_receipt(arguments):
     try:
         return CustomerReceiptProposalInput.model_validate(arguments or {})
@@ -472,10 +487,22 @@ def parse_customer_receipt(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "客户回款确认参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
 
 
+def parse_supplier_payment_confirmation(arguments):
+    try:
+        return SupplierPaymentConfirmationProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商实付确认参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
+
+
 def _receipt_payload(data: CustomerReceiptProposalInput):
     return CustomerReceipt(amount=data.amount, currency=data.currency, received_date=data.received_date,
         reference=data.reference, evidence=data.evidence, stage_id=data.stage_id,
         source_ref=data.source_ref, note=data.note)
+
+
+def _supplier_payment_payload(data: SupplierPaymentConfirmationProposalInput):
+    return Payment(amount=data.amount, currency=data.currency, paid_date=data.paid_date,
+        reference=data.reference, evidence=data.evidence)
 
 
 def preview_customer_receipt(db, user, data: CustomerReceiptProposalInput):
@@ -510,16 +537,61 @@ def preview_customer_receipt(db, user, data: CustomerReceiptProposalInput):
     return payload, display
 
 
+def preview_supplier_payment_confirmation(db, user, data: SupplierPaymentConfirmationProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    payment = db.get(m.BusinessSubject, data.payment_subject_id)
+    if not payment or payment.project_id != project.id:
+        raise DomainError("NOT_FOUND", "供应商付款申请不存在或不属于该项目", 404)
+    payment_scope = {"project_id": project.id, "category": payment.category}
+    require(db, user, "supplier_payment.read", payment_scope)
+    require(db, user, "finance.confirm", payment_scope)
+    payload = _supplier_payment_payload(data)
+    detail = validate_supplier_payment(db, payment, payload)
+    stage = db.get(m.PaymentStage, detail.stage_id)
+    contract = db.get(m.BusinessSubject, stage.contract_id) if stage else None
+    contract_detail = db.get(m.ContractDetail, contract.id) if contract else None
+    display = {
+        "操作": "登记供应商实际付款确认",
+        "项目": project.code+" · "+project.name,
+        "项目版本": project.row_version,
+        "付款申请": payment.number,
+        "付款节点": stage.name if stage else "未找到节点",
+        "关联合同": contract_detail.contract_number if contract_detail else "未找到合同",
+        "本次实付": str(data.amount)+" "+data.currency,
+        "付款日期": data.paid_date.isoformat(),
+        "付款流水/凭证号": data.reference,
+        "本次授权余额": str(detail.reservation)+" "+detail.currency,
+        "依据": data.evidence,
+        "说明": "本人确认后仅登记财务已确认的供应商实际付款事实，并扣减该申请授权余额；不执行银行转账，不代表全部付款完成或项目关闭。",
+    }
+    return payload, display
+
+
 def execute_finance_tool(db, user, key, arguments, run=None):
-    if key != "prepare_customer_receipt_confirmation":
+    if key not in {"prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation"}:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
-    data = parse_customer_receipt(arguments)
-    _, display = preview_customer_receipt(db, user, data)
-    proposal = {"kind": "customer_receipt", "action": "confirm_customer_receipt",
-        "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
-        "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+    if key == "prepare_customer_receipt_confirmation":
+        data = parse_customer_receipt(arguments)
+        _, display = preview_customer_receipt(db, user, data)
+        proposal = {"kind": "customer_receipt", "action": "confirm_customer_receipt",
+            "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+        limitations = ["仅准备客户实际回款登记建议；本人确认后才写入回款确认台账，不执行收款、不开票、不计算收入利润。"]
+    else:
+        data = parse_supplier_payment_confirmation(arguments)
+        _, display = preview_supplier_payment_confirmation(db, user, data)
+        proposal = {"kind": "supplier_payment_confirmation", "action": "confirm_supplier_payment",
+            "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+        limitations = ["仅准备供应商实际付款登记建议；本人确认后才写入付款确认记录，不执行银行转账，不代表全部付款完成。"]
     return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
-        "limitations": ["仅准备客户实际回款登记建议；本人确认后才写入回款确认台账，不执行收款、不开票、不计算收入利润。"]}
+        "limitations": limitations}
 
 
 def source(db, user, step_id):
@@ -533,7 +605,7 @@ def source(db, user, step_id):
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
     proposal = step.result.get("proposal")
-    if step.tool not in available_tools(db, user) or step.tool != "prepare_customer_receipt_confirmation" or not proposal:
+    if step.tool not in available_tools(db, user) or step.tool not in {"prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation"} or not proposal:
         raise DomainError("TOOL_FORBIDDEN", "操作能力不可用", 403)
     return proposal
 
@@ -542,20 +614,31 @@ def validate_intent(db, user, payload):
     proposal = source(db, user, payload["step_id"])
     if content_hash(proposal) != payload["proposal_hash"]:
         raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
-    data = parse_customer_receipt(proposal["input"])
-    _, display = preview_customer_receipt(db, user, data)
+    if proposal.get("kind") == "customer_receipt":
+        data = parse_customer_receipt(proposal["input"])
+        _, display = preview_customer_receipt(db, user, data)
+    elif proposal.get("kind") == "supplier_payment_confirmation":
+        data = parse_supplier_payment_confirmation(proposal["input"])
+        _, display = preview_supplier_payment_confirmation(db, user, data)
+    else:
+        raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
-        raise DomainError("VERSION_CONFLICT", "项目、合同或回款资料已变化，请重新准备", 409)
+        raise DomainError("VERSION_CONFLICT", "项目或财务资料已变化，请重新准备", 409)
     return proposal, data
 
 
 def confirm(db, user, payload):
     from .domain_commands import execute_command
-    _, data = validate_intent(db, user, payload)
-    receipt = _receipt_payload(data)
-    result = execute_command(db, user, "customer_receipt.confirm", data.contract_subject_id, receipt.model_dump(mode="json"))
-    return {"project_id": data.project_id, "contract_subject_id": data.contract_subject_id,
-        "customer_receipt_id": result["customer_receipt_id"], "action": "customer_receipt_confirm", "status": "CONFIRMED"}
+    proposal, data = validate_intent(db, user, payload)
+    if proposal.get("kind") == "customer_receipt":
+        receipt = _receipt_payload(data)
+        result = execute_command(db, user, "customer_receipt.confirm", data.contract_subject_id, receipt.model_dump(mode="json"))
+        return {"project_id": data.project_id, "contract_subject_id": data.contract_subject_id,
+            "customer_receipt_id": result["customer_receipt_id"], "action": "customer_receipt_confirm", "status": "CONFIRMED"}
+    payment = _supplier_payment_payload(data)
+    result = execute_command(db, user, "finance.confirm", data.payment_subject_id, payment.model_dump(mode="json"))
+    return {"project_id": data.project_id, "payment_subject_id": data.payment_subject_id,
+        "payment_confirmation_id": result["payment_confirmation_id"], "action": "supplier_payment_confirm", "status": "CONFIRMED"}
 
 
 def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
@@ -613,6 +696,8 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             limitations.append("未分配工程联络查询工具，未汇总设变费用、扣款或额外工时线索。")
         if "prepare_customer_receipt_confirmation" in allowed_tools:
             limitations.append("可在取得真实销售合同和收款节点后准备客户实际回款确认；该操作仍需本人核对卡片后才写入。")
+        if "prepare_supplier_payment_confirmation" in allowed_tools:
+            limitations.append("可在取得已审批供应商付款申请和授权余额后准备供应商实际付款确认；该操作仍需本人核对卡片后才写入。")
         return {
             "resolution": "RESOLVED",
             "data": [
