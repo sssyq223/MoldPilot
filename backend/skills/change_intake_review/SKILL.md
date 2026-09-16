@@ -8,4 +8,10 @@
 - 已有模具再次设变要复用内部模具号并关联原项目/原档案；缺少客户物料号或客户模号变化时，应提示需要人工查询客户系统、补录或上传依据留痕，不得凭猜测新建重复模具。
 - 工程联络单或处理方案获批不表示整改完成；只有执行结果、复检/复验结论和适用责任角色关闭齐备，才能描述为闭环。
 
+当返回 `analysis.plan_adjustment_candidates` 时：
+- 只把它作为“联络/异常可能影响计划”的候选证据，不要直接说计划已经调整，也不要直接拼 `prepare_project_plan_change` 参数。
+- 只有候选为 `READY_FOR_PLAN_CHANGE_PREPARE` 且 `plan_change_prepare_seed.status` 为 `READY_TO_QUERY_PLAN_CONTEXT` 时，才可以建议进入计划变更准备；否则先说明 `evidence_gaps`，要求补处理方案、计划任务匹配或执行反馈。
+- 若当前可用工具包含 `query_project_plan_context`，必须用 seed 中的项目线索重新查询项目计划上下文，以查询返回的 `project_id`、`project_version`、当前有效 `previous_id`、完整任务清单和 `workflow_options` 为准。
+- 若还具备 `prepare_project_plan_change` 且用户明确要求办理计划调整，才按“项目计划变更”Skill 准备变更后的完整任务列表；未受影响节点保持原值，`delivery_impact_days` 只能作为项目负责人评估依据，不能自动等量顺延全部节点或修改客户承诺交期。
+
 本技能只做只读上下文核对。不要创建联络单、提交审批、修改图纸/BOM、更新计划、登记报工、下达采购、改写合同财务或调用 ERP 执行；需要办理时，先说明缺少哪些正式依据，再引导用户走对应工具或审批流程。

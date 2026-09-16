@@ -603,11 +603,12 @@
         "query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对",
         "analysis.visualization.kanban.risk_lanes.overdue 将逾期节点输出为结构化风险泳道，便于后续异常协同入口引用",
         "query_change_intake_context 新增 plan_adjustment_candidates，把影响计划节点、WIP任务、返工/重发/暂停/取消或登记交期影响天数的工程联络事项结构化为计划调整候选，并输出匹配计划任务、证据缺口和 plan_change_prepare_seed；seed 只冻结项目、当前计划 previous_id、来源和变更意图，仍要求先查 query_project_plan_context 获取完整任务清单",
+        "change_intake_review Skill 明确 plan_adjustment_candidates 只是候选证据；只有证据齐全、可选计划工具可用且用户要求办理时，才回查项目计划上下文并进入项目计划变更 Skill",
         "prepare_project_plan_change 可把影响节点的调整方案封装为本人确认后的 plan_change BPM 提案",
         "普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析、逾期风险泳道和计划变更 proposal 确认链路；tests/test_change_intake_tools.py 覆盖工程联络事项到计划调整候选的结构化桥接、准备种子、权限隔离和证据缺口；真实部门协同验收仍未完成"
+        "tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析、逾期风险泳道和计划变更 proposal 确认链路；tests/test_change_intake_tools.py 覆盖工程联络事项到计划调整候选的结构化桥接、准备种子、权限隔离和证据缺口；tests/test_capability_catalog.py 覆盖设变 Skill 的计划变更桥接为可选依赖；真实部门协同验收仍未完成"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -624,10 +625,11 @@
         "审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人",
         "计划变更影响范围输出 affected_departments 矩阵，按部门、责任人、任务标识和新增/删除/调整/责任人变更类型冻结到提案预览、审批生效事件和审计详情",
         "审批生效后按 affected_departments 生成 plan_department_confirmation 部门确认项，优先派给组织目录部门负责人，没有部门负责人时派给受影响任务责任人；确认接口执行权限、确认人身份和版本校验后记录审计与通知",
-        "plan_adjustment_candidates 将工程联络事项、处理方案状态、交期影响和精确匹配的计划任务作为计划变更提案前置依据；plan_change_prepare_seed 标明 previous_id、项目版本和完整任务列表约束；证据不足时仅列缺口，不创建 plan_change"
+        "plan_adjustment_candidates 将工程联络事项、处理方案状态、交期影响和精确匹配的计划任务作为计划变更提案前置依据；plan_change_prepare_seed 标明 previous_id、项目版本和完整任务列表约束；证据不足时仅列缺口，不创建 plan_change",
+        "能力目录通过 optional_dependencies 表达设变核对到项目计划变更的可选桥接，不把计划变更权限作为只读设变核对的硬前提"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人、生成部门确认项、派发部门确认通知、负责人确认并在 query_project_plan_context 返回确认状态；tests/test_change_intake_tools.py 覆盖工程联络影响计划任务时的候选生成、准备种子和缺口阻断；ERP 执行进度和完整看板尚未验收"
+        "tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人、生成部门确认项、派发部门确认通知、负责人确认并在 query_project_plan_context 返回确认状态；tests/test_change_intake_tools.py 覆盖工程联络影响计划任务时的候选生成、准备种子和缺口阻断；tests/test_capability_catalog.py 覆盖可选桥接依赖；ERP 执行进度和完整看板尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

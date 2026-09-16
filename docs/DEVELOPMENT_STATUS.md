@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：设变到计划变更的 Skill 路由治理（2026-09-16）
+
+- `change_intake_review` Skill 增加工程联络影响计划候选的使用规则：看到 `plan_adjustment_candidates` 时只能作为候选证据，必须先核对 `evidence_gaps`，不能直接声称计划已调整，也不能直接拼 `prepare_project_plan_change` 参数。
+- 能力目录新增 `optional_dependencies` 元数据，`change_intake_review` 的硬依赖仍只有 `query_change_intake_context`；`query_project_plan_context` 和 `prepare_project_plan_change` 只是可选桥接能力，不会让没有计划变更权限的用户失去只读设变核对 Skill。
+- 当可选计划工具可用且用户明确要求办理计划调整时，Skill 要求先按 seed 回查 `query_project_plan_context`，以真实 `project_id`、`project_version`、当前有效 `previous_id`、完整任务清单和 `workflow_options` 为准，再进入“项目计划变更”Skill。
+- 新增能力目录单元测试覆盖可选依赖不会被误当作硬依赖。
+
 ## 持续开发：工程联络影响计划调整候选（2026-09-16）
 
 - `query_change_intake_context` 新增 `analysis.plan_adjustment_candidates`，把工程联络事项中影响计划节点、WIP 任务、返工/重发/暂停/取消或登记交期影响天数的记录结构化为计划调整候选。

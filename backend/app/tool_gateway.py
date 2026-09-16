@@ -70,7 +70,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context']},
                'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context']},
-               'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context']},
+               'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context'],
+                   'optional_tools':['query_project_plan_context','prepare_project_plan_change']},
                'finance_context_review':{'name':'财务节点与收付款核对','tools':['query_finance_context']},
                'governance_context_review':{'name':'治理权限与来源核对','tools':['query_governance_context']},
                'operations_readiness_review':{'name':'运行交付就绪核对','tools':['query_operations_readiness_context']},
@@ -251,6 +252,7 @@ def capability_descriptor(kind, key, spec):
         'type_name': TYPE_NAMES.get(capability_type, '操作'),
         'mode': mode,
         'dependencies': spec.get('tools', []),
+        'optional_dependencies': spec.get('optional_tools', []),
     }
 
 

@@ -11,6 +11,7 @@ def test_tool_descriptor_carries_backend_catalog_metadata():
     assert item["mode"] == "read_only"
     assert item["business_key"] == "purchase"
     assert item["dependencies"] == []
+    assert item["optional_dependencies"] == []
 
 
 def test_skill_descriptor_keeps_dependencies_and_review_metadata():
@@ -20,3 +21,14 @@ def test_skill_descriptor_keeps_dependencies_and_review_metadata():
     assert item["type"] == "review"
     assert item["mode"] == "read_only"
     assert item["dependencies"] == ["query_operations_readiness_context"]
+    assert item["optional_dependencies"] == []
+
+
+def test_change_intake_skill_exposes_optional_plan_change_bridge_without_hard_dependency():
+    item = capability_descriptor("SKILL", "change_intake_review", SKILLS["change_intake_review"])
+    assert item["name"] == "设变承接上下文核对"
+    assert item["department"] == "engineering"
+    assert item["type"] == "review"
+    assert item["mode"] == "read_only"
+    assert item["dependencies"] == ["query_change_intake_context"]
+    assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]
