@@ -44,6 +44,17 @@ def test_design_route_skill_exposes_optional_plan_change_bridge_without_hard_dep
     assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]
 
 
+def test_contract_signing_record_tool_is_human_confirmed_operation_in_contract_pack():
+    tool = capability_descriptor("TOOL", "prepare_contract_signing_record", TOOLS["prepare_contract_signing_record"])
+    assert tool["name"] == "准备合同签署记录"
+    assert tool["department"] == "finance"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "contract_context_review", SKILLS["contract_context_review"])
+    assert skill["dependencies"] == ["query_contract_context"]
+    assert "prepare_contract_signing_record" in skill["optional_dependencies"]
+
+
 def test_contact_collaboration_skill_has_curated_activation_pack():
     item = capability_descriptor("SKILL", "contact_collaboration_review", SKILLS["contact_collaboration_review"])
     assert item["dependencies"] == ["query_contact_cases"]

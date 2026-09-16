@@ -1142,17 +1142,22 @@ html[data-theme="light"] .capability-type-pill.total.active{background:#172334;b
 .capability-category-block .capability-row{border-top:0!important;border-bottom:0!important;background-clip:padding-box}
 .capability-category-block .capability-row::after{content:"";display:block;position:absolute;left:10px;right:10px;bottom:0;height:1px;background:color-mix(in srgb,var(--border) 56%,transparent)}
 .capability-category-block .capability-row:last-child::after{display:none}
-.capability-detail-modal{width:560px}
+.capability-detail-modal{width:560px;max-width:min(560px,calc(100vw - 40px));max-height:calc(100dvh - 64px);overflow:auto;padding:28px}
+.capability-detail-modal::-webkit-scrollbar{width:6px}
+.capability-detail-modal::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 35%,transparent);border-radius:999px}
 .capability-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
 .capability-detail-head h2{margin:0 0 4px}
 .capability-detail-head p{margin:0}
 .capability-detail-head .icon-button{width:32px;height:32px;font-size:20px;line-height:1}
+.capability-detail-body{min-height:0}
 .capability-detail-facts{display:grid;grid-template-columns:72px minmax(0,1fr);gap:9px 16px;margin:0 0 18px;padding:12px;border:1px solid color-mix(in srgb,var(--border) 70%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 72%,var(--bg))}
 .capability-detail-facts dt{font-size:12px;color:var(--muted)}
 .capability-detail-facts dd{margin:0;font-size:13px}
-.capability-detail-modal section{margin-top:14px}
-.capability-detail-modal section h3{margin:0 0 6px;font-size:13px}
-.capability-detail-modal section p{margin:0;color:var(--muted);font-size:13px;line-height:1.8}
+.capability-detail-modal section{margin-top:10px}
+.capability-detail-modal section h3{margin:0 0 4px;font-size:13px}
+.capability-detail-modal section p{margin:0;color:var(--muted);font-size:13px;line-height:1.58}
+.capability-detail-modal .preserve{line-height:1.62;white-space:pre-line}
+.capability-detail-modal .preserve br+br{display:none}
 .capability-detail-modal .capability-example{margin:0 -12px!important;padding:10px 12px;border-radius:10px;background:color-mix(in srgb,var(--surface) 76%,var(--bg));color:var(--text)}
 .settings-section-title{margin:20px 0 10px}
 html[data-theme="light"] .capability-page-head h2,html[data-theme="light"] .capability-department-title>span:first-child,html[data-theme="light"] .capability-row h3{color:#172334}

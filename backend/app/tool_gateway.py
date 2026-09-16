@@ -48,6 +48,7 @@ TOOLS.update({
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'prepare_contract_record':{'description':'准备销售合同或整套委外合同登记审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'project.dossier.read'},
+    'prepare_contract_signing_record':{'description':'准备整套委外合同签署文件或签署状态证据登记建议；必须使用真实项目版本、已生效整套委外合同和签署依据，本人确认后才写入签署记录，不发起电子签署。','permission':'full_outsource_contract.execute'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
@@ -98,8 +99,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context'],
                    'activation_queries':['中标接收','客户分类','客户规则','模具关联','开工依据']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context'],
-                   'optional_tools':['prepare_contract_record'],
-                   'activation_queries':['合同','合同登记','销售合同','整套委外合同','合同号','付款节点','补齐合同','替代合同']},
+                   'optional_tools':['prepare_contract_record','prepare_contract_signing_record'],
+                   'activation_queries':['合同','合同登记','销售合同','整套委外合同','合同号','付款节点','补齐合同','替代合同','合同签署','签署文件']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工']},
@@ -118,8 +119,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context'],
                    'activation_queries':['出库发货','物流报价','客户签收','客户验收','发货物流']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context'],
-                   'optional_tools':['prepare_supplier_deduction_settlement'],
-                   'activation_queries':['整套委外执行','整套委外加工','供应商节点','委外验收','委外扣款']},
+                   'optional_tools':['prepare_contract_signing_record','prepare_supplier_deduction_settlement'],
+                   'activation_queries':['整套委外执行','整套委外加工','供应商节点','委外验收','委外扣款','委外合同签署','签署扫描件']},
                'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context'],
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
                    'activation_queries':['客户设变','设变承接','工程设变','收费变更','原模具']},
@@ -184,6 +185,7 @@ CAPABILITY_NAMES = {
     'query_bid_intake_context': '读取中标接收上下文',
     'query_contract_context': '读取合同上下文',
     'prepare_contract_record': '准备合同登记',
+    'prepare_contract_signing_record': '准备合同签署记录',
     'query_internal_start_readiness': '核对正式开工条件',
     'prepare_internal_start': '准备正式开工通知',
     'query_project_plan_context': '读取项目计划上下文',
@@ -239,6 +241,7 @@ CAPABILITY_DEPARTMENTS = {
     'query_quote_evaluation_context': 'sales',
     'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
     'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'prepare_contract_record': 'finance',
+    'prepare_contract_signing_record': 'finance',
     'contract_context_review': 'finance',
     'query_finance_context': 'finance', 'prepare_supplier_deduction_settlement': 'finance',
     'finance_context_review': 'finance', 'query_governance_context': 'system',
@@ -278,7 +281,7 @@ CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
     'prepare_quote_acceptance_decision': 'approval',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
-    'prepare_contract_record': 'approval',
+    'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
     'prepare_internal_start': 'approval',
@@ -380,9 +383,10 @@ def tool_schema(key):
     if key=='query_bid_intake_context':
         from .quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
-    if key in {'query_contract_context','prepare_contract_record'}:
-        from .contract_tools import ContractContextInput, contract_schema
-        parameters=contract_schema() if key=='prepare_contract_record' else ContractContextInput.model_json_schema()
+    if key in {'query_contract_context','prepare_contract_record','prepare_contract_signing_record'}:
+        from .contract_tools import ContractContextInput, contract_schema, contract_signing_record_schema
+        parameters=contract_schema() if key=='prepare_contract_record' else (
+            contract_signing_record_schema() if key=='prepare_contract_signing_record' else ContractContextInput.model_json_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_internal_start_readiness','prepare_internal_start'}:
         from .start_tools import StartReadinessInput, start_schema
@@ -472,7 +476,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_quote_acceptance_decision':
         from .quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
-    if key=='prepare_contract_record':
+    if key in {'prepare_contract_record','prepare_contract_signing_record'}:
         from .contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)
     if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:

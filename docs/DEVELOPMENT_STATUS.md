@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：整套委外合同签署文件对话办理闭环（2026-09-16）
+
+- 新增 `prepare_contract_signing_record` 工具，基于真实项目版本、已生效整套委外合同、供应商、签署状态、签署日期、签署文件标题/引用和签署依据，准备合同签署证据登记 proposal。
+- 该能力不新增传统 ERP 页面：仍在对话框内展示 proposal 卡片，用户本人确认后才写入 `ContractSigningRecord`；不发起电子签署，不修改合同审批状态，不确认付款或收款。
+- 准备和确认阶段都会重新校验项目版本、合同归属、合同类型、供应商角色、合同生效状态、签署文件访问权限、`project.read` / `full_outsource_contract.read` / `full_outsource_contract.execute` 精确项目分类权限，以及重复来源引用。
+- 合同 Skill 与整套委外 Skill 已同步办理规则：默认只读，只有用户明确要求登记线下签署文件、签署扫描件或签署状态证据，且上下文有真实项目/合同 ID 与依据时才准备卡片。
+- 前端通用 proposal 卡片已映射 `contract_signing_record` 到 `/api/contract-proposals`，能力设置文案补充“准备合同签署记录”。
+- 验证：`tests/test_contract_tools.py` 覆盖 proposal 不直接写库、本人确认后写入已签署记录、重复来源阻断和已签署缺少签署日期阻断；`tests/test_model_harness.py` 继续验证合同场景只激活合同小工具包，不误激活报价/项目档案等邻近工具。
+
 ## 持续开发：供应商扣款责任/结算依据对话办理闭环（2026-09-16）
 
 - 新增 `prepare_supplier_deduction_settlement` 工具，基于整套委外或财务上下文中的真实项目、项目版本、供应商、已生效整套委外合同、工程联络扣款线索和正式责任/结算依据，准备供应商扣款责任/结算 proposal。
@@ -114,8 +123,9 @@
 - 新增 `contract_signing_record` PostgreSQL 迁移与领域模型，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人、证据和来源。
 - `query_full_outsource_context` 新增 `analysis.contract_signing_records`，并将 `has_signed_full_outsource_contract_file`、`has_unsigned_contract_signing_record` 纳入派生状态。
 - 有生效整套委外合同但无已签署文件/签署依据时返回 gaps；草稿、审核中、驳回或取消的签署记录进入 warnings，不会被当作正式签署合同。
+- `prepare_contract_signing_record` 已提供对话内办理入口，用户本人确认后才写入签署文件/状态证据；不发起电子签署、不修改合同审批状态、不确认付款。
 - 该能力仅覆盖模板/人工审核签订/签署文件上传证据，不接入在线电子签署服务。
-- PostgreSQL `moldpilot_test` 验证覆盖已签署合同文件证据、合同权限下可见签署依据、订单权限隔离和整套委外上下文汇总。
+- PostgreSQL `moldpilot_test` 验证覆盖已签署合同文件证据、合同权限下可见签署依据、订单权限隔离、整套委外上下文汇总、对话 proposal 不直接写库、本人确认后写入签署记录、重复来源和缺少签署日期阻断。
 - FR-073 仍为 NOT_VERIFIED：真实合同模板生成、采购主管提交、总经理审批、正式签署文件上传、附件安全和 ERP/文件存储联调尚未完成正式验收。
 
 ## 持续开发：FR-072 客户资料交接与供应商核验上下文（2026-09-16）

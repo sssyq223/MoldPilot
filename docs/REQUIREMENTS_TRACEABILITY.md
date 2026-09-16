@@ -273,8 +273,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 电子合同与纸质合同最终均需形成可追溯电子资料，记录上传人、上传时间、审批记录和版本。正式流程由业务人员上传并提交业务主管审核；现有设计文员或项目负责人上传路径如需保留，应在适配清单明确。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：合同查询请求仍只读取已登记合同事实和付款节点，明确不 OCR、不确认收付款；prepare_contract_record 可准备合同登记/补录审批建议并通过本人确认提交 BPM，形成合同业务材料与审批记录；Skill 指令要求查询先只读，办理必须先查上下文再准备 proposal，合同文件正文识别、电子签、附件版本和实际收付款继续走人工确认及专门流程
-- 验证证据：tests/test_contract_tools.py 覆盖只读上下文、合同登记 proposal、本人确认后提交 BPM 和重复/无效资料阻断；电子/纸质合同文件上传人、上传时间、附件版本、OCR/电子签和真实审核记录尚未验收
+- 实现证据：合同查询请求仍只读取已登记合同事实和付款节点，明确不 OCR、不确认收付款；prepare_contract_record 可准备合同登记/补录审批建议并通过本人确认提交 BPM，形成合同业务材料与审批记录；prepare_contract_signing_record 可准备整套委外合同线下签署文件/签署状态证据登记 proposal，本人确认后才写入 ContractSigningRecord；Skill 指令要求查询先只读，办理必须先查上下文再准备 proposal，合同文件正文识别、电子签、附件版本和实际收付款继续走人工确认及专门流程
+- 验证证据：tests/test_contract_tools.py 覆盖只读上下文、合同登记 proposal、本人确认后提交 BPM、签署证据 proposal 不直接写库、本人确认后写入签署记录，以及重复/无效资料阻断；电子/纸质合同文件上传人、上传时间、附件版本、OCR/电子签和真实审核记录尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-029
@@ -710,8 +710,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 采购合同按模板、审批和签订流程办理，供应商在线签署属于原需求中的目标能力，其具体服务及签署方式须确认。未确定电子签署接入前，不将草稿自动生成等同于合同已签署。
 
 - 最新口径：在线电子签署已由用户取消；保留模板、人工审核签订及签署文件上传。
-- 实现证据：新增 contract_signing_record PostgreSQL 模型与迁移，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人和证据；query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数、生效状态和 analysis.contract_signing_records，合同草稿、模板生成、审批上下文或非已签署记录不会被认定为已签署合同；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖已生效委外合同上下文、已签署合同文件证据和合同权限下签署依据可见；合同模板生成、采购主管提交、总经理审批、正式合同附件安全和文件存储联调尚未完整验收
+- 实现证据：新增 contract_signing_record PostgreSQL 模型与迁移，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人和证据；query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数、生效状态和 analysis.contract_signing_records，合同草稿、模板生成、审批上下文或非已签署记录不会被认定为已签署合同；prepare_contract_signing_record 基于真实项目版本、已生效整套委外合同和签署依据准备对话内确认卡，本人确认后才写入签署记录，不发起电子签署、不修改合同审批状态；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
+- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖已生效委外合同上下文、已签署合同文件证据和合同权限下签署依据可见；tests/test_contract_tools.py 覆盖签署证据 proposal 不直接写库、本人确认后写入 ContractSigningRecord、重复来源和已签署缺少签署日期阻断；合同模板生成、采购主管提交、总经理审批、正式合同附件安全和文件存储联调尚未完整验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-074

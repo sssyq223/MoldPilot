@@ -49,6 +49,21 @@ class ContractProposalInput(StrictModel):
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
 
 
+class ContractSigningRecordProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    template_name: str = Field(default='', max_length=150)
+    signing_method: Literal['MANUAL','OFFLINE_FILE','IMPORT','ERP','OTHER'] = 'OFFLINE_FILE'
+    status: Literal['DRAFT','UNDER_REVIEW','SIGNED','REJECTED','CANCELLED'] = 'SIGNED'
+    signed_date: date | None = None
+    signed_file_id: str | None = Field(default=None, max_length=36)
+    signed_file_title: str = Field(default='', max_length=200)
+    supplier_signer: str = Field(default='', max_length=120)
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_ref: str | None = Field(default=None, max_length=120)
+
+
 def _strength(value,needle):
     if value is None:return 0
     value=str(value).casefold();needle=str(needle).casefold()
@@ -259,10 +274,27 @@ def contract_schema():
     return ContractProposalInput.model_json_schema()
 
 
+def contract_signing_record_schema():
+    return ContractSigningRecordProposalInput.model_json_schema()
+
+
 def parse_contract(arguments):
     try:return ContractProposalInput.model_validate(arguments or {})
     except ValidationError as error:
         raise DomainError('INVALID_TOOL_INPUT','合同登记参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def parse_contract_signing_record(arguments):
+    try:data=ContractSigningRecordProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError('INVALID_TOOL_INPUT','合同签署记录参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+    if data.status=='SIGNED' and not data.signed_date:
+        raise DomainError('INVALID_TOOL_INPUT','已签署合同必须填写签署日期')
+    if data.status=='SIGNED' and not (data.signed_file_id or data.signed_file_title):
+        raise DomainError('INVALID_TOOL_INPUT','已签署合同必须填写签署文件或文件标题')
+    if data.status!='SIGNED' and data.signed_date:
+        raise DomainError('INVALID_TOOL_INPUT','非已签署状态不要填写签署日期')
+    return data
 
 
 def _party_display(db,data):
@@ -331,15 +363,78 @@ def preview_contract(db,user,data:ContractProposalInput):
     return detail,display
 
 
+def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id,'category':'outsource'}
+    require(db,user,'project.read',{'project_id':project.id})
+    require(db,user,'full_outsource_contract.read',scope)
+    require(db,user,'full_outsource_contract.execute',scope)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    contract=db.get(m.BusinessSubject,data.contract_subject_id)
+    if not contract or contract.project_id!=project.id or contract.kind!='full_outsource_contract':
+        raise DomainError('CONTRACT_NOT_FOUND','整套委外合同不存在或不属于该项目',404)
+    detail=db.get(m.ContractDetail,contract.id)
+    if not detail or not detail.supplier_id:
+        raise DomainError('CONTRACT_ROLE_INVALID','签署记录必须关联整套委外供应商合同',409)
+    supplier=db.get(m.Supplier,detail.supplier_id)
+    if data.status=='SIGNED' and contract.status not in {'EFFECTIVE','CLOSED'}:
+        raise DomainError('CONTRACT_NOT_EFFECTIVE','只有已生效或已关闭的整套委外合同才能登记已签署文件',409)
+    if data.signed_file_id:
+        from .files import uploaded_file
+        uploaded_file(db,user,data.signed_file_id)
+    if data.source_ref and db.scalar(select(m.ContractSigningRecord.id).where(
+        m.ContractSigningRecord.contract_subject_id==contract.id,
+        m.ContractSigningRecord.status==data.status,
+        m.ContractSigningRecord.source_ref==data.source_ref)):
+        raise DomainError('CONTRACT_SIGNING_DUPLICATE','该合同签署来源已登记',409)
+    display={'操作':'登记整套委外合同签署文件',
+        '项目':project.code+' · '+project.name,
+        '项目版本':project.row_version,
+        '整套委外合同':detail.contract_number,
+        '供应商':supplier.name if supplier else detail.supplier_id,
+        '模板名称':data.template_name or '未填写',
+        '签署方式':data.signing_method,
+        '签署状态':data.status,
+        '签署日期':data.signed_date.isoformat() if data.signed_date else '未签署',
+        '签署文件':data.signed_file_title or (data.signed_file_id or '未登记文件'),
+        '供应商签署人':data.supplier_signer or '未填写',
+        '来源引用':data.source_ref or '未填写',
+        '依据':data.evidence,
+        '说明':'本人确认后仅登记人工签署文件或签署状态证据；不发起电子签署、不修改合同审批状态、不确认收付款。'}
+    return contract,display
+
+
+def create_contract_signing_record(db,user,data:ContractSigningRecordProposalInput):
+    contract,_=preview_contract_signing_record(db,user,data)
+    row=m.ContractSigningRecord(contract_subject_id=contract.id,
+        template_name=data.template_name,signing_method=data.signing_method,status=data.status,
+        signed_date=data.signed_date,signed_file_id=data.signed_file_id,
+        signed_file_title=data.signed_file_title,supplier_signer=data.supplier_signer,
+        buyer_reviewer_id=user.id,approved_by=user.id if data.status=='SIGNED' else None,
+        evidence=data.evidence,source_system='MANUAL',source_ref=data.source_ref,recorded_by=user.id)
+    db.add(row);db.flush();return row
+
+
 def execute_contract_tool(db,user,key,arguments,run=None):
-    if key!='prepare_contract_record':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
-    data=parse_contract(arguments)
-    _,display=preview_contract(db,user,data)
-    proposal={'kind':data.contract_kind,'action':'contract_record','requires_approval':True,
-        'input':data.model_dump(mode='json'),'display':display,
-        'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+    if key=='prepare_contract_record':
+        data=parse_contract(arguments)
+        _,display=preview_contract(db,user,data)
+        proposal={'kind':data.contract_kind,'action':'contract_record','requires_approval':True,
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+        limitations=['仅准备合同登记建议；本人确认后才创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。']
+    elif key=='prepare_contract_signing_record':
+        data=parse_contract_signing_record(arguments)
+        _,display=preview_contract_signing_record(db,user,data)
+        proposal={'kind':'contract_signing_record','action':'contract_signing_record',
+            'requires_approval':False,'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=False)}
+        limitations=['仅准备整套委外合同签署证据登记建议；本人确认后才写入签署记录，不发起电子签署、不改变合同审批状态。']
+    else:raise DomainError('TOOL_UNKNOWN','工具未实现',403)
     return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
-        'limitations':['仅准备合同登记建议；本人确认后才创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。']}
+        'limitations':limitations}
 
 
 def source(db,user,step_id):
@@ -350,7 +445,7 @@ def source(db,user,step_id):
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
-    if step.tool not in available_tools(db,user) or step.tool!='prepare_contract_record' or not proposal:
+    if step.tool not in available_tools(db,user) or step.tool not in {'prepare_contract_record','prepare_contract_signing_record'} or not proposal:
         raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
     return proposal
 
@@ -358,8 +453,12 @@ def source(db,user,step_id):
 def validate_intent(db,user,payload):
     proposal=source(db,user,payload['step_id'])
     if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
-    data=parse_contract(proposal['input'])
-    _,display=preview_contract(db,user,data)
+    if proposal.get('kind')=='contract_signing_record':
+        data=parse_contract_signing_record(proposal['input'])
+        _,display=preview_contract_signing_record(db,user,data)
+    else:
+        data=parse_contract(proposal['input'])
+        _,display=preview_contract(db,user,data)
     if content_hash(display)!=content_hash(proposal['display']):
         raise DomainError('VERSION_CONFLICT','项目、合同、权限或流程资料已变化，请重新准备',409)
     return proposal,data
@@ -368,6 +467,10 @@ def validate_intent(db,user,payload):
 def confirm(db,user,payload):
     from .confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload)
+    if proposal.get('kind')=='contract_signing_record':
+        record=create_contract_signing_record(db,user,data)
+        return {'project_id':data.project_id,'contract_subject_id':data.contract_subject_id,
+            'contract_signing_record_id':record.id,'action':'contract_signing_record','status':'CONFIRMED'}
     detail,_=preview_contract(db,user,data)
     subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
         category='outsource' if data.contract_kind=='full_outsource_contract' else None,
@@ -387,7 +490,7 @@ def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
     source(db,user,step_id)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='contract.execute',m.HumanIntent.resource_id==step_id,
-        m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))
+        m.HumanIntent.receipt.is_not(None)).order_by(m.HumanIntent.created_at.desc()))
     return {'receipt':intent.receipt if intent else None}
 
 

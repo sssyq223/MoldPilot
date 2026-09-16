@@ -224,6 +224,8 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
                                                          'description': '按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文。'}}
     contract_prepare = {'type': 'function', 'function': {'name': 'prepare_contract_record',
                                                          'description': '准备销售合同或整套委外合同登记审批建议。'}}
+    contract_signing = {'type': 'function', 'function': {'name': 'prepare_contract_signing_record',
+                                                         'description': '准备整套委外合同签署文件或签署状态证据登记建议。'}}
     quote_context = {'type': 'function', 'function': {'name': 'query_quote_acceptance_context',
                                                       'description': '按项目线索读取报价、承接、拒单、正式开工和销售合同上下文。'}}
     quote_prepare = {'type': 'function', 'function': {'name': 'prepare_quote_acceptance_decision',
@@ -232,11 +234,11 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
                                                 'description': '按项目编号、模具号、工程联络、合同或订单编号反查项目业务档案。'}}
     gateway = Gateway()
     model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=[contract_context, contract_prepare, quote_context, quote_prepare, dossier],
+    run_loop(context(core_tool_names=[], tools=[contract_context, contract_prepare, contract_signing, quote_context, quote_prepare, dossier],
                      skills=[{'key': 'contract_context_review',
                               'agent_description': '合同上下文核对',
                               'tools': ['query_contract_context'],
-                              'optional_tools': ['prepare_contract_record'],
+                              'optional_tools': ['prepare_contract_record','prepare_contract_signing_record'],
                               'activation_queries': ['合同登记', '销售合同', '整套委外合同', '合同号']},
                              {'key': 'quote_acceptance_review',
                               'agent_description': '报价、承接、正式开工和销售合同上下文',
@@ -250,10 +252,10 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record', 'prepare_contract_signing_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record', 'prepare_contract_signing_record'],
     ]
-    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
+    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'prepare_contract_signing_record', 'query_contract_context']
 
 
 def test_business_query_mentioning_model_still_allows_tool_search():

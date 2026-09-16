@@ -451,12 +451,14 @@ async function clearAvatar(){
    <div v-if="selectedCapability" class="modal-shade capability-detail-shade" @click.self="selectedCapability=null">
     <section class="modal capability-detail-modal" role="dialog" aria-modal="true" aria-label="能力详情">
      <div class="capability-detail-head"><div><h2>{{capabilityName(selectedCapability.item)}}</h2><p class="muted">{{capabilityDetailMeta(selectedCapability)}}</p></div><button type="button" class="icon-button" aria-label="关闭详情" @click="selectedCapability=null">×</button></div>
-     <dl class="capability-detail-facts"><dt>所属部门</dt><dd>{{capabilityMeta(selectedCapability.item).departmentName}}</dd><dt>业务类别</dt><dd>{{capabilityCategoryName(selectedCapability.item)}}</dd><dt>能力类型</dt><dd>{{selectedCapability.kind==='tool'?'工具':'技能'}}</dd></dl>
-     <section><h3>{{selectedCapability.kind==='skill'?'智能体技能说明':'说明'}}</h3><p class="preserve">{{capabilityDescription(selectedCapability)}}</p></section>
-     <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.dependencies?.length"><h3>会调用的工具</h3><p>{{dependencyNames(selectedCapability.item)}}</p></section>
-     <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.optional_dependencies?.length"><h3>可选工具</h3><p>{{dependencyNames(selectedCapability.item,true)}}</p></section>
-     <section><h3>怎么用</h3><p>{{capabilityUsageText(selectedCapability)}}</p></section>
-     <section><h3>使用示例</h3><p class="capability-example">{{capabilityExample(selectedCapability)}}</p></section>
+     <div class="capability-detail-body">
+      <dl class="capability-detail-facts"><dt>所属部门</dt><dd>{{capabilityMeta(selectedCapability.item).departmentName}}</dd><dt>业务类别</dt><dd>{{capabilityCategoryName(selectedCapability.item)}}</dd><dt>能力类型</dt><dd>{{selectedCapability.kind==='tool'?'工具':'技能'}}</dd></dl>
+      <section><h3>{{selectedCapability.kind==='skill'?'智能体技能说明':'说明'}}</h3><p class="preserve">{{capabilityDescription(selectedCapability)}}</p></section>
+      <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.dependencies?.length"><h3>会调用的工具</h3><p>{{dependencyNames(selectedCapability.item)}}</p></section>
+      <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.optional_dependencies?.length"><h3>可选工具</h3><p>{{dependencyNames(selectedCapability.item,true)}}</p></section>
+      <section><h3>怎么用</h3><p>{{capabilityUsageText(selectedCapability)}}</p></section>
+      <section><h3>使用示例</h3><p class="capability-example">{{capabilityExample(selectedCapability)}}</p></section>
+     </div>
     </section>
    </div>
    </template>

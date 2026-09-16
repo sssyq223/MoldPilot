@@ -225,3 +225,83 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
     finally:
         engine.dispose()
 
+
+def test_prepare_contract_signing_record_requires_confirmation_then_records():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-SIGN-PREPARE','合同签署项目')
+            sup=supplier(db,'S-SIGN','签署供应商')
+            subject=contract(db,p,admin,'full_outsource_contract','FO-SIGN-001')
+            detail=db.get(m.ContractDetail,subject.id)
+            detail.supplier_id=sup.id
+            conversation=m.Conversation(user_id=admin.id,title='合同签署登记')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='登记整套委外合同签署扫描件',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'contract_subject_id':subject.id,
+                'template_name':'整套委外标准合同模板','signing_method':'OFFLINE_FILE','status':'SIGNED',
+                'signed_date':date.today().isoformat(),'signed_file_title':'FO-SIGN-001双方盖章扫描件.pdf',
+                'supplier_signer':'供应商张三','evidence':'双方盖章扫描件已由采购核对','source_ref':'SIGN-PREPARE-001'}
+        schema=tool_schema('prepare_contract_signing_record')['function']['parameters']
+        assert {'project_id','project_version','contract_subject_id','status','signed_file_title'} <= set(schema['properties'])
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            evidence=execute(db,admin,'prepare_contract_signing_record',args,run=run)
+            assert evidence['proposal']['kind']=='contract_signing_record'
+            assert evidence['proposal']['requires_approval'] is False
+            assert evidence['proposal']['display']['整套委外合同']=='FO-SIGN-001'
+            assert db.scalar(select(m.ContractSigningRecord).where(m.ContractSigningRecord.source_ref=='SIGN-PREPARE-001')) is None
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_contract_signing_record',request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'contract.execute',step.id,payload)
+            receipt=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            assert receipt['status']=='CONFIRMED'
+            row=db.get(m.ContractSigningRecord,receipt['contract_signing_record_id'])
+            assert row.contract_subject_id==args['contract_subject_id']
+            assert row.status=='SIGNED'
+            assert row.signed_file_title=='FO-SIGN-001双方盖章扫描件.pdf'
+            assert row.approved_by==admin.id
+            assert row.source_system=='MANUAL'
+    finally:
+        engine.dispose()
+
+
+def test_prepare_contract_signing_record_rejects_duplicate_and_missing_signed_date():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-SIGN-BLOCK','合同签署阻断项目')
+            sup=supplier(db,'S-SIGN-BLOCK','签署阻断供应商')
+            subject=contract(db,p,admin,'full_outsource_contract','FO-SIGN-BLOCK')
+            detail=db.get(m.ContractDetail,subject.id)
+            detail.supplier_id=sup.id
+            db.add(m.ContractSigningRecord(contract_subject_id=subject.id,template_name='整套委外标准合同模板',
+                signing_method='OFFLINE_FILE',status='SIGNED',signed_date=date.today(),
+                signed_file_title='已登记盖章扫描件.pdf',supplier_signer='供应商李四',
+                buyer_reviewer_id=admin.id,approved_by=admin.id,evidence='历史签署记录',
+                source_system='MANUAL',source_ref='SIGN-DUP-001',recorded_by=admin.id))
+            conversation=m.Conversation(user_id=admin.id,title='合同签署重复')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='登记整套委外合同签署扫描件',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'contract_subject_id':subject.id,
+                'template_name':'整套委外标准合同模板','signing_method':'OFFLINE_FILE','status':'SIGNED',
+                'signed_date':date.today().isoformat(),'signed_file_title':'FO-SIGN-BLOCK双方盖章扫描件.pdf',
+                'supplier_signer':'供应商李四','evidence':'重复签署来源','source_ref':'SIGN-DUP-001'}
+            with pytest.raises(Exception) as duplicate:
+                execute(db,admin,'prepare_contract_signing_record',args,run=run)
+            assert getattr(duplicate.value,'code',None)=='CONTRACT_SIGNING_DUPLICATE'
+            missing_date={**args,'source_ref':'SIGN-DATE-MISSING','signed_date':None}
+            with pytest.raises(Exception) as invalid:
+                execute(db,admin,'prepare_contract_signing_record',missing_date,run=run)
+            assert getattr(invalid.value,'code',None)=='INVALID_TOOL_INPUT'
+    finally:
+        engine.dispose()
+
