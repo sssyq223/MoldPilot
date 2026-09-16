@@ -20,6 +20,10 @@ def _configured(value: str | None) -> bool:
     return bool((value or "").strip())
 
 
+def _config_value(config: dict, key: str, default: str = "") -> str:
+    return os.environ.get(key) or str(config.get(key) or default)
+
+
 def _parse_url(value: str, expected_db: str | None, allow_primary_target: bool) -> dict:
     parsed = urlsplit(value)
     if parsed.scheme.startswith("sqlite"):
@@ -53,6 +57,13 @@ def _run(command: list[str], password: str, execute: bool) -> int:
     return subprocess.run(command, env=env, check=False).returncode
 
 
+def _run_capture(command: list[str], password: str) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    if password:
+        env["PGPASSWORD"] = password
+    return subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+
+
 def _common_postgres_tool_paths(name: str) -> list[Path]:
     executable = name if name.endswith(".exe") else f"{name}.exe"
     roots = [Path("C:/Program Files/PostgreSQL"), Path("C:/Program Files (x86)/PostgreSQL"), Path("D:/PostgreSQL")]
@@ -78,64 +89,31 @@ def _find_tool(name: str, explicit_path: str = "") -> tuple[str, str | None]:
     return "", None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate or restore a MoldPilot PostgreSQL pg_dump backup.")
-    parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
-    parser.add_argument("--url-key", default="MOLD_RESTORE_DATABASE_URL", help="Dotenv key containing isolated restore PostgreSQL DSN.")
-    parser.add_argument("--expected-db", default="moldpilot_restore", help="Expected restore database. Defaults to moldpilot_restore.")
-    parser.add_argument("--backup", default="", help="Path to a pg_dump custom-format backup file.")
-    parser.add_argument("--pg-restore", default="", help="Optional explicit pg_restore executable path.")
-    parser.add_argument("--execute", action="store_true", help="Actually run pg_restore. Omit for dry-run.")
-    parser.add_argument("--clean", action="store_true", help="Pass --clean --if-exists to pg_restore during execution.")
-    parser.add_argument("--allow-primary-target", action="store_true", help="Allow restoring into database named moldpilot. Not recommended.")
-    parser.add_argument("--i-understand-this-will-change-target-db", action="store_true", help="Required with --execute.")
-    args = parser.parse_args()
+def _docker_probe() -> dict:
+    docker = shutil.which("docker")
+    if not docker:
+        return {"available": False, "cli": False, "daemon": False}
+    result = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, check=False, timeout=5)
+    stderr = (result.stderr or "").lower()
+    stdout = (result.stdout or "").strip()
+    ok = result.returncode == 0 and "error during connect" not in stderr and bool(stdout)
+    return {
+        "available": ok,
+        "cli": True,
+        "daemon": ok,
+        "server_version": stdout if ok else "",
+    }
 
-    config = dotenv_values(args.env_file)
-    url = config.get(args.url_key)
-    if not _configured(url):
-        print(f"{args.url_key}_configured=False")
-        print("restore_ready=False")
-        print("hint=Set MOLD_RESTORE_DATABASE_URL to an isolated PostgreSQL restore database.")
-        return 0 if not args.execute else 2
 
-    target = _parse_url(str(url), args.expected_db or None, args.allow_primary_target)
-    pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or str(config.get("MOLD_PG_RESTORE_PATH") or ""))
-    if not pg_restore:
-        print("pg_restore_available=False")
-        print(f"database={target['database']}")
-        print(f"host={target['host']}")
-        print(f"port={target['port']}")
-        print("restore_ready=False")
-        print("hint=Install PostgreSQL client tools or pass --pg-restore with an explicit executable path.")
-        return 0 if not args.execute else 2
+def _container_host(host: str) -> str:
+    return "host.docker.internal" if host in {"127.0.0.1", "localhost"} else host
 
-    backup_path = Path(args.backup) if args.backup else None
-    backup_exists = bool(backup_path and backup_path.exists() and backup_path.is_file())
-    print("pg_restore_available=True")
-    print(f"pg_restore_source={pg_restore_source}")
-    print(f"database={target['database']}")
-    print(f"host={target['host']}")
-    print(f"port={target['port']}")
-    print(f"backup_specified={bool(backup_path)}")
-    print(f"backup_exists={backup_exists}")
 
-    if backup_path and backup_exists:
-        list_command = [str(pg_restore), "--list", str(backup_path)]
-        list_result = subprocess.run(list_command, capture_output=True, text=True, check=False)
-        print(f"backup_list_ok={list_result.returncode == 0}")
-        if list_result.returncode != 0:
-            return list_result.returncode
+def _native_list_command(pg_restore: str, backup_path: Path) -> list[str]:
+    return [str(pg_restore), "--list", str(backup_path)]
 
-    if not args.execute:
-        print("dry_run=True")
-        print(f"restore_ready={backup_exists}")
-        return 0
-    if not args.i_understand_this_will_change_target_db:
-        raise SystemExit("Execution requires --i-understand-this-will-change-target-db.")
-    if not backup_path or not backup_exists:
-        raise SystemExit("Execution requires an existing --backup file.")
 
+def _native_restore_command(pg_restore: str, target: dict, backup_path: Path, clean: bool) -> list[str]:
     command = [
         str(pg_restore),
         "--no-owner",
@@ -149,9 +127,123 @@ def main() -> int:
         "--dbname",
         target["database"],
     ]
-    if args.clean:
+    if clean:
         command.extend(["--clean", "--if-exists"])
     command.append(str(backup_path))
+    return command
+
+
+def _docker_base(image: str, backup_path: Path) -> list[str]:
+    docker = shutil.which("docker") or "docker"
+    return [
+        docker,
+        "run",
+        "--rm",
+        "-e",
+        "PGPASSWORD",
+        "-v",
+        f"{backup_path.parent.resolve()}:/backup:ro",
+        image,
+    ]
+
+
+def _docker_list_command(image: str, backup_path: Path) -> list[str]:
+    return [*_docker_base(image, backup_path), "pg_restore", "--list", f"/backup/{backup_path.name}"]
+
+
+def _docker_restore_command(image: str, target: dict, backup_path: Path, clean: bool) -> list[str]:
+    command = [
+        *_docker_base(image, backup_path),
+        "pg_restore",
+        "--no-owner",
+        "--no-acl",
+        "--host",
+        _container_host(target["host"]),
+        "--port",
+        target["port"],
+        "--username",
+        target["username"],
+        "--dbname",
+        target["database"],
+    ]
+    if clean:
+        command.extend(["--clean", "--if-exists"])
+    command.append(f"/backup/{backup_path.name}")
+    return command
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate or restore a MoldPilot PostgreSQL pg_dump backup.")
+    parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
+    parser.add_argument("--url-key", default="MOLD_RESTORE_DATABASE_URL", help="Dotenv key containing isolated restore PostgreSQL DSN.")
+    parser.add_argument("--expected-db", default="moldpilot_restore", help="Expected restore database. Defaults to moldpilot_restore.")
+    parser.add_argument("--backup", default="", help="Path to a pg_dump custom-format backup file.")
+    parser.add_argument("--pg-restore", default="", help="Optional explicit pg_restore executable path.")
+    parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_restore. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:16-alpine.")
+    parser.add_argument("--execute", action="store_true", help="Actually run pg_restore. Omit for dry-run.")
+    parser.add_argument("--clean", action="store_true", help="Pass --clean --if-exists to pg_restore during execution.")
+    parser.add_argument("--allow-primary-target", action="store_true", help="Allow restoring into database named moldpilot. Not recommended.")
+    parser.add_argument("--i-understand-this-will-change-target-db", action="store_true", help="Required with --execute.")
+    args = parser.parse_args()
+
+    config = dotenv_values(args.env_file)
+    url = _config_value(config, args.url_key)
+    if not _configured(url):
+        print(f"{args.url_key}_configured=False")
+        print("restore_ready=False")
+        print("hint=Set MOLD_RESTORE_DATABASE_URL to an isolated PostgreSQL restore database.")
+        return 0 if not args.execute else 2
+
+    target = _parse_url(str(url), args.expected_db or None, args.allow_primary_target)
+    pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or _config_value(config, "MOLD_PG_RESTORE_PATH"))
+    docker = _docker_probe()
+    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:16-alpine")
+    client_mode = "native" if pg_restore and args.client_mode in {"auto", "native"} else ""
+    if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
+        client_mode = "docker"
+    if not client_mode:
+        print("pg_restore_available=False")
+        print(f"docker_client_available={docker['available']}")
+        print(f"database={target['database']}")
+        print(f"host={target['host']}")
+        print(f"port={target['port']}")
+        print("restore_ready=False")
+        print("hint=Install PostgreSQL client tools, pass --pg-restore, or start Docker and use --client-mode docker.")
+        return 0 if not args.execute else 2
+
+    backup_path = Path(args.backup) if args.backup else None
+    backup_exists = bool(backup_path and backup_path.exists() and backup_path.is_file())
+    print(f"pg_restore_available={bool(pg_restore)}")
+    print(f"pg_restore_source={pg_restore_source or ''}")
+    print(f"docker_client_available={docker['available']}")
+    print(f"client_mode={client_mode}")
+    if client_mode == "docker":
+        print(f"docker_image={image}")
+        print(f"container_host={_container_host(target['host'])}")
+    print(f"database={target['database']}")
+    print(f"host={target['host']}")
+    print(f"port={target['port']}")
+    print(f"backup_specified={bool(backup_path)}")
+    print(f"backup_exists={backup_exists}")
+
+    if backup_path and backup_exists:
+        list_command = _native_list_command(pg_restore, backup_path) if client_mode == "native" else _docker_list_command(image, backup_path)
+        list_result = _run_capture(list_command, target["password"])
+        print(f"backup_list_ok={list_result.returncode == 0}")
+        if list_result.returncode != 0:
+            return list_result.returncode
+
+    if not args.execute:
+        print("dry_run=True")
+        print(f"restore_ready={backup_exists}")
+        return 0
+    if not args.i_understand_this_will_change_target_db:
+        raise SystemExit("Execution requires --i-understand-this-will-change-target-db.")
+    if not backup_path or not backup_exists:
+        raise SystemExit("Execution requires an existing --backup file.")
+
+    command = _native_restore_command(pg_restore, target, backup_path, args.clean) if client_mode == "native" else _docker_restore_command(image, target, backup_path, args.clean)
     code = _run(command, target["password"], execute=True)
     if code == 0:
         print("restore_completed=True")

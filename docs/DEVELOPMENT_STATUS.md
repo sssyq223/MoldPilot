@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：PostgreSQL 备份恢复 Docker 客户端模式（2026-09-16）
+
+- `scripts/backup_postgres.py` 与 `scripts/restore_postgres.py` 新增 `--client-mode auto|native|docker`，默认 `auto`：优先使用本机 `pg_dump` / `pg_restore`，本机未安装时可使用 Docker 临时 `postgres` 客户端镜像。
+- 新增配置 `MOLD_PG_CLIENT_IMAGE`，默认 `postgres:16-alpine`；Docker 模式下本机 `127.0.0.1` / `localhost` PostgreSQL 会映射为 `host.docker.internal`。
+- 密码仍只通过 `PGPASSWORD` 环境变量传入客户端；脚本不在命令行参数、日志或 readiness 结果中输出数据库密码。
+- `query_operations_readiness_context.backup_restore` 新增 `docker_pg_client`、native/docker 两组可运行状态和脚本支持的 `client_modes`，避免仅因 Windows 未安装 PostgreSQL 客户端而无法表达可交付路径。
+- 同步修正 Docker 探测：Docker CLI 存在但 Linux engine pipe 不可用时，readiness 不再误判为 Docker daemon 可用；当前本机实际返回 `DEPLOYMENT_RUNTIME_INCOMPLETE`、Docker pg client 不可用。
+- 当前是否真正解除 `BACKUP_TOOLING_INCOMPLETE` 仍取决于 Docker daemon 或本机 PostgreSQL 客户端是否可用、隔离恢复库是否配置，以及是否完成实际备份和恢复演练；本轮只补齐受控执行路径和只读识别。
+
 ## 持续开发：日志保留 dry-run 与受控清理工具（2026-09-16）
 
 - 新增 `scripts/log_retention.py`，默认 dry-run，只连接 `.env` 中的 PostgreSQL `moldpilot`，拒绝 SQLite 和非 `moldpilot` 数据库。

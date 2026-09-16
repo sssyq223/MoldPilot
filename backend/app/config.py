@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     restore_database_url: str = ""
     pg_dump_path: str = ""
     pg_restore_path: str = ""
+    pg_client_image: str = "postgres:16-alpine"
     origin: str = "http://127.0.0.1:5173"
     cookie_secure: bool = True
     environment: str = "development"

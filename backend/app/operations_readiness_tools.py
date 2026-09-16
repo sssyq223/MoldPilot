@@ -133,10 +133,13 @@ def _command_probe(command: list[str], timeout: float = 2.0) -> dict:
     except Exception as error:  # pragma: no cover - depends on host tools
         result.update({"probe_ok": False, "error_type": type(error).__name__})
         return result
-    output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    stderr = (completed.stderr or "").strip()
+    stdout = (completed.stdout or "").strip()
+    docker_connect_error = command[0] == "docker" and "error during connect" in stderr.lower()
+    output = (stdout or stderr or "").splitlines()
     result.update(
         {
-            "probe_ok": completed.returncode == 0,
+            "probe_ok": completed.returncode == 0 and not docker_connect_error,
             "returncode": completed.returncode,
             "summary": output[0][:160] if output else "",
         }
@@ -306,28 +309,51 @@ def _backup_restore_status() -> dict:
     cfg = settings()
     pg_dump = _tool_path("pg_dump", cfg.pg_dump_path)
     pg_restore = _tool_path("pg_restore", cfg.pg_restore_path)
+    docker_cli = _command_probe(["docker", "--version"])
+    docker_daemon = _command_probe(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=3.0)
+    docker_image = (cfg.pg_client_image or "postgres:16-alpine").strip()
+    docker_image_present = _command_probe(["docker", "image", "inspect", docker_image], timeout=3.0) if docker_daemon.get("probe_ok") else {"probe_ok": False}
+    docker_client = {
+        "image": docker_image,
+        "cli_available": bool(docker_cli.get("probe_ok")),
+        "daemon_available": bool(docker_daemon.get("probe_ok")),
+        "image_present": bool(docker_image_present.get("probe_ok")),
+        "can_use_as_pg_client": bool(docker_cli.get("probe_ok") and docker_daemon.get("probe_ok")),
+        "note": "Docker client 模式会使用临时 postgres 镜像运行 pg_dump/pg_restore；本机 127.0.0.1 会映射为 host.docker.internal。",
+    }
     restore_target = _safe_url(cfg.restore_database_url)
-    can_backup = backup_script.exists() and pg_dump["available"]
-    can_restore_rehearse = restore_script.exists() and pg_restore["available"] and restore_target.get("configured") is True
+    native_can_backup = backup_script.exists() and pg_dump["available"]
+    native_can_restore = restore_script.exists() and pg_restore["available"] and restore_target.get("configured") is True
+    docker_can_backup = backup_script.exists() and docker_client["can_use_as_pg_client"]
+    docker_can_restore = restore_script.exists() and docker_client["can_use_as_pg_client"] and restore_target.get("configured") is True
+    can_backup = native_can_backup or docker_can_backup
+    can_restore_rehearse = native_can_restore or docker_can_restore
     return {
         "backup_script": {
             "path": "scripts/backup_postgres.py",
             "exists": backup_script.exists(),
             "mode": "logical_pg_dump_custom_format",
             "default_output_dir": ".local/backups",
+            "client_modes": ["native", "docker", "auto"],
         },
         "restore_script": {
             "path": "scripts/restore_postgres.py",
             "exists": restore_script.exists(),
             "mode": "pg_restore_custom_format_to_isolated_database",
             "target": restore_target,
+            "client_modes": ["native", "docker", "auto"],
         },
         "pg_dump": pg_dump,
         "pg_restore": pg_restore,
+        "docker_pg_client": docker_client,
+        "native_can_run_local_backup": native_can_backup,
+        "native_can_rehearse_restore": native_can_restore,
+        "docker_can_run_local_backup": docker_can_backup,
+        "docker_can_rehearse_restore": docker_can_restore,
         "can_run_local_backup": can_backup,
         "can_rehearse_restore": can_restore_rehearse,
         "status": "BACKUP_TOOLING_READY" if can_backup and can_restore_rehearse else "BACKUP_TOOLING_INCOMPLETE",
-        "note": "备份/恢复脚本只读取本机 .env，拒绝 SQLite；恢复默认要求隔离库 MOLD_RESTORE_DATABASE_URL，正式 RTO/RPO 仍需隔离恢复演练证明。",
+        "note": "备份/恢复脚本只读取本机 .env，拒绝 SQLite；可使用本机 PostgreSQL 客户端或 Docker 临时 postgres 客户端；恢复默认要求隔离库 MOLD_RESTORE_DATABASE_URL，正式 RTO/RPO 仍需隔离恢复演练证明。",
     }
 
 

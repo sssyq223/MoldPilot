@@ -47,6 +47,9 @@ def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secret
     assert payload["log_retention"]["retention_script"]["exists"] is True
     assert payload["log_retention"]["retention_script"]["default_mode"] == "dry-run"
     assert "--i-understand-this-will-prune-logs" in payload["log_retention"]["retention_script"]["execute_requires"]
+    assert payload["backup_restore"]["backup_script"]["client_modes"] == ["native", "docker", "auto"]
+    assert payload["backup_restore"]["restore_script"]["client_modes"] == ["native", "docker", "auto"]
+    assert payload["backup_restore"]["docker_pg_client"]["image"]
     gates = {item["key"]: item for item in payload["acceptance_gates"]}
     for key in [
         "deployment_topology",

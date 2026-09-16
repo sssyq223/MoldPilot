@@ -22,6 +22,10 @@ def _configured(value: str | None) -> bool:
     return bool((value or "").strip())
 
 
+def _config_value(config: dict, key: str, default: str = "") -> str:
+    return os.environ.get(key) or str(config.get(key) or default)
+
+
 def _parse_url(value: str, expected_db: str) -> dict:
     parsed = urlsplit(value)
     if parsed.scheme.startswith("sqlite"):
@@ -73,36 +77,28 @@ def _find_tool(name: str, explicit_path: str = "") -> tuple[str, str | None]:
     return "", None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Create a MoldPilot PostgreSQL pg_dump backup.")
-    parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
-    parser.add_argument("--url-key", default="MOLD_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
-    parser.add_argument("--expected-db", default="moldpilot", help="Expected database name. Defaults to moldpilot.")
-    parser.add_argument("--output-dir", default=".local/backups", help="Backup directory. Defaults to .local/backups.")
-    parser.add_argument("--pg-dump", default="", help="Optional explicit pg_dump executable path.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate configuration and print the backup target only.")
-    args = parser.parse_args()
+def _docker_probe() -> dict:
+    docker = shutil.which("docker")
+    if not docker:
+        return {"available": False, "cli": False, "daemon": False}
+    result = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, check=False, timeout=5)
+    stderr = (result.stderr or "").lower()
+    stdout = (result.stdout or "").strip()
+    ok = result.returncode == 0 and "error during connect" not in stderr and bool(stdout)
+    return {
+        "available": ok,
+        "cli": True,
+        "daemon": ok,
+        "server_version": stdout if ok else "",
+    }
 
-    config = dotenv_values(args.env_file)
-    url = config.get(args.url_key)
-    if not _configured(url):
-        raise SystemExit(f"{args.url_key} is missing in {args.env_file}")
-    database = _parse_url(str(url), args.expected_db)
 
-    pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or str(config.get("MOLD_PG_DUMP_PATH") or ""))
-    if not pg_dump:
-        print("pg_dump_available=False")
-        print(f"database={database['database']}")
-        print(f"host={database['host']}")
-        print(f"port={database['port']}")
-        print("backup_ready=False")
-        print("hint=Install PostgreSQL client tools or pass --pg-dump with an explicit executable path.")
-        return 0 if args.dry_run else 2
+def _container_host(host: str) -> str:
+    return "host.docker.internal" if host in {"127.0.0.1", "localhost"} else host
 
-    output_dir = Path(args.output_dir)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_dir / f"{_safe_name(database['database'])}_{timestamp}.dump"
-    command = [
+
+def _native_command(pg_dump: str, database: dict, output_file: Path) -> list[str]:
+    return [
         str(pg_dump),
         "--format=custom",
         "--no-owner",
@@ -118,8 +114,80 @@ def main() -> int:
         database["database"],
     ]
 
-    print("pg_dump_available=True")
-    print(f"pg_dump_source={pg_dump_source}")
+
+def _docker_command(image: str, database: dict, output_dir: Path, output_file: Path) -> list[str]:
+    docker = shutil.which("docker") or "docker"
+    return [
+        docker,
+        "run",
+        "--rm",
+        "-e",
+        "PGPASSWORD",
+        "-v",
+        f"{output_dir.resolve()}:/backup",
+        image,
+        "pg_dump",
+        "--format=custom",
+        "--no-owner",
+        "--no-acl",
+        "--file",
+        f"/backup/{output_file.name}",
+        "--host",
+        _container_host(database["host"]),
+        "--port",
+        database["port"],
+        "--username",
+        database["username"],
+        database["database"],
+    ]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Create a MoldPilot PostgreSQL pg_dump backup.")
+    parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
+    parser.add_argument("--url-key", default="MOLD_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
+    parser.add_argument("--expected-db", default="moldpilot", help="Expected database name. Defaults to moldpilot.")
+    parser.add_argument("--output-dir", default=".local/backups", help="Backup directory. Defaults to .local/backups.")
+    parser.add_argument("--pg-dump", default="", help="Optional explicit pg_dump executable path.")
+    parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_dump. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:16-alpine.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate configuration and print the backup target only.")
+    args = parser.parse_args()
+
+    config = dotenv_values(args.env_file)
+    url = _config_value(config, args.url_key)
+    if not _configured(url):
+        raise SystemExit(f"{args.url_key} is missing in {args.env_file}")
+    database = _parse_url(str(url), args.expected_db)
+
+    pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or _config_value(config, "MOLD_PG_DUMP_PATH"))
+    docker = _docker_probe()
+    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:16-alpine")
+    client_mode = "native" if pg_dump and args.client_mode in {"auto", "native"} else ""
+    if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
+        client_mode = "docker"
+    if not client_mode:
+        print("pg_dump_available=False")
+        print(f"docker_client_available={docker['available']}")
+        print(f"database={database['database']}")
+        print(f"host={database['host']}")
+        print(f"port={database['port']}")
+        print("backup_ready=False")
+        print("hint=Install PostgreSQL client tools, pass --pg-dump, or start Docker and use --client-mode docker.")
+        return 0 if args.dry_run else 2
+
+    output_dir = Path(args.output_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = output_dir / f"{_safe_name(database['database'])}_{timestamp}.dump"
+    command = _native_command(pg_dump, database, output_file) if client_mode == "native" else _docker_command(image, database, output_dir, output_file)
+
+    print(f"pg_dump_available={bool(pg_dump)}")
+    print(f"pg_dump_source={pg_dump_source or ''}")
+    print(f"docker_client_available={docker['available']}")
+    print(f"client_mode={client_mode}")
+    if client_mode == "docker":
+        print(f"docker_image={image}")
+        print(f"container_host={_container_host(database['host'])}")
     print(f"database={database['database']}")
     print(f"host={database['host']}")
     print(f"port={database['port']}")
