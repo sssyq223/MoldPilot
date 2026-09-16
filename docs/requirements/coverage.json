@@ -1947,6 +1947,7 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "新增 query_operations_readiness_context 只读工具和 operations_readiness_review Skill，核对部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界的当前事实与验收缺口",
+        "readiness_summary 将机器可验证阻断项和仍需人工/实施验收的门槛分开汇总",
         "部署核对只读返回 Python、Node/npm、Docker CLI/daemon/compose、前端构建产物和后端入口文件状态",
         "数据库核对明确返回 PostgreSQL/moldpilot/Navicat 交付基线、实际 SQLAlchemy 方言、PostgreSQL 当前库名和 Alembic 迁移版本一致性，未满足时提示不得用 SQLite 作为交付依据",
         "Redis 核对只读执行 PING/INFO/XINFO，返回消息 stream 和通知消费组是否就绪",
@@ -1960,7 +1961,8 @@
         "scripts/backup_postgres.py --dry-run 已核对 PostgreSQL 配置并如实报告当前缺少 pg_dump",
         "运行就绪工具已返回 log_retention.status=LOG_RETENTION_POLICY_INCOMPLETE",
         "Redis 运行探测返回明确状态并保持未就绪警告直到 stream/group 验证通过",
-        "部署运行前提探测返回明确状态并保持未就绪警告直到 Docker/Node/构建产物全部验证通过"
+        "部署运行前提探测返回明确状态并保持未就绪警告直到 Docker/Node/构建产物全部验证通过",
+        "readiness_summary.overall_status 仍为 BLOCKED，防止把局部就绪当作整体验收完成"
       ],
       "acceptance_status": "NOT_VERIFIED"
     }

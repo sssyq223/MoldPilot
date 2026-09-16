@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：运行就绪阻断项汇总（2026-09-16）
+
+- `query_operations_readiness_context` 新增 `readiness_summary`，把数据库、迁移、Redis、部署运行前提、备份恢复工具链、日志保留、生产附件存储和模型运行配置汇总为机器可验证的 `machine_blockers` 与已满足的 `ready_items`。
+- 汇总同时输出 `acceptance_gaps`，保留部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界等仍需人工/实施验收的门槛。
+- `overall_status` 只有在机器阻断项和验收缺口都清空时才会是 `READY_FOR_DELIVERY`；当前环境仍会保持 `BLOCKED/NOT_VERIFIED`，避免模型把局部探测通过说成整体交付完成。
+- 该汇总供 Agent 回复交付状态时引用，不新增页面、不替代正式压测、恢复演练、生产部署和业务验收。
+
 ## 持续开发：部署运行前提只读核对（2026-09-16）
 
 - `query_operations_readiness_context` 新增 `deployment_runtime`，只读探测 Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。

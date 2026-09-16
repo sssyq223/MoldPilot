@@ -479,6 +479,82 @@ def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_stat
     ]
 
 
+def _readiness_summary(
+    cfg,
+    model_cfg,
+    database_baseline: dict,
+    database_health: dict,
+    migration_status: dict,
+    redis_status: dict,
+    deployment_runtime: dict,
+    backup_restore: dict,
+    log_retention: dict,
+    gates: list[dict],
+) -> dict:
+    machine_blockers: list[dict] = []
+    ready_items: list[str] = []
+
+    def block(key: str, title: str, status: str | None, next_action: str) -> None:
+        machine_blockers.append({"key": key, "title": title, "status": status, "next_action": next_action})
+
+    if database_baseline.get("delivery_ready") and database_health.get("reachable"):
+        ready_items.append("postgres_moldpilot_database")
+    else:
+        block("database", "PostgreSQL/moldpilot 数据库基线", database_baseline.get("status"), "检查 MOLD_DATABASE_URL，必须指向 PostgreSQL 的 moldpilot 库，并确认数据库可读。")
+
+    if migration_status.get("matches_repository_heads"):
+        ready_items.append("alembic_migration_head")
+    else:
+        block("migrations", "数据库迁移版本", migration_status.get("status"), "用迁移账号核对或执行 alembic upgrade head，确认 alembic_version 等于仓库 head。")
+
+    if redis_status.get("status") == "REDIS_REACHABLE_STREAM_GROUP_READY":
+        ready_items.append("redis_stream_group")
+    else:
+        block("redis", "Redis 消息 stream/消费组", redis_status.get("status"), "启动或修复 Redis，运行消息 Worker 初始化 stream/group，并复核重试、死信和去重。")
+
+    if deployment_runtime.get("status") == "DEPLOYMENT_RUNTIME_READY":
+        ready_items.append("local_deployment_runtime_prerequisites")
+    else:
+        block("deployment_runtime", "本机部署运行前提", deployment_runtime.get("status"), "核对 Docker daemon/compose、Node/npm、前端构建产物和后端 API/Worker 入口。")
+
+    if backup_restore.get("status") == "BACKUP_TOOLING_READY":
+        ready_items.append("postgres_backup_restore_tooling")
+    else:
+        block("backup_restore", "PostgreSQL 备份/恢复工具链", backup_restore.get("status"), "安装 PostgreSQL 客户端或指定 pg_dump/pg_restore，执行备份并在隔离库恢复演练。")
+
+    if log_retention.get("policy_fully_configured"):
+        ready_items.append("log_retention_policy")
+    else:
+        block("log_retention", "日志保留期限", log_retention.get("status"), "配置审计、应用、访问、模型调用日志保留天数，并确认脱敏、归档、检索和删除策略。")
+
+    if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend != "s3":
+        block("production_storage", "生产附件存储", cfg.file_backend, "生产环境必须配置私有 S3 兼容对象存储，并完成版本、权限、备份恢复和撤权验证。")
+    elif cfg.file_backend == "s3":
+        ready_items.append("s3_file_storage_configured")
+
+    if not model_cfg.llm_enabled or not model_cfg.active_model:
+        block("model_runtime", "模型运行配置", "MODEL_NOT_READY", "启用模型配置并确认供应商、模型名、上下文窗口、超时、工具循环和失败回执。")
+    else:
+        ready_items.append("model_runtime_configured")
+
+    acceptance_gaps = [
+        {"key": item["key"], "name": item["name"], "required_test": item["required_test"]}
+        for item in gates
+        if not item["confirmed"]
+    ]
+    return {
+        "overall_status": "BLOCKED" if machine_blockers or acceptance_gaps else "READY_FOR_DELIVERY",
+        "machine_status": "BLOCKED" if machine_blockers else "MACHINE_PREREQUISITES_READY",
+        "acceptance_status": "NOT_VERIFIED" if acceptance_gaps else "VERIFIED",
+        "machine_blocker_count": len(machine_blockers),
+        "acceptance_gap_count": len(acceptance_gaps),
+        "ready_items": ready_items,
+        "machine_blockers": machine_blockers,
+        "acceptance_gaps": acceptance_gaps,
+        "note": "该汇总由只读运行事实和验收门槛生成；不能替代正式生产验收、压测、恢复演练或业务验收。",
+    }
+
+
 def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
     model_cfg = model_settings()
@@ -490,6 +566,18 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
+    readiness_summary = _readiness_summary(
+        cfg,
+        model_cfg,
+        database_baseline,
+        database_health,
+        migration_status,
+        redis_status,
+        deployment_runtime,
+        backup_restore,
+        log_retention,
+        gates,
+    )
     warnings = [
         "FR-118 要求在实施方案中确认部署、用户规模、响应时间、可用性、备份频率、恢复目标和日志保留期限；未确认前不得承诺性能、可用性或准确率。",
         "本工具只读核对当前运行事实和验收缺口；不执行部署、备份、恢复、压测或清理。",
@@ -559,6 +647,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                     "read_timeout": model_cfg.llm_read_timeout,
                 },
                 "runtime_counters": _counts(db, data.include_runtime_counters),
+                "readiness_summary": readiness_summary,
                 "acceptance_gates": gates,
                 "confirmed_gate_count": sum(1 for item in gates if item["confirmed"]),
                 "required_gate_count": len(gates),
