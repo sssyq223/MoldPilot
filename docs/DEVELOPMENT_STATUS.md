@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：合同登记对话办理闭环（2026-09-16）
+
+- 新增 `prepare_contract_record` 工具，基于 `query_contract_context` 返回的真实项目、项目版本和销售合同/整套委外合同审批流程，准备合同登记 proposal。
+- 该能力不新增传统 ERP 菜单页面：仍在对话框内展示 proposal 卡片，用户本人确认后才创建 `sales_contract` 或 `full_outsource_contract` 业务材料并提交 Agent BPM；审批生效前不视为正式合同，不确认收付款，不触发 ERP 合同执行。
+- 销售合同必须关联有效客户，整套委外合同必须关联有效委外供应商；付款节点金额合计不能超过合同金额；同项目同类型的未关闭重复合同号会阻断；替代合同仍要求先完成财务归属核对，不能直接覆盖历史合同。
+- `query_contract_context` 在用户具备准备工具时返回按合同类型区分的 `workflow_options`，模型不需要猜流程 ID；合同 Skill 已补充办理规则，要求先查上下文再准备建议，查询请求仍保持只读。
+- 前端通用 proposal 卡片已映射 `sales_contract` / `full_outsource_contract` 到 `/api/contract-proposals`，并把付款节点等数组对象显示为可核对的多行内容，而不是 `[object Object]`。
+- PostgreSQL `moldpilot_test` 覆盖工具 schema、合同 workflow_options、proposal 不直接建单、本人确认后创建合同材料并提交 BPM、付款节点入库、重复合同号阻断和无效客户阻断；前端构建通过。
+
 ## 持续开发：Harness 按场景动态工具暴露治理（2026-09-16）
 
 - 参考 `D:\pi-desktop` 中“模型能看见的工具就会尝试，因此要在发送给模型前控制可见工具”的架构原则，调整 MoldPilot harness，不再把大批业务工具一次性列入模型上下文。

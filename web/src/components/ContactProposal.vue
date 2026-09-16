@@ -5,8 +5,14 @@ const props=defineProps<{stepId:string;proposal:any}>()
 const emit=defineEmits<{open:[id:string]}>()
 const intent=ref<any>(null),receipt=ref<any>(null),busy=ref(false),error=ref('')
 const policy=computed(()=>intent.value?.confirmation_policy||props.proposal.confirmation_policy)
-function displayValue(key:string,value:any){if(typeof value==='boolean')return value?'是':'否';return key==='实际发生时间'?shanghai(value):String(value)}
-const base=props.proposal.kind==='project_control'?'/project-control-proposals/':props.proposal.kind==='project_closure'?'/project-closure-proposals/':props.proposal.kind==='internal_start'?'/internal-start-proposals/':props.proposal.kind==='quote_acceptance'?'/quote-acceptance-proposals/':['project_plan_baseline','project_plan_change','plan_department_confirmation'].includes(props.proposal.kind)?'/project-plan-proposals/':'/contact-proposals/'
+function displayValue(key:string,value:any){
+  if(typeof value==='boolean')return value?'是':'否'
+  if(key==='实际发生时间')return shanghai(value)
+  if(Array.isArray(value))return value.map(item=>typeof item==='object'&&item!==null?Object.entries(item).map(([k,v])=>`${k}：${v}`).join('，'):String(item)).join('\n')
+  if(typeof value==='object'&&value!==null)return Object.entries(value).map(([k,v])=>`${k}：${v}`).join('\n')
+  return String(value)
+}
+const base=props.proposal.kind==='project_control'?'/project-control-proposals/':props.proposal.kind==='project_closure'?'/project-closure-proposals/':props.proposal.kind==='internal_start'?'/internal-start-proposals/':props.proposal.kind==='quote_acceptance'?'/quote-acceptance-proposals/':['sales_contract','full_outsource_contract'].includes(props.proposal.kind)?'/contract-proposals/':['project_plan_baseline','project_plan_change','plan_department_confirmation'].includes(props.proposal.kind)?'/project-plan-proposals/':'/contact-proposals/'
 const approval=props.proposal.kind==='project_control'||props.proposal.kind==='project_plan_change'||props.proposal.requires_approval
 onMounted(async()=>{try{receipt.value=(await api(base+props.stepId)).receipt}catch(e:any){error.value=e.message}})
 async function review(){busy.value=true;error.value='';try{intent.value=await post(base+props.stepId+'/intent')}catch(e:any){error.value=e.message}finally{busy.value=false}}

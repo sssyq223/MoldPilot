@@ -782,3 +782,5 @@ from .start_tools import router as internal_start_proposal_router
 app.include_router(internal_start_proposal_router)
 from .quote_tools import router as quote_acceptance_proposal_router
 app.include_router(quote_acceptance_proposal_router)
+from .contract_tools import router as contract_proposal_router
+app.include_router(contract_proposal_router)

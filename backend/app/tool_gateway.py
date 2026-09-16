@@ -47,6 +47,7 @@ TOOLS.update({
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
+    'prepare_contract_record':{'description':'准备销售合同或整套委外合同登记审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'project.dossier.read'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
@@ -90,7 +91,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['prepare_quote_acceptance_decision']},
                'quote_evaluation_review':{'name':'报价评估与加工方式核对','tools':['query_quote_evaluation_context']},
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context']},
-               'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
+               'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context'],
+                   'optional_tools':['prepare_contract_record']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
@@ -155,6 +157,7 @@ CAPABILITY_NAMES = {
     'query_quote_evaluation_context': '读取报价评估上下文',
     'query_bid_intake_context': '读取中标接收上下文',
     'query_contract_context': '读取合同上下文',
+    'prepare_contract_record': '准备合同登记',
     'query_internal_start_readiness': '核对正式开工条件',
     'prepare_internal_start': '准备正式开工通知',
     'query_project_plan_context': '读取项目计划上下文',
@@ -206,7 +209,8 @@ CAPABILITY_DEPARTMENTS = {
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
     'query_quote_evaluation_context': 'sales',
     'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
-    'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'contract_context_review': 'finance',
+    'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'prepare_contract_record': 'finance',
+    'contract_context_review': 'finance',
     'query_finance_context': 'finance', 'finance_context_review': 'finance', 'query_governance_context': 'system',
     'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
@@ -244,6 +248,7 @@ CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
     'prepare_quote_acceptance_decision': 'approval',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
+    'prepare_contract_record': 'approval',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
     'prepare_internal_start': 'approval',
@@ -344,9 +349,10 @@ def tool_schema(key):
     if key=='query_bid_intake_context':
         from .quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
-    if key=='query_contract_context':
-        from .contract_tools import ContractContextInput
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ContractContextInput.model_json_schema()}}
+    if key in {'query_contract_context','prepare_contract_record'}:
+        from .contract_tools import ContractContextInput, contract_schema
+        parameters=contract_schema() if key=='prepare_contract_record' else ContractContextInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_internal_start_readiness','prepare_internal_start'}:
         from .start_tools import StartReadinessInput, start_schema
         parameters=start_schema() if key=='prepare_internal_start' else StartReadinessInput.model_json_schema()
@@ -430,6 +436,9 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_quote_acceptance_decision':
         from .quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
+    if key=='prepare_contract_record':
+        from .contract_tools import execute_contract_tool
+        return execute_contract_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from .project_dossier import ProjectDossierInput,query

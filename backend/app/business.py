@@ -384,6 +384,9 @@ def create_intent(db, user, action, resource_id, payload):
     elif action == 'quote_acceptance.execute':
         from .quote_tools import validate_intent
         validate_intent(db,user,payload)
+    elif action == 'contract.execute':
+        from .contract_tools import validate_intent
+        validate_intent(db,user,payload)
     elif action.startswith('domain.'):
         from .domain_commands import validate_command
         validate_command(db,user,action[7:],resource_id,payload)
@@ -422,6 +425,9 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
         result=confirm(db,user,intent.payload)
     elif intent.action=='quote_acceptance.execute':
         from .quote_tools import confirm
+        result=confirm(db,user,intent.payload)
+    elif intent.action=='contract.execute':
+        from .contract_tools import confirm
         result=confirm(db,user,intent.payload)
     elif intent.action.startswith('domain.'):
         from .domain_commands import execute_command

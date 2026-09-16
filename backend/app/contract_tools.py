@@ -1,11 +1,17 @@
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal, InvalidOperation
-from pydantic import Field, model_validator
+from typing import Literal
+from fastapi import APIRouter, Depends
+from pydantic import Field, ValidationError, model_validator
 from sqlalchemy import select, and_
-from . import models as m
-from .authorization import access, predicate, select_fields
-from .db import now
+from . import models as m, domains, domain_schemas as s, workflow_selection
+from .authorization import access, fingerprint, predicate, require, select_fields
+from .bpm import content_hash
+from .confirmation_policy import proposal_confirmation_policy
+from .db import get_db, now
 from .errors import DomainError
+from .security import current_user
 from .schemas import StrictModel
 
 
@@ -22,6 +28,25 @@ class ContractContextInput(StrictModel):
             self.identifier=self.identifier.strip()
             if not self.identifier:raise ValueError('线索不能为空')
         return self
+
+
+class ContractProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    contract_kind: Literal['sales_contract', 'full_outsource_contract'] = Field(
+        description='合同类型：销售合同或整套委外合同。')
+    customer_id: str | None = Field(default=None, max_length=36)
+    supplier_id: str | None = Field(default=None, max_length=36)
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(pattern=r'^[A-Z]{3}$')
+    contract_number: str = Field(min_length=1, max_length=100)
+    expected_date: date | None = None
+    replaces_id: str | None = Field(default=None, max_length=36)
+    stages: list[s.StageInput] = Field(default_factory=list, max_length=30)
+    remark: str = Field(default='', max_length=4000)
+    workflow_definition_id: str = Field(min_length=1, max_length=36)
+    material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
+        description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
 
 
 def _strength(value,needle):
@@ -54,6 +79,28 @@ def _contract_subjects(db,user,project_ids,kind,allowed_tools):
         try:result.append(subject_data(db,user,subject))
         except DomainError:continue
     return result[:500]
+
+
+def workflow_options(db,user,project,kind):
+    scope={'project_id':project.id}
+    require_contract_permissions(db,user,kind,scope,submit=True)
+    rows=db.scalars(select(m.WorkflowDefinition).where(m.WorkflowDefinition.status=='PUBLISHED').order_by(
+        m.WorkflowDefinition.process_key,m.WorkflowDefinition.version.desc()))
+    result=[]
+    categories={'outsource'} if kind=='full_outsource_contract' else set()
+    for row in rows:
+        if not workflow_selection.matches(row.config,{'business_type':kind,'categories':categories,'design_type':None}):
+            continue
+        result.append(workflow_selection.metadata(row,db))
+    return result
+
+
+def require_contract_permissions(db,user,kind,scope,submit=False):
+    require(db,user,'project.read',scope)
+    require(db,user,kind+'.read',scope)
+    if submit:
+        require(db,user,kind+'.create',scope)
+        require(db,user,kind+'.submit',scope)
 
 
 def _resolve(db,user,data:ContractContextInput,allowed_tools:set[str]):
@@ -179,11 +226,17 @@ def query(db,user,data:ContractContextInput,allowed_tools:set[str]):
         if 'query_sales_contract' not in allowed_tools:skipped.append('销售合同')
         if 'query_full_outsource_contract' not in allowed_tools:skipped.append('整套委外合同')
         if skipped:limitations.append('未分配对应合同查询工具，未返回：'+'、'.join(skipped))
+        workflows={}
+        if 'prepare_contract_record' in allowed_tools:
+            for kind in ('sales_contract','full_outsource_contract'):
+                try:workflows[kind]=workflow_options(db,user,project,kind)
+                except DomainError as error:limitations.append(s.CATALOG[kind]['name']+'当前人员不可提交，未返回可选流程：'+error.message)
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'sales_contracts':sales,'full_outsource_contracts':outsource,
             'contract_totals':{'sales_contract':_totals(sales),'full_outsource_contract':_totals(outsource)},
             'replacement_links':_replacement_map(all_records),
             'late_expected_contracts':_late_expected(all_records),
+            'workflow_options':workflows,
             'derived_status':{
                 'has_sales_contract':bool(sales),
                 'has_full_outsource_contract':bool(outsource),
@@ -200,3 +253,150 @@ def query(db,user,data:ContractContextInput,allowed_tools:set[str]):
                 'limitations':limitations+['线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。']}
     return {'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':now().isoformat(),
             'limitations':limitations}
+
+
+def contract_schema():
+    return ContractProposalInput.model_json_schema()
+
+
+def parse_contract(arguments):
+    try:return ContractProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError('INVALID_TOOL_INPUT','合同登记参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def _party_display(db,data):
+    if data.contract_kind=='sales_contract':
+        customer=db.get(m.Customer,data.customer_id) if data.customer_id else None
+        return {'客户':customer.name if customer else '未找到客户', '供应商':'不适用'}
+    supplier=db.get(m.Supplier,data.supplier_id) if data.supplier_id else None
+    return {'客户':'不适用', '供应商':supplier.name if supplier else '未找到供应商'}
+
+
+def _duplicate_contract(db,project_id,kind,contract_number):
+    return db.scalar(select(m.BusinessSubject).join(m.ContractDetail,m.ContractDetail.subject_id==m.BusinessSubject.id).where(
+        m.BusinessSubject.project_id==project_id,
+        m.BusinessSubject.kind==kind,
+        m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','EFFECTIVE']),
+        m.ContractDetail.contract_number==contract_number).order_by(m.BusinessSubject.created_at.desc()).limit(1))
+
+
+def _contract_detail(data):
+    return s.ContractInput(customer_id=data.customer_id,supplier_id=data.supplier_id,
+        amount=data.amount,currency=data.currency,contract_number=data.contract_number,
+        expected_date=data.expected_date,replaces_id=data.replaces_id,stages=data.stages)
+
+
+def preview_contract(db,user,data:ContractProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id}
+    require_contract_permissions(db,user,data.contract_kind,scope,submit=True)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    if project.status in {'CLOSED','TERMINATED'}:
+        raise DomainError('PROJECT_BLOCKED','项目已关闭或终止，不能准备普通合同',409)
+    detail=_contract_detail(data)
+    if data.contract_kind=='sales_contract':
+        customer=db.get(m.Customer,detail.customer_id) if detail.customer_id else None
+        if not customer or not customer.active or detail.supplier_id:
+            raise DomainError('PARTY_INVALID','销售合同须关联有效客户，且不能填写供应商')
+    else:
+        supplier=db.get(m.Supplier,detail.supplier_id) if detail.supplier_id else None
+        if not supplier or not supplier.active or supplier.category!='outsource' or detail.customer_id:
+            raise DomainError('PARTY_INVALID','整套委外合同须关联有效委外供应商，且不能填写客户')
+    if sum((stage.amount for stage in detail.stages),Decimal(0))>detail.amount:
+        raise DomainError('STAGE_OVERFLOW','合同阶段金额合计超出合同金额')
+    if detail.replaces_id:
+        raise DomainError('ALLOCATION_REQUIRED','替代合同须先完成财务归属核对，当前禁止直接覆盖旧合同')
+    duplicate=_duplicate_contract(db,project.id,data.contract_kind,detail.contract_number)
+    if duplicate:
+        raise DomainError('CONTRACT_DUPLICATE','当前项目已有相同合同号的未关闭合同材料，请勿重复准备',409)
+    options=workflow_options(db,user,project,data.contract_kind)
+    selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
+    if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
+    stages=[{'名称':stage.name,'金额':str(stage.amount)+' '+detail.currency,'条件':stage.condition} for stage in detail.stages]
+    party=_party_display(db,data)
+    display={'操作':'登记销售合同' if data.contract_kind=='sales_contract' else '登记整套委外合同',
+        '项目':project.code+' · '+project.name,
+        '项目版本':project.row_version,
+        **party,
+        '合同号':detail.contract_number,
+        '合同金额':str(detail.amount)+' '+detail.currency,
+        '预计签订或补齐日期':detail.expected_date.isoformat() if detail.expected_date else '未填写',
+        '付款节点':stages or ['未登记付款节点'],
+        '备注':data.remark or '无',
+        '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
+        '说明':'本人确认后仅创建合同材料并提交 Agent BPM；审批生效前不视为正式合同，不确认收付款，不触发 ERP 合同执行。'}
+    return detail,display
+
+
+def execute_contract_tool(db,user,key,arguments,run=None):
+    if key!='prepare_contract_record':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
+    data=parse_contract(arguments)
+    _,display=preview_contract(db,user,data)
+    proposal={'kind':data.contract_kind,'action':'contract_record','requires_approval':True,
+        'input':data.model_dump(mode='json'),'display':display,
+        'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+    return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+        'limitations':['仅准备合同登记建议；本人确认后才创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。']}
+
+
+def source(db,user,step_id):
+    from .tool_gateway import available_tools
+    step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
+    if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
+    if run.status not in {'RUNNING','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
+        raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
+    proposal=step.result.get('proposal')
+    if step.tool not in available_tools(db,user) or step.tool!='prepare_contract_record' or not proposal:
+        raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
+    return proposal
+
+
+def validate_intent(db,user,payload):
+    proposal=source(db,user,payload['step_id'])
+    if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
+    data=parse_contract(proposal['input'])
+    _,display=preview_contract(db,user,data)
+    if content_hash(display)!=content_hash(proposal['display']):
+        raise DomainError('VERSION_CONFLICT','项目、合同、权限或流程资料已变化，请重新准备',409)
+    return proposal,data
+
+
+def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
+    proposal,data=validate_intent(db,user,payload)
+    detail,_=preview_contract(db,user,data)
+    subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
+        category='outsource' if data.contract_kind=='full_outsource_contract' else None,
+        remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
+    from .business import submit_subject
+    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        data.material_review_id,agent_permission_mode=agent_permission_mode_from_proposal(proposal))
+    return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
+        'action':'contract_record','contract_kind':data.contract_kind,'status':'SUBMITTED'}
+
+
+router=APIRouter()
+
+
+@router.get('/api/contract-proposals/{step_id}')
+def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    source(db,user,step_id)
+    intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
+        m.HumanIntent.action=='contract.execute',m.HumanIntent.resource_id==step_id,
+        m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))
+    return {'receipt':intent.receipt if intent else None}
+
+
+@router.post('/api/contract-proposals/{step_id}/intent')
+def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    from .business import create_intent
+    proposal=source(db,user,step_id)
+    payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
+    result=create_intent(db,user,'contract.execute',step_id,payload)
+    result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
+    db.commit();return result
