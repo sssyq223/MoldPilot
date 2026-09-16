@@ -45,6 +45,7 @@ def _can_read_kind(kind, allowed_tools):
         "internal_start": {"query_internal_start_readiness", "query_change_intake_context"},
         "project_plan": {"query_project_plan_context", "query_change_intake_context"},
         "plan_change": {"query_project_plan_context", "query_change_intake_context"},
+        "pause_resume": {"query_project_control_context", "query_change_intake_context"},
         "engineering_change": {"query_engineering_change", "query_change_intake_context"},
         "contact_resolution": {"query_contact_resolution", "query_change_intake_context"},
     }
@@ -342,6 +343,111 @@ def _resolutions(rows):
     return result
 
 
+def _iso(value):
+    return value.isoformat() if value else None
+
+
+def _pause_context(db, user, project_id):
+    if not access(db, user, "pause_resume.read", {"project_id": project_id}).allowed:
+        return None, True
+
+    active_pause = db.scalar(
+        select(m.PauseRecord)
+        .where(m.PauseRecord.project_id == project_id, m.PauseRecord.end_date.is_(None))
+        .order_by(m.PauseRecord.start_date.desc(), m.PauseRecord.id)
+    )
+    pause_detail = db.get(m.ProjectPauseDetail, active_pause.subject_id) if active_pause else None
+
+    pending = []
+    for subject in db.scalars(
+        select(m.BusinessSubject)
+        .where(m.BusinessSubject.project_id == project_id, m.BusinessSubject.kind == "pause_resume", m.BusinessSubject.status.in_(["DRAFT", "SUBMITTED"]))
+        .order_by(m.BusinessSubject.created_at.desc(), m.BusinessSubject.id)
+        .limit(20)
+    ):
+        detail = db.get(m.ProjectPauseDetail, subject.id)
+        pending.append(
+            {
+                "id": subject.id,
+                "number": subject.number,
+                "status": subject.status,
+                "decision": detail.decision if detail else None,
+                "effective_date": _iso(detail.effective_date) if detail else None,
+                "expected_resume_date": _iso(detail.expected_resume_date) if detail else None,
+                "source_pause_subject_id": detail.source_pause_subject_id if detail else None,
+                "reason_present": bool(detail and detail.reason),
+                "evidence_present": bool(detail and detail.evidence),
+            }
+        )
+
+    history = []
+    for record in db.scalars(
+        select(m.PauseRecord)
+        .where(m.PauseRecord.project_id == project_id)
+        .order_by(m.PauseRecord.start_date.desc(), m.PauseRecord.id)
+        .limit(20)
+    ):
+        pause = db.get(m.ProjectPauseDetail, record.subject_id)
+        resume = db.get(m.ProjectPauseDetail, record.resume_subject_id) if record.resume_subject_id else None
+        shifts = [
+            {
+                "task_id": shift.task_id,
+                "previous_start": _iso(shift.previous_start),
+                "previous_end": _iso(shift.previous_end),
+                "shifted_start": _iso(shift.shifted_start),
+                "shifted_end": _iso(shift.shifted_end),
+                "shifted_days": shift.shifted_days,
+                "task_status": shift.task_status,
+            }
+            for shift in db.scalars(select(m.PauseTaskShift).where(m.PauseTaskShift.pause_id == record.id).order_by(m.PauseTaskShift.id).limit(50))
+        ]
+        history.append(
+            {
+                "pause_subject_id": record.subject_id,
+                "resume_subject_id": record.resume_subject_id,
+                "start_date": _iso(record.start_date),
+                "end_date": _iso(record.end_date),
+                "expected_resume_date": _iso(pause.expected_resume_date) if pause else None,
+                "pause_reason_present": bool(pause and pause.reason),
+                "pause_evidence_present": bool(pause and pause.evidence),
+                "resume_reason_present": bool(resume and resume.reason),
+                "resume_evidence_present": bool(resume and resume.evidence),
+                "shifted_days": record.shifted_days,
+                "shift_applied": record.shift_applied,
+                "customer_due_date_snapshot": _iso(record.customer_due_date_snapshot),
+                "task_shift_count": len(shifts),
+                "task_shifts": shifts,
+            }
+        )
+
+    return (
+        {
+            "active_pause": (
+                {
+                    "pause_subject_id": active_pause.subject_id,
+                    "start_date": _iso(active_pause.start_date),
+                    "expected_resume_date": _iso(pause_detail.expected_resume_date) if pause_detail else None,
+                    "reason_present": bool(pause_detail and pause_detail.reason),
+                    "evidence_present": bool(pause_detail and pause_detail.evidence),
+                }
+                if active_pause
+                else None
+            ),
+            "pending_pause_requests": pending,
+            "pause_history": history,
+            "allowed_during_pause": ["资料补录", "沟通记录", "合同与结算核对", "工程联络与恢复申请"],
+            "blocked_during_pause": ["普通下单", "报工", "发料", "计划执行"],
+            "derived_status": {
+                "has_active_pause": bool(active_pause),
+                "has_pending_pause_request": bool(pending),
+                "has_resume_shift_evidence": any(row["shift_applied"] and row["task_shift_count"] for row in history),
+                "customer_due_date_is_independent": True,
+            },
+        },
+        False,
+    )
+
+
 def _plan_task_matches(contact_task, plan_tasks):
     ref = str(contact_task.get("affected_ref") or "").strip().casefold()
     if not ref:
@@ -406,9 +512,12 @@ def _plan_change_prepare_seed(project, case, contact_task, matched_tasks, eviden
     }
 
 
-def _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools):
+def _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools, project_control=None):
     effective_resolution_cases = {row.get("case_id") for row in resolutions if row.get("status") == "EFFECTIVE"}
     recommended_tools = []
+    project_control_status = (project_control or {}).get("derived_status") or {}
+    if (project_control_status.get("has_active_pause") or project_control_status.get("has_pending_pause_request")) and "query_project_control_context" in allowed_tools:
+        recommended_tools.append("query_project_control_context")
     if "query_project_plan_context" in allowed_tools:
         recommended_tools.append("query_project_plan_context")
         if "prepare_project_plan_change" in allowed_tools:
@@ -435,6 +544,10 @@ def _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allo
                 evidence_gaps.append("责任部门尚未提交处理反馈或执行依据。")
             if int(task.get("delivery_impact_days") or 0) == 0 and task.get("planned_action") == "CONTINUE":
                 evidence_gaps.append("未登记交期影响天数且计划动作为继续，需项目负责人确认是否需要计划变更。")
+            if project_control_status.get("has_active_pause"):
+                evidence_gaps.append("项目当前处于暂停状态；普通计划执行、下单、报工和发料受限，计划变更前需先核对暂停/恢复上下文。")
+            if project_control_status.get("has_pending_pause_request"):
+                evidence_gaps.append("存在待审批暂停/恢复申请；计划调整前需确认暂停区间和冻结任务范围是否已变化。")
             result.append(
                 {
                     "case_id": case.get("id"),
@@ -475,7 +588,7 @@ def _classify_change(category, text):
     return "UNCLASSIFIED"
 
 
-def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts, outsource_contracts, plan_tasks, engineering_changes, contacts, resolutions, allowed_tools):
+def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts, outsource_contracts, plan_tasks, engineering_changes, contacts, resolutions, project_control, allowed_tools):
     contact_tasks = [task for case in contacts for task in case.get("tasks") or [] if task.get("status") != "CANCELLED"]
     contact_problem_sources = Counter(case.get("problem_source") or "UNKNOWN" for case in contacts)
     affected_types = Counter(task.get("affected_type") for task in contact_tasks)
@@ -497,7 +610,8 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
     effective_starts = [row for row in starts if row.get("status") == "EFFECTIVE"]
     external_or_customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE" or case.get("customer_ref")]
     outsource_cases = [case for case in contacts if case.get("category") == "outsource" or case.get("problem_source") == "OUTSOURCE_DEFECT"]
-    plan_adjustment_candidates = _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools)
+    project_control_status = (project_control or {}).get("derived_status") or {}
+    plan_adjustment_candidates = _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools, project_control)
 
     gaps = []
     warnings = []
@@ -515,6 +629,10 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
         warnings.append("存在未完成执行、复验或关闭的设变/联络事项，不能把方案审批或工程联络单获批等同于整改完成。")
     if outsource_cases and not outsource_contracts:
         warnings.append("存在委外设变或外协不良线索，但未见委外合同上下文；委外金额需由采购与供应商确认并保留依据。")
+    if project_control_status.get("has_active_pause"):
+        warnings.append("项目当前处于暂停状态；工程联络和恢复申请可继续办理，但普通计划执行、下单、报工和发料受暂停门禁限制。")
+    if project_control_status.get("has_pending_pause_request"):
+        warnings.append("存在待审批暂停/恢复申请；设变计划调整、执行安排和交期判断需先核对冻结任务范围。")
     if not plan_tasks:
         gaps.append("未见有效计划任务上下文，无法判断当前环节可变更性、继续/暂停/取消/返工/重新下达的边界。")
     gaps.append("当前工具只读核对设变承接上下文；不自动读取客户平台、不替代 ERP 设计/制造/采购/物流/财务执行。")
@@ -532,6 +650,7 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
         "engineering_changes": engineering_changes,
         "engineering_contact_cases": contacts,
         "contact_resolutions": resolutions,
+        "project_control": project_control,
         "plan_adjustment_candidates": plan_adjustment_candidates,
         "gaps": gaps,
         "warnings": warnings,
@@ -552,6 +671,10 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
             "open_impact_count": len(open_change_impacts) + len(incomplete_contact_tasks),
             "has_plan_adjustment_candidate": bool(plan_adjustment_candidates),
             "plan_adjustment_candidate_count": len(plan_adjustment_candidates),
+            "has_active_project_pause": bool(project_control_status.get("has_active_pause")),
+            "has_pending_pause_request": bool(project_control_status.get("has_pending_pause_request")),
+            "has_resume_shift_evidence": bool(project_control_status.get("has_resume_shift_evidence")),
+            "customer_due_date_is_independent": bool(project_control_status.get("customer_due_date_is_independent")),
         },
     }
 
@@ -577,6 +700,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools), task_names)
         contacts = _contact_cases(db, user, project.id, allowed_tools)
         resolutions = _resolutions(_subject_rows(db, user, project.id, "contact_resolution", allowed_tools))
+        project_control, pause_skipped = _pause_context(db, user, project.id)
         contact_total = db.scalar(select(func.count()).select_from(m.ContactCase).where(m.ContactCase.project_id == project.id)) or 0
         skipped = []
         for kind, label in (
@@ -585,15 +709,18 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             ("sales_contract", "销售合同"),
             ("full_outsource_contract", "委外合同"),
             ("project_plan", "项目计划/受影响任务"),
+            ("pause_resume", "项目暂停/恢复资料"),
             ("engineering_change", "工程变更审批记录"),
             ("contact_resolution", "联络单处理方案审批"),
         ):
             if not _can_read_kind(kind, allowed_tools):
                 skipped.append(label)
+        if pause_skipped:
+            skipped.append("项目暂停/恢复资料")
         if ("query_contact_cases" not in allowed_tools and "query_change_intake_context" not in allowed_tools) or (contact_total and not contacts):
             skipped.append("工程联络协作事项")
         if skipped:
-            limitations.append("未分配对应查询工具或权限，未返回：" + "、".join(skipped))
+            limitations.append("未分配对应查询工具或权限，未返回：" + "、".join(dict.fromkeys(skipped)))
         return {
             "resolution": "RESOLVED",
             "data": [
@@ -612,6 +739,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         engineering_changes,
                         contacts,
                         resolutions,
+                        project_control,
                         allowed_tools,
                     ),
                 }

@@ -872,8 +872,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 异常处理须记录方案批准、执行结果及复检或复验结论，由适用责任角色确认关闭。工程联络单获批不表示整改完成；涉及节点、费用及合同事项未落实时应能识别未完成事项。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；当项目存在有效暂停或待审批暂停/恢复申请时，设变承接上下文同时返回 project_control、has_active_project_pause、has_pending_pause_request 和暂停门禁提示，避免在暂停状态下误把计划调整候选当作可直接执行；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警，并覆盖暂停项目下计划调整候选转为 NEEDS_CONTEXT；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ## 暂停与恢复
@@ -885,8 +885,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 收到客户邮件或线下暂停通知时，由项目负责人核实并上传依据，记录原因、暂停开始时间、影响对象及预计情况。暂停状态应通知相关部门，明确受影响任务的执行限制，不能只改变显示颜色而继续无条件下单或报工。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_control_context 支持按项目号、项目名、模具号、工程联络和暂停恢复单号定位项目，返回项目版本、有效计划、未完成任务、当前暂停区间、待处理暂停/恢复申请和可选 Agent BPM；prepare_project_pause 仅准备暂停建议，冻结有效计划和未完成任务范围；本人确认后才创建暂停单并提交 BPM，审批生效后项目状态转为 PAUSED；domains.before_submit/apply 在暂停状态下阻断普通计划、下单、报工、发料等执行业务，同时保留工程联络、合同、结算和恢复等专用流程
-- 验证证据：tests/test_project_pause.py 覆盖暂停冻结未完成任务、计划范围变化阻断生效、按 identifier 查询上下文和暂停期限制/允许事项输出
+- 实现证据：query_project_control_context 支持按项目号、项目名、模具号、工程联络和暂停恢复单号定位项目，返回项目版本、有效计划、未完成任务、当前暂停区间、待处理暂停/恢复申请和可选 Agent BPM；prepare_project_pause 仅准备暂停建议，冻结有效计划和未完成任务范围；本人确认后才创建暂停单并提交 BPM，审批生效后项目状态转为 PAUSED；domains.before_submit/apply 在暂停状态下阻断普通计划、下单、报工、发料等执行业务，同时保留工程联络、合同、结算和恢复等专用流程；query_change_intake_context 在有 pause_resume.read 权限时把 active_pause、pending_pause_requests、allowed_during_pause 与 blocked_during_pause 聚合到设变/联络上下文，权限不足时不泄露暂停原因和依据
+- 验证证据：tests/test_project_pause.py 覆盖暂停冻结未完成任务、计划范围变化阻断生效、按 identifier 查询上下文和暂停期限制/允许事项输出；tests/test_change_intake_tools.py 覆盖已暂停项目的设变上下文门禁提示，以及无 pause_resume.read 权限时不返回 SECRET 暂停原因/依据
 - 验收状态：NOT_VERIFIED
 
 ### FR-092
@@ -894,8 +894,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 恢复时上传恢复通知和恢复时间。项目整体暂停恢复后，未完成节点按实际暂停时长统一顺延，经项目负责人确认生效；已完成节点保留实际日期，同一次暂停不得重复顺延。局部任务调整按第7章影响评估处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：prepare_project_resume 要求关联当前有效暂停记录、恢复依据和恢复日期；恢复生效时按实际暂停天数顺延暂停时冻结的未完成节点；PauseRecord.shift_applied、shifted_days 与 PauseTaskShift 保存每个任务前后计划日期；已完成节点不顺延，同一暂停区间恢复记录唯一防止重复顺延
-- 验证证据：tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点保留原日期、同一恢复不能重复应用和查询返回顺延证据
+- 实现证据：prepare_project_resume 要求关联当前有效暂停记录、恢复依据和恢复日期；恢复生效时按实际暂停天数顺延暂停时冻结的未完成节点；PauseRecord.shift_applied、shifted_days 与 PauseTaskShift 保存每个任务前后计划日期；已完成节点不顺延，同一暂停区间恢复记录唯一防止重复顺延；query_change_intake_context 返回 has_resume_shift_evidence，供设变/异常复盘时识别计划日期是否已经由恢复流程调整
+- 验证证据：tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点保留原日期、同一恢复不能重复应用和查询返回顺延证据；tests/test_change_intake_tools.py 覆盖设变上下文内的暂停/恢复派生状态
 - 验收状态：NOT_VERIFIED
 
 ### FR-093
@@ -903,8 +903,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 顺延保留前后计划、暂停依据和确认记录，客户承诺交期按客户确认单独处理。必要的资料补录、沟通、保管和结算等操作按权限保留，不因暂停一概禁止。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认
-- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单
+- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；query_change_intake_context 在设变/工程联络上下文同步返回 customer_due_date_is_independent，提醒 Agent 不得把内部顺延等同为客户承诺交期变更；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认
+- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单；tests/test_change_intake_tools.py 覆盖暂停门禁与客户交期独立状态在设变上下文中的返回
 - 验收状态：NOT_VERIFIED
 
 ## 终止结算与正常关闭

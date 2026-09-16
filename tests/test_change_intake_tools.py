@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 
-from app import models as m
+from app import domains, domain_schemas as s, models as m
 from app.authorization import PERMISSIONS
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
@@ -240,6 +240,27 @@ def contact_flow(db, project, creator):
     return case
 
 
+def pause_project(db, project, creator, reason="客户通知暂停，涉及 SECRET-PAUSE"):
+    pause = domains.create(
+        db,
+        creator,
+        s.SubjectInput(
+            kind="pause_resume",
+            project_id=project.id,
+            remark="客户通知暂停",
+            detail={
+                "decision": "PAUSE",
+                "effective_date": date.today(),
+                "expected_resume_date": date.today() + timedelta(days=7),
+                "reason": reason,
+                "evidence": "客户邮件暂停依据 SECRET-EVIDENCE",
+            },
+        ),
+    )
+    domains.apply(db, creator, pause)
+    return pause
+
+
 def test_change_intake_schema_and_context_summary():
     engine, Session = factory()
     try:
@@ -346,6 +367,65 @@ def test_change_intake_marks_plan_adjustment_candidate_context_gaps():
             assert "已审批生效的联络单处理方案" in "".join(candidate["evidence_gaps"])
             assert "未精确匹配当前可见计划任务" in "".join(candidate["evidence_gaps"])
             assert candidate["recommended_next_tools"] == ["query_project_plan_context", "prepare_project_plan_change"]
+    finally:
+        engine.dispose()
+
+
+def test_change_intake_includes_project_pause_gate_for_authorized_user():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            p = project(db, "CHG-PAUSED")
+            project_profile_and_mold(db, p, admin)
+            acceptance_contract_and_start(db, p, admin)
+            plan_and_change(db, p, admin)
+            contact_flow(db, p, admin)
+            pause_project(db, p, admin)
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_change_intake_context", {"identifier": "CHG-PAUSED"})
+            analysis = result["data"][0]["analysis"]
+            status = analysis["derived_status"]
+            assert status["has_active_project_pause"] is True
+            assert status["customer_due_date_is_independent"] is True
+            assert analysis["project_control"]["derived_status"]["has_active_pause"] is True
+            assert analysis["project_control"]["active_pause"]["reason_present"] is True
+            assert "普通下单" in "".join(analysis["project_control"]["blocked_during_pause"])
+            assert "工程联络" in "".join(analysis["project_control"]["allowed_during_pause"])
+            assert "暂停状态" in "".join(analysis["warnings"])
+            candidate = analysis["plan_adjustment_candidates"][0]
+            assert candidate["candidate_status"] == "NEEDS_CONTEXT"
+            assert "暂停状态" in "".join(candidate["evidence_gaps"])
+            assert candidate["recommended_next_tools"][0] == "query_project_control_context"
+            assert candidate["plan_change_prepare_seed"]["status"] == "NEEDS_CONTEXT"
+    finally:
+        engine.dispose()
+
+
+def test_change_intake_does_not_leak_project_pause_without_permission():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            operator = user(db)
+            p = project(db, "CHG-PAUSE-LIMITED")
+            project_profile_and_mold(db, p, admin)
+            plan_and_change(db, p, admin)
+            contact_flow(db, p, admin)
+            pause_project(db, p, admin)
+            grant(db, admin, operator, "project.read", project_id=p.id)
+            grant(db, admin, operator, "engineering_change.read", project_id=p.id, category="customer_change")
+            capability(db, operator, "query_change_intake_context")
+        with Session() as db:
+            operator = db.query(m.User).filter_by(username="operator").one()
+            result = execute(db, operator, "query_change_intake_context", {"identifier": "CHG-PAUSE-LIMITED"})
+            analysis = result["data"][0]["analysis"]
+            assert analysis["project_control"] is None
+            assert analysis["derived_status"]["has_active_project_pause"] is False
+            assert "项目暂停/恢复资料" in "".join(result["limitations"])
+            assert "SECRET-PAUSE" not in str(result)
+            assert "SECRET-EVIDENCE" not in str(result)
     finally:
         engine.dispose()
 
