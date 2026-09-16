@@ -7,7 +7,8 @@
 - 撤回未提交的 SQLite 单元测试思路，后续开发业务库以 `.env` 中 `MOLD_DATABASE_URL` 指向的 PostgreSQL 为准。
 - 当前本机开发库已核对为 `127.0.0.1:5432/moldpilot`，`admin` 超级管理员存在且启用。
 - 新增 `database/verify_moldpilot_navicat.sql`，可在 Navicat 连接 `moldpilot` 后运行，用于核对当前库、连接用户、admin 账号和关键表行数；脚本不展示密码哈希。
-- README 删除旧的 `55432/agent_db` 说明，改为以 `.env` 为权威，并明确不要再使用 SQLite 作为开发业务库。
+- 新增命令行校验脚本 `scripts/verify_postgres_baseline.py`，复用 Navicat SQL，拒绝 SQLite，检查当前连接库名和 admin 超级管理员状态，作为后续本地验收基线。
+- README 和 `.env.example` 删除旧的 `55432/agent_db` 说明，改为以 `.env` / `moldpilot` 为权威，并明确不要再使用 SQLite 作为开发业务库。
 
 ## 持续开发：对话依据中的设计改版与计划复核展示（2026-09-16）
 

@@ -39,6 +39,15 @@ Python 使用 3.12；首次搭建可用 `requirements.lock` 安装本次验证�
 
 本机 PostgreSQL 以 `.env` 为唯一权威配置；不要再使用 SQLite 作为开发业务库。当前环境已初始化，不要重复 initdb 或重新播种；如需核对数据库，用 Navicat 连接 `moldpilot` 后运行 `database/verify_moldpilot_navicat.sql`。
 
+命令行也可用同一份 SQL 核对 PostgreSQL 基线：
+
+```powershell
+$env:PYTHONPATH='backend'
+.venv/Scripts/python.exe scripts/verify_postgres_baseline.py
+```
+
+该脚本只读取 `.env`，拒绝 SQLite，确认连接到 `moldpilot` 并检查 `admin` 为启用的超级管理员；输出不会包含密码哈希。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。
