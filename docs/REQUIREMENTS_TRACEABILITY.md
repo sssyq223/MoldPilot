@@ -662,8 +662,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 发货后记录客户签收和客户验收结果，两者分别确认。验收结果作为适用的回款及归档依据；签收日期按移模业务规则维护，不自动认定质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 将客户签收 has_customer_signature 与客户验收 has_customer_acceptance 分开；当前无签收结构化模型时不自动认定签收；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仅作为客户验收依据之一展示，不把供应商发货、仓库收货或试模通过等同于客户验收
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖客户验收清单 DONE 可被识别，同时 has_customer_signature 仍为 false；真实签收日期、移模业务规则和回款归档联动尚未验收
+- 实现证据：新增 customer_delivery_signature / customer_acceptance_record PostgreSQL 模型与迁移，分别保存客户签收/移模签收、客户质量验收、复验、责任判断、整改期限和证据；query_delivery_logistics_context 返回 analysis.customer_delivery_acceptance，并将 has_customer_signature 与 has_customer_acceptance 分开，签收不会自动推断为客户验收通过；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仍仅作为客户验收依据之一展示
+- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖客户签收与客户验收分离、签收后未验收仍返回缺口，以及普通仓库视角不泄露客户验收失败原因和扣款金额；真实签收日期、移模业务规则和回款归档联动尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-069
@@ -671,8 +671,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 客户验收不通过时记录问题、证据、责任判断和处理期限，关联工程联络单或供应商整改任务。整改后安排复验并记录最终结果，涉及费用、扣款、交期和合同变化时同步对应记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 汇总质量、交付、物流或验收相关工程联络事项，存在未关闭事项时 warnings 提醒不能认定整改闭环完成；收货检验不合格数量、试模未通过和客户验收/质量联络分别触发警示，要求关联退换货、扣款、整改或工程联络处理
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖收货检验不合格、客户验收质量联络和开放整改事项提示；客户验收不通过后的复验、费用扣款、交期与合同变化同步尚未完整联调
+- 实现证据：customer_acceptance_record 保存客户验收不通过的问题描述、责任判断、整改期限、关联工程联络单、供应商、扣款金额、交期影响天数和合同变化要求；query_delivery_logistics_context 在验收失败且无复验通过时提示不能认定闭环完成，扣款、合同变化和交期影响分别写入 warnings，并继续汇总质量、交付、物流或验收相关工程联络事项
+- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖客户验收失败、扣款金额、合同变化、交期影响和未复验通过警示；真实供应商整改任务、财务扣款、计划/合同变化同步和 ERP/财务联调尚未正式验收
 - 验收状态：NOT_VERIFIED
 
 ## 整套委外协同

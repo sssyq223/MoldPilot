@@ -173,6 +173,53 @@ class LogisticsQuote(IdentityMixin, Base):
     )
 
 
+class CustomerDeliverySignature(IdentityMixin, Base):
+    """Customer receipt/signature evidence after shipment; not quality acceptance."""
+    __tablename__ = 'customer_delivery_signature'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    logistics_route_id: Mapped[str | None] = mapped_column(ForeignKey('logistics_route.id'))
+    shipment_reference: Mapped[str] = mapped_column(String(120))
+    signed_date: Mapped[date] = mapped_column(Date)
+    signer_name: Mapped[str] = mapped_column(String(120))
+    sign_status: Mapped[str] = mapped_column(String(30), default='SIGNED')
+    move_type: Mapped[str] = mapped_column(String(40), default='DELIVERY')
+    evidence: Mapped[str] = mapped_column(Text)
+    recorded_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('project_id','shipment_reference','signed_date', name='customer_delivery_signature_unique_ref_date'),
+        CheckConstraint("sign_status IN ('SIGNED','REJECTED','PENDING')", name='customer_delivery_signature_status'),
+        CheckConstraint("move_type IN ('DELIVERY','MOLD_TRANSFER','RETURN','OTHER')", name='customer_delivery_signature_move_type'),
+    )
+
+
+class CustomerAcceptanceRecord(IdentityMixin, Base):
+    """Customer acceptance, rejection and recheck evidence; failures may carry deductions."""
+    __tablename__ = 'customer_acceptance_record'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    signature_id: Mapped[str | None] = mapped_column(ForeignKey('customer_delivery_signature.id'), index=True)
+    acceptance_type: Mapped[str] = mapped_column(String(30), default='INITIAL')
+    result: Mapped[str] = mapped_column(String(30))
+    accepted_date: Mapped[date] = mapped_column(Date)
+    issue_description: Mapped[str] = mapped_column(Text, default='')
+    responsibility: Mapped[str] = mapped_column(String(40), default='UNKNOWN')
+    corrective_due_date: Mapped[date | None] = mapped_column(Date)
+    contact_case_id: Mapped[str | None] = mapped_column(ForeignKey('contact_case.id'), index=True)
+    supplier_id: Mapped[str | None] = mapped_column(ForeignKey('supplier.id'))
+    deduction_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    schedule_impact_days: Mapped[int] = mapped_column(Integer, default=0)
+    contract_change_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        CheckConstraint("acceptance_type IN ('INITIAL','RECHECK')", name='customer_acceptance_type'),
+        CheckConstraint("result IN ('PASSED','FAILED','CONDITIONALLY_PASSED')", name='customer_acceptance_result'),
+        CheckConstraint("responsibility IN ('CUSTOMER','SUPPLIER','INTERNAL','SHARED','UNKNOWN')", name='customer_acceptance_responsibility'),
+        CheckConstraint('deduction_amount IS NULL OR deduction_amount >= 0', name='customer_acceptance_deduction_nonnegative'),
+        CheckConstraint('schedule_impact_days >= 0', name='customer_acceptance_schedule_impact_nonnegative'),
+    )
+
+
 class ReceiptInspection(IdentityMixin, Base):
     __tablename__ = 'receipt_inspection'
     receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)

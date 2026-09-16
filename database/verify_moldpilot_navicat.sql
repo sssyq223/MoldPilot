@@ -33,6 +33,26 @@ SELECT
     'audit_event',
     COUNT(*)
 FROM audit_event
+UNION ALL
+SELECT
+    'logistics_route',
+    COUNT(*)
+FROM logistics_route
+UNION ALL
+SELECT
+    'logistics_quote',
+    COUNT(*)
+FROM logistics_quote
+UNION ALL
+SELECT
+    'customer_delivery_signature',
+    COUNT(*)
+FROM customer_delivery_signature
+UNION ALL
+SELECT
+    'customer_acceptance_record',
+    COUNT(*)
+FROM customer_acceptance_record
 ORDER BY table_name;
 
 SELECT

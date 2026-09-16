@@ -233,6 +233,46 @@ def logistics_quote(db, project, creator, settlement=True):
     return route, quote
 
 
+def customer_signature(db, project, creator, reference="CUSTOMER-SIGN-001"):
+    row = m.CustomerDeliverySignature(
+        project_id=project.id,
+        shipment_reference=reference,
+        signed_date=date.today(),
+        signer_name="客户代表",
+        sign_status="SIGNED",
+        move_type="MOLD_TRANSFER",
+        evidence="客户签收单",
+        recorded_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def customer_acceptance(db, project, creator, signature, result="FAILED", recheck=False, deduction=True):
+    row = m.CustomerAcceptanceRecord(
+        project_id=project.id,
+        signature_id=signature.id,
+        acceptance_type="RECHECK" if recheck else "INITIAL",
+        result=result,
+        accepted_date=date.today(),
+        issue_description="客户验收尺寸偏差" if result == "FAILED" else "复验通过",
+        responsibility="SUPPLIER" if result == "FAILED" else "UNKNOWN",
+        corrective_due_date=date.today() + timedelta(days=5) if result == "FAILED" else None,
+        contact_case_id=None,
+        supplier_id=None,
+        deduction_amount=Decimal("500.00") if deduction else None,
+        currency="CNY" if deduction else None,
+        schedule_impact_days=2 if result == "FAILED" else 0,
+        contract_change_required=result == "FAILED",
+        evidence="客户验收记录",
+        confirmed_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def test_delivery_logistics_schema_and_context_summary(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:
@@ -292,6 +332,55 @@ def test_delivery_logistics_returns_effective_route_quote_and_settlement_price(p
         assert "物流报价" not in "".join(analysis["gaps"])
 
 
+def test_delivery_logistics_keeps_customer_signature_separate_from_acceptance(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-SIGN")
+        wh = warehouse(db)
+        plan(db, p, admin)
+        order_with_flow(db, p, admin, material(db, "SIGN-MAT"), wh)
+        customer_signature(db, p, admin)
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-SIGN"})
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        customer = analysis["customer_delivery_acceptance"]
+        assert status["has_customer_signature"] is True
+        assert status["has_customer_acceptance"] is False
+        assert customer["signatures"][0]["move_type"] == "MOLD_TRANSFER"
+        assert "已有客户签收记录，但未见客户质量验收" in "".join(analysis["gaps"])
+
+
+def test_delivery_logistics_reports_failed_customer_acceptance_deduction_and_recheck_gap(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-ACCEPT-FAIL")
+        wh = warehouse(db)
+        plan(db, p, admin)
+        order_with_flow(db, p, admin, material(db, "ACCEPT-MAT"), wh)
+        signature = customer_signature(db, p, admin, "CUSTOMER-SIGN-FAIL")
+        customer_acceptance(db, p, admin, signature, result="FAILED", deduction=True)
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ACCEPT-FAIL"})
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        customer = analysis["customer_delivery_acceptance"]
+        assert status["has_customer_signature"] is True
+        assert status["has_failed_customer_acceptance"] is True
+        assert status["has_customer_recheck_passed"] is False
+        assert status["has_customer_acceptance_deduction"] is True
+        assert status["has_customer_acceptance_contract_change"] is True
+        assert customer["acceptance_records"][0]["deduction_amount"] == "500.00"
+        warnings = "".join(analysis["warnings"])
+        assert "客户验收未通过" in warnings
+        assert "费用扣款" in warnings
+        assert "合同变化" in warnings
+
+
 def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:
@@ -300,6 +389,8 @@ def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_fa
         p = project(db, "DLV-LIMITED")
         wh = warehouse(db)
         order_with_flow(db, p, admin, material(db, "SECRET-MAT", "秘密发货物料"), wh)
+        signature = customer_signature(db, p, admin, "CUSTOMER-SIGN-LIMITED")
+        customer_acceptance(db, p, admin, signature, result="FAILED", deduction=True)
         grant(db, admin, operator, "project.read", project_id=p.id)
         grant(db, admin, operator, "warehouse.read", warehouse_id=wh.id)
         capability(db, operator, "query_delivery_logistics_context")
@@ -310,8 +401,13 @@ def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_fa
         assert analysis["derived_status"]["has_supplier_shipment"] is False
         assert "SHIP-SECRET" not in str(result)
         assert "PO-DLV-LIMITED" not in str(result)
+        assert "500.00" not in str(result)
+        assert "客户验收尺寸偏差" not in str(result)
         assert result["data"][0]["purchase_orders"] == []
+        assert analysis["customer_delivery_acceptance"]["visibility"]["acceptance_records_visible"] is False
+        assert analysis["customer_delivery_acceptance"]["signatures"][0]["shipment_reference"] == "CUSTOMER-SIGN-LIMITED"
         assert "正式采购订单" in "".join(result["limitations"])
+        assert "客户验收/复验/扣款记录" in "".join(result["limitations"])
 
 
 def test_delivery_logistics_reports_multiple_candidates_without_deciding(pg_session_factory):

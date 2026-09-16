@@ -471,7 +471,85 @@ def _logistics_pricing(db, project_id):
     }
 
 
-def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing):
+def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
+    signatures = []
+    for row in db.scalars(
+        select(m.CustomerDeliverySignature)
+        .where(m.CustomerDeliverySignature.project_id == project_id)
+        .order_by(m.CustomerDeliverySignature.signed_date.desc(), m.CustomerDeliverySignature.created_at.desc(), m.CustomerDeliverySignature.id)
+        .limit(50)
+    ):
+        signatures.append(
+            {
+                "id": row.id,
+                "logistics_route_id": row.logistics_route_id,
+                "shipment_reference": row.shipment_reference,
+                "signed_date": row.signed_date.isoformat(),
+                "signer_name": row.signer_name,
+                "sign_status": row.sign_status,
+                "move_type": row.move_type,
+                "evidence": row.evidence,
+                "recorded_by": row.recorded_by,
+            }
+        )
+
+    can_read_acceptance = "query_project_closure_context" in allowed_tools and access(db, user, "project_close.read", {"project_id": project_id}).allowed
+    acceptance_records = []
+    if can_read_acceptance:
+        for row in db.scalars(
+            select(m.CustomerAcceptanceRecord)
+            .where(m.CustomerAcceptanceRecord.project_id == project_id)
+            .order_by(m.CustomerAcceptanceRecord.accepted_date.desc(), m.CustomerAcceptanceRecord.created_at.desc(), m.CustomerAcceptanceRecord.id)
+            .limit(50)
+        ):
+            acceptance_records.append(
+                {
+                    "id": row.id,
+                    "signature_id": row.signature_id,
+                    "acceptance_type": row.acceptance_type,
+                    "result": row.result,
+                    "accepted_date": row.accepted_date.isoformat(),
+                    "issue_description": row.issue_description,
+                    "responsibility": row.responsibility,
+                    "corrective_due_date": row.corrective_due_date.isoformat() if row.corrective_due_date else None,
+                    "contact_case_id": row.contact_case_id,
+                    "supplier_id": row.supplier_id,
+                    "deduction_amount": str(row.deduction_amount) if row.deduction_amount is not None else None,
+                    "currency": row.currency,
+                    "schedule_impact_days": row.schedule_impact_days,
+                    "contract_change_required": row.contract_change_required,
+                    "evidence": row.evidence,
+                    "confirmed_by": row.confirmed_by,
+                }
+            )
+
+    signed = [row for row in signatures if row["sign_status"] == "SIGNED"]
+    passed = [row for row in acceptance_records if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
+    failed = [row for row in acceptance_records if row["result"] == "FAILED"]
+    rechecks = [row for row in acceptance_records if row["acceptance_type"] == "RECHECK"]
+    recheck_passed = [row for row in rechecks if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
+    deductions = [row for row in acceptance_records if row["deduction_amount"] is not None]
+    return {
+        "signatures": signatures,
+        "acceptance_records": acceptance_records,
+        "visibility": {
+            "signature_records_visible": True,
+            "acceptance_records_visible": can_read_acceptance,
+        },
+        "derived_status": {
+            "has_customer_signature": bool(signed),
+            "has_customer_acceptance": bool(passed),
+            "has_failed_customer_acceptance": bool(failed),
+            "has_recheck_record": bool(rechecks),
+            "has_recheck_passed": bool(recheck_passed),
+            "has_acceptance_deduction": bool(deductions),
+            "has_contract_change_required": any(row["contract_change_required"] for row in acceptance_records),
+            "schedule_impact_days_total": sum(int(row["schedule_impact_days"] or 0) for row in acceptance_records),
+        },
+    }
+
+
+def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing, customer_delivery_acceptance):
     totals = shipment_tracking["totals"]
     trial_passed = [row for row in trials if row.get("passed") is True]
     trial_failed = [row for row in trials if row.get("passed") is False]
@@ -479,6 +557,8 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
     delivery_done = [row for row in closure_items if "DELIVERY" in row.get("item_key", "") and row.get("status") == "DONE"]
     open_contacts = [row for row in contacts if row.get("collaboration_status") != "CLOSED"]
     stock_out = [row for row in stock_movements if Decimal(str(row.get("quantity") or "0")) < 0]
+    customer_status = customer_delivery_acceptance["derived_status"]
+    has_customer_acceptance = bool(customer_acceptance_done) or customer_status["has_customer_acceptance"]
 
     gaps = []
     warnings = []
@@ -504,8 +584,20 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         warnings.append("存在未关闭质量、交付、物流或验收相关工程联络事项，不能认定整改闭环完成。")
     if not delivery_done:
         gaps.append("未见结项/归档清单中的交付或发货完成依据。")
-    if not customer_acceptance_done:
+    if not customer_status["has_customer_signature"]:
+        gaps.append("未见客户签收记录；客户签收日期不能由供应商发货、仓库收货或出库移动推断。")
+    if customer_status["has_customer_signature"] and not has_customer_acceptance:
+        gaps.append("已有客户签收记录，但未见客户质量验收通过或有条件通过依据。")
+    if not has_customer_acceptance:
         gaps.append("未见客户签收与客户质量验收分别确认的正式依据。")
+    if customer_status["has_failed_customer_acceptance"] and not customer_status["has_recheck_passed"]:
+        warnings.append("存在客户验收未通过记录，未见复验通过；需继续跟踪问题、责任、整改期限和复验结果。")
+    if customer_status["has_acceptance_deduction"]:
+        warnings.append("客户验收记录涉及费用扣款，需同步财务/合同/供应商结算依据。")
+    if customer_status["has_contract_change_required"]:
+        warnings.append("客户验收记录要求合同变化，需同步合同变更或客户确认材料。")
+    if customer_status["schedule_impact_days_total"]:
+        warnings.append("客户验收记录存在交期影响天数，需与计划变更或客户交期确认联动。")
     pricing_status = logistics_pricing["derived_status"]
     if not pricing_status["has_route"]:
         gaps.append("未见结构化固定物流路线、承运商车型、计价单位、含税方式和有效期。")
@@ -534,6 +626,7 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         "closure_delivery_acceptance_items": closure_items[:100],
         "delivery_quality_contacts": contacts,
         "logistics_pricing": logistics_pricing,
+        "customer_delivery_acceptance": customer_delivery_acceptance,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -548,8 +641,12 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
             "has_stock_out_movement": bool(stock_out),
             "has_trial_passed": bool(trial_passed),
             "has_trial_failed": bool(trial_failed),
-            "has_customer_signature": False,
-            "has_customer_acceptance": bool(customer_acceptance_done),
+            "has_customer_signature": customer_status["has_customer_signature"],
+            "has_customer_acceptance": has_customer_acceptance,
+            "has_failed_customer_acceptance": customer_status["has_failed_customer_acceptance"],
+            "has_customer_recheck_passed": customer_status["has_recheck_passed"],
+            "has_customer_acceptance_deduction": customer_status["has_acceptance_deduction"],
+            "has_customer_acceptance_contract_change": customer_status["has_contract_change_required"],
             "has_open_delivery_or_quality_issue": bool(open_contacts),
             "has_structured_logistics_price": pricing_status["has_effective_quote"],
             "has_project_logistics_settlement_price": pricing_status["has_project_settlement_price"],
@@ -580,6 +677,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         closure_items = _closure_items(db, user, project.id, allowed_tools)
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         logistics_pricing = _logistics_pricing(db, project.id)
+        customer_delivery_acceptance = _customer_delivery_acceptance(db, user, project.id, allowed_tools)
         profile = _profile(db, user, project.id)
         skipped = []
         if not records["project_plan"] and not records["plan_change"]:
@@ -588,6 +686,8 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             skipped.append("正式采购订单/供应商发货/收货跟踪")
         if "query_trial_request" not in allowed_tools and "query_assembly_trial_context" not in allowed_tools:
             skipped.append("试模结果")
+        if not customer_delivery_acceptance["visibility"]["acceptance_records_visible"]:
+            skipped.append("客户验收/复验/扣款记录")
         if "query_project_closure_context" not in allowed_tools:
             skipped.append("项目结项/交付验收清单")
         if "query_contact_cases" not in allowed_tools:
@@ -603,7 +703,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                     "project_plans": _plan_headers(records)["project_plan"],
                     "plan_changes": _plan_headers(records)["plan_change"],
                     "purchase_orders": _order_headers(orders),
-                    "analysis": _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing),
+                    "analysis": _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing, customer_delivery_acceptance),
                 }
             ],
             "source": "agent_db",
