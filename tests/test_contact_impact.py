@@ -1,19 +1,24 @@
 from datetime import date
 from uuid import uuid4
 from pydantic import ValidationError
-from sqlalchemy import create_engine,select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 import pytest
 from app import contacts,contact_lifecycle as lifecycle,models as m
-from app.db import Base
 from app.errors import DomainError
 from fastapi.encoders import jsonable_encoder
+from pg_db import database
 
 
-def database():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    return sessionmaker(engine,expire_on_commit=False)()
+@pytest.fixture()
+def db():
+    session = database()
+    try:
+        yield session
+    finally:
+        engine = session.info.get("moldpilot_test_engine")
+        session.close()
+        if engine:
+            engine.dispose()
 
 
 def setup_case(db):
@@ -48,8 +53,8 @@ def test_contact_requires_business_identity_and_rejects_future_application_date(
             problem_source='QUALITY_ISSUE',current_stage='质检',change_type='EXCEPTION',urgency='URGENT')
 
 
-def test_structured_impact_is_frozen_into_resolution_materials_and_erp_requires_provenance():
-    db=database();user,case,group=setup_case(db)
+def test_structured_impact_is_frozen_into_resolution_materials_and_erp_requires_provenance(db):
+    user,case,group=setup_case(db)
     with pytest.raises(ValidationError,match='ERP影响事实'):
         task_input(case,group,source_system='ERP')
     result=contacts.add_task(case.id,task_input(case,group),user,db)
@@ -61,8 +66,8 @@ def test_structured_impact_is_frozen_into_resolution_materials_and_erp_requires_
     assert task.delivery_impact_days==2 and task.impact_description=='装配尺寸须按新版本返工'
 
 
-def test_execution_feedback_records_time_hours_amount_evidence_and_source_without_overwrite():
-    db=database();user,case,group=setup_case(db)
+def test_execution_feedback_records_time_hours_amount_evidence_and_source_without_overwrite(db):
+    user,case,group=setup_case(db)
     contacts.add_task(case.id,task_input(case,group),user,db)
     task=db.scalar(select(m.ContactTask));task.assignee_id=user.id;task.status='ASSIGNED';db.flush()
     with pytest.raises(ValidationError,match='ERP执行结果'):
@@ -80,8 +85,8 @@ def test_execution_feedback_records_time_hours_amount_evidence_and_source_withou
         contacts.respond(case.id,task.id,contacts.ResponseInput(**{**response.model_dump(),'request_key':uuid4(),'revision':case.revision}),user,db)
 
 
-def test_effective_resolution_records_handoff_once_and_increments_case_revision():
-    db=database();user,case,group=setup_case(db)
+def test_effective_resolution_records_handoff_once_and_increments_case_revision(db):
+    user,case,group=setup_case(db)
     contacts.add_task(case.id,task_input(case,group),user,db)
     subject=m.BusinessSubject(kind='contact_resolution',number='CONTACT-PLAN-001',project_id=case.project_id,
         category=case.category,created_by=user.id,status='EFFECTIVE')

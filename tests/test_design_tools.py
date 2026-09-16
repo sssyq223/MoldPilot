@@ -1,19 +1,14 @@
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.authorization import PERMISSIONS
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
 
 def factory():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    Session=sessionmaker(engine,expire_on_commit=False)
-    return engine,Session
+    return pg_factory()
 
 
 def user(db,username='operator',super_admin=False):
@@ -191,3 +186,4 @@ def test_design_context_reports_multiple_candidates_and_no_effective_design():
             assert '未见生效设计版本' in ''.join(analysis['warnings'])
     finally:
         engine.dispose()
+

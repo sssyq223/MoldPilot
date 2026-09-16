@@ -264,7 +264,17 @@ def users(user=Depends(current_user), db=Depends(get_db)):
 def create_user(data: s.UserInput, user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "user.manage")
     new = m.User(username=normalize_username(data.username), display_name=data.display_name, department=data.department, password_hash=hasher.hash(data.password))
-    db.add(new); db.flush(); record(db, user, "user.created", new.id); db.commit()
+    department = db.scalar(select(m.AssignmentGroup).where(
+        m.AssignmentGroup.kind == "DEPARTMENT",
+        m.AssignmentGroup.name == data.department,
+        m.AssignmentGroup.active.is_(True)
+    ))
+    if not department:
+        raise DomainError("INVALID_INPUT", "请先新增并选择有效部门")
+    db.add(new); db.flush()
+    db.add(m.AssignmentMember(group_id=department.id, user_id=new.id, is_head=False))
+    record(db, user, "user.created", new.id, {"department_id": department.id})
+    db.commit()
     return public_user_with_profile(db, new)
 
 

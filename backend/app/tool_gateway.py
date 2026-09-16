@@ -88,7 +88,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
     'finance': '财务部门', 'warehouse': '仓储部门', 'assembly': '装配部门', 'trial': '试模部门',
-    'sales': '销售部门', 'system': '系统管理', 'agent': '智能体',
+    'sales': '销售部门', 'system': '管理部门', 'agent': '智能体',
 }
 
 TYPE_NAMES = {'query': '查询', 'operation': '操作', 'approval': '审批', 'review': '核对'}

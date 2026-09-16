@@ -73,16 +73,15 @@ $env:PYTHONPATH='backend'
 
 运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
 
-本地 Redis 可用 Docker 单独启动，不要求与应用共用 Compose：
+本地 Redis 默认复用 Windows 本机安装的 `D:\Redis`，`.env` / `.env.example` 默认连接 `redis://127.0.0.1:6379/0`。`scripts/dev_redis.py` 默认按 native 模式检查和启动本机 `redis-server.exe`；Docker 只作为显式 `--backend docker` 的可选备用方式。
 
 ```powershell
-$env:PYTHONPATH='backend'
 .venv/Scripts/python.exe scripts/dev_redis.py status
 .venv/Scripts/python.exe scripts/dev_redis.py start --execute
 .venv/Scripts/python.exe scripts/dev_redis.py init-stream --execute
 ```
 
-`status` 只读；`start` 会使用 [docker-compose.redis.yml](docker-compose.redis.yml) 启动绑定到 `127.0.0.1:56379` 的 Redis；`init-stream` 只创建 `message_worker` 所需的业务事件 stream 和通知消费组，不发布业务消息。
+`status` 只读；`start` 在 native 模式下会使用 `MOLD_REDIS_HOME`（默认 `D:\Redis`）中的 `redis-server.exe`；`init-stream` 只创建 `message_worker` 所需的业务事件 stream 和通知消费组，不发布业务消息。若确需隔离容器，可显式传 `--backend docker` 使用 [docker-compose.redis.yml](docker-compose.redis.yml)。
 
 部署运行前提也由同一个工具只读核对：Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。该核对不会启动服务、不会构建前端、不会执行 Docker 操作；缺失项会保持 FR-118 部署拓扑门槛未通过。
 

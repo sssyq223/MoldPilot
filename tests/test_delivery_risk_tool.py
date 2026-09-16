@@ -1,20 +1,15 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.db import now
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
 
 def factory():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    Session=sessionmaker(engine,expire_on_commit=False)
-    return engine,Session
+    return pg_factory()
 
 
 def add_order(db,project,user,material,supplier,number):
@@ -30,7 +25,7 @@ def add_order(db,project,user,material,supplier,number):
                        unit_price=Decimal('2.50'),agreed_ship_date=now().date()+timedelta(days=1)))
 
 
-def test_delivery_risk_tool_schema_and_project_identifier_scope_sqlite():
+def test_delivery_risk_tool_schema_and_project_identifier_scope_postgres():
     engine,Session=factory()
     try:
         with Session.begin() as db:
@@ -58,7 +53,7 @@ def test_delivery_risk_tool_schema_and_project_identifier_scope_sqlite():
         engine.dispose()
 
 
-def test_delivery_risk_ambiguous_identifier_does_not_fallback_to_global_sqlite():
+def test_delivery_risk_ambiguous_identifier_does_not_fallback_to_global_postgres():
     engine,Session=factory()
     try:
         with Session.begin() as db:
@@ -79,3 +74,4 @@ def test_delivery_risk_ambiguous_identifier_does_not_fallback_to_global_sqlite()
             assert {row['code'] for row in result['candidates']}=={'AMB-001','AMB-002'}
     finally:
         engine.dispose()
+

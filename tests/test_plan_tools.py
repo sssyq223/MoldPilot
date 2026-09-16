@@ -2,14 +2,13 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 
 from app import bpm, business, domains, domain_schemas as s, erp_adapter, erp_progress, models as m, plan_confirmations
 from app.authorization import PERMISSIONS, fingerprint
 from app.db import now
 from app.errors import DomainError
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 from conftest import sign_in
 from test_agent_api import start, worker_headers
@@ -17,10 +16,7 @@ from test_domains import workflow as create_workflow
 
 
 def factory():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    Session=sessionmaker(engine,expire_on_commit=False)
-    return engine,Session
+    return pg_factory()
 
 
 def user(db,username='operator',super_admin=False,department=''):
@@ -434,16 +430,16 @@ def test_plan_change_proposal_accepts_confirmed_material_review():
         engine.dispose()
 
 
-def test_plan_change_proposal_sqlite_confirm_chain(monkeypatch):
+def test_plan_change_proposal_postgres_confirm_chain(monkeypatch):
     engine,Session=factory()
     try:
         with Session.begin() as db:
             admin=user(db,'admin',True);p=project(db,'PLAN-CHANGE')
             config={'business_type':'plan_change','nodes':[{'key':'review','name':'计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
-            definition=m.WorkflowDefinition(process_key='plan_change_sqlite',version=1,name='计划变更审批',
+            definition=m.WorkflowDefinition(process_key='plan_change_postgres',version=1,name='计划变更审批',
                 status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
             db.add(definition)
-            baseline=plan(db,p,admin,'PLAN-SQLITE')
+            baseline=plan(db,p,admin,'PLAN-POSTGRES')
             task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
             task(db,baseline,admin,'machining','加工',date(2026,9,6),date(2026,9,20),'PLANNED')
             conversation=m.Conversation(user_id=admin.id,title='计划变更')
@@ -479,3 +475,4 @@ def test_plan_change_proposal_sqlite_confirm_chain(monkeypatch):
             assert db.get(m.PlanDetail,change.id).previous_id==baseline.id
     finally:
         engine.dispose()
+

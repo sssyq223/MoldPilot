@@ -50,6 +50,16 @@ def save(db,user,g,data):
     before=group_data(db,g)
     g.name=data.name.strip();g.active=data.active;g.version+=1
     db.execute(delete(AssignmentMember).where(AssignmentMember.group_id==g.id))
+    if data.kind=='DEPARTMENT':
+        member_ids=set(ids)
+        if member_ids:
+            other_departments=select(AssignmentGroup.id).where(AssignmentGroup.kind=='DEPARTMENT',AssignmentGroup.id!=g.id)
+            db.execute(delete(AssignmentMember).where(AssignmentMember.group_id.in_(other_departments),AssignmentMember.user_id.in_(member_ids)))
+        for person in people:
+            if person.id in member_ids:
+                person.department=g.name
+            elif person.id in old and person.department==before['name']:
+                person.department=''
     db.add_all(AssignmentMember(group_id=g.id,user_id=m.user_id,is_head=m.is_head) for m in data.members)
     # Member/selector changes invalidate cached authorization context, but never add a Grant.
     for person in people:person.security_version+=1

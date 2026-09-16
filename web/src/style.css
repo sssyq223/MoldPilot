@@ -257,6 +257,7 @@ html[data-theme="light"] .chat-header .icon-button{background:#f5f7f9;border-col
 html[data-theme="light"] .chat-header .icon-button:hover{background:#eef4fa;border-color:#ccdbe8;color:#356ea9}
 
 /* Sidebar profile entry should read as account info, not a framed card. */
+.avatar{background:#172334;color:#fff}
 .profile-entry,.profile-entry:hover,.profile-entry:focus,.profile-entry:focus-visible,.profile-entry:active,.profile-entry[aria-expanded="true"]{background:transparent;border-color:transparent;box-shadow:none}
 .profile-entry:focus-visible{outline:none}
 html[data-theme="light"] .profile-entry,html[data-theme="light"] .profile-entry:hover,html[data-theme="light"] .profile-entry:focus,html[data-theme="light"] .profile-entry:active,html[data-theme="light"] .profile-entry[aria-expanded="true"]{background:transparent;border-color:transparent}
@@ -623,18 +624,21 @@ html[data-theme="light"] .profile-menu button:hover{background:#edf3f8!important
 .appearance-setting strong{font-size:13px}
 .appearance-setting small{font-size:12px;line-height:1.5}
 .theme-options button{height:34px;padding:0 12px;font-size:13px}
-.account-profile-card{display:grid;grid-template-columns:minmax(230px,.9fr) minmax(320px,1.35fr) auto;align-items:center;gap:24px;margin:0 0 18px;padding:18px 20px;border-radius:12px}
-.account-profile-left{display:flex;align-items:center;gap:14px;min-width:0}
+.account-center-layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:18px;margin:0 0 18px}
+.account-person-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;margin:0;padding:22px 18px;border-radius:12px}
+.account-avatar-button{display:flex;flex-direction:column;align-items:center;gap:8px;border:0;background:transparent!important;color:inherit;padding:0;margin:0 0 4px;box-shadow:none}
+.account-avatar-button:hover .account-avatar{filter:brightness(.96)}
+.account-avatar-button small{font-size:11px;color:var(--muted)}
 .account-avatar{width:56px;height:56px;display:grid;place-items:center;overflow:hidden;border-radius:14px;background:#172334;color:#fff;font-size:18px;font-weight:800}
 .account-avatar img{width:100%;height:100%;object-fit:cover}
-.account-profile-main{min-width:0;display:flex;flex-direction:column;gap:3px}
-.account-profile-main strong{font-size:16px;line-height:1.35}
-.account-profile-main small{font-size:12px}
-.account-profile-facts{display:grid;grid-template-columns:70px minmax(0,1fr);gap:8px 18px;margin:0;padding-left:24px;border-left:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
+.account-person-card>strong{font-size:16px;line-height:1.35}
+.account-remove-avatar{height:30px;margin-top:8px;padding:0 10px;border-radius:8px;font-size:12px}
+.account-info-card{margin:0;padding:0;border-radius:12px;overflow:hidden}
+.account-info-head{padding:14px 16px;border-bottom:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
+.account-info-head strong{font-size:14px}
+.account-profile-facts{display:grid;grid-template-columns:90px minmax(0,1fr);gap:12px 22px;margin:0;padding:18px 20px}
 .account-profile-facts dt{color:var(--muted);font-size:12px}
 .account-profile-facts dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
-.account-profile-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
-.account-profile-card button{height:34px;padding:0 12px;border-radius:9px;white-space:nowrap}
 .model-config-heading{margin-bottom:16px}
 .model-config-heading h2{margin:0}
 .model-config-heading p{margin:4px 0 0}
@@ -858,6 +862,8 @@ html[data-theme="light"] .resize-handle:hover::after,html[data-theme="light"] .r
 .admin-page-head p{margin:0;font-size:13px;line-height:1.55}
 .admin-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .admin-head-actions>button,.admin-card-title>button{height:34px;padding:0 14px;border-radius:8px;background:transparent}
+.organization-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.organization-actions button{height:34px;padding:0 12px;border-radius:8px;background:transparent;white-space:nowrap}
 .admin-stat{height:34px;display:inline-flex;align-items:center;gap:5px;padding:0 10px;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:999px;color:var(--muted);font-size:12px;background:color-mix(in srgb,var(--surface) 60%,transparent)}
 .admin-stat strong{font-size:15px;color:var(--text)}
 .admin-overview-grid{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(360px,1.1fr);gap:12px;align-items:start}
@@ -884,8 +890,9 @@ html[data-theme="light"] .resize-handle:hover::after,html[data-theme="light"] .r
 .admin-user-main small{margin-top:1px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .admin-user-badge{height:24px;display:inline-flex;align-items:center;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--accent) 10%,transparent);color:color-mix(in srgb,var(--accent) 76%,#fff);font-size:11px;white-space:nowrap}
 .admin-create-form{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr)) auto;gap:10px;align-items:end;margin:0;padding:12px 14px;border-radius:10px}
-.admin-create-form input{height:34px;padding:7px 9px;font-size:12px}
+.admin-create-form input,.admin-create-form select{height:34px;padding:7px 9px;font-size:12px}
 .admin-create-form .primary{height:34px;padding:0 14px;white-space:nowrap}
+.admin-create-hint{grid-column:1/-1;margin:0;font-size:12px}
 html[data-theme="light"] .admin-stat{background:#fff;border-color:#d9e2ec}
 html[data-theme="light"] .admin-user-badge{background:#edf4fb;color:#172334}
 html[data-theme="light"] .admin-empty{background:#fbfdff}
@@ -894,7 +901,7 @@ html[data-theme="light"] .admin-empty{background:#fbfdff}
  .admin-head-actions{justify-content:flex-start}
  .admin-overview-grid{grid-template-columns:1fr}
  .admin-create-form{grid-template-columns:1fr 1fr}
- .admin-create-form .primary{grid-column:1/-1}
+ .admin-create-form .primary,.admin-create-hint{grid-column:1/-1}
 }
 
 /* Compact tools/skills capability page. */
@@ -964,16 +971,38 @@ html[data-theme="light"] .capability-type-pill.total.active{background:#356ea9;b
 .capability-type-pill.active,.capability-type-pill.total.active{background:color-mix(in srgb,var(--accent) 82%,#111827);border-color:color-mix(in srgb,var(--accent) 82%,#111827);color:#fff}
 .capability-type-pill.total{margin-left:auto;background:color-mix(in srgb,var(--surface) 90%,var(--bg));color:var(--muted)}
 .capability-type-pill small{font-size:10px;line-height:1;color:inherit;opacity:.7}
-.capability-type-block{margin:0;padding:0 12px}
-.capability-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;min-height:58px;padding:10px 0;border-top:1px solid color-mix(in srgb,var(--border) 60%,transparent);background:transparent}
+.capability-type-block{margin:0;padding:6px 10px 8px}
+.capability-section-list{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+.capability-category-block{padding:6px 10px 8px}
+.capability-category-heading{height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--muted)}
+.capability-category-heading strong{font-size:12px;color:color-mix(in srgb,var(--text) 88%,var(--muted))}
+.capability-category-heading small{font-size:11px}
+.capability-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(132px,auto);align-items:center;gap:18px;min-height:44px;padding:8px 12px;border-top:0;border-radius:10px;background:transparent;cursor:pointer}
 .capability-type-block:first-of-type .capability-row:first-child{border-top:0}
-.capability-row:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.capability-row:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
 .capability-row>div:first-child{min-width:0}
 .capability-row h3{margin:0;min-width:0;display:flex;align-items:center;gap:8px;color:color-mix(in srgb,var(--muted) 8%,#fff);font-size:13px;font-weight:800;line-height:1.35}
 .capability-row h3 svg{width:24px;height:24px;padding:5px;border-radius:8px;background:color-mix(in srgb,var(--accent) 10%,transparent);color:color-mix(in srgb,var(--accent) 72%,#fff)}
-.capability-row p{max-width:100%;margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capability-row:hover h3 svg{background:#172334;color:#fff}
+.capability-row p{max-width:100%;margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.55;overflow:visible;text-overflow:clip;white-space:normal}
+.capability-description{line-height:1.65!important}
+.capability-use{margin-top:5px!important;font-size:11px!important;color:color-mix(in srgb,var(--muted) 86%,var(--text))!important}
 .capability-row-meta{min-width:126px;text-align:right}
 .capability-row-meta small{display:inline-flex;max-width:210px;align-items:center;justify-content:flex-end;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+.capability-category-block .capability-row{border-top:0!important;border-bottom:0!important;background-clip:padding-box}
+.capability-category-block .capability-row::after{content:"";position:absolute;left:10px;right:10px;bottom:0;height:1px;background:color-mix(in srgb,var(--border) 56%,transparent)}
+.capability-category-block .capability-row:last-child::after{display:none}
+.capability-detail-modal{width:560px}
+.capability-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.capability-detail-head h2{margin:0 0 4px}
+.capability-detail-head p{margin:0}
+.capability-detail-head .icon-button{width:32px;height:32px;font-size:20px;line-height:1}
+.capability-detail-facts{display:grid;grid-template-columns:72px minmax(0,1fr);gap:9px 16px;margin:0 0 18px;padding:12px;border:1px solid color-mix(in srgb,var(--border) 70%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 72%,var(--bg))}
+.capability-detail-facts dt{font-size:12px;color:var(--muted)}
+.capability-detail-facts dd{margin:0;font-size:13px}
+.capability-detail-modal section{margin-top:14px}
+.capability-detail-modal section h3{margin:0 0 6px;font-size:13px}
+.capability-detail-modal section p{margin:0;color:var(--muted);font-size:13px;line-height:1.8}
 .settings-section-title{margin:20px 0 10px}
 html[data-theme="light"] .capability-page-head h2,html[data-theme="light"] .capability-department-title>span:first-child,html[data-theme="light"] .capability-row h3{color:#172334}
 html[data-theme="light"] .capability-toolbar-v2 .capability-manage-button,html[data-theme="light"] .capability-toolbar-v2 .capability-tabs,html[data-theme="light"] .capability-toolbar-v2 .capability-filter-control select,html[data-theme="light"] .capability-toolbar-v2 .capability-search-pill{background:#fff;border-color:#d7e1eb}
@@ -985,10 +1014,11 @@ html[data-theme="light"] .capability-type-pill.total{background:#fff;color:#6272
 html[data-theme="light"] .capability-type-pill:hover{background:#f2f7fc;color:#172334;border-color:#9bbddf}
 html[data-theme="light"] .capability-type-pill.active,html[data-theme="light"] .capability-type-pill.total.active{background:#172334;border-color:#172334;color:#fff}
 html[data-theme="light"] .capability-row h3 svg{background:#eef5fb;color:#172334}
-html[data-theme="light"] .capability-row:hover{background:#f6f9fc}
+html[data-theme="light"] .capability-row:hover{background:#f7f9fb}
 @media(max-width:900px){
  .capability-page-head{align-items:flex-start;flex-direction:column;gap:6px}
  .capability-groups.capability-grid{grid-template-columns:1fr}
+ .capability-section-list{grid-template-columns:1fr!important}
  .capability-toolbar-v2 .capability-search-pill{max-width:none;flex-basis:100%}
 }
 @media(max-width:650px){
@@ -999,9 +1029,7 @@ html[data-theme="light"] .capability-row:hover{background:#f6f9fc}
  .capability-row{grid-template-columns:1fr}
  .capability-row-meta{text-align:left}
  .capability-row-meta small{justify-content:flex-start;max-width:100%}
- .account-profile-card{grid-template-columns:1fr;align-items:start}
- .account-profile-facts{padding-left:0;border-left:0;border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent);padding-top:12px}
- .account-profile-actions{justify-content:flex-start}
+ .account-center-layout{grid-template-columns:1fr}
 }
 
 /* Keep the capabilities page on one neutral ink palette in light mode. */
@@ -1021,6 +1049,7 @@ html[data-theme="light"] .capability-type-pill.total.active{background:#172334;b
 html[data-theme="light"] .capability-row h3 svg{background:#eef2f6;color:#172334}
 
 /* Neutralize the rest of the light settings pages so they match tools/skills. */
+html[data-theme="light"] .avatar{background:#172334!important;color:#fff!important}
 html[data-theme="light"] .settings-page{--accent:#172334}
 html[data-theme="light"] .settings-back,
 html[data-theme="light"] .settings-sidebar nav button{color:#172334}

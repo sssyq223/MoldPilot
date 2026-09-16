@@ -11,7 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MOLD_", env_file=".env", extra="ignore")
     database_url: str = "postgresql+psycopg://postgres@127.0.0.1:5432/moldpilot"
-    redis_url: str = "redis://127.0.0.1:56379/0"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_home: str = "D:\\Redis"
     restore_database_url: str = ""
     pg_dump_path: str = ""
     pg_restore_path: str = ""

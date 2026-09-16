@@ -2,14 +2,13 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
 
 from app import bpm, business, models as m, schemas as s
-from app.db import Base, now
+from app.db import now
 from app.errors import DomainError
 from app.security import hasher
+from pg_db import factory as pg_factory
 
 
 CONTRACT = {
@@ -22,11 +21,9 @@ CONTRACT = {
 
 
 @pytest.fixture()
-def sqlite_session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
-    with factory() as db:
+def pg_session():
+    engine, session_factory = pg_factory()
+    with session_factory() as db:
         yield db
     engine.dispose()
 
@@ -41,10 +38,26 @@ def fixture(db, *, review_status="CONFIRMED"):
     template = m.MaterialTemplate(template_key="binding_sheet", version=1, name="绑定资料模板", status="PUBLISHED",
         contract=CONTRACT, package_hash=bpm.content_hash({"template_key":"binding_sheet","version":1,"contract":CONTRACT}))
     db.add(template); db.flush()
+    conversation = m.Conversation(user_id=user.id, title="资料绑定附件")
+    db.add(conversation); db.flush()
+    file = m.FileObject(
+        owner_id=user.id,
+        conversation_id=conversation.id,
+        request_key="file-1",
+        filename="binding.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        size=32,
+        sha256="2" * 64,
+        backend="local",
+        storage_namespace="test",
+        object_key="material-binding/" + "2" * 64,
+        storage_version=None,
+    )
+    db.add(file); db.flush()
     material_data = {"fields": {"urgent": True}, "tables": {"design": [{"id": "MAT-BIND", "values": {"item": "MAT-BIND", "quantity": "2"}}]}}
-    review = m.MaterialReview(template_id=template.id, mapping_id=None, file_id="file-1", owner_id=user.id,
+    review = m.MaterialReview(template_id=template.id, mapping_id=None, file_id=file.id, owner_id=user.id,
         status=review_status, material_data=material_data, issues=[] if review_status == "CONFIRMED" else [{"code": "PENDING"}],
-        template_hash=template.package_hash, mapping_hash="1"*64, file_sha256="2"*64,
+        template_hash=template.package_hash, mapping_hash="1"*64, file_sha256=file.sha256,
         review_hash=bpm.content_hash({"material_data": material_data}), confirmed_by=user.id if review_status == "CONFIRMED" else None,
         confirmed_at=now() if review_status == "CONFIRMED" else None)
     config = {"business_type": "generic", "material_contract": CONTRACT,
@@ -56,8 +69,8 @@ def fixture(db, *, review_status="CONFIRMED"):
     return user, request, template, review, definition
 
 
-def test_submit_request_freezes_confirmed_material_review(sqlite_session):
-    db = sqlite_session
+def test_submit_request_freezes_confirmed_material_review(pg_session):
+    db = pg_session
     user, request, template, review, definition = fixture(db)
     result = business.submit_request(db, user, request.id, request.revision, definition.id, material_review_id=review.id)
     instance = db.get(m.ApprovalInstance, result["instance_id"])
@@ -70,8 +83,8 @@ def test_submit_request_freezes_confirmed_material_review(sqlite_session):
     assert instance.snapshot["material_binding"]["review_hash"] == review.review_hash
 
 
-def test_submit_request_requires_confirmed_material_review(sqlite_session):
-    db = sqlite_session
+def test_submit_request_requires_confirmed_material_review(pg_session):
+    db = pg_session
     user, request, _template, review, definition = fixture(db, review_status="READY_FOR_CONFIRMATION")
     with pytest.raises(DomainError) as error:
         business.submit_request(db, user, request.id, request.revision, definition.id, material_review_id=review.id)

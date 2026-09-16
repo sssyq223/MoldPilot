@@ -1,16 +1,22 @@
 from datetime import date
-from sqlalchemy import create_engine,select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
+import pytest
 from app import models as m,domains,domain_schemas as s
-from app.db import Base
 from app.errors import DomainError
 from app.tool_gateway import execute,tool_schema
+from pg_db import database
 
 
-def database():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    return sessionmaker(engine,expire_on_commit=False)()
+@pytest.fixture()
+def db():
+    session = database()
+    try:
+        yield session
+    finally:
+        engine = session.info.get("moldpilot_test_engine")
+        session.close()
+        if engine:
+            engine.dispose()
 
 
 def setup_project(db):
@@ -37,8 +43,8 @@ def payload(project,decision,effective_date,**extra):
         'evidence':'已上传并由负责人核对的通知',**extra})
 
 
-def test_resume_shifts_only_frozen_incomplete_tasks_and_preserves_customer_due_date():
-    db=database();user,project,completed,pending=setup_project(db)
+def test_resume_shifts_only_frozen_incomplete_tasks_and_preserves_customer_due_date(db):
+    user,project,completed,pending=setup_project(db)
     pause=domains.create(db,user,payload(project,'PAUSE',date(2026,9,10),expected_resume_date=date(2026,9,20)))
     detail=db.get(m.ProjectPauseDetail,pause.id)
     assert [item['id'] for item in detail.task_snapshot]==[pending.id]
@@ -58,8 +64,8 @@ def test_resume_shifts_only_frozen_incomplete_tasks_and_preserves_customer_due_d
     assert db.get(m.ProjectProfile,project.id).customer_due_date==date(2026,10,31)
 
 
-def test_pause_approval_rejects_scope_changed_after_draft():
-    db=database();user,project,_,pending=setup_project(db)
+def test_pause_approval_rejects_scope_changed_after_draft(db):
+    user,project,_,pending=setup_project(db)
     pause=domains.create(db,user,payload(project,'PAUSE',date(2026,9,10)))
     pending.status='RUNNING';db.flush()
     try:domains.apply(db,user,pause)
@@ -68,8 +74,8 @@ def test_pause_approval_rejects_scope_changed_after_draft():
     assert project.status=='ACTIVE'
 
 
-def test_resume_cannot_apply_twice():
-    db=database();user,project,_,_=setup_project(db)
+def test_resume_cannot_apply_twice(db):
+    user,project,_,_=setup_project(db)
     pause=domains.create(db,user,payload(project,'PAUSE',date(2026,9,10)))
     domains.apply(db,user,pause)
     resume=domains.create(db,user,payload(project,'RESUME',date(2026,9,12),source_pause_subject_id=pause.id))
@@ -79,8 +85,8 @@ def test_resume_cannot_apply_twice():
     else:raise AssertionError('resume must be idempotently blocked after first application')
 
 
-def test_project_control_context_resolves_identifier_and_returns_shift_evidence():
-    db=database();user,project,completed,pending=setup_project(db)
+def test_project_control_context_resolves_identifier_and_returns_shift_evidence(db):
+    user,project,completed,pending=setup_project(db)
     pause=domains.create(db,user,payload(project,'PAUSE',date(2026,9,10),expected_resume_date=date(2026,9,20)))
     domains.apply(db,user,pause)
     resume=domains.create(db,user,payload(project,'RESUME',date(2026,9,13),source_pause_subject_id=pause.id))
@@ -104,8 +110,8 @@ def test_project_control_context_resolves_identifier_and_returns_shift_evidence(
     assert '不同事实' in ''.join(result['limitations'])
 
 
-def test_project_control_prepare_rejects_identifier_only():
-    db=database();user,project,_,_=setup_project(db)
+def test_project_control_prepare_rejects_identifier_only(db):
+    user,project,_,_=setup_project(db)
     try:
         execute(db,user,'prepare_project_pause',{'identifier':'P-PAUSE','project_version':1,
             'effective_date':'2026-09-10','reason':'客户通知','evidence':'邮件',
@@ -114,8 +120,8 @@ def test_project_control_prepare_rejects_identifier_only():
     else:raise AssertionError('write proposals must use the real project_id returned by query context')
 
 
-def test_project_control_context_reports_multiple_candidates_without_deciding():
-    db=database();user,project,_,_=setup_project(db)
+def test_project_control_context_reports_multiple_candidates_without_deciding(db):
+    user,project,_,_=setup_project(db)
     other=m.Project(code='P-PAUSE-2',name='暂停恢复测试二',status='ACTIVE')
     db.add(other);db.flush()
     db.add(m.ProjectProfile(project_id=other.id,owner_user_id=user.id,execution_mode='INTERNAL'))

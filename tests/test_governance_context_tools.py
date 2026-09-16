@@ -1,20 +1,15 @@
 from datetime import timedelta
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.authorization import PERMISSIONS
 from app.db import now
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
 
 def factory():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(engine, expire_on_commit=False)
-    return engine, Session
+    return pg_factory()
 
 
 def user(db, username="operator", super_admin=False):
@@ -89,9 +84,12 @@ def seed_governance_project(db):
         execution_source_as_of=now(),
     )
     db.add(task)
+    conversation = m.Conversation(user_id=admin.id, title="治理证据附件")
+    db.add(conversation)
+    db.flush()
     blob = m.FileObject(
         owner_id=admin.id,
-        conversation_id="00000000-0000-0000-0000-000000000001",
+        conversation_id=conversation.id,
         request_key="file-gov",
         filename="治理证据.pdf",
         media_type="application/pdf",
@@ -186,3 +184,4 @@ def test_governance_context_does_not_expose_contact_files_without_contact_read()
             assert "治理证据.pdf" not in str(result)
     finally:
         engine.dispose()
+

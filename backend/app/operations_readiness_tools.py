@@ -422,7 +422,7 @@ def _redis_status(value: str | None) -> dict:
 
         from .message_worker import GROUP, STREAM
 
-        client = Redis.from_url(value, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
+        client = Redis.from_url(value, decode_responses=True, socket_connect_timeout=1, socket_timeout=1, protocol=2)
         try:
             client.ping()
             server_info = client.info("server")

@@ -1,20 +1,15 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.authorization import PERMISSIONS
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
 
 def factory():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(engine, expire_on_commit=False)
-    return engine, Session
+    return pg_factory()
 
 
 def user(db, username="operator", super_admin=False):
@@ -194,3 +189,4 @@ def test_bid_intake_does_not_leak_contract_or_mold_without_tools_and_dossier_per
             assert row["analysis"]["known_molds"][0]["internal_number"] == "SECRET-MOLD"
     finally:
         engine.dispose()
+

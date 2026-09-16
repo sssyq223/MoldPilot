@@ -2,25 +2,22 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, select, func
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select, func
 from fastapi.testclient import TestClient
 
 from app import bpm, business, models as m, schemas as s
 from app.authorization import PERMISSIONS, fingerprint
-from app.db import Base, now
+from app.db import now
 from app.db import get_db
 from app.api import app
 from app.security import hasher
+from pg_db import factory as pg_factory
 
 
 @pytest.fixture()
-def sqlite_session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
-    with factory() as db:
+def pg_session():
+    engine, session_factory = pg_factory()
+    with session_factory() as db:
         yield db
     engine.dispose()
 
@@ -70,8 +67,8 @@ def draft(db, buyer, project, material, quantity=Decimal("2")):
     ))
 
 
-def test_agent_delegation_stays_pending_in_ask_mode_even_with_delegation(sqlite_session):
-    db = sqlite_session
+def test_agent_delegation_stays_pending_in_ask_mode_even_with_delegation(pg_session):
+    db = pg_session
     _admin, buyer, reviewer, project, material, definition = fixture_data(db, auto_node=True)
     req = draft(db, buyer, project, material)
     result = business.submit_request(db, buyer, req.id, req.revision, definition.id)
@@ -85,8 +82,8 @@ def test_agent_delegation_stays_pending_in_ask_mode_even_with_delegation(sqlite_
     assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
 
 
-def test_agent_delegation_auto_approves_explicitly_enabled_node_when_run_delegates(sqlite_session):
-    db = sqlite_session
+def test_agent_delegation_auto_approves_explicitly_enabled_node_when_run_delegates(pg_session):
+    db = pg_session
     _admin, buyer, reviewer, project, material, definition = fixture_data(db, auto_node=True)
     req = draft(db, buyer, project, material)
     result = business.submit_request(db, buyer, req.id, req.revision, definition.id,
@@ -106,8 +103,8 @@ def test_agent_delegation_auto_approves_explicitly_enabled_node_when_run_delegat
     assert audit.detail["delegation_id"] == action.user_snapshot["delegation_id"]
 
 
-def test_agent_delegation_does_not_bypass_force_human_node(sqlite_session):
-    db = sqlite_session
+def test_agent_delegation_does_not_bypass_force_human_node(pg_session):
+    db = pg_session
     _admin, buyer, reviewer, project, material, definition = fixture_data(db, auto_node=False)
     req = draft(db, buyer, project, material)
     result = business.submit_request(db, buyer, req.id, req.revision, definition.id)
@@ -121,8 +118,8 @@ def test_agent_delegation_does_not_bypass_force_human_node(sqlite_session):
     assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
 
 
-def test_agent_delegation_respects_node_auto_policy(sqlite_session):
-    db = sqlite_session
+def test_agent_delegation_respects_node_auto_policy(pg_session):
+    db = pg_session
     _admin, buyer, reviewer, project, material, definition = fixture_data(
         db, auto_node=True,
         auto_policy={"condition": {"field": "quantity", "op": "lte", "value": "1"}},
@@ -138,8 +135,8 @@ def test_agent_delegation_respects_node_auto_policy(sqlite_session):
     assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
 
 
-def test_delegation_changes_authorization_fingerprint(sqlite_session):
-    db = sqlite_session
+def test_delegation_changes_authorization_fingerprint(pg_session):
+    db = pg_session
     _admin, _buyer, reviewer, _project, _material, _definition = fixture_data(db, auto_node=True)
     before = fingerprint(db, reviewer)
     delegation = db.scalar(select(m.AgentApprovalDelegation).where(m.AgentApprovalDelegation.user_id == reviewer.id))
@@ -149,8 +146,8 @@ def test_delegation_changes_authorization_fingerprint(sqlite_session):
     assert fingerprint(db, reviewer) != before
 
 
-def test_delegation_api_only_exposes_and_accepts_explicit_auto_nodes(sqlite_session):
-    db = sqlite_session
+def test_delegation_api_only_exposes_and_accepts_explicit_auto_nodes(pg_session):
+    db = pg_session
     password = "SyntheticPassword-2026!"
     user = m.User(username="reviewer-api", display_name="接口审批人", password_hash=hasher.hash(password))
     db.add(user)

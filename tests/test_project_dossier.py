@@ -1,20 +1,15 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.authorization import PERMISSIONS
-from app.models import Base
+from pg_db import factory as pg_factory
 from app.tool_gateway import execute
 
 
 def factory():
-    engine=create_engine('sqlite+pysqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    Session=sessionmaker(engine,expire_on_commit=False)
-    return engine,Session
+    return pg_factory()
 
 
 def user(db,username='operator',super_admin=False):
@@ -116,3 +111,4 @@ def test_dossier_financial_summary_uses_only_actual_confirmed_payment_records():
         assert summary['confirmed_supplier_payments']==[{'currency':'CNY','amount':'25.00'}]
         assert summary['customer_payment_nodes'][0]['contract_number']=='CN-001'
     engine.dispose()
+

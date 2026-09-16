@@ -1,46 +1,42 @@
 import json
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.db import Base
 from app.models import User
 from app.tool_gateway import SKILLS, TOOLS, available_tools, execute, skill_context, tool_schema
+from pg_db import factory as pg_factory
 
 
 @pytest.fixture()
-def sqlite_factory():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
-    with factory.begin() as db:
+def pg_factory_with_admin():
+    engine, session_factory = pg_factory()
+    with session_factory.begin() as db:
         db.add(User(username="admin", display_name="测试管理员", password_hash="x", super_admin=True))
-    yield factory
+    yield session_factory
     engine.dispose()
 
 
-def test_operations_readiness_tool_schema_and_skill_registered(sqlite_factory):
+def test_operations_readiness_tool_schema_and_skill_registered(pg_factory_with_admin):
     assert "query_operations_readiness_context" in TOOLS
     assert "operations_readiness_review" in SKILLS
     schema = tool_schema("query_operations_readiness_context")["function"]["parameters"]
     assert "include_runtime_counters" in schema["properties"]
-    with sqlite_factory() as db:
+    with pg_factory_with_admin() as db:
         admin = db.scalar(select(User).where(User.username == "admin"))
         assert "query_operations_readiness_context" in available_tools(db, admin)
         assert any(item["key"] == "operations_readiness_review" for item in skill_context(db, admin))
 
 
-def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secrets(sqlite_factory, monkeypatch):
+def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secrets(pg_factory_with_admin, monkeypatch):
     cfg = settings()
     monkeypatch.setattr(cfg, "database_url", "postgresql://agent:secret-db-pass@localhost:5432/agent_test?sslmode=require")
     monkeypatch.setattr(cfg, "redis_url", "redis://:secret-redis-pass@127.0.0.1:6379/0")
     monkeypatch.setattr(cfg, "worker_secret", "secret-worker-value")
     monkeypatch.setattr(cfg, "credential_encryption_key", "secret-credential-value")
     monkeypatch.setattr(cfg, "file_s3_secret_key", "secret-s3-value")
-    with sqlite_factory() as db:
+    with pg_factory_with_admin() as db:
         admin = db.scalar(select(User).where(User.username == "admin"))
         result = execute(db, admin, "query_operations_readiness_context", {})
     payload = result["data"][0]
@@ -73,7 +69,7 @@ def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secret
     assert "未确认前不得承诺性能" in "".join(result["limitations"])
 
 
-def test_operations_readiness_acceptance_evidence_file_confirms_one_gate(sqlite_factory, monkeypatch, tmp_path):
+def test_operations_readiness_acceptance_evidence_file_confirms_one_gate(pg_factory_with_admin, monkeypatch, tmp_path):
     evidence = tmp_path / "acceptance-gates.json"
     evidence.write_text(
         json.dumps(
@@ -100,7 +96,7 @@ def test_operations_readiness_acceptance_evidence_file_confirms_one_gate(sqlite_
     )
     cfg = settings()
     monkeypatch.setattr(cfg, "acceptance_evidence_file", str(evidence))
-    with sqlite_factory() as db:
+    with pg_factory_with_admin() as db:
         admin = db.scalar(select(User).where(User.username == "admin"))
         result = execute(db, admin, "query_operations_readiness_context", {})
     payload = result["data"][0]

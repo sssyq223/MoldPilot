@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,ImagePlus,Trash2} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
@@ -15,6 +15,7 @@ const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(fa
 const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
 const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
 const avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
+const selectedCapability=ref<{kind:'tool'|'skill';item:any}|null>(null)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
 const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
@@ -36,6 +37,35 @@ function capabilityGroupKey(kind:'tools'|'skills',department:any){return kind+':
 function capabilityGroupTab(kind:'tools'|'skills',department:any){return capabilityGroupTabs.value[capabilityGroupKey(kind,department)]||'all'}
 function setCapabilityGroupTab(kind:'tools'|'skills',department:any,typeKey:string){capabilityGroupTabs.value={...capabilityGroupTabs.value,[capabilityGroupKey(kind,department)]:typeKey}}
 function visibleCapabilityTypes(kind:'tools'|'skills',department:any){const active=capabilityGroupTab(kind,department);return active==='all'?department.types:department.types.filter((type:any)=>type.key===active)}
+function capabilityCategoryName(item:any){return item.permission?permissionName(item.permission).split(' · ')[0]:capabilityMeta(item).typeName}
+function visibleCapabilityCategoryGroups(kind:'tools'|'skills',department:any){
+ const map=new Map<string,any[]>()
+ for(const type of visibleCapabilityTypes(kind,department))for(const item of type.items){
+  const name=capabilityCategoryName(item)
+  if(!map.has(name))map.set(name,[])
+  map.get(name)!.push(item)
+ }
+ return Array.from(map.entries()).map(([name,items])=>({name,items}))
+}
+function toolUsageText(tool:any){
+ return tool.mode==='human_confirmed_proposal'
+  ? '用法：在对话里说清要办理的对象和目标，系统先生成操作建议，确认后才提交。'
+  : '用法：在对话里提供项目、单号、模号或关键词，系统只查询资料并返回依据。'
+}
+function skillUsageText(){
+ return '用法：在对话里描述任务目标，系统会按当前授权工具组合处理。'
+}
+function capabilityUsageText(detail:{kind:'tool'|'skill';item:any}|null){
+ if(!detail)return ''
+ return detail.kind==='tool'?toolUsageText(detail.item):skillUsageText()
+}
+function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
+ if(!detail)return ''
+ const item=detail.item
+ return detail.kind==='tool'
+  ? `${permissionName(item.permission)} · ${capabilityMeta(item).typeName} · ${item.mode==='human_confirmed_proposal'?'需确认':'只读'}`
+  : `技能 · 第 ${item.version} 版`
+}
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
 const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
 const activeModelName=computed(()=>{
@@ -179,18 +209,22 @@ async function clearAvatar(){
   <div class="settings-inner">
    <template v-if="page==='account'">
     <h2>账号信息</h2><p class="muted">维护当前登录账号的基础信息。</p>
-    <section class="surface account-profile-card">
-     <div class="account-profile-left">
-      <span class="account-avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span>
-      <div class="account-profile-main"><strong>{{me.display_name}}</strong><small class="muted">{{me.username}} · {{me.super_admin?'超级管理员':me.department||'未设置部门'}}</small></div>
-     </div>
-     <dl class="account-profile-facts"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
-     <div class="account-profile-actions">
+    <div class="account-center-layout">
+     <section class="surface account-person-card">
       <input ref="avatarInput" class="avatar-file-input" type="file" accept="image/png,image/jpeg,image/webp" @change="uploadAvatar"/>
-      <button type="button" :disabled="avatarUploading" @click="avatarInput?.click()"><ImagePlus :size="16"/>{{avatarUploading?'正在处理…':'上传头像'}}</button>
-      <button v-if="me.avatar_url" type="button" :disabled="avatarUploading" @click="clearAvatar"><Trash2 :size="16"/>移除头像</button>
-     </div>
-    </section>
+      <button type="button" class="account-avatar-button" :disabled="avatarUploading" :title="avatarUploading?'正在处理头像':'点击上传头像'" @click="avatarInput?.click()">
+       <span class="account-avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span>
+       <small>{{avatarUploading?'正在处理…':'点击头像上传'}}</small>
+      </button>
+      <strong>{{me.display_name}}</strong>
+      <span class="muted small">{{me.department||'未设置部门'}}</span>
+      <button v-if="me.avatar_url" type="button" class="account-remove-avatar" :disabled="avatarUploading" @click="clearAvatar"><Trash2 :size="15"/>移除头像</button>
+     </section>
+     <section class="surface account-info-card">
+      <div class="account-info-head"><strong>基本资料</strong></div>
+      <dl class="account-profile-facts"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
+     </section>
+    </div>
     <h3 class="settings-section-title">外观</h3>
    <section class="surface appearance-setting" aria-labelledby="appearance-title">
      <div><strong id="appearance-title">颜色模式</strong><small class="muted">选择更适合当前环境的工作台明暗外观，设置会保存在本机。</small></div>
@@ -303,7 +337,7 @@ async function clearAvatar(){
    </div>
    </template>
    <template v-else-if="page==='capabilities'">
-    <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
+    <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。使用时在对话里说“查询/准备 + 项目、单号、模号或关键词”；需确认的工具会先生成建议，不会直接提交。</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
     <div class="capability-toolbar capability-toolbar-v2">
      <button v-if="permissions.includes('user.manage')" class="capability-manage-button" @click="select('admin')"><Users :size="16"/>管理用户的工具与权限</button>
      <div class="capability-tabs" role="tablist" aria-label="能力类型">
@@ -317,11 +351,12 @@ async function clearAvatar(){
     </div>
     <template v-if="showCapabilityTools">
     <h3 class="settings-section-title">工具</h3>
-    <div class="capability-groups capability-grid" role="tabpanel" aria-label="工具">
+    <div class="capability-groups capability-grid capability-section-list" role="tabpanel" aria-label="工具">
      <section v-for="department in groupedTools" :key="department.key" class="capability-department">
       <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('tools',department)==='all'}" @click="setCapabilityGroupTab('tools',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('tools',department)===type.key}" @click="setCapabilityGroupTab('tools',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
-      <div v-for="type in visibleCapabilityTypes('tools',department)" :key="type.key" class="capability-type-block">
-       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><small class="muted">{{permissionName(tool.permission)}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
+      <div v-for="category in visibleCapabilityCategoryGroups('tools',department)" :key="category.name" class="capability-category-block">
+       <div class="capability-category-heading"><strong>{{category.name}}</strong><small class="muted">{{category.items.length}} 项</small></div>
+       <article v-for="tool in category.items" :key="tool.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'tool',item:tool}" @keydown.enter.prevent="selectedCapability={kind:'tool',item:tool}" @keydown.space.prevent="selectedCapability={kind:'tool',item:tool}"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3></div><div class="capability-row-meta"><small class="muted">{{capabilityMeta(tool).typeName}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
       </div>
      </section>
     </div>
@@ -330,17 +365,26 @@ async function clearAvatar(){
     </template>
     <template v-if="showCapabilitySkills">
     <h3 class="settings-section-title">技能</h3>
-    <div class="capability-groups capability-grid" role="tabpanel" aria-label="技能">
+    <div class="capability-groups capability-grid capability-section-list" role="tabpanel" aria-label="技能">
      <section v-for="department in groupedSkills" :key="department.key" class="capability-department">
       <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('skills',department)==='all'}" @click="setCapabilityGroupTab('skills',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('skills',department)===type.key}" @click="setCapabilityGroupTab('skills',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
-      <div v-for="type in visibleCapabilityTypes('skills',department)" :key="type.key" class="capability-type-block">
-       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div></article>
+      <div v-for="category in visibleCapabilityCategoryGroups('skills',department)" :key="category.name" class="capability-category-block">
+       <div class="capability-category-heading"><strong>{{category.name}}</strong><small class="muted">{{category.items.length}} 项</small></div>
+       <article v-for="skill in category.items" :key="skill.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'skill',item:skill}" @keydown.enter.prevent="selectedCapability={kind:'skill',item:skill}" @keydown.space.prevent="selectedCapability={kind:'skill',item:skill}"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3></div><div class="capability-row-meta"><small class="muted">第 {{skill.version}} 版</small></div></article>
       </div>
      </section>
     </div>
     <p v-if="!capabilities.skills.length" class="muted">还没有分配可用技能，请联系管理员。</p>
     <p v-if="capabilities.skills.length&&!filteredSkills.length" class="muted">没有匹配的技能。</p>
-    </template>
+   </template>
+   <div v-if="selectedCapability" class="modal-shade capability-detail-shade" @click.self="selectedCapability=null">
+    <section class="modal capability-detail-modal" role="dialog" aria-modal="true" aria-label="能力详情">
+     <div class="capability-detail-head"><div><h2>{{capabilityName(selectedCapability.item)}}</h2><p class="muted">{{capabilityDetailMeta(selectedCapability)}}</p></div><button type="button" class="icon-button" aria-label="关闭详情" @click="selectedCapability=null">×</button></div>
+     <dl class="capability-detail-facts"><dt>所属部门</dt><dd>{{capabilityMeta(selectedCapability.item).departmentName}}</dd><dt>业务类别</dt><dd>{{capabilityCategoryName(selectedCapability.item)}}</dd><dt>能力类型</dt><dd>{{selectedCapability.kind==='tool'?'工具':'技能'}}</dd></dl>
+     <section><h3>说明</h3><p>{{selectedCapability.item.description||('第 '+selectedCapability.item.version+' 版 · 使用当前授权工具')}}</p></section>
+     <section><h3>怎么用</h3><p>{{capabilityUsageText(selectedCapability)}}</p></section>
+    </section>
+   </div>
    </template>
    <AdminPanel v-else-if="page==='admin'&&permissions.includes('user.manage')" @error="emit('error',$event)"/>
    <WorkflowPanel v-else-if="page==='workflows'&&permissions.includes('workflow.design')" @error="emit('error',$event)"/>

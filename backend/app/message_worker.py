@@ -112,7 +112,7 @@ def consume_batch(factory,redis,messages):
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
     config=settings()
-    redis=Redis.from_url(config.redis_url,decode_responses=True,socket_connect_timeout=2,socket_timeout=3)
+    redis=Redis.from_url(config.redis_url,decode_responses=True,socket_connect_timeout=2,socket_timeout=3,protocol=2)
     consumer='worker-'+str(uuid.uuid4())
     while True:
         try:

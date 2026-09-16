@@ -1,9 +1,6 @@
 import os
-from pathlib import Path
 import pytest
-from dotenv import dotenv_values
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from alembic.config import Config
@@ -18,17 +15,9 @@ PASSWORD = "OnlyForSyntheticTests-2026!"
 
 
 def _test_database_url():
-    values = dotenv_values('.env')
-    explicit = os.environ.get("MOLD_TEST_DATABASE_URL") or values.get("MOLD_TEST_DATABASE_URL")
-    if explicit:
-        return explicit
-    main = os.environ.get("MOLD_DATABASE_URL") or values.get("MOLD_DATABASE_URL")
-    if not main:
-        return None
-    url = make_url(main)
-    if url.drivername.startswith("sqlite"):
-        return None
-    return url.set(database="moldpilot_test").render_as_string(hide_password=False)
+    from pg_db import _test_database_url as resolve_test_database_url
+
+    return resolve_test_database_url()
 
 
 @pytest.fixture(scope="session")

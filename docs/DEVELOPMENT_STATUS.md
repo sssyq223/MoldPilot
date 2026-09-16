@@ -72,7 +72,7 @@
 - 密码仍只通过 `PGPASSWORD` 环境变量传入客户端；脚本不在命令行参数、日志或 readiness 结果中输出数据库密码。
 - `query_operations_readiness_context.backup_restore` 新增 `docker_pg_client`、native/docker 两组可运行状态和脚本支持的 `client_modes`，避免仅因 Windows 未安装 PostgreSQL 客户端而无法表达可交付路径。
 - 同步修正 Docker 探测：Docker CLI 存在但 Linux engine pipe 不可用或返回 Internal Server Error 时，readiness 不再误判为 Docker daemon 可用。
-- 本机已启动 Docker Desktop Linux engine，使用 `postgres:18-alpine` 真实生成 `.local/backups/moldpilot_20260916_122810.dump`，并恢复到隔离库 `moldpilot_restore`；恢复后核对 `admin_count=1`、`alembic=d2f0a9b1c3e4`。
+- 历史曾使用 Docker PostgreSQL 客户端镜像完成一次备份/隔离恢复演练；当前用户已要求删除 Docker 容器和镜像，后续本机验收不得再把 Docker 镜像作为默认前提。当前 PATH 未检测到 native `pg_dump` / `pg_restore`，需安装 PostgreSQL 客户端或显式配置路径后重新演练。
 - 当前 `query_operations_readiness_context` 返回 `backup_restore.status=BACKUP_TOOLING_READY`；正式 RPO/RTO、备份频率、异地位置和恢复演练记录仍需实施验收确认。
 
 ## 持续开发：日志保留 dry-run 与受控清理工具（2026-09-16）
@@ -92,11 +92,19 @@
 - 默认开发库名、测试库名和数据库角色维护脚本统一到 `moldpilot` / `moldpilot_test` / `moldpilot_restore`；README 明确数据库测试只能指向 `moldpilot_test`。
 - 本轮仍保留历史单元测试中直接构造的 SQLite 内存测试作为待迁移技术债；它们不得作为交付验收依据，真实开发/浏览器/数据库核对以 PostgreSQL/Navicat 基线为准。
 
+## 持续开发：本机 Redis 与 PostgreSQL-only 测试基线收口（2026-09-16）
+
+- Redis 默认运行口径改为复用用户本机 `D:\Redis`，配置默认连接 `redis://127.0.0.1:6379/0`，新增 `MOLD_REDIS_HOME=D:\Redis`。Docker Redis 容器和镜像已从本机删除，Docker 只保留为显式 `--backend docker` 的可选备用路径。
+- `scripts/dev_redis.py` 默认 native 模式，直接检查/启动 `D:\Redis\redis-server.exe`；同时修复脚本直接运行时的 `backend` import 路径，并把 Python Redis 客户端统一为 RESP2 `protocol=2`，兼容本机 Redis 5.0.14.1。
+- 本机实测：`scripts/dev_redis.py status` 返回 `host=127.0.0.1`、`port=6379`、`native_redis_server_exists=True`、`redis_reachable=True`；`init-stream --execute` 已创建 `mold:business-events:v1` 与 `notifications-v1`，复查 `stream_exists=True`、`group_ready=True`。
+- 新增 `tests/pg_db.py` PostgreSQL-only 测试工厂，拒绝 SQLite URL，仅允许清理隔离库 `moldpilot_test`；把一批历史工具/领域测试从内存 SQLite 切到 PostgreSQL，并按真实外键补齐 `file_object` / `ai_conversation` 等合成数据。
+- 验证：`pytest` 对本轮迁移的 81 项测试在 PostgreSQL `moldpilot_test` 上通过；`py_compile` 覆盖 Redis 脚本、运行配置、消息 worker、运行就绪工具和迁移后的测试入口。
+
 ## 持续开发：本地 Redis 启动与 stream 初始化脚本（2026-09-16）
 
-- 新增 `docker-compose.redis.yml`，提供独立本地 Redis 7 容器，绑定 `127.0.0.1:56379`，开启 AOF 持久化，与 `.env.example` 的 `MOLD_REDIS_URL` 保持一致。
-- 新增 `scripts/dev_redis.py`，默认 `status` 只读核对 Docker daemon、端口、Redis PING、业务事件 stream 和通知消费组；`start --execute` 才会启动容器，`init-stream --execute` 才会创建 `message_worker` 所需 stream/group。
-- 当前环境在 Docker Desktop Linux engine 启动后，`scripts/dev_redis.py start --execute` 已启动 Redis，`init-stream --execute` 已创建业务事件 stream 和通知消费组；`status` 返回 `redis_reachable=True`、`stream_exists=True`、`group_ready=True`。
+- 新增 `docker-compose.redis.yml`，提供显式 Docker 备用 Redis；当前本机不作为默认运行路径。
+- 新增 `scripts/dev_redis.py`，默认 `status` 只读核对本机 Redis 端口、Redis PING、业务事件 stream 和通知消费组；`start --execute` 才会启动本机 Redis，`init-stream --execute` 才会创建 `message_worker` 所需 stream/group。
+- 当前环境已切换为本机 `D:\Redis`：`scripts/dev_redis.py status` 返回 `redis_reachable=True`、`stream_exists=True`、`group_ready=True`。
 - 该脚本已消除 `readiness_summary.machine_blockers.redis` 的本机运行阻断；正式交付仍需目标环境 Redis 持久化、容量、告警、重试、死信和故障恢复演练。
 
 ## 持续开发：PostgreSQL 隔离恢复脚本基线（2026-09-16）
@@ -111,7 +119,7 @@
 
 - `query_operations_readiness_context` 新增 `readiness_summary`，把数据库、迁移、Redis、部署运行前提、备份恢复工具链、日志保留、生产附件存储和模型运行配置汇总为机器可验证的 `machine_blockers` 与已满足的 `ready_items`。
 - 汇总同时输出 `acceptance_gaps`，保留部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界等仍需人工/实施验收的门槛。
-- 当前本机机器阻断项已清空：`machine_status=MACHINE_PREREQUISITES_READY`，ready_items 包含 PostgreSQL/moldpilot、Alembic head、Redis stream/group、本机部署运行前提、PostgreSQL 备份恢复工具链、日志保留策略和模型运行配置。
+- 当前本机 PostgreSQL/moldpilot、Alembic head、Redis stream/group 和模型运行配置已核对；备份恢复工具链因 native `pg_dump` / `pg_restore` 未在 PATH 中检测到，不能再宣称机器阻断项已全部清空。
 - `overall_status` 仍为 `BLOCKED`，原因是正式实施/业务验收缺口尚未清空；避免模型把机器前提就绪说成整体交付完成。
 - 该汇总供 Agent 回复交付状态时引用，不新增页面、不替代正式压测、恢复演练、生产部署和业务验收。
 
