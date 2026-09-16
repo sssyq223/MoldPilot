@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：FR-074～075 委外设变议价与交期任务影响上下文（2026-09-16）
+
+- 新增 `outsource_change_negotiation` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、工程联络单/任务、客户报价、供应商报价、议定金额、币种、交期影响天数、任务影响摘要、是否需要合同变化、状态、客户/供应商/议价依据和批准人。
+- `query_full_outsource_context` 新增 `analysis.outsource_change_negotiations`，并将 `has_approved_outsource_change_negotiation`、`has_open_outsource_change_negotiation`、`has_contract_change_negotiation` 纳入派生状态。
+- 有委外设变/整改影响项但没有已批准议价记录时，工具提示新增费用、交期和任务影响仍需采购、项目和供应商确认；草稿、议价中或仅达成未审批的记录不会被视为已落实费用或交期变更。
+- PostgreSQL `moldpilot_test` 验证覆盖客户报价、供应商报价、议定金额、交期影响、任务影响、需合同变化、合同权限下可见议价依据和订单权限隔离。
+- FR-074～075 仍为 NOT_VERIFIED：真实设变追加/变更合同审批、原版本保护、供应商当前执行评估、正式议价审批、交期重排和 ERP/财务联动尚未完成正式验收。
+
 ## 持续开发：FR-076 供应商责任确认与扣款结算上下文（2026-09-16）
 
 - 新增 `supplier_deduction_settlement` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、工程联络单/任务、扣款原因、责任归属、扣款金额、币种、结算状态、责任依据、结算依据、确认人和来源。

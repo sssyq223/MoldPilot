@@ -407,6 +407,39 @@ class SupplierDeductionSettlement(IdentityMixin, Base):
     )
 
 
+class OutsourceChangeNegotiation(IdentityMixin, Base):
+    """Negotiation evidence for outsource changes: cost, schedule and task impact."""
+    __tablename__ = 'outsource_change_negotiation'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    contact_case_id: Mapped[str | None] = mapped_column(ForeignKey('contact_case.id'), index=True)
+    contact_task_id: Mapped[str | None] = mapped_column(ForeignKey('contact_task.id'), index=True)
+    customer_quote_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    supplier_quote_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    negotiated_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3), default='CNY')
+    schedule_impact_days: Mapped[int] = mapped_column(Integer, default=0)
+    task_impact_summary: Mapped[str] = mapped_column(Text, default='')
+    requires_contract_change: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(30), default='DRAFT')
+    customer_evidence: Mapped[str] = mapped_column(Text, default='')
+    supplier_evidence: Mapped[str] = mapped_column(Text, default='')
+    negotiation_evidence: Mapped[str] = mapped_column(Text)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    __table_args__ = (
+        UniqueConstraint('project_id','supplier_id','source_ref', name='outsource_change_negotiation_unique_source'),
+        CheckConstraint('customer_quote_amount IS NULL OR customer_quote_amount >= 0', name='outsource_change_customer_amount_nonnegative'),
+        CheckConstraint('supplier_quote_amount IS NULL OR supplier_quote_amount >= 0', name='outsource_change_supplier_amount_nonnegative'),
+        CheckConstraint('negotiated_amount IS NULL OR negotiated_amount >= 0', name='outsource_change_negotiated_amount_nonnegative'),
+        CheckConstraint('schedule_impact_days >= 0', name='outsource_change_schedule_impact_nonnegative'),
+        CheckConstraint("status IN ('DRAFT','NEGOTIATING','AGREED','APPROVED','CANCELLED')", name='outsource_change_negotiation_status'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='outsource_change_negotiation_source_system'),
+    )
+
+
 class PlanDetail(Base):
     __tablename__ = 'plan_detail'
     subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)

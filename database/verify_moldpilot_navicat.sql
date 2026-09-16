@@ -45,6 +45,11 @@ SELECT
 FROM logistics_quote
 UNION ALL
 SELECT
+    'outsource_change_negotiation',
+    COUNT(*)
+FROM outsource_change_negotiation
+UNION ALL
+SELECT
     'customer_delivery_signature',
     COUNT(*)
 FROM customer_delivery_signature

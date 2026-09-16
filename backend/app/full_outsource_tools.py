@@ -408,6 +408,47 @@ def _deduction_settlements(db, user, project_id, allowed_tools):
     return rows
 
 
+def _change_negotiations(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    q = (
+        select(m.OutsourceChangeNegotiation, m.Supplier)
+        .join(m.Supplier, m.OutsourceChangeNegotiation.supplier_id == m.Supplier.id)
+        .where(m.OutsourceChangeNegotiation.project_id == project_id)
+        .order_by(m.OutsourceChangeNegotiation.created_at.desc(), m.OutsourceChangeNegotiation.id)
+        .limit(100)
+    )
+    for negotiation, supplier in db.execute(q):
+        rows.append(
+            {
+                "id": negotiation.id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": negotiation.contract_subject_id,
+                "contact_case_id": negotiation.contact_case_id,
+                "contact_task_id": negotiation.contact_task_id,
+                "customer_quote_amount": str(negotiation.customer_quote_amount) if negotiation.customer_quote_amount is not None else None,
+                "supplier_quote_amount": str(negotiation.supplier_quote_amount) if negotiation.supplier_quote_amount is not None else None,
+                "negotiated_amount": str(negotiation.negotiated_amount) if negotiation.negotiated_amount is not None else None,
+                "currency": negotiation.currency,
+                "schedule_impact_days": negotiation.schedule_impact_days,
+                "task_impact_summary": negotiation.task_impact_summary,
+                "requires_contract_change": negotiation.requires_contract_change,
+                "status": negotiation.status,
+                "customer_evidence_present": bool(negotiation.customer_evidence),
+                "supplier_evidence_present": bool(negotiation.supplier_evidence),
+                "negotiation_evidence": negotiation.negotiation_evidence,
+                "approved_by": negotiation.approved_by,
+                "source_system": negotiation.source_system,
+                "source_ref": negotiation.source_ref,
+            }
+        )
+    return rows
+
+
 def _engineering_changes(rows):
     result = []
     for row in rows:
@@ -526,7 +567,7 @@ def _closure_items(db, user, project_id, allowed_tools):
     return rows[:100]
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, deduction_settlements, order_tracking, engineering_changes, contacts, payments, closure_items):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -540,6 +581,9 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
     settled_deductions = [row for row in deduction_settlements if row.get("status") == "SETTLED"]
     pending_deductions = [row for row in deduction_settlements if row.get("status") == "PROPOSED" or row.get("responsibility") == "UNKNOWN"]
+    approved_change_negotiations = [row for row in change_negotiations if row.get("status") == "APPROVED"]
+    open_change_negotiations = [row for row in change_negotiations if row.get("status") in {"DRAFT", "NEGOTIATING", "AGREED"}]
+    contract_change_negotiations = [row for row in change_negotiations if row.get("requires_contract_change")]
     deduction_tasks = [
         task
         for issue in contacts
@@ -587,6 +631,12 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("存在未关闭委外质量、延期、验收或扣款相关工程联络事项，不能认定异常已闭环。")
     if open_change_impacts:
         warnings.append("存在设变或整改影响项未见执行与复验全部完成，不能把方案批准等同于整改完成。")
+    if open_change_impacts and not approved_change_negotiations:
+        warnings.append("存在委外设变或整改影响项，但未见已批准的设变议价记录；新增费用、交期和任务影响仍需采购、项目和供应商确认。")
+    if open_change_negotiations:
+        warnings.append("存在草稿、议价中或仅达成未审批的委外设变议价记录，不能作为已落实的费用或交期变更。")
+    if contract_change_negotiations and not any(row.get("status") == "APPROVED" for row in contract_change_negotiations):
+        warnings.append("存在要求合同变化的委外设变议价记录，但未见已审批结果；不能自动追加或变更合同。")
     if deduction_tasks and not contract_effective:
         warnings.append("存在扣款/费用影响线索，但未见已生效委外合同，不能确认责任与结算依据。")
     if deduction_tasks and not confirmed_deductions:
@@ -611,6 +661,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         "supplier_progress_reports": supplier_progress_reports,
         "supplier_material_handoffs": material_handoffs,
         "supplier_deduction_settlements": deduction_settlements,
+        "outsource_change_negotiations": change_negotiations,
         "supplier_execution_tracking": order_tracking,
         "engineering_changes": engineering_changes,
         "outsource_quality_delay_contacts": contacts,
@@ -634,6 +685,9 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_confirmed_supplier_deduction": bool(confirmed_deductions),
             "has_settled_supplier_deduction": bool(settled_deductions),
             "has_pending_supplier_deduction": bool(pending_deductions),
+            "has_approved_outsource_change_negotiation": bool(approved_change_negotiations),
+            "has_open_outsource_change_negotiation": bool(open_change_negotiations),
+            "has_contract_change_negotiation": bool(contract_change_negotiations),
             "has_supplier_shipment_or_receipt": bool(totals.get("supplier_shipments") or totals.get("goods_receipts")),
             "has_rejected_receipt": bool(totals.get("rejected_receipt_lines")),
             "has_open_outsource_issue": bool(open_contacts or open_change_impacts),
@@ -663,6 +717,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
         deduction_settlements = _deduction_settlements(db, user, project.id, allowed_tools)
+        change_negotiations = _change_negotiations(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         payments = _payment_summary(_subject_rows(db, user, project.id, "supplier_payment", allowed_tools))
@@ -704,6 +759,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         supplier_progress_reports,
                         material_handoffs,
                         deduction_settlements,
+                        change_negotiations,
                         order_tracking,
                         engineering_changes,
                         contacts,
