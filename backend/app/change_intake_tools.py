@@ -342,6 +342,83 @@ def _resolutions(rows):
     return result
 
 
+def _plan_task_matches(contact_task, plan_tasks):
+    ref = str(contact_task.get("affected_ref") or "").strip().casefold()
+    if not ref:
+        return []
+    matches = []
+    for task in plan_tasks:
+        values = {str(task.get("task_id") or "").casefold(), str(task.get("key") or "").casefold(), str(task.get("name") or "").casefold()}
+        if ref in values:
+            matches.append(task)
+    return [
+        {
+            "plan_id": task.get("plan_id"),
+            "plan_number": task.get("plan_number"),
+            "plan_status": task.get("plan_status"),
+            "task_id": task.get("task_id"),
+            "key": task.get("key"),
+            "name": task.get("name"),
+            "status": task.get("status"),
+            "planned_start": task.get("planned_start"),
+            "planned_end": task.get("planned_end"),
+        }
+        for task in matches[:10]
+    ]
+
+
+def _plan_adjustment_candidates(contacts, plan_tasks, resolutions, allowed_tools):
+    effective_resolution_cases = {row.get("case_id") for row in resolutions if row.get("status") == "EFFECTIVE"}
+    recommended_tools = []
+    if "query_project_plan_context" in allowed_tools:
+        recommended_tools.append("query_project_plan_context")
+        if "prepare_project_plan_change" in allowed_tools:
+            recommended_tools.append("prepare_project_plan_change")
+    result = []
+    for case in contacts:
+        for task in case.get("tasks") or []:
+            if task.get("status") == "CANCELLED":
+                continue
+            relevant = (
+                task.get("affected_type") in {"PLAN_NODE", "WIP_TASK"}
+                or int(task.get("delivery_impact_days") or 0) > 0
+                or task.get("planned_action") in {"PAUSE", "CANCEL", "REWORK", "REISSUE"}
+            )
+            if not relevant:
+                continue
+            matched_tasks = _plan_task_matches(task, plan_tasks)
+            evidence_gaps = []
+            if case.get("id") not in effective_resolution_cases:
+                evidence_gaps.append("尚无已审批生效的联络单处理方案，不能直接作为计划变更依据。")
+            if not matched_tasks:
+                evidence_gaps.append("联络事项 affected_ref 未精确匹配当前可见计划任务 ID、标识或名称。")
+            if task.get("status") not in {"RESPONDED", "VERIFIED"}:
+                evidence_gaps.append("责任部门尚未提交处理反馈或执行依据。")
+            if int(task.get("delivery_impact_days") or 0) == 0 and task.get("planned_action") == "CONTINUE":
+                evidence_gaps.append("未登记交期影响天数且计划动作为继续，需项目负责人确认是否需要计划变更。")
+            result.append(
+                {
+                    "case_id": case.get("id"),
+                    "case_title": case.get("title"),
+                    "case_revision": case.get("revision"),
+                    "contact_task_id": task.get("id"),
+                    "contact_task_title": task.get("title"),
+                    "contact_task_status": task.get("status"),
+                    "affected_type": task.get("affected_type"),
+                    "affected_ref": task.get("affected_ref"),
+                    "planned_action": task.get("planned_action"),
+                    "delivery_impact_days": task.get("delivery_impact_days"),
+                    "impact_description": task.get("impact_description"),
+                    "matched_plan_tasks": matched_tasks,
+                    "candidate_status": "READY_FOR_PLAN_CHANGE_PREPARE" if matched_tasks and not evidence_gaps else "NEEDS_CONTEXT",
+                    "evidence_gaps": evidence_gaps,
+                    "recommended_next_tools": recommended_tools,
+                    "guardrail": "只提示项目负责人核对并准备计划变更；不会自动改计划、自动顺延任务或跳过 BPM 审批。",
+                }
+            )
+    return result[:50]
+
+
 def _classify_change(category, text):
     value = ((category or "") + " " + (text or "")).casefold()
     customer = any(keyword.casefold() in value for keyword in CUSTOMER_KEYWORDS) or category == "customer_change"
@@ -358,7 +435,7 @@ def _classify_change(category, text):
     return "UNCLASSIFIED"
 
 
-def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts, outsource_contracts, plan_tasks, engineering_changes, contacts, resolutions):
+def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts, outsource_contracts, plan_tasks, engineering_changes, contacts, resolutions, allowed_tools):
     contact_tasks = [task for case in contacts for task in case.get("tasks") or [] if task.get("status") != "CANCELLED"]
     contact_problem_sources = Counter(case.get("problem_source") or "UNKNOWN" for case in contacts)
     affected_types = Counter(task.get("affected_type") for task in contact_tasks)
@@ -380,6 +457,7 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
     effective_starts = [row for row in starts if row.get("status") == "EFFECTIVE"]
     external_or_customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE" or case.get("customer_ref")]
     outsource_cases = [case for case in contacts if case.get("category") == "outsource" or case.get("problem_source") == "OUTSOURCE_DEFECT"]
+    plan_adjustment_candidates = _plan_adjustment_candidates(contacts, plan_tasks, resolutions, allowed_tools)
 
     gaps = []
     warnings = []
@@ -414,6 +492,7 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
         "engineering_changes": engineering_changes,
         "engineering_contact_cases": contacts,
         "contact_resolutions": resolutions,
+        "plan_adjustment_candidates": plan_adjustment_candidates,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -431,6 +510,8 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
             "has_approved_solution": bool([row for row in resolutions if row.get("status") == "EFFECTIVE"]),
             "has_open_execution_or_recheck_items": bool(open_change_impacts or incomplete_contact_tasks),
             "open_impact_count": len(open_change_impacts) + len(incomplete_contact_tasks),
+            "has_plan_adjustment_candidate": bool(plan_adjustment_candidates),
+            "plan_adjustment_candidate_count": len(plan_adjustment_candidates),
         },
     }
 
@@ -491,6 +572,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         engineering_changes,
                         contacts,
                         resolutions,
+                        allowed_tools,
                     ),
                 }
             ],

@@ -272,8 +272,18 @@ def test_change_intake_schema_and_context_summary():
             assert status["has_plan_impact_context"] is True
             assert status["has_approved_solution"] is True
             assert status["has_open_execution_or_recheck_items"] is True
+            assert status["has_plan_adjustment_candidate"] is True
+            assert status["plan_adjustment_candidate_count"] == 1
             assert analysis["known_molds"][0]["internal_number"] == "MOLD-INT-001"
             assert analysis["engineering_changes"][0]["source_classification"] == "CUSTOMER_CHANGE_INTERNAL_OR_UNSPECIFIED"
+            candidate = analysis["plan_adjustment_candidates"][0]
+            assert candidate["candidate_status"] == "READY_FOR_PLAN_CHANGE_PREPARE"
+            assert candidate["affected_ref"] == "machining_rework"
+            assert candidate["delivery_impact_days"] == 2
+            assert candidate["matched_plan_tasks"][0]["key"] == "machining_rework"
+            assert candidate["evidence_gaps"] == []
+            assert candidate["recommended_next_tools"] == ["query_project_plan_context", "prepare_project_plan_change"]
+            assert "不会自动改计划" in candidate["guardrail"]
             assert "不能把方案审批" in "".join(analysis["warnings"])
             assert "不同事实" in "".join(result["limitations"])
     finally:
@@ -299,8 +309,37 @@ def test_change_intake_does_not_leak_contacts_without_contact_permission():
             analysis = result["data"][0]["analysis"]
             assert analysis["derived_status"]["has_change_record"] is True
             assert analysis["engineering_contact_cases"] == []
+            assert analysis["plan_adjustment_candidates"] == []
             assert "客户设变导致加工返工" not in str(result)
             assert "工程联络协作事项" in "".join(result["limitations"])
+    finally:
+        engine.dispose()
+
+
+def test_change_intake_marks_plan_adjustment_candidate_context_gaps():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            p = project(db, "CHG-GAP")
+            project_profile_and_mold(db, p, admin)
+            plan_and_change(db, p, admin)
+            case = contact_flow(db, p, admin)
+            resolution = db.query(m.BusinessSubject).filter_by(kind="contact_resolution", project_id=p.id).one()
+            resolution.status = "DRAFT"
+            contact_task = db.query(m.ContactTask).filter_by(case_id=case.id).one()
+            contact_task.affected_ref = "unknown-plan-node"
+            capability(db, admin, "query_project_plan_context")
+            capability(db, admin, "prepare_project_plan_change")
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_change_intake_context", {"identifier": "CHG-GAP"})
+            candidate = result["data"][0]["analysis"]["plan_adjustment_candidates"][0]
+            assert candidate["candidate_status"] == "NEEDS_CONTEXT"
+            assert candidate["matched_plan_tasks"] == []
+            assert "已审批生效的联络单处理方案" in "".join(candidate["evidence_gaps"])
+            assert "未精确匹配当前可见计划任务" in "".join(candidate["evidence_gaps"])
+            assert candidate["recommended_next_tools"] == ["query_project_plan_context", "prepare_project_plan_change"]
     finally:
         engine.dispose()
 
