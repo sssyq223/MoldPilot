@@ -8,6 +8,7 @@ import ApprovalPanel from './components/ApprovalPanel.vue'
 import ContactPanel from './components/ContactPanel.vue'
 import ContactProposal from './components/ContactProposal.vue'
 import FileMaterial from './components/FileMaterial.vue'
+import BusinessFacts from './components/BusinessFacts.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
@@ -135,6 +136,10 @@ function evidenceSections(row:any){
 }
 function evidenceCardTitle(row:any,index:number,title:string){
  return isRecord(row)?(compactRecordTitle(row)||`${title} ${Number(index)+1}`):`${title} ${Number(index)+1}`
+}
+function hasBusinessFactHighlights(row:any){
+ const analysis=row?.analysis
+ return Boolean(analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
 }
 function runTrace(run:any){
  if(Array.isArray(run.trace)&&run.trace.length)return run.trace
@@ -367,6 +372,7 @@ onUnmounted(()=>clearInterval(timer))
             </div>
           </div>
           <p v-else class="muted small">暂无可见摘要字段。</p>
+          <BusinessFacts v-if="hasBusinessFactHighlights(row)" :value="row" :highlights-only="true"/>
           <section v-for="section in evidenceSections(row)" :key="section.key" class="evidence-detail-section">
             <div class="evidence-section-title">
               <h3>{{section.title}}</h3>
