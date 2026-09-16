@@ -39,6 +39,16 @@ class PlanChangeProposalInput(StrictModel):
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
 
 
+class PlanBaselineProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4000)
+    tasks: list[s.TaskInput] = Field(min_length=1, max_length=200)
+    workflow_definition_id: str = Field(min_length=1, max_length=36)
+    material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
+        description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
+
+
 class PlanDepartmentConfirmationProposalInput(StrictModel):
     confirmation_id: str = Field(min_length=1, max_length=36,
         description='query_project_plan_context 返回的待确认部门影响项 ID。')
@@ -273,10 +283,13 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         skipped=[]
         if 'query_plan_change' not in allowed_tools and 'prepare_project_plan_change' not in allowed_tools:skipped.append('计划变更')
         if skipped:limitations.append('未分配对应查询工具，未返回：'+'、'.join(skipped))
-        workflows=[]
+        workflows=[];baseline_workflows=[]
         if 'prepare_project_plan_change' in allowed_tools:
-            try:workflows=workflow_options(db,user,project)
+            try:workflows=workflow_options(db,user,project,'plan_change')
             except DomainError as error:limitations.append('当前人员缺少计划变更读取或提交权限，未返回可选计划变更审批流程：'+error.message)
+        if 'prepare_project_plan_baseline' in allowed_tools:
+            try:baseline_workflows=workflow_options(db,user,project,'project_plan')
+            except DomainError as error:limitations.append('当前人员缺少项目计划读取或提交权限，未返回可选基线计划审批流程：'+error.message)
         analysis=_analysis(project,profile,records)
         from . import plan_confirmations
         confirmations=[]
@@ -290,7 +303,7 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
             'profile':profile,'project_plans':records['project_plan'],'plan_changes':records['plan_change'],
             'department_confirmations':confirmations,
             'erp_execution_progress':erp_execution_progress,
-            'analysis':analysis,'workflow_options':workflows}],
+            'analysis':analysis,'workflow_options':workflows,'baseline_workflow_options':baseline_workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),
@@ -302,15 +315,19 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
             'limitations':limitations}
 
 
-def workflow_options(db,user,project):
+def workflow_options(db,user,project,business_type='plan_change'):
     scope={'project_id':project.id}
-    require(db,user,'plan_change.read',scope)
-    require(db,user,'plan_change.submit',scope)
+    if business_type=='project_plan':
+        require(db,user,'project_plan.read',scope)
+        require(db,user,'project_plan.submit',scope)
+    else:
+        require(db,user,'plan_change.read',scope)
+        require(db,user,'plan_change.submit',scope)
     rows=db.scalars(select(m.WorkflowDefinition).where(m.WorkflowDefinition.status=='PUBLISHED').order_by(
         m.WorkflowDefinition.process_key,m.WorkflowDefinition.version.desc()))
     result=[]
     for row in rows:
-        if not workflow_selection.matches(row.config,{'business_type':'plan_change','categories':set(),'design_type':None}):continue
+        if not workflow_selection.matches(row.config,{'business_type':business_type,'categories':set(),'design_type':None}):continue
         item=workflow_selection.metadata(row,db)
         item['material_required']=row.config.get('material_contract') is not None
         item['material_template_id']=row.material_template_id
@@ -325,8 +342,17 @@ def plan_change_schema():
     return PlanChangeProposalInput.model_json_schema()
 
 
+def plan_baseline_schema():
+    return PlanBaselineProposalInput.model_json_schema()
+
+
 def department_confirmation_schema():
     return PlanDepartmentConfirmationProposalInput.model_json_schema()
+
+
+def parse_plan_baseline(arguments):
+    try:return PlanBaselineProposalInput.model_validate(arguments or {})
+    except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','基线计划参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
 
 
 def parse_plan_change(arguments):
@@ -343,6 +369,42 @@ def _task_label(task):
     return task.name+'（'+task.key+'：'+task.planned_start.isoformat()+' 至 '+task.planned_end.isoformat()+'）'
 
 
+def preview_plan_baseline(db,user,data:PlanBaselineProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id}
+    require(db,user,'project.read',scope)
+    require(db,user,'project_plan.read',scope)
+    require(db,user,'project_plan.create',scope)
+    require(db,user,'project_plan.submit',scope)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    if project.status!='ACTIVE':
+        raise DomainError('START_REQUIRED','项目正式开工后才能准备基线计划',409)
+    existing=db.scalar(select(m.BusinessSubject.id).where(m.BusinessSubject.project_id==project.id,
+        m.BusinessSubject.kind.in_(['project_plan','plan_change']),
+        m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','EFFECTIVE'])).limit(1))
+    if existing:
+        raise DomainError('PLAN_EXISTS','项目已有计划或待处理计划申请，请通过计划变更或处理原申请',409)
+    detail=s.PlanInput(previous_id=None,reason=data.reason,tasks=data.tasks)
+    domains.validate_plan(db,project.id,detail)
+    options=workflow_options(db,user,project,'project_plan')
+    selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
+    if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
+    definition=db.get(m.WorkflowDefinition,data.workflow_definition_id)
+    review=workflow_selection.validate_material_review(db,user,definition,data.material_review_id)
+    coverage=_milestone_coverage([task.model_dump(mode='json') for task in data.tasks])
+    display={'操作':'项目基线计划','项目':project.code+' · '+project.name,'项目版本':project.row_version,
+        '计划原因':data.reason,'计划任务数':len(data.tasks),
+        '计划节点':[_task_label(task) for task in data.tasks],
+        '大节点覆盖':'已覆盖：'+('、'.join(coverage['covered'].keys()) or '无')+'；缺少：'+('、'.join(coverage['missing']) or '无'),
+        '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
+        '说明':'本人确认后仅创建基线计划材料并提交 Agent BPM；审批生效前不会下达 ERP 执行任务，也不会把内部计划变更为客户承诺交期。'}
+    if selected.get('material_required'):
+        display['资料核对包']='已确认 · '+review.review_hash[:12] if review else '未绑定'
+    return detail,display
+
+
 def preview_plan_change(db,user,data:PlanChangeProposalInput):
     project=db.get(m.Project,data.project_id)
     if not project:raise DomainError('NOT_FOUND','项目不存在',404)
@@ -357,7 +419,7 @@ def preview_plan_change(db,user,data:PlanChangeProposalInput):
     previous=domains.require_source(db,data.previous_id,project.id,{'project_plan','plan_change'})
     detail=s.PlanInput(previous_id=data.previous_id,reason=data.reason,tasks=data.tasks)
     domains.validate_plan(db,project.id,detail)
-    options=workflow_options(db,user,project)
+    options=workflow_options(db,user,project,'plan_change')
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
     definition=db.get(m.WorkflowDefinition,data.workflow_definition_id)
@@ -407,6 +469,14 @@ def preview_department_confirmation(db,user,data:PlanDepartmentConfirmationPropo
 
 def execute_plan_tool(db,user,key,arguments,run=None):
     from .confirmation_policy import proposal_confirmation_policy
+    if key=='prepare_project_plan_baseline':
+        data=parse_plan_baseline(arguments)
+        _,display=preview_plan_baseline(db,user,data)
+        proposal={'kind':'project_plan_baseline','action':'project_plan','requires_approval':True,
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+        return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+            'limitations':['仅准备基线计划操作建议；本人确认后才创建业务材料并提交审批，审批完成前不改变计划或执行任务。']}
     if key=='prepare_project_plan_change':
         data=parse_plan_change(arguments)
         _,display=preview_plan_change(db,user,data)
@@ -434,7 +504,7 @@ def source(db,user,step_id):
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
-    allowed={'prepare_project_plan_change','prepare_plan_department_confirmation'}
+    allowed={'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}
     if step.tool not in available_tools(db,user) or step.tool not in allowed or not proposal:
         raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
     return proposal
@@ -446,6 +516,9 @@ def validate_intent(db,user,payload):
     if proposal.get('action')=='department_confirmation':
         data=parse_department_confirmation(proposal['input'])
         display=preview_department_confirmation(db,user,data)
+    elif proposal.get('action')=='project_plan':
+        data=parse_plan_baseline(proposal['input'])
+        _,display=preview_plan_baseline(db,user,data)
     else:
         data=parse_plan_change(proposal['input'])
         _,display=preview_plan_change(db,user,data)
@@ -463,6 +536,16 @@ def confirm(db,user,payload):
         return {'project_id':result['project_id'],'confirmation_id':result['id'],
             'plan_change_id':result['plan_change_id'],'department':result['department'],
             'action':'department_confirmation','status':result['status']}
+    if proposal.get('action')=='project_plan':
+        subject=domains.create(db,user,s.SubjectInput(kind='project_plan',project_id=data.project_id,
+            remark=data.reason,detail={'previous_id':None,'reason':data.reason,
+                'tasks':[task.model_dump(mode='json') for task in data.tasks]}))
+        from .business import submit_subject
+        submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+            material_review_id=data.material_review_id,
+            agent_permission_mode=agent_permission_mode_from_proposal(proposal))
+        return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
+            'action':'project_plan','status':'SUBMITTED'}
     subject=domains.create(db,user,s.SubjectInput(kind='plan_change',project_id=data.project_id,
         remark=data.reason,detail={'previous_id':data.previous_id,'reason':data.reason,
             'tasks':[task.model_dump(mode='json') for task in data.tasks]}))

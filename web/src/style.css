@@ -798,12 +798,15 @@ html[data-theme="light"] .workspace-header,html[data-theme="light"] .workspace-t
 .sidebar-collapsed .profile-entry{justify-content:center!important;padding:4px!important}
 .sidebar-collapsed .profile-menu{left:8px!important;width:240px!important}
 .sidebar-collapsed .chat-title strong{max-width:min(760px,calc(100vw - 380px))}
+
+/* Give the bottom account entry a little more breathing room from the left edge. */
+.workbench:not(.sidebar-collapsed) .profile-entry{padding-left:14px!important}
 .context-meter-wrap{position:relative;margin-left:auto}
 .context-meter{height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:8px;background:transparent;color:var(--text);padding:0 4px;font-size:12px;font-weight:500;box-shadow:none}
 .context-meter:hover{background:color-mix(in srgb,var(--accent) 8%,transparent)}
-.context-dot{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-radius:999px;background:transparent}
-.context-dot.warn{border-color:#d97706;background:color-mix(in srgb,#d97706 18%,transparent)}
-.context-dot.danger{border-color:#dc2626;background:color-mix(in srgb,#dc2626 18%,transparent)}
+.context-dot{--context-fill:#172334;--context-track:#d2dbe6;display:inline-block;width:14px;height:14px;border-radius:999px;background:conic-gradient(var(--context-fill) var(--context-percent,0%),var(--context-track) 0);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 0);mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 0)}
+.context-dot.warn{--context-fill:#172334;--context-track:#d2dbe6}
+.context-dot.danger{--context-fill:#172334;--context-track:#d2dbe6}
 .context-popover{position:absolute;right:0;bottom:38px;width:340px;z-index:50;padding:14px 16px;border:1px solid var(--border);border-radius:18px;background:var(--surface-strong);color:var(--text);box-shadow:0 20px 60px color-mix(in srgb,var(--shadow) 42%,transparent)}
 .context-popover-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px;font-size:16px}
 .context-popover-head span{font-weight:700}
@@ -897,6 +900,29 @@ html[data-theme="light"] .resize-handle:hover::after,html[data-theme="light"] .r
  .workspace-open .model-selector-wrap{display:block!important}
  .workspace-open .composer-meta-group{flex:1 1 auto;margin-left:auto}
 }
+
+/* Composer toolbar: make the quick actions share one visual rhythm. */
+.composer-toolbar{gap:8px}
+.composer-toolbar .icon-button,.context-meter,.composer-model-label,.approval-mode-button,.send{height:32px!important;min-height:32px!important;align-items:center!important}
+.composer-toolbar .icon-button{width:32px!important;min-width:32px!important;padding:0!important;border-radius:999px!important}
+.send{width:30px!important;min-width:30px!important;height:30px!important;min-height:30px!important;padding:0!important;border-radius:999px!important}
+.composer-toolbar .icon-button{background:transparent!important;border:1px solid transparent!important}
+.approval-mode-button{padding:0 11px!important;border-radius:999px!important;gap:6px}
+.context-meter{min-width:54px;padding:0 8px!important;border-radius:999px!important;gap:7px}
+.composer-model-label{padding:0 9px!important;border-radius:999px!important;gap:6px}
+.composer-toolbar svg{width:16px;height:16px;stroke-width:1.9}
+.send svg{width:16px;height:16px}
+html[data-theme="light"] .context-meter,html[data-theme="light"] .composer-model-label{background:#fff!important;border:1px solid transparent!important}
+html[data-theme="light"] .context-meter:hover,html[data-theme="light"] .composer-model-label:hover,html[data-theme="light"] .composer-toolbar .icon-button:hover{background:#eef2f6!important}
+.workspace-open .context-meter{padding-inline:7px!important}
+.workspace-open .model-selector-wrap .composer-model-label{padding-inline:7px!important}
+
+/* Workspace header actions match the flat top-left utility icons. */
+.workspace-header .icon-button{width:28px!important;height:28px!important;padding:0!important;border:0!important;border-radius:8px!important;background:transparent!important;color:#172334!important;box-shadow:none!important}
+.workspace-header .icon-button:hover,.workspace-header .icon-button:focus,.workspace-header .icon-button:active{background:#eef2f6!important;border:0!important;color:#172334!important;box-shadow:none!important}
+.workspace-header .icon-button svg{stroke-width:1.8}
+html[data-theme="dark"] .workspace-header .icon-button{color:#d6dee8!important}
+html[data-theme="dark"] .workspace-header .icon-button:hover,html[data-theme="dark"] .workspace-header .icon-button:focus,html[data-theme="dark"] .workspace-header .icon-button:active{background:color-mix(in srgb,var(--accent) 10%,transparent)!important;color:#eef2f6!important}
 
 /* Compact personnel & permission management page. */
 .admin-permission-page{display:flex;flex-direction:column;gap:12px}

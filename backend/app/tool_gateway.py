@@ -50,6 +50,7 @@ TOOLS.update({
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
+    'prepare_project_plan_baseline':{'description':'准备项目基线计划审批建议；必须使用查询返回的真实项目、项目版本、完整节点清单和流程 ID，本人确认后才提交 Agent BPM。','permission':'project_plan.create'},
     'prepare_project_plan_change':{'description':'准备项目计划变更审批建议；必须使用查询返回的真实项目、当前计划和节点清单，本人确认后才提交 Agent BPM。','permission':'plan_change.create'},
     'prepare_plan_department_confirmation':{'description':'准备计划变更生效后的部门影响确认；只能使用计划上下文返回的待确认项 ID 和版本，本人确认后仅记录本部门已核对。','permission':'plan_change.execute'},
     'query_design_route_context':{'description':'按项目、设计单、图纸、BOM物料或任务线索核对设计、BOM、加工路线、计划任务和工程联络影响；只读，不生成图纸或重复ERP设计模块。','permission':'design_route.read'},
@@ -92,7 +93,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start']},
-               'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context']},
+               'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
+                   'optional_tools':['prepare_project_plan_baseline']},
                'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context','prepare_project_plan_change','prepare_plan_department_confirmation']},
                'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context'],
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change']},
@@ -149,6 +151,7 @@ CAPABILITY_NAMES = {
     'query_internal_start_readiness': '核对正式开工条件',
     'prepare_internal_start': '准备正式开工通知',
     'query_project_plan_context': '读取项目计划上下文',
+    'prepare_project_plan_baseline': '准备项目基线计划',
     'prepare_project_plan_change': '准备项目计划变更',
     'prepare_plan_department_confirmation': '准备计划部门影响确认',
     'query_design_route_context': '读取设计BOM与路线上下文',
@@ -202,6 +205,7 @@ CAPABILITY_DEPARTMENTS = {
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
     'prepare_internal_start': 'project',
     'internal_start_readiness': 'project', 'query_project_plan_context': 'project',
+    'prepare_project_plan_baseline': 'project',
     'prepare_project_plan_change': 'project', 'prepare_plan_department_confirmation': 'project',
     'project_plan_context_review': 'project', 'project_plan_change': 'project',
     'query_design_route_context': 'design',
@@ -237,6 +241,7 @@ CAPABILITY_TYPES = {
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
     'prepare_internal_start': 'approval',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
+    'prepare_project_plan_baseline': 'approval',
     'design_route_context_review': 'review',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
     'delivery_logistics_review': 'review', 'full_outsource_review': 'review',
@@ -341,9 +346,10 @@ def tool_schema(key):
     if key=='query_project_plan_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key in {'prepare_project_plan_change','prepare_plan_department_confirmation'}:
-        from .plan_tools import department_confirmation_schema, plan_change_schema
-        parameters=department_confirmation_schema() if key=='prepare_plan_department_confirmation' else plan_change_schema()
+    if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
+        from .plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema
+        parameters=department_confirmation_schema() if key=='prepare_plan_department_confirmation' else (
+            plan_baseline_schema() if key=='prepare_project_plan_baseline' else plan_change_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_design_route_context':
         from .design_tools import DesignRouteContextInput
@@ -405,7 +411,7 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_project_plan_change','prepare_plan_department_confirmation'}:
+    if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
         from .plan_tools import execute_plan_tool
         return execute_plan_tool(db,user,key,arguments,run=run)
     if key=='prepare_internal_start':

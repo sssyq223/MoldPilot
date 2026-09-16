@@ -323,8 +323,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备基线计划 prepare 能力且权限满足时，query_project_plan_context 返回 baseline_workflow_options；prepare_project_plan_baseline 要求使用查询返回的真实项目、项目版本、完整任务清单和流程 ID 生成会话提案，本人确认后才创建 project_plan 并提交 Agent BPM，且会阻断未正式开工、已有有效计划或待处理计划申请的项目；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；基线计划和计划变更均走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、基线计划 proposal 不写业务、本人确认后提交 project_plan BPM、重复计划阻断、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-034
@@ -341,8 +341,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 现有业务以55天作为一套模具项目周期的参考，由项目负责人结合线下评估填写，不作为全部模具固定承诺，也不等同于人员计费工时。自然日或工作日、节假日和各类模具周期模板在适配阶段确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 的 limitations 明确 55 天周期、自然日/工作日、节假日和周期模板仍须适配确认，不能作为固定承诺；大节点覆盖仅按当前计划任务事实辅助核对
-- 验证证据：tests/test_plan_tools.py 覆盖计划任务事实分析；周期模板和日历适配尚未验收
+- 实现证据：query_project_plan_context 的 limitations 明确 55 天周期、自然日/工作日、节假日和周期模板仍须适配确认，不能作为固定承诺；大节点覆盖仅按当前计划任务事实辅助核对；prepare_project_plan_baseline 接受项目负责人填写的完整任务清单并按日期/依赖规则校验，但不内置固定 55 天承诺
+- 验证证据：tests/test_plan_tools.py 覆盖计划任务事实分析，以及基线计划 proposal 的任务清单和审批提交链路；周期模板和日历适配尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-036
@@ -350,8 +350,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 大节点至少覆盖设计工艺分析、结构设计及出图，原材料、五金和委外采购，工序加工，装配，试模及最终交付。开工、试模完成及出库等客户节点应形成提醒或待办，由项目负责人核对维护。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口；对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖
-- 验证证据：tests/test_plan_tools.py 覆盖大节点缺口识别；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表
+- 实现证据：analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口；prepare_project_plan_baseline 的预览展示基线计划任务数、计划节点和大节点覆盖情况；对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖
+- 验证证据：tests/test_plan_tools.py 覆盖大节点缺口识别和基线计划完整大节点覆盖；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表
 - 验收状态：NOT_VERIFIED
 
 ### FR-037
@@ -368,8 +368,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 装配可在零件齐套达到设定条件时启动，现有参考阈值为70%至80%，允许配置。比例口径、关键件条件及统计范围须确认；不得仅凭总体百分比认定所有装配前置条件满足。试模必须在对应装配任务完成后正式开展。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成；limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定
-- 验证证据：tests/test_plan_tools.py 覆盖依赖阻塞任务；装配齐套率和关键件口径尚未验收
+- 实现证据：项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成；prepare_project_plan_baseline 会校验任务依赖和日期顺序，可阻止试模等节点早于前置节点的基线计划；limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定
+- 验证证据：tests/test_plan_tools.py 覆盖依赖阻塞任务和基线计划依赖校验链路；装配齐套率和关键件口径尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-039
@@ -386,8 +386,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 节点调整记录原计划、新计划、原因、影响范围及审批附件。内部部门提出调整后通知项目负责人，由其协调并通知受影响部门；客户变更由项目负责人组织传达。不得只留延期说明而不更新相应计划及任务。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；部门确认矩阵和更完整的受影响部门通知规则仍待补齐
-- 验证证据：tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人；完整部门通知尚未验收
+- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_baseline 与 prepare_project_plan_change 分别处理初始计划和节点调整，已有有效计划或待处理计划时会阻断基线计划并要求走计划变更；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；部门确认矩阵和更完整的受影响部门通知规则仍待补齐
+- 验证证据：tests/test_plan_tools.py 覆盖基线计划重复阻断、计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人；完整部门通知尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-041

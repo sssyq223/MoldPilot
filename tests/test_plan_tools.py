@@ -477,6 +477,91 @@ def test_plan_change_proposal_postgres_confirm_chain(monkeypatch):
         engine.dispose()
 
 
+def test_plan_baseline_proposal_requires_human_confirmation_then_submits_bpm():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-BASELINE-PREP',status='ACTIVE')
+            config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='project_plan_baseline',version=1,name='项目基线计划审批',
+                status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+            db.add(definition)
+            conversation=m.Conversation(user_id=admin.id,title='基线计划')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备项目基线计划',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'delegated_auto'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'正式开工后建立项目基线计划',
+                'workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计及出图','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+                    {'key':'purchase','name':'五金采购','owner_user_id':admin.id,
+                    'planned_start':'2026-09-06','planned_end':'2026-09-10','prerequisites':['design']},
+                    {'key':'machining','name':'加工','owner_user_id':admin.id,
+                    'planned_start':'2026-09-11','planned_end':'2026-09-20','prerequisites':['purchase']},
+                    {'key':'assembly','name':'装配','owner_user_id':admin.id,
+                    'planned_start':'2026-09-21','planned_end':'2026-09-25','prerequisites':['machining']},
+                    {'key':'trial','name':'试模','owner_user_id':admin.id,
+                    'planned_start':'2026-09-26','planned_end':'2026-09-28','prerequisites':['assembly']},
+                    {'key':'delivery','name':'最终交付','owner_user_id':admin.id,
+                    'planned_start':'2026-09-29','planned_end':'2026-09-30','prerequisites':['trial']}]}
+        schema=tool_schema('prepare_project_plan_baseline')['function']['parameters']
+        assert {'project_id','project_version','tasks','workflow_definition_id'} <= set(schema['properties'])
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            evidence=execute(db,admin,'prepare_project_plan_baseline',args,run=run)
+            assert evidence['proposal']['kind']=='project_plan_baseline'
+            assert evidence['proposal']['requires_approval'] is True
+            assert evidence['proposal']['display']['计划任务数']==6
+            assert '缺少：无' in evidence['proposal']['display']['大节点覆盖']
+            assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='project_plan')) is None
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_project_plan_baseline',
+                request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'project_plan.execute',step.id,payload)
+            receipt=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            assert receipt['status']=='SUBMITTED'
+            assert receipt['action']=='project_plan'
+            baseline=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='project_plan'))
+            assert baseline and baseline.status=='SUBMITTED'
+            assert db.get(m.PlanDetail,baseline.id).previous_id is None
+            assert len(list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==baseline.id))))==6
+            assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==baseline.id))
+    finally:
+        engine.dispose()
+
+
+def test_plan_baseline_proposal_rejects_existing_plan():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-BASELINE-EXISTS',status='ACTIVE')
+            existing=plan(db,p,admin,'PLAN-EXISTS')
+            task(db,existing,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'PLANNED')
+            config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='project_plan_baseline',version=1,name='项目基线计划审批',
+                status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+            db.add(definition)
+            conversation=m.Conversation(user_id=admin.id,title='基线计划')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备项目基线计划',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'重复建立计划',
+                'workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]}]}
+            with pytest.raises(DomainError) as duplicate:
+                execute(db,admin,'prepare_project_plan_baseline',args,run=run)
+            assert duplicate.value.code=='PLAN_EXISTS'
+    finally:
+        engine.dispose()
+
+
 def test_department_confirmation_proposal_requires_human_confirmation():
     engine,Session=factory()
     try:
