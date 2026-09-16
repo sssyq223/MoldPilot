@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -53,8 +53,9 @@ def task(db,plan_subject,user,key,name,start,end,status='PLANNED'):
     db.add(row);db.flush();return row
 
 
-def design(db,project,user,number='DESIGN-001',status='EFFECTIVE',revision='A0'):
+def design(db,project,user,number='DESIGN-001',status='EFFECTIVE',revision='A0',created_at=None):
     subject=m.BusinessSubject(kind='design_route',number=number,project_id=project.id,created_by=user.id,status=status)
+    if created_at:subject.created_at=created_at
     db.add(subject);db.flush()
     db.add(m.DesignDetail(subject_id=subject.id,design_type='NEW_MOLD',drawing_revision=revision,
         drawing_evidence='正式图纸版本 '+revision,reviewer_id=user.id))
@@ -98,7 +99,9 @@ def test_design_route_context_schema_routes_plan_and_contacts():
             base=plan(db,p,admin)
             machining=task(db,base,admin,'machining','模具加工',today,today+timedelta(days=10),'RUNNING')
             purchase=task(db,base,admin,'trial-material','试模料采购',today,today+timedelta(days=5))
-            design_subject=design(db,p,admin,'DESIGN-BASE','EFFECTIVE','A1')
+            previous_design=design(db,p,admin,'DESIGN-BASE-A0','CLOSED','A0',datetime(2026,1,1,9,0,0))
+            item(db,previous_design,mat_core,'INTERNAL','1',machining.id)
+            design_subject=design(db,p,admin,'DESIGN-BASE','EFFECTIVE','A1',datetime(2026,1,2,9,0,0))
             item(db,design_subject,mat_core,'INTERNAL','2',machining.id)
             item(db,design_subject,mat_steel,'PURCHASE','5',purchase.id)
             item(db,design_subject,mat_out,'OUTSOURCE','1')
@@ -115,6 +118,14 @@ def test_design_route_context_schema_routes_plan_and_contacts():
             assert {task['key'] for task in analysis['linked_plan_tasks']}=={'machining','trial-material'}
             assert analysis['engineering_contact_impacts'][0]['title']=='图纸改版影响采购与加工'
             assert analysis['derived_status']['has_engineering_contact_impacts'] is True
+            impact=analysis['revision_impact']
+            assert impact['status']=='COMPARED'
+            assert impact['previous_design']['drawing_revision']=='A0'
+            assert impact['latest_design']['drawing_revision']=='A1'
+            assert impact['summary']['added']==2
+            assert impact['summary']['quantity_changed']==1
+            assert impact['derived_status']['has_bom_or_route_changes'] is True
+            assert {task['key'] for task in impact['affected_plan_tasks']}=={'machining','trial-material'}
             assert any(item['code']=='STEEL-001' for item in analysis['route_summary']['materials'])
     finally:
         engine.dispose()
@@ -139,6 +150,7 @@ def test_design_context_hides_plan_and_contact_without_tools():
             analysis=result['data'][0]['analysis']
             assert analysis['linked_plan_tasks']==[]
             assert analysis['engineering_contact_impacts']==[]
+            assert analysis['revision_impact']['status']=='NO_PREVIOUS_COMPARABLE_DESIGN'
             assert '秘密加工' not in str(result)
             assert '工程联络影响' in ''.join(result['limitations'])
             assert analysis['route_summary']['materials'][0]['code']=='SECRET-MAT'

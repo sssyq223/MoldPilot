@@ -183,13 +183,99 @@ def _contact_impacts(db,user,project_id,materials,tasks,designs,allowed_tools):
     return result[:20]
 
 
+def _design_card(design):
+    if not design:return None
+    detail=design.get('detail') if isinstance(design.get('detail'),dict) else {}
+    return {'id':design.get('id'),'number':design.get('number'),'status':design.get('status'),
+        'created_at':design.get('created_at'),'drawing_revision':detail.get('drawing_revision'),
+        'drawing_evidence':detail.get('drawing_evidence')}
+
+
+def _item_snapshot(item,material=None):
+    return {'material_id':item.get('material_id'),'code':(material or {}).get('code'),
+        'name':(material or {}).get('name'),'category':(material or {}).get('category'),
+        'quantity':item.get('quantity'),'route':item.get('route'),'task_id':item.get('task_id')}
+
+
+def _revision_impact(designs,materials,tasks):
+    effective=[row for row in designs if row.get('status')=='EFFECTIVE']
+    if not effective:
+        return {'status':'NO_EFFECTIVE_DESIGN','latest_design':None,'previous_design':None,
+            'added_items':[],'removed_items':[],'changed_items':[],'unchanged_count':0,
+            'affected_plan_tasks':[],'summary':{'added':0,'removed':0,'changed':0,'unchanged':0,
+                'route_changed':0,'quantity_changed':0,'task_link_changed':0},
+            'derived_status':{'has_revision_comparison':False,'has_bom_or_route_changes':False,
+                'has_route_changes':False,'has_task_link_changes':False},
+            'limitations':['未见生效设计版本，不能比较正式图纸/BOM/路线改版影响。']}
+    ordered=sorted(designs,key=lambda row:(row.get('created_at') or '',row.get('number') or '',row.get('id') or ''),reverse=True)
+    latest=max(effective,key=lambda row:(row.get('created_at') or '',row.get('number') or '',row.get('id') or ''))
+    previous=next((row for row in ordered if row.get('id')!=latest.get('id')
+        and row.get('status') not in {'DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','CANCELLED'}),None)
+    if not previous:
+        return {'status':'NO_PREVIOUS_COMPARABLE_DESIGN','latest_design':_design_card(latest),'previous_design':None,
+            'added_items':[],'removed_items':[],'changed_items':[],'unchanged_count':0,
+            'affected_plan_tasks':[],'summary':{'added':0,'removed':0,'changed':0,'unchanged':0,
+                'route_changed':0,'quantity_changed':0,'task_link_changed':0},
+            'derived_status':{'has_revision_comparison':False,'has_bom_or_route_changes':False,
+                'has_route_changes':False,'has_task_link_changes':False},
+            'limitations':['当前可见范围未见可比较的上一版设计路线，只能展示当前生效版本。']}
+    material_by_design={(item.get('design_id'),item.get('id')):item for item in materials if item.get('id')}
+    task_by_id={task.get('id'):task for task in tasks if task.get('id')}
+    def items(design):
+        detail=design.get('detail') if isinstance(design.get('detail'),dict) else {}
+        return {item.get('material_id'):item for item in detail.get('items',[]) if item.get('material_id')}
+    current=items(latest);prior=items(previous)
+    added=[];removed=[];changed=[];unchanged=0;affected_task_ids=set()
+    for material_id,item in current.items():
+        if material_id not in prior:
+            added.append(_item_snapshot(item,material_by_design.get((latest.get('id'),material_id))))
+            if item.get('task_id'):affected_task_ids.add(item.get('task_id'))
+    for material_id,item in prior.items():
+        if material_id not in current:
+            removed.append(_item_snapshot(item,material_by_design.get((previous.get('id'),material_id))))
+            if item.get('task_id'):affected_task_ids.add(item.get('task_id'))
+    route_changed=quantity_changed=task_link_changed=0
+    for material_id,item in current.items():
+        old=prior.get(material_id)
+        if not old:continue
+        changes=[]
+        if str(old.get('quantity'))!=str(item.get('quantity')):
+            changes.append('QUANTITY_CHANGED');quantity_changed+=1
+        if old.get('route')!=item.get('route'):
+            changes.append('ROUTE_CHANGED');route_changed+=1
+        if old.get('task_id')!=item.get('task_id'):
+            changes.append('TASK_LINK_CHANGED');task_link_changed+=1
+        if changes:
+            changed.append({'material_id':material_id,'code':material_by_design.get((latest.get('id'),material_id),{}).get('code')
+                or material_by_design.get((previous.get('id'),material_id),{}).get('code'),
+                'name':material_by_design.get((latest.get('id'),material_id),{}).get('name')
+                or material_by_design.get((previous.get('id'),material_id),{}).get('name'),
+                'changes':changes,'from':_item_snapshot(old,material_by_design.get((previous.get('id'),material_id))),
+                'to':_item_snapshot(item,material_by_design.get((latest.get('id'),material_id)))})
+            if old.get('task_id'):affected_task_ids.add(old.get('task_id'))
+            if item.get('task_id'):affected_task_ids.add(item.get('task_id'))
+        else:unchanged+=1
+    affected_tasks=[task_by_id[task_id] for task_id in sorted(affected_task_ids) if task_id in task_by_id]
+    has_changes=bool(added or removed or changed)
+    return {'status':'COMPARED','latest_design':_design_card(latest),'previous_design':_design_card(previous),
+        'added_items':added[:50],'removed_items':removed[:50],'changed_items':changed[:50],
+        'unchanged_count':unchanged,'affected_plan_tasks':affected_tasks[:50],
+        'summary':{'added':len(added),'removed':len(removed),'changed':len(changed),'unchanged':unchanged,
+            'route_changed':route_changed,'quantity_changed':quantity_changed,'task_link_changed':task_link_changed},
+        'derived_status':{'has_revision_comparison':True,'has_bom_or_route_changes':has_changes,
+            'has_route_changes':route_changed>0,'has_task_link_changes':task_link_changed>0},
+        'limitations':['改版影响仅比较当前可见上一版与当前生效版的 Agent 设计路线事实；不生成图纸、不同步 ERP BOM、不自动调整计划任务。']}
+
+
 def _analysis(designs,materials,tasks,contacts):
     effective=[row for row in designs if row.get('status')=='EFFECTIVE']
     open_designs=[row for row in designs if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED'}]
-    latest=max(effective,key=lambda row:row.get('created_at','')) if effective else None
-    route_counts=dict(Counter(item.get('route') for item in materials if item.get('route')))
-    unlinked=[item for item in materials if item.get('route')=='INTERNAL' and not item.get('task_id')]
-    purchase_like=[item for item in materials if item.get('route') in {'PURCHASE','OUTSOURCE'}]
+    latest=max(effective,key=lambda row:(row.get('created_at') or '',row.get('number') or '',row.get('id') or '')) if effective else None
+    current_materials=[item for item in materials if latest and item.get('design_id')==latest.get('id')] if latest else materials
+    route_counts=dict(Counter(item.get('route') for item in current_materials if item.get('route')))
+    unlinked=[item for item in current_materials if item.get('route')=='INTERNAL' and not item.get('task_id')]
+    purchase_like=[item for item in current_materials if item.get('route') in {'PURCHASE','OUTSOURCE'}]
+    revision_impact=_revision_impact(designs,materials,tasks)
     warnings=[]
     if len(effective)>1:warnings.append('当前可见范围存在多个生效设计版本，请先核对唯一正式版本。')
     if not latest:warnings.append('当前可见范围未见生效设计版本，不能认定正式BOM或加工路线已确认。')
@@ -197,16 +283,19 @@ def _analysis(designs,materials,tasks,contacts):
     if unlinked:warnings.append('存在内部加工路线物料未关联计划任务，不能据此判断加工排程已覆盖。')
     if purchase_like and not tasks:warnings.append('采购或委外路线物料未在当前权限内看到关联计划节点，请核对采购/委外任务承接。')
     if contacts:warnings.append('存在工程联络影响项，设计、BOM或路线结论需结合联络方案/复验状态确认。')
+    if revision_impact['derived_status']['has_bom_or_route_changes']:
+        warnings.append('当前生效设计较上一版存在BOM、数量、路线或计划关联差异，需结合设计改版依据和相关任务承接核对。')
     return {'latest_effective_design':latest,'open_design_routes':open_designs[:20],
-        'route_summary':{'counts':route_counts,'materials':materials[:50],
+        'route_summary':{'counts':route_counts,'materials':current_materials[:50],
             'internal_unlinked_items':[{'material_id':i.get('id'),'code':i.get('code'),'name':i.get('name')} for i in unlinked[:20]]},
-        'linked_plan_tasks':tasks[:50],'engineering_contact_impacts':contacts,
+        'linked_plan_tasks':tasks[:50],'engineering_contact_impacts':contacts,'revision_impact':revision_impact,
         'warnings':warnings,'derived_status':{
             'has_effective_design_route':bool(latest),
             'has_open_design_route':bool(open_designs),
             'has_unlinked_internal_route':bool(unlinked),
             'has_purchase_or_outsource_route':bool(purchase_like),
-            'has_engineering_contact_impacts':bool(contacts)}}
+            'has_engineering_contact_impacts':bool(contacts),
+            **revision_impact['derived_status']}}
 
 
 def query(db,user,data:DesignRouteContextInput,allowed_tools:set[str]):
