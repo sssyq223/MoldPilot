@@ -738,8 +738,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 质量或延期问题记录事实、责任确认、整改和复验。按适用合同及经确认的责任处理客户对我方、我方对供应商的扣款，不能在责任未确定时仅凭延期自动认定全部由供应商承担。扣款结果关联结算数据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索；full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担
-- 验证证据：tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；责任确认、复验关闭、客户对我方/我方对供应商扣款联动及结算写入尚未验收
+- 实现证据：新增 supplier_deduction_settlement PostgreSQL 模型与迁移，保存项目、供应商、委外合同、工程联络单/任务、扣款原因、责任归属、扣款金额、币种、结算状态、责任依据、结算依据、确认人和来源；query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，并新增 analysis.supplier_deduction_settlements；derived_status.has_deduction_or_cost_impact_signal、has_confirmed_supplier_deduction、has_settled_supplier_deduction、has_pending_supplier_deduction 分别标记扣款线索、责任已确认、已结算和待确认状态；工具要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担
+- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商质量延期扣款线索、合同依据、责任确认、已结算扣款和未关闭问题提示；真实复验关闭、客户对我方扣款与我方对供应商扣款联动及 ERP/财务结算写入尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-077

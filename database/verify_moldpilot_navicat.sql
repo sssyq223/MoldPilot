@@ -68,6 +68,11 @@ SELECT
     'supplier_material_handoff',
     COUNT(*)
 FROM supplier_material_handoff
+UNION ALL
+SELECT
+    'supplier_deduction_settlement',
+    COUNT(*)
+FROM supplier_deduction_settlement
 ORDER BY table_name;
 
 SELECT

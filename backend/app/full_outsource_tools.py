@@ -368,6 +368,46 @@ def _material_handoffs(db, user, project_id, allowed_tools):
     return rows
 
 
+def _deduction_settlements(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    q = (
+        select(m.SupplierDeductionSettlement, m.Supplier)
+        .join(m.Supplier, m.SupplierDeductionSettlement.supplier_id == m.Supplier.id)
+        .where(m.SupplierDeductionSettlement.project_id == project_id)
+        .order_by(m.SupplierDeductionSettlement.created_at.desc(), m.SupplierDeductionSettlement.id)
+        .limit(100)
+    )
+    for settlement, supplier in db.execute(q):
+        rows.append(
+            {
+                "id": settlement.id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": settlement.contract_subject_id,
+                "contact_case_id": settlement.contact_case_id,
+                "contact_task_id": settlement.contact_task_id,
+                "reason": settlement.reason,
+                "responsibility": settlement.responsibility,
+                "deduction_amount": str(settlement.deduction_amount),
+                "currency": settlement.currency,
+                "status": settlement.status,
+                "settlement_reference": settlement.settlement_reference,
+                "responsibility_evidence": settlement.responsibility_evidence,
+                "settlement_evidence": settlement.settlement_evidence,
+                "confirmed_by": settlement.confirmed_by,
+                "settled_by": settlement.settled_by,
+                "settled_at": settlement.settled_at.isoformat() if settlement.settled_at else None,
+                "source_system": settlement.source_system,
+                "source_ref": settlement.source_ref,
+            }
+        )
+    return rows
+
+
 def _engineering_changes(rows):
     result = []
     for row in rows:
@@ -486,7 +526,7 @@ def _closure_items(db, user, project_id, allowed_tools):
     return rows[:100]
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, order_tracking, engineering_changes, contacts, payments, closure_items):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, deduction_settlements, order_tracking, engineering_changes, contacts, payments, closure_items):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -497,6 +537,9 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     overdue_reports = [row for row in supplier_progress_reports if row.get("overdue_followup")]
     approved_handoffs = [row for row in material_handoffs if row.get("approval_status") == "APPROVED"]
     draft_or_revoked_handoffs = [row for row in material_handoffs if row.get("approval_status") != "APPROVED"]
+    confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
+    settled_deductions = [row for row in deduction_settlements if row.get("status") == "SETTLED"]
+    pending_deductions = [row for row in deduction_settlements if row.get("status") == "PROPOSED" or row.get("responsibility") == "UNKNOWN"]
     deduction_tasks = [
         task
         for issue in contacts
@@ -546,6 +589,12 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("存在设变或整改影响项未见执行与复验全部完成，不能把方案批准等同于整改完成。")
     if deduction_tasks and not contract_effective:
         warnings.append("存在扣款/费用影响线索，但未见已生效委外合同，不能确认责任与结算依据。")
+    if deduction_tasks and not confirmed_deductions:
+        warnings.append("存在扣款/费用影响线索，但未见责任已确认的供应商扣款结算依据；不能仅凭延期或质量问题自动认定供应商扣款。")
+    if confirmed_deductions and not settled_deductions:
+        warnings.append("存在责任已确认的供应商扣款，但未见已结算记录；需同步供应商结算或财务依据。")
+    if pending_deductions:
+        warnings.append("存在待确认责任或拟议状态的供应商扣款记录，不能作为正式结算结果。")
     if not acceptance_done:
         gaps.append("未见委外项目客户验收完成、回款或关闭清单中的正式依据。")
     gaps.append("当前未接入供应商门户、供应商在线签署、供应商节点填报频率和证据模板；只能读取已授权本地/ERP适配事实。")
@@ -561,6 +610,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         "outsource_plan_tasks": plan_tasks,
         "supplier_progress_reports": supplier_progress_reports,
         "supplier_material_handoffs": material_handoffs,
+        "supplier_deduction_settlements": deduction_settlements,
         "supplier_execution_tracking": order_tracking,
         "engineering_changes": engineering_changes,
         "outsource_quality_delay_contacts": contacts,
@@ -581,6 +631,9 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_overdue_supplier_progress_followup": bool(overdue_reports),
             "has_approved_supplier_material_handoff": bool(approved_handoffs),
             "has_draft_or_revoked_supplier_material_handoff": bool(draft_or_revoked_handoffs),
+            "has_confirmed_supplier_deduction": bool(confirmed_deductions),
+            "has_settled_supplier_deduction": bool(settled_deductions),
+            "has_pending_supplier_deduction": bool(pending_deductions),
             "has_supplier_shipment_or_receipt": bool(totals.get("supplier_shipments") or totals.get("goods_receipts")),
             "has_rejected_receipt": bool(totals.get("rejected_receipt_lines")),
             "has_open_outsource_issue": bool(open_contacts or open_change_impacts),
@@ -609,6 +662,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         active_plan, plan_tasks = _plan_tasks(plan_rows)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
+        deduction_settlements = _deduction_settlements(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         payments = _payment_summary(_subject_rows(db, user, project.id, "supplier_payment", allowed_tools))
@@ -649,6 +703,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         plan_tasks,
                         supplier_progress_reports,
                         material_handoffs,
+                        deduction_settlements,
                         order_tracking,
                         engineering_changes,
                         contacts,

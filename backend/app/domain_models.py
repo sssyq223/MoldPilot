@@ -377,6 +377,36 @@ class PaymentConfirmation(IdentityMixin, Base):
     __table_args__ = (CheckConstraint('amount <> 0'),)
 
 
+class SupplierDeductionSettlement(IdentityMixin, Base):
+    """Responsibility-confirmed supplier deduction/settlement evidence for quality or delay."""
+    __tablename__ = 'supplier_deduction_settlement'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    contact_case_id: Mapped[str | None] = mapped_column(ForeignKey('contact_case.id'), index=True)
+    contact_task_id: Mapped[str | None] = mapped_column(ForeignKey('contact_task.id'), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    responsibility: Mapped[str] = mapped_column(String(40), default='UNKNOWN')
+    deduction_amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3), default='CNY')
+    status: Mapped[str] = mapped_column(String(30), default='PROPOSED')
+    settlement_reference: Mapped[str | None] = mapped_column(String(120))
+    responsibility_evidence: Mapped[str] = mapped_column(Text)
+    settlement_evidence: Mapped[str] = mapped_column(Text, default='')
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    settled_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    __table_args__ = (
+        UniqueConstraint('project_id','supplier_id','reason','source_ref', name='supplier_deduction_settlement_unique_source'),
+        CheckConstraint("responsibility IN ('CUSTOMER','SUPPLIER','INTERNAL','SHARED','UNKNOWN')", name='supplier_deduction_responsibility'),
+        CheckConstraint("status IN ('PROPOSED','RESPONSIBILITY_CONFIRMED','SETTLED','CANCELLED')", name='supplier_deduction_status'),
+        CheckConstraint('deduction_amount >= 0', name='supplier_deduction_nonnegative'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_deduction_source_system'),
+    )
+
+
 class PlanDetail(Base):
     __tablename__ = 'plan_detail'
     subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)

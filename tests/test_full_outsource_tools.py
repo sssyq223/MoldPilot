@@ -278,23 +278,49 @@ def contact_issue(db, project, creator):
     )
     db.add(case)
     db.flush()
-    db.add(
-        m.ContactTask(
-            case_id=case.id,
-            department_id=group.id,
-            title="供应商整改复验及扣款核对",
-            created_by=creator.id,
-            status="ASSIGNED",
-            affected_type="CONTRACT",
-            affected_ref="FOC",
-            impact_description="质量延期，需要整改复验并核对扣款",
-            planned_action="REWORK",
-            delivery_impact_days=5,
-            estimated_amount=Decimal("8000.00"),
-            currency="CNY",
-        )
+    task = m.ContactTask(
+        case_id=case.id,
+        department_id=group.id,
+        title="供应商整改复验及扣款核对",
+        created_by=creator.id,
+        status="ASSIGNED",
+        affected_type="CONTRACT",
+        affected_ref="FOC",
+        impact_description="质量延期，需要整改复验并核对扣款",
+        planned_action="REWORK",
+        delivery_impact_days=5,
+        estimated_amount=Decimal("8000.00"),
+        currency="CNY",
     )
-    return case
+    db.add(task)
+    db.flush()
+    return case, task
+
+
+def supplier_deduction(db, project, creator, sup, contract=None, case=None, task=None, status="SETTLED"):
+    row = m.SupplierDeductionSettlement(
+        project_id=project.id,
+        supplier_id=sup.id,
+        contract_subject_id=contract.id if contract else None,
+        contact_case_id=case.id if case else None,
+        contact_task_id=task.id if task else None,
+        reason="供应商质量延期责任扣款",
+        responsibility="SUPPLIER",
+        deduction_amount=Decimal("8000.00"),
+        currency="CNY",
+        status=status,
+        settlement_reference="SETTLE-" + project.code if status == "SETTLED" else None,
+        responsibility_evidence="责任确认单",
+        settlement_evidence="供应商结算扣款单" if status == "SETTLED" else "",
+        confirmed_by=creator.id,
+        settled_by=creator.id if status == "SETTLED" else None,
+        settled_at=None,
+        source_system="MANUAL",
+        source_ref="DEDUCT-" + project.code,
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def closure_acceptance(db, project, creator):
@@ -331,7 +357,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         _, task = plan(db, p, admin)
         supplier_progress(db, p, admin, sup, task)
         order_flow(db, p, admin, material(db), sup, wh)
-        contact_issue(db, p, admin)
+        case, contact_task = contact_issue(db, p, admin)
+        supplier_deduction(db, p, admin, sup, contract, case, contact_task)
         closure_acceptance(db, p, admin)
     schema = tool_schema("query_full_outsource_context")["function"]["parameters"]
     assert {"project_id", "identifier"} <= set(schema["properties"])
@@ -351,6 +378,9 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert status["has_overdue_supplier_progress_followup"] is True
         assert status["has_approved_supplier_material_handoff"] is True
         assert status["has_draft_or_revoked_supplier_material_handoff"] is False
+        assert status["has_confirmed_supplier_deduction"] is True
+        assert status["has_settled_supplier_deduction"] is True
+        assert status["has_pending_supplier_deduction"] is False
         assert status["has_supplier_shipment_or_receipt"] is True
         assert status["has_rejected_receipt"] is True
         assert status["has_open_outsource_issue"] is True
@@ -363,6 +393,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert analysis["supplier_material_handoffs"][0]["approval_status"] == "APPROVED"
         assert analysis["contract_signing_records"][0]["signed_file_title"] == "整套委外合同签署扫描件.pdf"
         assert analysis["contract_signing_records"][0]["status"] == "SIGNED"
+        assert analysis["supplier_deduction_settlements"][0]["deduction_amount"] == "8000.00"
+        assert analysis["supplier_deduction_settlements"][0]["status"] == "SETTLED"
         assert "供应商门户" in "".join(analysis["gaps"])
         warnings = "".join(analysis["warnings"])
         assert "不合格" in warnings
@@ -383,6 +415,7 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         contract_signing(db, contract, admin)
         supplier_progress(db, p, admin, sup)
         material_handoff(db, p, admin, sup, contract)
+        supplier_deduction(db, p, admin, sup, contract)
         order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
         grant(db, admin, operator, "project.read", project_id=p.id)
         grant(db, admin, operator, "full_outsource_contract.read", project_id=p.id, category="outsource")
@@ -395,6 +428,7 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         assert analysis["derived_status"]["has_signed_full_outsource_contract_file"] is True
         assert analysis["derived_status"]["has_supplier_progress_report"] is True
         assert analysis["derived_status"]["has_approved_supplier_material_handoff"] is True
+        assert analysis["derived_status"]["has_settled_supplier_deduction"] is True
         assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
         assert "SHIP-OUT-SECRET" not in str(result)
         assert "PO-OUT-OUT-LIMITED" not in str(result)
@@ -402,6 +436,7 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         assert analysis["contract_signing_records"][0]["source_ref"] == "SIGN-FOC-OUT-LIMITED"
         assert analysis["supplier_progress_reports"][0]["source_ref"] == "SPR-OUT-LIMITED"
         assert analysis["supplier_material_handoffs"][0]["source_ref"] == "HANDOFF-OUT-LIMITED"
+        assert analysis["supplier_deduction_settlements"][0]["source_ref"] == "DEDUCT-OUT-LIMITED"
         assert "正式订单" in "".join(result["limitations"])
 
 
