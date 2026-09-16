@@ -108,7 +108,14 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'governance_context_review':{'name':'治理权限与来源核对','tools':['query_governance_context']},
                'operations_readiness_review':{'name':'运行交付就绪核对','tools':['query_operations_readiness_context']},
                'procurement_price_context_review':{'name':'采购价格与订单上下文核对','tools':['query_procurement_price_context']},
-               'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases']},
+               'contact_collaboration_review':{'name':'工程联络协作核对','tools':['query_contact_cases'],
+                   'optional_tools':['query_contact_context','prepare_contact_resolution','prepare_contact_review',
+                                     'prepare_contact_close','prepare_contact_respond','prepare_contact_task',
+                                     'prepare_contact_assign','prepare_contact_set_reviewer',
+                                     'prepare_contact_cancel_task','prepare_contact_note',
+                                     'prepare_contact_attach','prepare_contact_create'],
+                   'activation_tools':['query_contact_cases','query_contact_context','prepare_contact_resolution',
+                                       'prepare_contact_review','prepare_contact_close','prepare_contact_respond']},
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
                'project_dossier_review':{'name':'项目业务档案核对','tools':['query_project_dossier']},
                'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context','prepare_project_pause','prepare_project_resume']},
@@ -295,6 +302,7 @@ def capability_descriptor(kind, key, spec):
         'mode': mode,
         'dependencies': spec.get('tools', []),
         'optional_dependencies': spec.get('optional_tools', []),
+        'activation_dependencies': spec.get('activation_tools', spec.get('tools', []) + spec.get('optional_tools', [])),
     }
 
 
@@ -397,7 +405,8 @@ def skill_context(db, user):
             content = path.read_text(encoding="utf-8")
             result.append({"key": key, "version": "1.0.0", "hash": content_hash(content), "instructions": content,
                            "agent_description": skill_agent_description(content),
-                           "tools": spec["tools"], "optional_tools": spec.get("optional_tools", [])})
+                           "tools": spec["tools"], "optional_tools": spec.get("optional_tools", []),
+                           "activation_tools": spec.get("activation_tools")})
     return result
 
 

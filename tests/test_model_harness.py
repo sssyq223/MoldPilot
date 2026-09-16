@@ -67,10 +67,26 @@ BASELINE_TOOL = {'type': 'function', 'function': {'name': 'prepare_project_plan_
                                                   'description': '准备项目基线计划审批建议。'}}
 PLAN_CHANGE_TOOL = {'type': 'function', 'function': {'name': 'prepare_project_plan_change',
                                                      'description': '准备项目计划变更审批建议。'}}
+CONTACT_CASES_TOOL = {'type': 'function', 'function': {'name': 'query_contact_cases',
+                                                       'description': '查询工程联络单列表和协作状态。'}}
+CONTACT_CONTEXT_TOOL = {'type': 'function', 'function': {'name': 'query_contact_context',
+                                                         'description': '读取指定工程联络单的办理上下文。'}}
+CONTACT_RESOLUTION_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact_resolution',
+                                                            'description': '准备处理方案审批建议。'}}
+CONTACT_REVIEW_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact_review',
+                                                        'description': '准备复验处理结果建议。'}}
+CONTACT_CLOSE_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact_close',
+                                                       'description': '准备人工关闭联络单建议。'}}
+CONTACT_RESPOND_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact_respond',
+                                                         'description': '准备提交联络反馈建议。'}}
+CONTACT_ASSIGN_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact_assign',
+                                                        'description': '准备分派联络处理人建议。'}}
 TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search1', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': 'query_projects'})}}]}
 PLAN_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-plan', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目计划'})}}]}
+CONTACT_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-contact', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '工程联络关闭'})}}]}
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
+CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -169,6 +185,36 @@ def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
         ['ToolSearch', 'query_project_plan_context'],
         ['ToolSearch', 'query_project_plan_context'],
     ]
+
+
+def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools():
+    gateway = Gateway()
+    model = InspectingRepliesModel([CONTACT_TOOL_SEARCH, CONTACT_PROPOSAL, FINAL])
+    run_loop(context(core_tool_names=[], tools=[
+                         CONTACT_CASES_TOOL, CONTACT_CONTEXT_TOOL, CONTACT_RESOLUTION_TOOL,
+                         CONTACT_REVIEW_TOOL, CONTACT_CLOSE_TOOL, CONTACT_RESPOND_TOOL,
+                         CONTACT_ASSIGN_TOOL,
+                     ],
+                     skills=[{'key': 'contact_collaboration_review',
+                              'agent_description': '工程联络协作核对',
+                              'tools': ['query_contact_cases'],
+                              'optional_tools': ['query_contact_context','prepare_contact_resolution',
+                                                 'prepare_contact_review','prepare_contact_close',
+                                                 'prepare_contact_respond','prepare_contact_assign'],
+                              'activation_tools': ['query_contact_cases','query_contact_context',
+                                                   'prepare_contact_resolution','prepare_contact_review',
+                                                   'prepare_contact_close','prepare_contact_respond']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
+         'prepare_contact_resolution', 'prepare_contact_review',
+         'prepare_contact_close', 'prepare_contact_respond'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
+         'prepare_contact_resolution', 'prepare_contact_review',
+         'prepare_contact_close', 'prepare_contact_respond'],
+    ]
+    assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
 
 
 def test_business_query_mentioning_model_still_allows_tool_search():

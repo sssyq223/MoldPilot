@@ -42,3 +42,18 @@ def test_design_route_skill_exposes_optional_plan_change_bridge_without_hard_dep
     assert item["mode"] == "read_only"
     assert item["dependencies"] == ["query_design_route_context"]
     assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]
+
+
+def test_contact_collaboration_skill_has_curated_activation_pack():
+    item = capability_descriptor("SKILL", "contact_collaboration_review", SKILLS["contact_collaboration_review"])
+    assert item["dependencies"] == ["query_contact_cases"]
+    assert "query_contact_context" in item["optional_dependencies"]
+    assert "prepare_contact_close" in item["optional_dependencies"]
+    assert item["activation_dependencies"] == [
+        "query_contact_cases",
+        "query_contact_context",
+        "prepare_contact_resolution",
+        "prepare_contact_review",
+        "prepare_contact_close",
+        "prepare_contact_respond",
+    ]

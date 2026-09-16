@@ -103,7 +103,8 @@ def _skill_tool_groups(skills, all_tools):
         spec = registered.get(key, {})
         required = skill.get("tools") or skill.get("dependencies") or spec.get("tools", [])
         optional = skill.get("optional_tools") or skill.get("optional_dependencies") or spec.get("optional_tools", [])
-        tool_names = [name for name in [*required, *optional] if name in all_tools]
+        activation = skill.get("activation_tools") or skill.get("activation_dependencies") or spec.get("activation_tools")
+        tool_names = [name for name in (activation or [*required, *optional]) if name in all_tools]
         if not tool_names:
             continue
         description = skill.get("agent_description") or spec.get("description") or spec.get("name") or ""
@@ -127,6 +128,17 @@ def _score_search_candidate(query, terms, *fields):
             if term in text:
                 score += 80
     return score
+
+
+def _search_terms(query):
+    terms = [term for term in query.replace("/", " ").replace("|", " ").replace(";", " ").replace(",", " ").split() if term]
+    domain_terms = (*BUSINESS_OBJECT_HINTS, *BUSINESS_ACTION_HINTS,
+                    "协作", "复验", "验收", "反馈", "分派", "派发", "处理方案", "附件", "联络")
+    for term in domain_terms:
+        folded = term.lower()
+        if folded in query and folded not in terms:
+            terms.append(folded)
+    return terms
 
 
 def _optional_tools_prompt(deferred_tools, tool_groups):
@@ -166,7 +178,7 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None):
     normalized = (query or "").strip().lower()
     if not normalized:
         return [], [], []
-    terms = [term for term in normalized.replace("/", " ").replace("|", " ").replace(";", " ").replace(",", " ").split() if term]
+    terms = _search_terms(normalized)
     if normalized in deferred_tools:
         return [normalized], [normalized], []
     group_scores = []
