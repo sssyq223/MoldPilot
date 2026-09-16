@@ -60,6 +60,8 @@ def _visible_projects(db,user):
 def _visible_plan_subjects(db,user,project_ids,kind,allowed_tools):
     if kind=='project_plan':
         if 'query_project_plan_context' not in allowed_tools and 'query_project_plan' not in allowed_tools:return []
+    elif kind=='plan_change':
+        if 'query_plan_change' not in allowed_tools and 'prepare_project_plan_change' not in allowed_tools:return []
     elif 'query_'+kind not in allowed_tools:return []
     from .domains import data as subject_data
     result=[]
@@ -190,12 +192,16 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         records=_records(db,user,project.id,allowed_tools)
         profile=_profile(db,user,project.id)
         skipped=[]
-        if 'query_plan_change' not in allowed_tools:skipped.append('计划变更')
+        if 'query_plan_change' not in allowed_tools and 'prepare_project_plan_change' not in allowed_tools:skipped.append('计划变更')
         if skipped:limitations.append('未分配对应查询工具，未返回：'+'、'.join(skipped))
+        workflows=[]
+        if 'prepare_project_plan_change' in allowed_tools:
+            try:workflows=workflow_options(db,user,project)
+            except DomainError as error:limitations.append('当前人员缺少计划变更读取或提交权限，未返回可选计划变更审批流程：'+error.message)
         analysis=_analysis(project,profile,records)
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':profile,'project_plans':records['project_plan'],'plan_changes':records['plan_change'],
-            'analysis':analysis}],
+            'analysis':analysis,'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),

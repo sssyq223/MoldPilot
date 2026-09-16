@@ -115,6 +115,37 @@ def test_plan_context_does_not_leak_plan_change_without_tool():
         engine.dispose()
 
 
+def test_plan_change_skill_context_returns_active_change_and_workflows_without_generic_query_tool():
+    engine,Session=factory()
+    today=date.today()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);operator=user(db)
+            p=project(db,'PLAN-CHANGE-SKILL')
+            base=plan(db,p,admin,'PLAN-OLD',status='CLOSED')
+            task(db,base,admin,'design','结构设计',today,today+timedelta(days=1),'DONE')
+            change=plan(db,p,admin,'PLAN-CHANGE-EFFECTIVE',kind='plan_change',status='EFFECTIVE',previous_id=base.id)
+            task(db,change,admin,'design','结构设计',today,today+timedelta(days=1),'DONE')
+            task(db,change,admin,'trial','试模',today+timedelta(days=2),today+timedelta(days=3))
+            definition=m.WorkflowDefinition(process_key='plan_change_visible',version=1,name='计划变更审批',
+                status='PUBLISHED',config={'business_type':'plan_change','nodes':[{'key':'review','name':'计划负责人确认','mode':'ALL','users':[admin.id],'reject_rules':[]}]})
+            db.add(definition)
+            for permission in ('project.read','project_plan.read','plan_change.read','plan_change.create','plan_change.submit'):
+                grant(db,admin,operator,permission,p.id)
+            capability(db,operator,'query_project_plan_context')
+            capability(db,operator,'prepare_project_plan_change')
+        with Session() as db:
+            operator=db.query(m.User).filter_by(username='operator').one()
+            result=execute(db,operator,'query_project_plan_context',{'identifier':'PLAN-CHANGE-SKILL'})
+            row=result['data'][0]
+            assert row['analysis']['active_plan']['number']=='PLAN-CHANGE-EFFECTIVE'
+            assert row['plan_changes'][0]['number']=='PLAN-CHANGE-EFFECTIVE'
+            assert row['workflow_options'][0]['id']==definition.id
+            assert '未返回：计划变更' not in ''.join(result['limitations'])
+    finally:
+        engine.dispose()
+
+
 def test_plan_context_reports_no_effective_plan_and_multiple_candidates():
     engine,Session=factory()
     today=date.today()

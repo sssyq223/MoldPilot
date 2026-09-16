@@ -917,3 +917,66 @@ html[data-theme="light"] .capability-type-pill.total.active{background:#356ea9;b
  .capability-filter-control{flex:1 1 140px}
  .capability-filter-control select{flex:1;min-width:0}
 }
+
+/* PI-Desktop inspired tools/skills settings page. */
+.capability-page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:0 0 14px}
+.capability-page-head h2{margin:0 0 4px;font-size:24px;line-height:1.25;font-weight:800;letter-spacing:-.02em}
+.capability-page-head p{margin:0;font-size:13px;line-height:1.55}
+.capability-page-head>small{white-space:nowrap}
+.capability-toolbar-v2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 18px;padding:0}
+.capability-toolbar-v2 .capability-manage-button{height:36px;flex:0 0 auto;padding:0 13px;border-radius:10px;background:color-mix(in srgb,var(--surface) 86%,var(--bg));border-color:color-mix(in srgb,var(--border) 74%,transparent);font-size:13px;white-space:nowrap}
+.capability-toolbar-v2 .capability-tabs{height:36px;display:inline-flex;align-items:center;gap:3px;margin:0;padding:3px;border-radius:11px;background:color-mix(in srgb,var(--surface) 88%,var(--bg));border:1px solid color-mix(in srgb,var(--border) 78%,transparent)}
+.capability-toolbar-v2 .capability-tabs button{height:28px;border-radius:8px;padding:0 11px;border:0;background:transparent;color:var(--muted);font-size:12px;font-weight:600}
+.capability-toolbar-v2 .capability-tabs button.active{background:color-mix(in srgb,var(--accent) 16%,var(--surface));color:color-mix(in srgb,var(--accent) 76%,#fff);box-shadow:0 1px 0 color-mix(in srgb,#fff 7%,transparent) inset}
+.capability-toolbar-v2 .capability-tabs span{height:17px;min-width:17px;padding:0 5px;border-radius:999px;background:color-mix(in srgb,var(--accent) 10%,transparent);font-size:10px;color:inherit}
+.capability-toolbar-v2 .capability-filter-control{height:36px;display:inline-flex;flex:0 0 auto;flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:12px;white-space:nowrap}
+.capability-toolbar-v2 .capability-filter-control select{width:auto;min-width:116px;height:36px;padding:0 30px 0 10px;border-radius:10px;background:color-mix(in srgb,var(--surface) 88%,var(--bg));border-color:color-mix(in srgb,var(--border) 76%,transparent);font-size:12px}
+.capability-toolbar-v2 .capability-search-pill{height:36px;min-width:230px;max-width:360px;flex:1 1 260px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;border-radius:999px;background:color-mix(in srgb,var(--surface) 88%,var(--bg));border:1px solid color-mix(in srgb,var(--border) 76%,transparent);color:var(--muted)}
+.capability-toolbar-v2 .capability-search-pill:focus-within{border-color:color-mix(in srgb,var(--accent) 48%,var(--border));box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent)}
+.capability-toolbar-v2 .capability-search-pill input{height:34px;min-width:0;border:0;background:transparent;padding:0;font-size:12px}
+.capability-groups.capability-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:16px;align-items:start;margin-top:8px}
+.capability-department{overflow:hidden;padding:0;border-radius:16px;background:color-mix(in srgb,var(--surface) 88%,var(--bg));border:1px solid color-mix(in srgb,var(--border) 82%,transparent);box-shadow:0 14px 40px color-mix(in srgb,#000 10%,transparent)}
+.capability-department-title{min-height:50px;display:flex!important;align-items:center;gap:8px;margin:0!important;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,var(--border) 62%,transparent);white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+.capability-department-title::-webkit-scrollbar{display:none}
+.capability-department-title>span:first-child{flex:0 0 auto;max-width:180px;overflow:hidden;text-overflow:ellipsis;color:color-mix(in srgb,var(--muted) 20%,#fff);font-size:14px;font-weight:800}
+.capability-type-pill{height:26px;flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:0 9px;border-radius:9px;border:1px solid color-mix(in srgb,var(--border) 74%,transparent);background:color-mix(in srgb,var(--surface) 78%,var(--bg));color:var(--muted);font-size:12px;font-weight:650;box-shadow:none}
+.capability-type-pill:hover{background:color-mix(in srgb,var(--accent) 9%,var(--surface));border-color:color-mix(in srgb,var(--accent) 34%,var(--border));color:color-mix(in srgb,var(--accent) 70%,#fff)}
+.capability-type-pill.active,.capability-type-pill.total.active{background:color-mix(in srgb,var(--accent) 82%,#111827);border-color:color-mix(in srgb,var(--accent) 82%,#111827);color:#fff}
+.capability-type-pill.total{margin-left:auto;background:color-mix(in srgb,var(--surface) 90%,var(--bg));color:var(--muted)}
+.capability-type-pill small{font-size:10px;line-height:1;color:inherit;opacity:.7}
+.capability-type-block{margin:0;padding:0 12px}
+.capability-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;min-height:58px;padding:10px 0;border-top:1px solid color-mix(in srgb,var(--border) 60%,transparent);background:transparent}
+.capability-type-block:first-of-type .capability-row:first-child{border-top:0}
+.capability-row:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.capability-row>div:first-child{min-width:0}
+.capability-row h3{margin:0;min-width:0;display:flex;align-items:center;gap:8px;color:color-mix(in srgb,var(--muted) 8%,#fff);font-size:13px;font-weight:800;line-height:1.35}
+.capability-row h3 svg{width:24px;height:24px;padding:5px;border-radius:8px;background:color-mix(in srgb,var(--accent) 10%,transparent);color:color-mix(in srgb,var(--accent) 72%,#fff)}
+.capability-row p{max-width:100%;margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capability-row-meta{min-width:126px;text-align:right}
+.capability-row-meta small{display:inline-flex;max-width:210px;align-items:center;justify-content:flex-end;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+.settings-section-title{margin:20px 0 10px}
+html[data-theme="light"] .capability-page-head h2,html[data-theme="light"] .capability-department-title>span:first-child,html[data-theme="light"] .capability-row h3{color:#172334}
+html[data-theme="light"] .capability-toolbar-v2 .capability-manage-button,html[data-theme="light"] .capability-toolbar-v2 .capability-tabs,html[data-theme="light"] .capability-toolbar-v2 .capability-filter-control select,html[data-theme="light"] .capability-toolbar-v2 .capability-search-pill{background:#fff;border-color:#d7e1eb}
+html[data-theme="light"] .capability-toolbar-v2 .capability-tabs button.active{background:#e7f0f9;color:#1e5f9c}
+html[data-theme="light"] .capability-department{background:#fff;border-color:#d9e2ec;box-shadow:0 14px 36px #52667d12}
+html[data-theme="light"] .capability-department-title{border-bottom-color:#e7edf3}
+html[data-theme="light"] .capability-type-pill{background:#fff;border-color:#d7e1eb;color:#355a80}
+html[data-theme="light"] .capability-type-pill.total{background:#fff;color:#627285}
+html[data-theme="light"] .capability-type-pill:hover{background:#f2f7fc;color:#172334;border-color:#9bbddf}
+html[data-theme="light"] .capability-type-pill.active,html[data-theme="light"] .capability-type-pill.total.active{background:#172334;border-color:#172334;color:#fff}
+html[data-theme="light"] .capability-row h3 svg{background:#eef5fb;color:#172334}
+html[data-theme="light"] .capability-row:hover{background:#f6f9fc}
+@media(max-width:900px){
+ .capability-page-head{align-items:flex-start;flex-direction:column;gap:6px}
+ .capability-groups.capability-grid{grid-template-columns:1fr}
+ .capability-toolbar-v2 .capability-search-pill{max-width:none;flex-basis:100%}
+}
+@media(max-width:650px){
+ .capability-toolbar-v2{align-items:stretch}
+ .capability-toolbar-v2 .capability-manage-button,.capability-toolbar-v2 .capability-tabs,.capability-toolbar-v2 .capability-filter-control,.capability-toolbar-v2 .capability-search-pill{width:100%;flex:1 1 100%}
+ .capability-toolbar-v2 .capability-tabs button{flex:1}
+ .capability-toolbar-v2 .capability-filter-control select{flex:1}
+ .capability-row{grid-template-columns:1fr}
+ .capability-row-meta{text-align:left}
+ .capability-row-meta small{justify-content:flex-start;max-width:100%}
+}

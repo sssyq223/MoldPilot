@@ -9,5 +9,5 @@
 - `milestone_coverage` 只是按任务名称和标识做辅助核对；不能替代项目负责人按模具类型确认大节点是否完整。
 - 不要把 55 天周期、自然日/工作日、节假日、齐套率或关键件口径当作固定规则，除非工具或业务资料明确给出。
 - 查询阶段只读，不重排计划、不生成甘特图、不下达任务、不修改客户承诺交期。
-- 当用户明确要求调整项目计划时，必须先用 `query_project_plan_context` 取得真实 `project_id`、项目版本、当前有效计划 `previous_id` 和任务清单，再调用 `prepare_project_plan_change` 准备计划变更 proposal。不得只根据自然语言线索生成变更，也不得直接承诺计划已变更。
+- 当用户明确要求调整项目计划时，必须先用 `query_project_plan_context` 取得真实 `project_id`、项目版本、当前有效计划 `previous_id`、任务清单和 `workflow_options.id`，再调用 `prepare_project_plan_change` 准备计划变更 proposal。不得只根据自然语言线索生成变更，也不得直接承诺计划已变更。
 - `prepare_project_plan_change` 只生成待本人确认的计划变更建议；本人确认后才创建 `plan_change` 业务材料并提交 Agent BPM，审批生效前原计划和执行任务都不改变。

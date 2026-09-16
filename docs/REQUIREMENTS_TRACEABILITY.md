@@ -323,8 +323,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；真实部门确认尚未验收
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；真实部门确认尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-034

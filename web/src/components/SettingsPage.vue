@@ -254,19 +254,17 @@ function delegationLabel(row:any){
      </article>
      <p v-if="!archived.length" class="muted archived-empty">还没有归档聊天。</p>
      <p v-else-if="!filteredArchived.length" class="muted">没有匹配的归档聊天。</p>
-    </div>
+   </div>
    </template>
    <template v-else-if="page==='capabilities'">
-    <h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。</p>
-    <div class="capability-toolbar">
+    <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
+    <div class="capability-toolbar capability-toolbar-v2">
      <button v-if="permissions.includes('user.manage')" class="capability-manage-button" @click="select('admin')"><Users :size="16"/>管理用户的工具与权限</button>
      <div class="capability-tabs" role="tablist" aria-label="能力类型">
       <button role="tab" :class="{active:capabilityTab==='tools'}" :aria-selected="capabilityTab==='tools'" @click="capabilityTab='tools'"><Wrench :size="15"/>工具<span>{{filteredTools.length}}</span></button>
       <button role="tab" :class="{active:capabilityTab==='skills'}" :aria-selected="capabilityTab==='skills'" @click="capabilityTab='skills'"><Layers :size="15"/>技能<span>{{filteredSkills.length}}</span></button>
       <button role="tab" :class="{active:capabilityTab==='all'}" :aria-selected="capabilityTab==='all'" @click="capabilityTab='all'">全部<span>{{filteredTools.length+filteredSkills.length}}</span></button>
      </div>
-    </div>
-    <div class="capability-filter surface compact-capability-filter">
      <label class="capability-filter-control">部门<select v-model="capabilityDepartment"><option value="">全部部门</option><option v-for="[key,name] in capabilityDepartments" :key="key" :value="key">{{name}}</option></select></label>
      <label class="capability-filter-control">类型<select v-model="capabilityType"><option value="">全部类型</option><option v-for="[key,name] in capabilityTypes" :key="key" :value="key">{{name}}</option></select></label>
      <label class="capability-search-pill"><Search :size="15"/><input v-model="capabilitySearch" placeholder="查询工具、权限或说明"/></label>
