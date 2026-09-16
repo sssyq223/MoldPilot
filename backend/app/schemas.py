@@ -115,6 +115,11 @@ class ConfirmationInput(StrictModel):
     challenge: str = Field(min_length=32, max_length=200)
 
 
+class PlanDepartmentConfirmationInput(StrictModel):
+    expected_version: int = Field(ge=1)
+    note: str = Field(min_length=1, max_length=1000)
+
+
 class RunInput(StrictModel):
     prompt: str = Field(min_length=1, max_length=6000)
     conversation_id: str | None = None

@@ -187,7 +187,7 @@ def _analysis(project,profile,records):
 def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
     project,alternatives,truncated=_resolve(db,user,data,allowed_tools)
     limitations=['只读取当前用户可见且具备项目计划读取权限的项目。',
-                 '本工具只核对计划、节点和依赖上下文，不重排计划、不生成甘特图、不下达部门任务。',
+                 '本工具只核对计划、节点、依赖和部门确认上下文，不重排计划、不生成甘特图、不下达 ERP 执行任务。',
                  '55天周期、自然日/工作日、节假日和齐套率口径仍须按项目适配确认，不能由本工具默认承诺。']
     if truncated:limitations.append('最多检查前500个可见项目，结果可能未覆盖全部可见范围。')
     if project:
@@ -201,8 +201,13 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
             try:workflows=workflow_options(db,user,project)
             except DomainError as error:limitations.append('当前人员缺少计划变更读取或提交权限，未返回可选计划变更审批流程：'+error.message)
         analysis=_analysis(project,profile,records)
+        from . import plan_confirmations
+        confirmations=[]
+        try:confirmations=plan_confirmations.visible_for_project(db,user,project.id)
+        except DomainError as error:limitations.append('当前人员缺少计划变更读取权限，未返回部门确认状态：'+error.message)
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':profile,'project_plans':records['project_plan'],'plan_changes':records['plan_change'],
+            'department_confirmations':confirmations,
             'analysis':analysis,'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:

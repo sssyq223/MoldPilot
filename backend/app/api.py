@@ -570,6 +570,15 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     db.commit(); return result
 
 
+@app.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
+def confirm_plan_department(confirmation_id: str, data: s.PlanDepartmentConfirmationInput,
+                            user=Depends(current_user), db=Depends(get_db)):
+    from . import plan_confirmations
+    result = plan_confirmations.confirm(db, user, confirmation_id, data.expected_version, data.note)
+    db.commit()
+    return result
+
+
 @app.get("/api/notifications")
 def notifications(user=Depends(current_user), db=Depends(get_db)):
     from .message_worker import permitted

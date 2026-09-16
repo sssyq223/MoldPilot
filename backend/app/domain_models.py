@@ -238,6 +238,23 @@ class TaskDependency(Base):
     __table_args__ = (CheckConstraint('task_id <> prerequisite_id'),)
 
 
+class PlanDepartmentConfirmation(IdentityMixin, Base):
+    __tablename__ = 'plan_department_confirmation'
+    plan_change_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    department: Mapped[str] = mapped_column(String(100))
+    assigned_user_ids: Mapped[list] = mapped_column(J, default=list)
+    task_keys: Mapped[list] = mapped_column(J, default=list)
+    change_types: Mapped[list] = mapped_column(J, default=list)
+    status: Mapped[str] = mapped_column(String(30), default='PENDING')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (UniqueConstraint('plan_change_id','department'),
+                      CheckConstraint("status IN ('PENDING','CONFIRMED')", name='plan_department_confirmation_status'))
+
+
 class BusinessDecisionDetail(Base):
     """Typed decision/notice fields shared by simple human control documents."""
     __tablename__ = 'business_decision_detail'

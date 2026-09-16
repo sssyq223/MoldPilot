@@ -25,7 +25,9 @@ TITLES={'approval.pending':'有新的审批待办','approval.assignment.blocked'
         'contact.assigned':'有新的工程联络事项待处理','contact.responded':'工程联络事项已有反馈',
         'contact.attachment_added':'工程联络单有新附件待核对',
         'contact.resolution_effective':'工程联络处理方案已批准，请按影响项落实',
-        'plan.change.effective':'项目计划变更已生效，请核对受影响节点'}
+        'plan.change.effective':'项目计划变更已生效，请核对受影响节点',
+        'plan.department_confirmation.pending':'项目计划变更影响范围待部门确认',
+        'plan.department_confirmation.confirmed':'项目计划变更部门影响已确认'}
 
 
 def claim(factory):

@@ -617,10 +617,11 @@
         "prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM",
         "计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据",
         "审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人",
-        "计划变更影响范围输出 affected_departments 矩阵，按部门、责任人、任务标识和新增/删除/调整/责任人变更类型冻结到提案预览、审批生效事件和审计详情；真人部门会签仍待补齐"
+        "计划变更影响范围输出 affected_departments 矩阵，按部门、责任人、任务标识和新增/删除/调整/责任人变更类型冻结到提案预览、审批生效事件和审计详情",
+        "审批生效后按 affected_departments 生成 plan_department_confirmation 部门确认项，优先派给组织目录部门负责人，没有部门负责人时派给受影响任务责任人；确认接口执行权限、确认人身份和版本校验后记录审计与通知"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人并输出部门影响矩阵；完整部门会签通知尚未验收"
+        "tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人、生成部门确认项、派发部门确认通知、负责人确认并在 query_project_plan_context 返回确认状态；ERP 执行进度和完整看板尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

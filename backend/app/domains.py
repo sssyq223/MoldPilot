@@ -55,6 +55,10 @@ def typed_detail(db,subject):
         detail=values(db.get(m.PlanDetail,subject.id),('subject_id',))
         tasks=rows(db,m.PlanTask,plan_id=subject.id); keys={t.id:t.key for t in tasks}
         detail['tasks']=[{**values(t),'prerequisites':[keys[d.prerequisite_id] for d in rows(db,m.TaskDependency,task_id=t.id)]} for t in tasks]
+        if kind=='plan_change':
+            from . import plan_confirmations
+            detail['department_confirmations']=[
+                plan_confirmations.serialize(db,row) for row in rows(db,m.PlanDepartmentConfirmation,plan_change_id=subject.id)]
     elif kind=='pause_resume':
         detail=values(db.get(m.ProjectPauseDetail,subject.id),('subject_id',))
         plan=db.get(m.BusinessSubject,detail.get('plan_subject_id')) if detail.get('plan_subject_id') else None
@@ -396,6 +400,8 @@ def apply(db,user,subject):
             old=require_source(db,prior,project.id,{'project_plan','plan_change'});old.status='CLOSED'
         elif active:raise DomainError('PLAN_EXISTS','项目已有基线，请通过计划变更生成新版本',409)
         if kind=='plan_change' and impact_recipients:
+            from . import plan_confirmations
+            plan_confirmations.create_for_plan_change(db,user,subject,impact_detail)
             record(db,user,'plan.change.effective',subject.id,impact_detail,impact_recipients)
     elif kind=='pause_resume':
         detail=db.get(m.ProjectPauseDetail,subject.id)

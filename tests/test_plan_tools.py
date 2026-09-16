@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app import bpm, business, domains, domain_schemas as s, models as m
+from app import bpm, business, domains, domain_schemas as s, models as m, plan_confirmations
 from app.authorization import PERMISSIONS, fingerprint
 from app.db import now
 from app.errors import DomainError
@@ -183,7 +183,16 @@ def test_plan_change_effective_notifies_changed_task_owners():
             admin=user(db,'admin',True,department='项目部')
             old_owner=user(db,'old_owner',department='加工部')
             new_owner=user(db,'new_owner',department='试模部')
+            old_head=user(db,'old_head',department='加工部')
+            new_head=user(db,'new_head',department='试模部')
+            machining_group=m.AssignmentGroup(kind='DEPARTMENT',name='加工部')
+            trial_group=m.AssignmentGroup(kind='DEPARTMENT',name='试模部')
+            db.add_all([machining_group,trial_group]);db.flush()
+            db.add_all([m.AssignmentMember(group_id=machining_group.id,user_id=old_head.id,is_head=True),
+                m.AssignmentMember(group_id=trial_group.id,user_id=new_head.id,is_head=True)])
             p=project(db,'PLAN-NOTIFY')
+            for permission in ('project.read','project_plan.read','plan_change.read','plan_change.execute'):
+                grant(db,admin,new_head,permission,p.id)
             baseline=plan(db,p,admin,'PLAN-NOTIFY-BASE')
             task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
             task(db,baseline,old_owner,'machining','加工',date(2026,9,6),date(2026,9,20),'PLANNED')
@@ -208,6 +217,21 @@ def test_plan_change_effective_notifies_changed_task_owners():
             assert {row['department'] for row in machining_departments}=={'加工部','试模部'}
             trial=[row for row in audit.detail['affected_departments'] if row['department']=='试模部'][0]
             assert set(trial['task_keys'])=={'machining','trial'}
+            confirmations=list(db.scalars(select(m.PlanDepartmentConfirmation).where(
+                m.PlanDepartmentConfirmation.plan_change_id==change.id).order_by(m.PlanDepartmentConfirmation.department)))
+            assert [row.department for row in confirmations]==['加工部','试模部']
+            assert all(row.status=='PENDING' for row in confirmations)
+            assert confirmations[0].assigned_user_ids==[old_head.id]
+            assert confirmations[1].assigned_user_ids==[new_head.id]
+            pending=list(db.scalars(select(m.Outbox).where(
+                m.Outbox.kind=='plan.department_confirmation.pending',m.Outbox.resource_id==change.id)))
+            assert {tuple(row.payload['recipients']) for row in pending}=={(old_head.id,),(new_head.id,)}
+            confirmed=plan_confirmations.confirm(db,new_head,confirmations[1].id,confirmations[1].version,'试模部已核对顺延影响')
+            assert confirmed['status']=='CONFIRMED'
+            assert confirmed['confirmed_by']['id']==new_head.id
+            context=execute(db,admin,'query_project_plan_context',{'identifier':'PLAN-NOTIFY'})
+            rows=context['data'][0]['department_confirmations']
+            assert any(row['department']=='试模部' and row['status']=='CONFIRMED' for row in rows)
             assert db.get(m.BusinessSubject,baseline.id).status=='CLOSED'
     finally:
         engine.dispose()
