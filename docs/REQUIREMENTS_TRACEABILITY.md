@@ -809,8 +809,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 联络单至少记录客户、项目号、模具号、产品料号或适用料品、申请日期、问题来源、责任部门、变更类别、紧急程度、说明、对策、要求及实际完成时间、工时、金额、附件、版本和审批记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录；query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则；tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：contact_models.py/contacts.py：客户、模具、料品、日期、实际时间、工时、金额、证据、来源；既有附件版本与方案审批记录；附件关联审计冻结文件名、sha256、版本、前序版本和收件人；query_change_intake_context 返回联络单客户、项目、模具号、产品料号、申请日期、问题来源、当前环节、变更类别、紧急程度、任务实际时间/工时/金额/证据和审批方案摘要；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：tests/test_contact_impact.py：创建、反馈和不可覆盖规则；tests/test_change_intake_tools.py：联络单和处理方案字段被查询工具完整读取；tests/test_files.py 覆盖附件关联通知协作参与人并在审计中冻结文件名和 sha256；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-084
@@ -818,8 +818,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 原件附件、操作记录和复检结果一并留存，关联设变单、维修或返工任务、项目节点和成本记录；额外工时及其计价关联财务，计价方式和审批权限后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；contact.attachment_added 事件按联络协作参与人生成站内通知；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调；tests/test_files.py 覆盖附件关联后只通知有业务读取权限的联络参与人且不通知操作人本人；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ### FR-085
@@ -1121,8 +1121,8 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 待办和提醒关联业务对象、触发条件、接收角色及处理状态，支持确认与追踪。节点变更后更新适用提醒，避免对同一业务重复生成有效任务；手机、站内或其他消息渠道在适配阶段确定。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重；query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态，帮助识别重复或失败提醒
-- 验证证据：tests/test_governance_context_tools.py 覆盖通知投递、未读计数和关联业务对象；tests/test_messages.py 覆盖 Outbox 发布重试、Inbox 去重和 Notification 唯一投递；tests/test_contacts.py 覆盖工程联络分派通知生成
+- 实现证据：Outbox/Inbox/Notification 以业务对象 resource_id、事件 kind、recipients、read 状态追踪消息；Notification 对 event_id/user_id 唯一，message_worker 通过 Inbox 去重；工程联络附件关联生成 contact.attachment_added 事件，按发起人、复验负责人、协作事项创建人、处理人和责任部门负责人计算候选收件人；投递前仍复核 contact.read；query_governance_context 返回项目相关 outbox 发布、投递、通知数、未读数、失败和死信状态，帮助识别重复或失败提醒
+- 验证证据：tests/test_governance_context_tools.py 覆盖通知投递、未读计数和关联业务对象；tests/test_messages.py 覆盖 Outbox 发布重试、Inbox 去重和 Notification 唯一投递；tests/test_contacts.py 覆盖工程联络分派通知生成；tests/test_files.py 覆盖工程联络附件关联通知协作参与人并由 message_worker 权限复核后投递
 - 验收状态：NOT_VERIFIED
 
 ### FR-116
@@ -1130,8 +1130,8 @@ Agent 开发通知、待办及附件版本与权限；业务提醒与主动 AI �
 附件保留来源、上传人、时间、版本及对象关联，授权人员可查看和下载。文件格式、大小、保留期限及敏感数据范围后续确认；历史截图中的字段和按钮不自动扩大权限或功能。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容；/api/material-templates/{id}/xlsx-preview 可基于本人可见 XLSX 原件、资料模板版本和临时列映射生成待人工核对的 material_data 草稿；解析器不执行宏、外部链接或公式，含公式、缺列、类型错误或重复行标识时返回 NEEDS_REVIEW，不创建业务材料绑定；material_template_xlsx_mapping 与 /api/material-templates/{id}/xlsx-mappings 保存已发布资料模板的 Excel 映射版本、映射哈希、创建人和时间；预览未传临时映射时使用最新保存映射并记录所用映射版本；material_review 与 /api/material-templates/{id}/xlsx-reviews 保存 XLSX 解析核对包，记录模板哈希、映射哈希、原文件 sha256、material_data、issues 和 review_hash；无 issues 的核对包可人工确认并记录确认人、确认时间和审计事件，有 issues 的核对包禁止确认；material_binding 与 SubmitInput.material_review_id 将本人已确认且与审批模板资料版本匹配的核对包绑定到采购或通用业务提交，并把 material_data、绑定 ID、模板/映射哈希、文件 sha256、review_hash 和确认信息冻结进审批实例快照；正式提交仍拒绝客户端直接传 material_data
-- 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突和撤权不可见；tests/test_material_templates.py 覆盖 XLSX 资料预览成功解析、保存映射版本后复用预览、模板哈希冲突阻断、公式单元格/重复行标识进入待核对状态、干净核对包确认成功，以及有 issues 的核对包禁止确认；tests/test_material_binding.py 覆盖已确认核对包提交时冻结为 material_binding、审批快照包含 material_data 与来源哈希，以及未确认或缺失核对包继续阻断提交
+- 实现证据：FileObject 保留上传人、会话、文件名、格式、大小、sha256、存储后端和版本；ContactAttachment 保留业务对象、材料标识、版本、前一版本、关联人和时间；附件关联后 AuditEvent.detail 冻结 contact record 明细，包含附件版本、文件名、sha256、前序版本和 file_id；通知 payload 只保留收件人，不携带附件内容；query_governance_context 返回当前授权可见附件的来源、上传人、关联对象、版本链和当前版本状态；不暴露对象存储 key，不读取文件内容；/api/material-templates/{id}/xlsx-preview 可基于本人可见 XLSX 原件、资料模板版本和临时列映射生成待人工核对的 material_data 草稿；解析器不执行宏、外部链接或公式，含公式、缺列、类型错误或重复行标识时返回 NEEDS_REVIEW，不创建业务材料绑定；material_template_xlsx_mapping 与 /api/material-templates/{id}/xlsx-mappings 保存已发布资料模板的 Excel 映射版本、映射哈希、创建人和时间；预览未传临时映射时使用最新保存映射并记录所用映射版本；material_review 与 /api/material-templates/{id}/xlsx-reviews 保存 XLSX 解析核对包，记录模板哈希、映射哈希、原文件 sha256、material_data、issues 和 review_hash；无 issues 的核对包可人工确认并记录确认人、确认时间和审计事件，有 issues 的核对包禁止确认；material_binding 与 SubmitInput.material_review_id 将本人已确认且与审批模板资料版本匹配的核对包绑定到采购或通用业务提交，并把 material_data、绑定 ID、模板/映射哈希、文件 sha256、review_hash 和确认信息冻结进审批实例快照；正式提交仍拒绝客户端直接传 material_data
+- 验证证据：tests/test_governance_context_tools.py 覆盖附件上传人、版本、摘要、S3 版本状态和无权不可见；tests/test_files.py 覆盖格式/大小/宏校验、私有下载、S3 版本对象、附件版本冲突、撤权不可见，以及附件关联通知和审计冻结文件名/sha256；tests/test_material_templates.py 覆盖 XLSX 资料预览成功解析、保存映射版本后复用预览、模板哈希冲突阻断、公式单元格/重复行标识进入待核对状态、干净核对包确认成功，以及有 issues 的核对包禁止确认；tests/test_material_binding.py 覆盖已确认核对包提交时冻结为 material_binding、审批快照包含 material_data 与来源哈希，以及未确认或缺失核对包继续阻断提交
 - 验收状态：NOT_VERIFIED
 
 ## 来源与运行交付

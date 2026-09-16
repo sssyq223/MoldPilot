@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, Folder, ShoppingCart, Settings, Bot, ChevronRight, LogOut, X, Square, ArrowRight, Pin, Archive, Copy, Check, ShieldCheck, ImagePlus, Trash2 } from 'lucide-vue-next'
+import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, Folder, ShoppingCart, Settings, Bot, ChevronRight, LogOut, X, Square, ArrowRight, Pin, Archive, Copy, Check, ShieldCheck } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from './uiText'
 import SettingsPage from './components/SettingsPage.vue'
@@ -15,7 +15,7 @@ const modelName=ref('未配置模型')
 const modelLimits=ref<any>({context_window:8192,max_output_tokens:2048})
 const contactTarget=ref('')
 const selectedEvidence=ref<any|null>(null)
-const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null),avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
+const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
 let conversationEpoch=0
 const me=ref<any>(null),permissions=ref<string[]>([]),loading=ref(true),error=ref(''),busy=ref(false),username=ref(''),password=ref('')
 const panel=ref(''),expanded=ref(false),full=ref(false),width=ref(650),conversations=ref<any[]>([]),conversation=ref(''),activeConversationTitle=ref(''),activeConversationArchived=ref(false),runs=ref<any[]>([]),prompt=ref(''),search=ref(''),notices=ref<any[]>([]),showNotices=ref(false)
@@ -232,38 +232,6 @@ async function uploadFiles(event:Event){
   if(epoch===conversationEpoch){conversation.value=target;selectedFiles.value.push(result)}
  }await refresh()}catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
-async function avatarDataUrl(file:File){
- if(!/^image\/(png|jpeg|webp)$/.test(file.type)){throw new Error('头像只支持 PNG、JPG 或 WebP 图片')}
- if(file.size>5*1024*1024){throw new Error('头像图片不能超过 5MB')}
- const url=URL.createObjectURL(file)
- try{
-  const image=await new Promise<HTMLImageElement>((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('头像图片无法读取'));img.src=url})
-  const size=Math.min(image.naturalWidth,image.naturalHeight)
-  if(!size)throw new Error('头像图片尺寸无效')
-  const canvas=document.createElement('canvas'),target=128
-  canvas.width=target;canvas.height=target
-  const ctx=canvas.getContext('2d')
-  if(!ctx)throw new Error('当前浏览器不支持头像处理')
-  ctx.imageSmoothingQuality='high'
-  ctx.drawImage(image,(image.naturalWidth-size)/2,(image.naturalHeight-size)/2,size,size,0,0,target,target)
-  return canvas.toDataURL('image/png')
- }finally{URL.revokeObjectURL(url)}
-}
-async function uploadAvatar(event:Event){
- const input=event.target as HTMLInputElement,file=input.files?.[0];input.value=''
- if(!file||avatarUploading.value)return
- avatarUploading.value=true;error.value=''
- try{const avatar_url=await avatarDataUrl(file);const updated=await api('/me/avatar',{method:'PUT',body:JSON.stringify({avatar_url})});me.value={...me.value,...updated}}
- catch(e:any){fail(e.message)}
- finally{avatarUploading.value=false}
-}
-async function clearAvatar(){
- if(avatarUploading.value)return
- avatarUploading.value=true;error.value=''
- try{const updated=await api('/me/avatar',{method:'PUT',body:JSON.stringify({avatar_url:''})});me.value={...me.value,...updated}}
- catch(e:any){fail(e.message)}
- finally{avatarUploading.value=false}
-}
 async function cancel(id:string){try{await post('/runs/'+id+'/cancel');await selectConversation(conversation.value)}catch(e:any){fail(e.message)}}
 async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else if(n.kind?.startsWith('contact.')){contactTarget.value=n.resource_id;await openPanel('contacts')}else await openNotices()}catch(e:any){fail(e.message)}}
 function beginResize(e:PointerEvent){const x=e.clientX,start=width.value;const move=(ev:PointerEvent)=>{width.value=Math.max(560,Math.min(window.innerWidth-480,start+x-ev.clientX))};const end=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);saveLayout()};window.addEventListener('pointermove',move);window.addEventListener('pointerup',end)}
@@ -279,7 +247,7 @@ onUnmounted(()=>clearInterval(timer))
 <main v-else class="workbench" :class="{'panel-full':full&&workspaceOpen,'sidebar-collapsed':sidebarCollapsed,'workspace-open':workspaceOpen&&!full}">
   <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>MoldPilot</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button class="brand-action" title="消息通知" aria-label="消息通知" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.super_admin?'超级管理员':me.department||me.username}}</small></span></button>
 <div v-if="showProfile" class="profile-dismiss" @click="closeProfile"/>
-<div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><input ref="avatarInput" class="avatar-file-input" type="file" accept="image/png,image/jpeg,image/webp" @change="uploadAvatar"/><button role="menuitem" :disabled="avatarUploading" @click="avatarInput?.click()"><ImagePlus :size="17"/>{{avatarUploading?'正在处理头像…':'上传头像'}}</button><button v-if="me.avatar_url" role="menuitem" :disabled="avatarUploading" @click="clearAvatar"><Trash2 :size="17"/>移除头像</button><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
+<div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
   <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><span class="muted small">统一智能体</span><button v-if="!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
     <div v-if="!runs.length" class="welcome"><div class="agent-mark"><Bot :size="28"/></div><h1>今天，我们一起完成什么？</h1><p>描述你的目标，我会在你的权限范围内调用工具、<br/>核对资料，并把需要你决定的事项交给你。</p><div class="suggestions"><button v-if="capabilities.tools.some((t:any)=>t.key==='query_projects')" @click="prompt='查询我有权限查看的项目及当前状态'"><Folder :size="17"/>查看我的项目<ArrowRight :size="14"/></button><button v-if="capabilities.tools.some((t:any)=>t.key==='query_purchase_requests')" @click="prompt='查询我负责范围内的采购申请，核对明细和审批进度'"><ShoppingCart :size="17"/>核对采购申请<ArrowRight :size="14"/></button></div><small>从会话开始办理，待审批事项在消息通知中查看。</small></div>
     <article v-for="run in runs" :key="run.id" class="conversation-turn">

@@ -7,11 +7,12 @@ import pytest
 from sqlalchemy import select,func,text
 from sqlalchemy.exc import DBAPIError
 from app.config import settings
-from app.models import FileObject,ContactAttachment,ContactCase,Grant,Capability,RunFile
+from app.models import FileObject,ContactAttachment,ContactCase,Grant,Capability,RunFile,Outbox,Notification,AuditEvent
 from app import object_storage
 from app.errors import DomainError
 from conftest import sign_in
-from test_contacts import create,grant
+from test_contacts import create,grant,add_task,operation
+from test_bpm_assignments import group
 from test_agent_api import start,worker_headers
 from test_contact_proposals import propose,intent,confirm
 
@@ -96,6 +97,34 @@ def test_attachment_confirmation_versions_and_immutable_originals(client,data,mo
     r=client.post(f"/internal/runs/{ctx['id']}/tools",headers=worker_headers(),json={'epoch':ctx['epoch'],'sequence':2,'key':'prepare_contact_attach','arguments':{
         'case_id':case['id'],'revision':case['revision'],'file_id':third['id'],'title':'旧版本替换','previous_id':previous}})
     assert r.status_code==409 and r.json()['error']['code']=='VERSION_CONFLICT'
+
+
+def test_attachment_link_notifies_collaboration_participants(client,data,monkeypatch):
+    from app.message_worker import deliver
+    ids,factory=data;sign_in(client)
+    g=group(client,[ids['buyer'],ids['reviewer']],kind='DEPARTMENT',name='附件责任部门',heads=[ids['reviewer']])
+    grant(factory,ids,ids['buyer'],['read','respond'])
+    grant(factory,ids,ids['reviewer'],['read','assign'])
+    case,_=create(client,ids);case=add_task(client,case,g)
+    tid=case['tasks'][0]['id']
+    case=client.post(f"/api/contacts/{case['id']}/tasks/{tid}/assign",
+        json=operation(case,assignee_id=ids['buyer'],reason='附件核对通知验证')).json()
+    blob=upload(client).json();_,ctx=start(client,monkeypatch,'admin')
+    case=link(client,ctx,case,blob)
+    with factory() as db:
+        event=db.scalar(select(Outbox).where(Outbox.kind=='contact.attachment_added',Outbox.resource_id==case['id']))
+        assert event and set(event.payload['recipients'])=={ids['buyer'],ids['reviewer']}
+        event_id=event.id
+        audit=db.scalar(select(AuditEvent).where(AuditEvent.action=='contact.attachment_added',AuditEvent.resource_id==case['id']))
+        assert audit.detail['revision']==case['revision']
+        assert audit.detail['detail']['filename']=='合成材料.pdf'
+        assert audit.detail['detail']['sha256']==blob['sha256']
+        assert set(audit.detail['detail']['recipients'])=={ids['buyer'],ids['reviewer']}
+    assert deliver(factory,event_id)=='DELIVERED'
+    with factory() as db:
+        delivered=set(db.scalars(select(Notification.user_id).where(Notification.event_id==event_id)))
+        assert delivered=={ids['buyer'],ids['reviewer']}
+        assert db.scalar(select(Notification.user_id).where(Notification.event_id==event_id,Notification.user_id==ids['admin'])) is None
 
 
 def test_uploader_cannot_bypass_business_revocation(client,data,monkeypatch):

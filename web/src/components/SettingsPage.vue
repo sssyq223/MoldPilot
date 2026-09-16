@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,MessageSquare,RotateCcw,BrainCircuit,ShieldCheck,ShieldOff} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,ImagePlus,Trash2} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,groupedCapabilities,permissionName,auditName} from '../uiText'
@@ -14,6 +14,7 @@ const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref('
 const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
 const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
 const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
+const avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
 const capabilityTypes=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.type,meta.typeName]})).entries()))
@@ -54,7 +55,7 @@ const modelCredentialState=computed(()=>{
  return modelConfig.value.company?.api_key_configured?'API Key 已配置':'API Key 未配置'
 })
 const navigation=computed(()=>[
- {key:'account',name:'账号与模型',icon:Settings,allow:true},
+ {key:'account',name:'账号信息',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
  {key:'agent-approvals',name:'Agent 自动审批',icon:ShieldCheck,allow:true},
  {key:'archived',name:'已归档的聊天',icon:Archive,allow:true},
@@ -131,6 +132,38 @@ function delegationLabel(row:any){
  const option=delegationOptionMap.value[row.process_key+'::'+row.node_key]
  return option?`${option.process_name} · ${option.node_name}`:`${row.process_key} · ${row.node_key}`
 }
+async function avatarDataUrl(file:File){
+ if(!/^image\/(png|jpeg|webp)$/.test(file.type))throw new Error('头像只支持 PNG、JPG 或 WebP 图片')
+ if(file.size>5*1024*1024)throw new Error('头像图片不能超过 5MB')
+ const url=URL.createObjectURL(file)
+ try{
+  const image=await new Promise<HTMLImageElement>((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('头像图片无法读取'));img.src=url})
+  const size=Math.min(image.naturalWidth,image.naturalHeight)
+  if(!size)throw new Error('头像图片尺寸无效')
+  const canvas=document.createElement('canvas'),target=128
+  canvas.width=target;canvas.height=target
+  const ctx=canvas.getContext('2d')
+  if(!ctx)throw new Error('当前浏览器不支持头像处理')
+  ctx.imageSmoothingQuality='high'
+  ctx.drawImage(image,(image.naturalWidth-size)/2,(image.naturalHeight-size)/2,size,size,0,0,target,target)
+  return canvas.toDataURL('image/png')
+ }finally{URL.revokeObjectURL(url)}
+}
+async function uploadAvatar(event:Event){
+ const input=event.target as HTMLInputElement,file=input.files?.[0];input.value=''
+ if(!file||avatarUploading.value)return
+ avatarUploading.value=true
+ try{const avatar_url=await avatarDataUrl(file);const updated=await api('/me/avatar',{method:'PUT',body:JSON.stringify({avatar_url})});Object.assign(props.me,updated)}
+ catch(e:any){emit('error',e.message)}
+ finally{avatarUploading.value=false}
+}
+async function clearAvatar(){
+ if(avatarUploading.value)return
+ avatarUploading.value=true
+ try{const updated=await api('/me/avatar',{method:'PUT',body:JSON.stringify({avatar_url:''})});Object.assign(props.me,updated)}
+ catch(e:any){emit('error',e.message)}
+ finally{avatarUploading.value=false}
+}
 </script>
 <template>
 <main class="settings-page">
@@ -145,8 +178,19 @@ function delegationLabel(row:any){
  <section class="settings-content" :key="me.id+me.authorization_hash" aria-label="设置内容">
   <div class="settings-inner">
    <template v-if="page==='account'">
-    <h2>账号与模型</h2><p class="muted">当前账号的信息及智能体使用的模型。</p>
-    <dl class="settings-facts surface"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>模型</dt><dd>{{modelName}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
+    <h2>账号信息</h2><p class="muted">维护当前登录账号的基础信息。</p>
+    <section class="surface account-profile-card">
+     <div class="account-profile-left">
+      <span class="account-avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span>
+      <div class="account-profile-main"><strong>{{me.display_name}}</strong><small class="muted">{{me.username}} · {{me.super_admin?'超级管理员':me.department||'未设置部门'}}</small></div>
+     </div>
+     <dl class="account-profile-facts"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
+     <div class="account-profile-actions">
+      <input ref="avatarInput" class="avatar-file-input" type="file" accept="image/png,image/jpeg,image/webp" @change="uploadAvatar"/>
+      <button type="button" :disabled="avatarUploading" @click="avatarInput?.click()"><ImagePlus :size="16"/>{{avatarUploading?'正在处理…':'上传头像'}}</button>
+      <button v-if="me.avatar_url" type="button" :disabled="avatarUploading" @click="clearAvatar"><Trash2 :size="16"/>移除头像</button>
+     </div>
+    </section>
     <h3 class="settings-section-title">外观</h3>
    <section class="surface appearance-setting" aria-labelledby="appearance-title">
      <div><strong id="appearance-title">颜色模式</strong><small class="muted">选择更适合当前环境的工作台明暗外观，设置会保存在本机。</small></div>

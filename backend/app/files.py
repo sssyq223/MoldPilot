@@ -168,6 +168,25 @@ def attach_preview(db,user,case,data):
             '关联方式':'保存为新版本，保留原版本' if previous else '新增附件','附件版本':previous.version+1 if previous else 1}
 
 
+def contact_attachment_recipients(db,user,case):
+    """Notify active collaboration participants without exposing file content."""
+    ids={case.created_by}
+    if case.reviewer_id:ids.add(case.reviewer_id)
+    tasks=list(db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==case.id,m.ContactTask.status!='CANCELLED')))
+    for task in tasks:
+        ids.add(task.created_by)
+        if task.assignee_id:ids.add(task.assignee_id)
+        heads=db.scalars(select(m.User.id).join(m.AssignmentMember,m.AssignmentMember.user_id==m.User.id).where(
+            m.AssignmentMember.group_id==task.department_id,m.AssignmentMember.is_head.is_(True),m.User.active.is_(True)))
+        ids.update(heads)
+    ids.discard(user.id)
+    recipients=[]
+    for uid in ids:
+        person=db.get(m.User,uid) if uid else None
+        if person and c.permitted(db,person,'read',case):recipients.append(person.id)
+    return sorted(set(recipients))
+
+
 def attach(db,user,case_id,data):
     case=c.load(db,user,case_id,True);c.require(db,user,'attach',case)
     digest,done=c.replay(db,user,case,data,'ATTACHMENT_ADDED')
@@ -176,8 +195,10 @@ def attach(db,user,case_id,data):
     link=m.ContactAttachment(case_id=case.id,file_id=blob.id,document_id=previous.document_id if previous else str(uuid4()),
         version=previous.version+1 if previous else 1,title=data.title,previous_id=previous.id if previous else None,created_by=user.id)
     db.add(link);db.flush()
+    recipients=contact_attachment_recipients(db,user,case)
     return c.append(db,user,case,data,'ATTACHMENT_ADDED',digest,{'attachment_id':link.id,'file_id':blob.id,
-        'filename':blob.filename,'title':link.title,'version':link.version,'previous_id':link.previous_id,'sha256':blob.sha256})
+        'filename':blob.filename,'title':link.title,'version':link.version,'previous_id':link.previous_id,
+        'sha256':blob.sha256,'recipients':recipients},recipients=recipients)
 
 
 def case_attachments(db,case):

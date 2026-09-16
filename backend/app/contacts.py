@@ -290,7 +290,7 @@ def append(db,user,c,data,kind,digest,detail,occurred_at=None,recipients=None):
     c.revision+=1
     db.add(m.ContactRecord(case_id=c.id,author_id=user.id,request_key=str(data.request_key),request_hash=digest,
         kind=kind,occurred_at=occurred_at or now(),detail=detail))
-    record(db,user,'contact.'+kind.lower(),c.id,{'revision':c.revision},recipients)
+    record(db,user,'contact.'+kind.lower(),c.id,{'revision':c.revision,'record_kind':kind,'detail':detail},recipients)
     db.flush()
     return serialize(db,c,True,user)
 
