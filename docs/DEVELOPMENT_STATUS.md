@@ -20,8 +20,9 @@
 - 计划变更审批生效时新增 `plan.change.effective` 事件，按新增、删除、日期/名称/负责人变化的任务计算受影响节点负责人并写入 Outbox；消息 worker 会在投递通知前重新校验收件人对该 `plan_change` 的读取权限。
 - 计划变更影响范围新增 `affected_departments` 结构化矩阵：按新增、删除、责任人变更和日期/名称调整汇总部门、责任人、任务标识和变更类型。提案预览会展示受影响部门，审批生效事件和审计详情会冻结同一份矩阵，后续可用于部门确认卡、通知和看板渲染。
 - 计划变更审批生效后会按 `affected_departments` 创建 `plan_department_confirmation` 部门确认项：优先派给组织目录中的部门负责人，没有部门负责人时派给受影响任务责任人兜底。`query_project_plan_context` 在有 `plan_change.read` 权限时返回确认状态；`/api/plan-department-confirmations/{id}/confirm` 只允许指定确认人、部门负责人或超级管理员在版本匹配时确认，并记录审计和通知。
+- 计划上下文新增 ERP 执行进度只读引用契约：通过现有 `ERPIdentity` 和 `ERPClient` 的固定白名单路径读取 `/system/projectNode/list` 与 `/system/productionSchedule/list`，按模具号和项目号返回 `erp_execution_progress`。返回值只保留节点、工单、状态、计划/实际时间、进度和 ERP 原生引用，不写入 Agent 计划任务，也不把未知/异常当作“无进度”。
 - `/api/project-plan-proposals/{step_id}` 和 `/intent` 提供浏览器确认入口，并把来源 Run 的 `agent_permission_mode` 传递到 BPM 提交；显式授权模式下仅在后续流程节点满足委托条件时才可能自动同意。
-- 新增 SQLite 测试覆盖计划变更上下文返回有效变更计划和审批流程、proposal 不写业务、HumanIntent 确认后才创建 `plan_change` 并提交 BPM、`delegated_auto` 传递到 `submit_subject`，资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 `material_binding`，以及计划变更生效后通知受影响节点负责人、生成部门确认项、派发部门确认通知并完成负责人确认。ERP 执行进度联调、甘特图/看板完整样式仍待验收。
+- 新增 SQLite 单元测试覆盖计划变更上下文返回有效变更计划和审批流程、proposal 不写业务、HumanIntent 确认后才创建 `plan_change` 并提交 BPM、`delegated_auto` 传递到 `submit_subject`，资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 `material_binding`，以及计划变更生效后通知受影响节点负责人、生成部门确认项、派发部门确认通知并完成负责人确认。另新增 Mock ERP 测试覆盖未配置时不兜底、已登录时按模具号读取 ERP 项目节点/生产进度并过滤非契约字段。真实 ERP 环境联调、甘特图/看板完整样式仍待验收。
 
 ## 持续开发：资料模板 XLSX 解析与核对确认（2026-09-15）
 
@@ -124,8 +125,9 @@
 
 - 新增 `query_project_plan_context` 只读工具和“项目计划上下文核对”Skill。用户按项目 ID、项目编号/名称、计划单号或任务关键字提问时，模型可读取当前可见有效计划、计划变更、任务依赖、运行中节点、逾期节点、客户承诺交期风险和大节点覆盖情况。
 - 大节点覆盖按任务名称/标识辅助核对设计/采购/加工/装配/试模/交付等类别；工具明确提示这不能替代项目负责人按实际模具类型确认，也不默认 55 天周期、自然日/工作日、节假日或齐套率口径。
+- `query_project_plan_context` 会附加 `erp_execution_progress`，区分 `NOT_CONFIGURED`、`LOGIN_REQUIRED`、`NO_MOLD_REFERENCE`、`RESOLVED` 或具体 ERP 错误；该字段只引用 ERP 原系统事实，不修改 Agent 计划、不登记开完工、不替代计划变更审批。
 - 对话依据展示新增项目计划专用表格。当工具结果含 `analysis.tasks` 时，会先显示“项目大节点 / 计划任务表”，列出节点、状态、计划开始、计划结束和前置依赖，并显示已覆盖/缺少的大节点。
-- 新增 SQLite 单元测试覆盖有效计划分析、运行中/逾期/依赖阻塞/客户交期风险、大节点缺口、计划变更权限隔离和多候选不自动决定。FR-033～042 仍为 NOT_VERIFIED：计划重编审批、真实部门确认、装配齐套率/关键件口径、异常调整执行、甘特图/看板完整样式和真实 ERP 执行进度尚未完成验收。
+- 新增 SQLite 单元测试覆盖有效计划分析、运行中/逾期/依赖阻塞/客户交期风险、大节点缺口、计划变更权限隔离、多候选不自动决定，以及 Mock ERP 进度只读引用。FR-033～042 仍为 NOT_VERIFIED：装配齐套率/关键件口径、异常调整执行、甘特图/看板完整样式和真实 ERP 环境验收尚未完成。
 
 ## 持续开发：正式开工条件核对工具（2026-09-15）
 

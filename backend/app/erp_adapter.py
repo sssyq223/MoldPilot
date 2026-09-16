@@ -14,6 +14,11 @@ READ_FIELDS=['groupId','groupNo','requestId','requestNo','moldNo','materialCateg
              'decisionStatusLabel','totalQuantity','totalAmount','deliveryDate','canCreateOrder','orderCreateBlockReason',
              'orderId','orderNo','details','candidates','abnormalFlag','abnormalReason','frozenFlag','supplierId',
              'pricingMode','finalConfirmedPrice','pricingRemark']
+PLAN_PROGRESS_FIELDS=['id','nodeId','nodeName','name','code','projectNo','projectCode','moldNo','moldNumber',
+                      'status','statusLabel','planStartDate','planEndDate','plannedStart','plannedEnd',
+                      'actualStartDate','actualEndDate','actualStartTime','actualEndTime','progress','percent',
+                      'workOrderId','workOrderNo','orderNo','procedureName','processName','partNo','partName',
+                      'ownerName','responsibleName','updatedAt','createTime','createdAt']
 
 
 def cipher():
@@ -63,6 +68,14 @@ class ERPClient:
     def groups(self,mold_no=None):return self.request('GET','purchase/decision/list',params={'moldNo':mold_no} if mold_no else {})['data']
     def group(self,group_id):return self.request('GET',f'purchase/decision/{int(group_id)}')['data']
     def create_order(self,group_id):return self.request('POST',f'purchase/decision/{int(group_id)}/create-order')['data']
+    def project_nodes(self,mold_no=None,project_no=None):
+        return self.request('GET','system/projectNode/list',params=plan_progress_params(mold_no,project_no))['data']
+    def production_schedules(self,mold_no=None,project_no=None):
+        return self.request('GET','system/productionSchedule/list',params=plan_progress_params(mold_no,project_no))['data']
+    def plan_execution_progress(self,mold_no=None,project_no=None):
+        from .db import now
+        return normalize_plan_progress(self.project_nodes(mold_no,project_no),
+            self.production_schedules(mold_no,project_no),now().isoformat())
 
 
 def verified_identity(client,expected_id,permission=None):
@@ -89,3 +102,40 @@ def normalized(row):
 
 
 def review_material(row):return normalized({k:row[k] for k in READ_FIELDS if k in row})
+
+
+def _payload_rows(data):
+    if isinstance(data,list):return data
+    if not isinstance(data,dict):return []
+    for key in ('rows','records','items','list','data'):
+        value=data.get(key)
+        if isinstance(value,list):return value
+        if isinstance(value,dict):
+            nested=_payload_rows(value)
+            if nested:return nested
+    return []
+
+
+def _progress_row(row,source):
+    if not isinstance(row,dict):return None
+    card={k:normalized(row[k]) for k in PLAN_PROGRESS_FIELDS if k in row}
+    native_id=card.get('id') or card.get('nodeId') or card.get('workOrderId') or card.get('workOrderNo') or card.get('orderNo')
+    if native_id is not None:card['source_ref']=source+':'+str(native_id)
+    card['source_system']='ERP';card['source_endpoint']=source
+    return card
+
+
+def normalize_plan_progress(project_nodes=None,production_schedules=None,as_of=None):
+    nodes=[card for card in (_progress_row(row,'system/projectNode/list') for row in _payload_rows(project_nodes)) if card]
+    schedules=[card for card in (_progress_row(row,'system/productionSchedule/list') for row in _payload_rows(production_schedules)) if card]
+    return normalized({'project_nodes':nodes[:100],'production_schedules':schedules[:100],
+        'totals':{'project_nodes':len(nodes),'production_schedules':len(schedules)},
+        'as_of':as_of,'source_system':'ERP',
+        'limitations':['ERP 进度只作为原系统事实引用返回，不写入 Agent 计划任务，不替代计划变更审批或部门确认。']})
+
+
+def plan_progress_params(mold_no=None,project_no=None):
+    params={}
+    if mold_no:params['moldNo']=mold_no
+    if project_no:params['projectNo']=project_no
+    return params

@@ -648,10 +648,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_project_plan_context 支持查看有效计划、计划变更、实际进度和依赖阻塞；暂停恢复仍由 project_pause_resume 独立工具处理",
+        "query_project_plan_context 新增 erp_execution_progress，只读引用 ERP /system/projectNode/list 与 /system/productionSchedule/list 的节点、工单、状态、计划/实际时间、进度和原生引用；未配置、未登录、无模具引用或 ERP 异常会明确返回状态，不把未知进度当作无待办",
         "对话中新增计划任务表格依据展示，但甘特图和完整进度看板样式仍待适配"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖有效计划与计划变更查询；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证"
+        "tests/test_plan_tools.py 覆盖有效计划与计划变更查询、ERP 未配置状态、Mock ERP 进度只读引用和非契约字段过滤；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

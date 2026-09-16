@@ -1,10 +1,11 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app import bpm, business, domains, domain_schemas as s, models as m, plan_confirmations
+from app import bpm, business, domains, domain_schemas as s, erp_adapter, erp_progress, models as m, plan_confirmations
 from app.authorization import PERMISSIONS, fingerprint
 from app.db import now
 from app.errors import DomainError
@@ -61,6 +62,25 @@ def depends(db,item,previous):
     db.add(m.TaskDependency(task_id=item.id,prerequisite_id=previous.id))
 
 
+class FakeERPProgressClient:
+    calls=[]
+
+    def __init__(self, token):
+        self.token=token
+
+    def close(self):
+        pass
+
+    def plan_execution_progress(self, mold_no=None, project_no=None):
+        self.calls.append({'token':self.token,'mold_no':mold_no,'project_no':project_no})
+        return erp_adapter.normalize_plan_progress(
+            {'rows':[{'id':'NODE-1','nodeName':'加工节点','moldNo':mold_no,'statusLabel':'执行中',
+                      'plannedStart':'2026-09-01','plannedEnd':'2026-09-10','secretField':'hidden'}]},
+            {'rows':[{'workOrderNo':'WO-1','procedureName':'CNC','moldNo':mold_no,
+                      'actualStartTime':'2026-09-02T08:00:00','progress':50,'internalCost':'hidden'}]},
+            '2026-09-16T10:00:00+08:00')
+
+
 def test_plan_context_schema_and_progress_analysis():
     engine,Session=factory()
     today=date.today()
@@ -90,6 +110,42 @@ def test_plan_context_schema_and_progress_analysis():
             assert analysis['dependency_blocked_tasks'][0]['key']=='assembly'
             assert 'trial' in analysis['milestone_coverage']['missing']
             assert any(task['key']=='delivery' for task in analysis['customer_due_risk_tasks'])
+            erp=result['data'][0]['erp_execution_progress']
+            assert erp['status']=='NOT_CONFIGURED'
+            assert erp['records'] is None
+            assert 'ERP 服务地址未配置' in ''.join(result['limitations'])
+    finally:
+        engine.dispose()
+
+
+def test_plan_context_reads_erp_progress_as_reference_without_mirroring(monkeypatch):
+    engine,Session=factory()
+    FakeERPProgressClient.calls=[]
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-ERP')
+            mold=m.Mold(internal_number='MOLD-ERP-01',name='ERP进度模具')
+            db.add(mold);db.flush()
+            db.add(m.ProjectMold(project_id=p.id,mold_id=mold.id))
+            base=plan(db,p,admin,'PLAN-ERP-BASE')
+            task(db,base,admin,'machining','加工',date(2026,9,1),date(2026,9,10),'RUNNING')
+            db.add(m.ERPIdentity(user_id=admin.id,erp_user_id='ERP-ADMIN',token_ciphertext='cipher'))
+        monkeypatch.setattr(erp_progress,'settings',lambda:SimpleNamespace(erp_base_url='https://erp.example.test'))
+        monkeypatch.setattr(erp_progress,'decrypt',lambda value:'token-123')
+        monkeypatch.setattr(erp_progress,'ERPClient',FakeERPProgressClient)
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_project_plan_context',{'identifier':'PLAN-ERP'})
+            erp=result['data'][0]['erp_execution_progress']
+            assert erp['status']=='RESOLVED'
+            assert FakeERPProgressClient.calls==[{'token':'token-123','mold_no':'MOLD-ERP-01','project_no':'PLAN-ERP'}]
+            row=erp['records'][0]['project_nodes'][0]
+            schedule=erp['records'][0]['production_schedules'][0]
+            assert row['source_ref']=='system/projectNode/list:NODE-1'
+            assert schedule['source_ref']=='system/productionSchedule/list:WO-1'
+            assert 'secretField' not in str(erp)
+            assert 'internalCost' not in str(erp)
+            assert not list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==base.id,m.PlanTask.actual_end.is_not(None))))
     finally:
         engine.dispose()
 

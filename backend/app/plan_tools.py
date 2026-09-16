@@ -205,9 +205,13 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         confirmations=[]
         try:confirmations=plan_confirmations.visible_for_project(db,user,project.id)
         except DomainError as error:limitations.append('当前人员缺少计划变更读取权限，未返回部门确认状态：'+error.message)
+        from . import erp_progress
+        erp_execution_progress=erp_progress.query_project_progress(db,user,project)
+        limitations.extend(erp_execution_progress.get('limitations',[]))
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':profile,'project_plans':records['project_plan'],'plan_changes':records['plan_change'],
             'department_confirmations':confirmations,
+            'erp_execution_progress':erp_execution_progress,
             'analysis':analysis,'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
