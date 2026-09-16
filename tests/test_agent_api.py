@@ -45,6 +45,45 @@ def test_run_persists_agent_permission_mode_for_worker_context(client, data, mon
     assert history[0]['agent_permission_mode'] == 'delegated_auto'
 
 
+def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    checkpoint = {
+        'messages': [{'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'tool-search-1', 'type': 'function',
+            'function': {'name': 'ToolSearch', 'arguments': '{"query":"项目计划"}'},
+        }]}],
+        'turn': 1, 'phase': 'TOOL_RUNNING',
+    }
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': checkpoint}).status_code == 200
+    assert client.post(f"/internal/runs/{run['id']}/fail", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'code': 'MODEL_OUTPUT_INVALID'}).status_code == 200
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    failed = history[0]
+    assert failed['status'] == 'FAILED'
+    assert failed['trace'][0]['type'] == 'tool_interrupted'
+    assert failed['trace'][0]['tool'] == 'ToolSearch'
+    assert failed['trace'][-1]['error_code'] == 'MODEL_OUTPUT_INVALID'
+
+
+def test_tool_search_result_is_projected_as_harness_activity(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    messages = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'tool-search-1', 'type': 'function',
+            'function': {'name': 'ToolSearch', 'arguments': '{"query":"项目计划"}'},
+        }]},
+        {'role': 'tool', 'tool_call_id': 'tool-search-1', 'content': '{"source":"harness","as_of":"2026-09-16T16:46:45+0800","query":"项目计划","matches":["project_plan_context_review"],"activated":["query_project_plan_context"],"message":"已激活按需工具"}'},
+    ]
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': {'messages': messages, 'turn': 1}}).status_code == 200
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    activity = history[0]['trace'][0]
+    assert activity['type'] == 'tool_search'
+    assert activity['activated'] == ['query_project_plan_context']
+    assert activity['as_of'] == '2026-09-16T16:46:45+0800'
+
+
 def test_tool_assignment_cannot_grant_business_data_access(client, data):
     ids, _ = data; sign_in(client)
     department = client.post('/api/organization/groups', json={

@@ -11,6 +11,9 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   return body
 }
 export const post = (path: string, body: unknown = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
-export function shanghai(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
+export function shanghai(value: string | null | undefined) {
+  if (!value) return '时间待确认'
+  const date=new Date(value)
+  if(!Number.isFinite(date.getTime()))return '时间待确认'
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'short' }).format(date)
 }

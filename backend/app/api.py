@@ -123,7 +123,8 @@ def run_trace(run, steps):
                 if call_id in tool_result_call_ids:
                     continue
                 name = (call.get("function") or {}).get("name") or "业务工具"
-                trace.append({"type": "tool_pending", "tool": name, "call_id": call_id})
+                trace.append({"type": "tool_pending" if run.status in {"QUEUED", "RUNNING"} else "tool_interrupted",
+                              "tool": name, "call_id": call_id, "run_status": run.status})
         elif role == "tool":
             try:
                 payload = json.loads(msg.get("content") or "{}")
@@ -132,8 +133,12 @@ def run_trace(run, steps):
             step = step_by_id.get(payload.get("evidence_id"))
             if step:
                 trace.append({"type": "tool", "id": step.id, "tool": step.tool, **step.result})
+            elif payload.get("source") == "harness" and isinstance(payload.get("activated"), list):
+                trace.append({"type": "tool_search", "tool": "ToolSearch", "query": payload.get("query", ""),
+                              "activated": payload.get("activated", []), "matches": payload.get("matches", []),
+                              "message": payload.get("message", ""), "as_of": payload.get("as_of")})
             else:
-                trace.append({"type": "tool", "tool": "业务工具", "data": []})
+                trace.append({"type": "tool", "tool": "业务工具", "data": [], "as_of": payload.get("as_of")})
     result = run.result if isinstance(run.result, dict) else {}
     if result:
         trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),

@@ -5,6 +5,7 @@ import time
 
 import httpx
 import pytest
+from sqlalchemy import text
 
 from app.harness import run_loop
 from app.model_adapter import ModelAdapter, ModelError, tls_context
@@ -85,6 +86,7 @@ TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search1', 'type': 'fu
 PLAN_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-plan', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目计划'})}}]}
 CONTACT_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-contact', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '工程联络关闭'})}}]}
 CONTRACT_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-contract', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '合同登记'})}}]}
+HALLUCINATED_SKILL_CALL = {'role': 'assistant', 'tool_calls': [{'id': 'bad-skill', 'type': 'function', 'function': {'name': 'business_object_matching', 'arguments': json.dumps({'query': 'SMOKE-M001'})}}]}
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
@@ -153,6 +155,39 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert gateway.saved['active_tool_names'] == ['query_projects']
 
 
+def test_persisted_tool_signatures_are_postgresql_jsonb_safe(data):
+    gateway = Gateway()
+    run_loop(context(core_tool_names=[]), Model([TOOL_SEARCH, PROPOSAL, FINAL]), gateway)
+    signatures = gateway.saved['executed_tool_signatures']
+    assert signatures and all('\0' not in signature for signature in signatures)
+    _, factory = data
+    with factory() as db:
+        stored = db.scalar(text('select cast(:payload as jsonb)'),
+                           {'payload': json.dumps({'signatures': signatures}, ensure_ascii=False)})
+    assert stored['signatures'] == signatures
+
+
+def test_hallucinated_skill_name_is_repaired_through_tool_search_instead_of_failing_run():
+    gateway = Gateway()
+    model = InspectingRepliesModel([HALLUCINATED_SKILL_CALL, TOOL_SEARCH, PROPOSAL, FINAL])
+    result = run_loop(context(prompt='查询 SMOKE-M001 的项目计划', core_tool_names=[],
+                              skills=[{'key': 'business_object_matching',
+                                       'agent_description': '按业务编号匹配候选对象',
+                                       'tools': ['query_projects']}]), model, gateway)
+    assert result['summary'] == 'one visible project'
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch'],
+        ['ToolSearch', 'query_projects'],
+        ['ToolSearch', 'query_projects'],
+    ]
+    catalog_prompt = gateway.saved['messages'][0]['content']
+    assert 'business_object_matching' not in catalog_prompt
+    assert 'ToolSearch query="业务对象候选匹配"' in catalog_prompt
+    assert gateway.saved['protocol_repairs'] == 1
+    assert gateway.physical_calls == 1
+
+
 def test_tool_search_activates_bounded_skill_tool_pack_for_next_turn():
     gateway = Gateway()
     model = InspectingRepliesModel([PLAN_TOOL_SEARCH, PLAN_PROPOSAL, FINAL])
@@ -165,11 +200,11 @@ def test_tool_search_activates_bounded_skill_tool_pack_for_next_turn():
     assert result['summary'] == 'one visible project'
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
-        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
+        ['ToolSearch', 'query_project_plan_context'],
+        ['ToolSearch', 'query_project_plan_context'],
     ]
     assert gateway.physical_calls == 1
-    assert gateway.saved['active_tool_names'] == ['prepare_project_plan_baseline', 'query_project_plan_context']
+    assert gateway.saved['active_tool_names'] == ['query_project_plan_context']
 
 
 def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
@@ -210,12 +245,13 @@ def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools
     assert model.tool_names == [
         ['ToolSearch'],
         ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_resolution', 'prepare_contact_review',
-         'prepare_contact_close', 'prepare_contact_respond'],
+         'prepare_contact_close'],
         ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_resolution', 'prepare_contact_review',
-         'prepare_contact_close', 'prepare_contact_respond'],
+         'prepare_contact_close'],
     ]
+    assert len(gateway.saved['active_tool_names']) <= 4
+    assert 'prepare_contact_close' in gateway.saved['active_tool_names']
+    assert 'prepare_contact_resolution' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
 
 
@@ -252,10 +288,10 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record', 'prepare_contract_signing_record'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record', 'prepare_contract_signing_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
     ]
-    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'prepare_contract_signing_record', 'query_contract_context']
+    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
 
 
 def test_business_query_mentioning_model_still_allows_tool_search():

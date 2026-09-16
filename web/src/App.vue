@@ -24,14 +24,20 @@ const approvals=ref<any[]>([]),detail=ref<any>(null),capabilities=ref<any>({tool
 const runProcessOpen=ref<Record<string,boolean>>({})
 const sidebarCollapsed=ref(false)
 const copiedMessage=ref('')
-const labels:Record<string,string>={approvals:'审批材料',contacts:'联络单材料',materials:'业务材料'}
+const labels:Record<string,string>={materials:'材料总览',approvals:'审批材料',contacts:'联络单材料'}
+const workspaceTabs=[
+ {key:'materials',name:'材料总览',hint:'说明工作区会展示哪些业务材料'},
+ {key:'approvals',name:'审批材料',hint:'查看待审批事项、节点和依据'},
+ {key:'contacts',name:'联络单材料',hint:'查看工程联络单、附件和协作进度'},
+]
 const settingsOpen=ref(false),settingsInitialPage=ref('account'),showProfile=ref(false),noticeLoading=ref(false),showSidebarSearch=ref(false)
 const contextPopoverOpen=ref(false),modelPopoverOpen=ref(false),approvalModePopoverOpen=ref(false)
 const approvalPermissionMode=ref<'ask'|'delegated_auto'>('ask')
 const approvalPermissionLabel=computed(()=>approvalPermissionMode.value==='delegated_auto'?'按授权自动审批':'每次询问')
 function approvalModeStorageKey(){return 'mold.agentPermissionMode.'+(me.value?.id||'anonymous')}
 function setApprovalPermissionMode(mode:'ask'|'delegated_auto'){approvalPermissionMode.value=mode;if(me.value)localStorage.setItem(approvalModeStorageKey(),mode);approvalModePopoverOpen.value=false}
-const profileButton=ref<HTMLButtonElement|null>(null),sidebarSearchInput=ref<HTMLInputElement|null>(null)
+const profileButton=ref<HTMLButtonElement|null>(null),noticeButton=ref<HTMLButtonElement|null>(null),sidebarSearchInput=ref<HTMLInputElement|null>(null)
+const notificationPopoverStyle=ref<Record<string,string>>({left:'96px',top:'44px'})
 const workspaceOpen=computed(()=>expanded.value)
 const noticeCount=computed(()=>new Set([...approvals.value.map(a=>'approval:'+a.id),...notices.value.filter(n=>!n.read).map(n=>n.kind?.startsWith('approval.')?'approval:'+n.resource_id:'notice:'+n.id)]).size)
 function closeProfile(){showProfile.value=false;profileButton.value?.focus()}
@@ -40,19 +46,28 @@ function toggleSidebarSearch(){
  if(showSidebarSearch.value||search.value){showSidebarSearch.value=false;search.value='';return}
  showSidebarSearch.value=true;nextTick(()=>sidebarSearchInput.value?.focus())
 }
-function escapeMenu(e:KeyboardEvent){if(e.key==='Escape'){if(showProfile.value)closeProfile();contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false}}
+function updateNotificationPosition(){
+ const rect=noticeButton.value?.getBoundingClientRect()
+ if(!rect)return
+ const width=340,gap=8
+ let left=Math.round(rect.left-16)
+ left=Math.max(10,Math.min(left,window.innerWidth-width-10))
+ notificationPopoverStyle.value={left:left+'px',top:Math.round(rect.bottom+gap)+'px'}
+}
+function escapeMenu(e:KeyboardEvent){if(e.key==='Escape'){if(showProfile.value)closeProfile();showNotices.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false}}
 function closeFloatingPanels(e:MouseEvent){
  const target=e.target as Element|null
  if(contextPopoverOpen.value&&!target?.closest('.context-meter-wrap'))contextPopoverOpen.value=false
  if(modelPopoverOpen.value&&!target?.closest('.model-selector-wrap'))modelPopoverOpen.value=false
  if(approvalModePopoverOpen.value&&!target?.closest('.approval-mode-wrap'))approvalModePopoverOpen.value=false
 }
-onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels)})
-onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels)})
-async function openNotices(){showProfile.value=false;showNotices.value=true;noticeLoading.value=true;try{[notices.value,approvals.value]=await Promise.all([api('/notifications'),api('/approvals')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
+onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',updateNotificationPosition)})
+onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition)})
+async function openNotices(){showProfile.value=false;showNotices.value=true;await nextTick();updateNotificationPosition();noticeLoading.value=true;try{[notices.value,approvals.value]=await Promise.all([api('/notifications'),api('/approvals')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
 const currentTitle=computed(()=>conversations.value.find(c=>c.id===conversation.value)?.title || activeConversationTitle.value || '新对话')
 const filteredConversations=computed(()=>conversations.value.filter(c=>c.title.includes(search.value)))
 const running=computed(()=>runs.value.some(r=>['QUEUED','RUNNING'].includes(r.status)))
+const activeRun=computed(()=>[...runs.value].reverse().find(r=>['QUEUED','RUNNING'].includes(r.status)))
 const latestContextUsage=computed(()=>{
  const withUsage=[...runs.value].reverse().find((run:any)=>run.context_usage||run.progress?.context_usage)
  if(withUsage)return withUsage.context_usage||withUsage.progress?.context_usage
@@ -63,6 +78,19 @@ const latestContextUsage=computed(()=>{
 })
 watchEffect(()=>{if(typeof document!=='undefined')document.documentElement.style.setProperty('--context-percent',`${Math.min(100,Math.max(0,Number(latestContextUsage.value?.used_percent||0)))}%`)})
 const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
+const runErrorMessages:Record<string,string>={
+ HTTPStatusError:'Harness 保存运行状态或调用内部接口时发生 HTTP 异常。',
+ HARNESS_BACKEND_REJECTED:'Harness 的内部请求被后端拒绝。',
+ TOOL_FORBIDDEN:'模型请求了本轮未激活或当前无权使用的工具。',
+ MODEL_OUTPUT_INVALID:'模型返回的工具调用或最终结果不符合协议。',
+ MODEL_HTTP_FAILED:'模型服务返回异常状态。',
+ MODEL_CONNECT_TIMEOUT:'连接模型服务超时。',
+ MODEL_READ_TIMEOUT:'等待模型回复超时。',
+ MODEL_NETWORK_ERROR:'模型服务网络连接异常。',
+ CONTEXT_BUDGET_EXCEEDED:'上下文压缩后仍超过模型安全窗口。',
+ BUDGET_EXCEEDED:'本轮执行已达到时间、回合或工具预算上限。',
+}
+function runFailureReason(code:any){return runErrorMessages[String(code||'')]||'执行链路发生未分类异常，请按错误码核对服务日志。'}
 const compactHidden=new Set(['id','subject_id','plan_id','created_at','updated_at','analysis','detail','snapshot','project','subject','lines','history','tasks','attachments'])
 const titleKeys=['number','code','internal_number','project_code','name','title','project_name','status','project_status']
 const compactKeys=['execution_mode','customer_due_date','due_date','drawing_revision','revision','version','scope_confirmed','business_status','remark','description']
@@ -217,7 +245,9 @@ async function login(){busy.value=true;error.value='';try{await post('/auth/logi
 function clearSessionData(){conversationEpoch++;selectedFiles.value=[];me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem('mold.layout.'+me.value.id,JSON.stringify({width:width.value}))}
-async function openPanel(key:string){if(!['contacts','approvals'].includes(key))return;panel.value=key;expanded.value=true;saveLayout()}
+async function openPanel(key:string){if(!['materials','contacts','approvals'].includes(key))return;panel.value=key;expanded.value=true;saveLayout()}
+function workspaceEmptyTitle(){return panel.value==='approvals'?'暂无审批材料':panel.value==='contacts'?'暂无联络单材料':'材料总览'}
+function workspaceEmptyText(){return panel.value==='approvals'?'从消息通知或会话中的审批建议打开具体审批，节点、依据和操作记录会显示在这里。':panel.value==='contacts'?'从会话结果中选择联络单，附件、处理方案和协作进度会显示在这里。':'工作区用于承载会话中打开的业务材料，目前包含审批材料和联络单材料；从会话结果或消息通知选择具体事项后会自动切换。'}
 function toggleWorkspace(){if(expanded.value)collapse();else{if(!panel.value)panel.value='materials';expanded.value=true}}
 function collapse(){expanded.value=false;full.value=false;saveLayout()}
 async function openApproval(id:string){try{showNotices.value=false;detail.value=await api('/approvals/'+id);await openPanel('approvals')}catch(e:any){fail(e.message)}}
@@ -228,6 +258,7 @@ async function archiveConversation(c:any,event?:Event){event?.stopPropagation();
 async function openArchivedConversation(c:any){settingsOpen.value=false;showNotices.value=false;await selectConversation(c.id,c.title,true)}
 function newConversation(){conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];prompt.value='';detail.value=null;collapse()}
 async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+async function stopActiveRun(){const run=activeRun.value;if(!run||busy.value)return;busy.value=true;error.value='';try{await post('/runs/'+run.id+'/cancel');if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function uploadFiles(event:Event){
  const input=event.target as HTMLInputElement,files=Array.from(input.files||[]);input.value=''
  if(!files.length||uploading.value)return
@@ -238,7 +269,6 @@ async function uploadFiles(event:Event){
   if(epoch===conversationEpoch){conversation.value=target;selectedFiles.value.push(result)}
  }await refresh()}catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
-async function cancel(id:string){try{await post('/runs/'+id+'/cancel');await selectConversation(conversation.value)}catch(e:any){fail(e.message)}}
 async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else if(n.kind?.startsWith('contact.')){contactTarget.value=n.resource_id;await openPanel('contacts')}else await openNotices()}catch(e:any){fail(e.message)}}
 function beginResize(e:PointerEvent){const x=e.clientX,start=width.value;const move=(ev:PointerEvent)=>{width.value=Math.max(560,Math.min(window.innerWidth-480,start+x-ev.clientX))};const end=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);saveLayout()};window.addEventListener('pointermove',move);window.addEventListener('pointerup',end)}
 function resizeBy(delta:number){width.value=Math.max(560,Math.min(window.innerWidth-480,width.value+delta));saveLayout()}
@@ -251,7 +281,7 @@ onUnmounted(()=>clearInterval(timer))
 <main v-else-if="!me" class="login-screen"><form class="login-box" @submit.prevent="login"><div class="brand-symbol"><Bot :size="30"/></div><h1>MoldPilot</h1><p>模具项目智能工作台 · 从一个任务开始，让业务能力协同工作。</p><label>用户名<input v-model="username" autocomplete="username" required autofocus/></label><label>密码<input v-model="password" type="password" autocomplete="current-password" required/></label><p v-if="error" class="error" role="alert">{{error}}</p><button class="primary" :disabled="busy">{{busy?'正在登录…':'登录工作台'}}<ArrowRight :size="16"/></button><small>统一智能体入口 · 你的权限决定可用能力</small></form></main>
 <SettingsPage v-else-if="settingsOpen" :me="me" :permissions="permissions" :capabilities="capabilities" :model-name="modelName" :color-theme="colorTheme" :initial-page="settingsInitialPage" @theme-change="changeTheme" @model-updated="modelName=$event" @open-conversation="openArchivedConversation" @close="settingsOpen=false;restore().catch(e=>fail(e.message))" @error="fail"/>
 <main v-else class="workbench" :class="{'panel-full':full&&workspaceOpen,'sidebar-collapsed':sidebarCollapsed,'workspace-open':workspaceOpen&&!full}">
-  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>MoldPilot</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button class="brand-action" title="消息通知" aria-label="消息通知" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
+  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>MoldPilot</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button ref="noticeButton" class="brand-action" title="待处理" aria-label="待处理" :aria-expanded="showNotices" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
 <div v-if="showProfile" class="profile-dismiss" @click="closeProfile"/>
 <div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
   <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><span class="muted small">统一智能体</span><button v-if="!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
@@ -267,7 +297,7 @@ onUnmounted(()=>clearInterval(timer))
       </div>
       <div class="agent-answer message-block">
         <div class="answer-body">
-          <div v-if="run.status!=='SUCCEEDED'" class="run-label"><span :class="{pulse:['QUEUED','RUNNING'].includes(run.status)}"/>{{runStatus[run.status]??'任务状态待确认'}}<template v-if="['QUEUED','RUNNING'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template><button v-if="['QUEUED','RUNNING'].includes(run.status)" class="icon-button" title="停止任务" aria-label="停止任务" @click="cancel(run.id)"><Square :size="12"/></button></div>
+          <div v-if="run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&runFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING'].includes(run.status)}"/>{{runStatus[run.status]??'任务状态待确认'}}<template v-if="['QUEUED','RUNNING'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
           <p v-if="run.status==='WAITING_CONFIGURATION'" class="muted">任务已保存。模型尚未完成配置，当前不会生成业务结论。待审批事项仍可从消息通知中查看。</p>
           <p v-if="run.status==='RUNNING'" class="muted small">{{run.progress?.phase==='MODEL_WAITING'?'正在等待模型回复':run.progress?.phase==='TOOL_RUNNING'?'正在调用业务工具':run.progress?.phase==='VALIDATING'?'正在核对模型结果':'正在准备任务'}}<span v-if="run.progress?.tools?.length"> · 已完成 {{run.progress.tools.length}} 次工具调用</span></p>
           <div v-if="runTrace(run).length" class="react-trace" aria-label="执行链路">
@@ -279,6 +309,11 @@ onUnmounted(()=>clearInterval(timer))
                 <template v-for="(item,index) in runProcessTrace(run)" :key="item.id||item.call_id||index">
                   <div v-if="item.type==='message'" class="assistant-prose process-text">
                     <p class="preserve">{{item.text}}</p>
+                  </div>
+                  <div v-else-if="item.type==='tool_search'" class="agent-tool-row tool-search-row">
+                    <span class="agent-tool-icon"><Search :size="13"/></span>
+                    <span class="agent-tool-name">已加载能力</span>
+                    <span class="agent-tool-summary">{{item.activated?.length?item.activated.map((name:string)=>capabilityName(name)).join('、'):'未找到匹配能力'}}</span>
                   </div>
                   <details v-else-if="item.type==='tool'" class="agent-tool-row">
                     <summary class="agent-tool-head">
@@ -307,16 +342,18 @@ onUnmounted(()=>clearInterval(timer))
                       </div>
                     </div>
                   </details>
-                  <div v-else-if="item.type==='tool_pending'" class="agent-tool-row pending">
+                  <div v-else-if="item.type==='tool_pending'||item.type==='tool_interrupted'" class="agent-tool-row pending" :class="{interrupted:item.type==='tool_interrupted'}">
                     <span class="agent-tool-icon"><span class="pulse-dot"/></span>
-                    <span class="agent-tool-name">正在调用 {{capabilityName(item.tool)}}</span>
+                    <span class="agent-tool-name">{{item.type==='tool_interrupted'?'调用中断':'正在调用'}} {{capabilityName(item.tool)}}</span>
                   </div>
                 </template>
               </div>
             </div>
             <div v-if="runFinalTrace(run)" class="assistant-prose final">
               <p v-if="runFinalTrace(run)?.summary || runFinalTrace(run)?.message" class="preserve">{{runFinalTrace(run)?.summary ?? runFinalTrace(run)?.message}}</p>
-              <p v-if="runFinalTrace(run)?.error_code" class="muted small">任务未能完成，请查看原因说明后重试。</p>
+              <div v-if="runFinalTrace(run)?.error_code" class="run-error-detail" role="note">
+                <strong>失败原因</strong><span>{{runFailureReason(runFinalTrace(run)?.error_code)}}</span><code>错误码 {{runFinalTrace(run)?.error_code}}</code>
+              </div>
               <ul v-if="runFinalTrace(run)?.suggestions?.length">
                 <li v-for="s in runFinalTrace(run)?.suggestions" :key="s">{{s}}</li>
               </ul>
@@ -335,19 +372,60 @@ onUnmounted(()=>clearInterval(timer))
         </div>
       </div>
     </article>
-  </div><form class="composer" @submit.prevent="send"><div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div><p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p><textarea v-model="prompt" placeholder="输入任务或问题…" aria-label="输入任务或问题" rows="3" @keydown.enter.exact.prevent="send"/><div class="composer-toolbar"><input ref="fileInput" hidden type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx" multiple aria-label="选择上传附件" @change="uploadFiles"/><button v-if="permissions.includes('file.upload')" type="button" class="icon-button" aria-label="上传附件" title="上传附件" :disabled="uploading||busy" @click="fileInput?.click()"><Paperclip :size="17"/></button><div class="approval-mode-wrap"><button type="button" class="approval-mode-button" title="Agent 权限模式" :aria-expanded="approvalModePopoverOpen" aria-haspopup="menu" @click="approvalModePopoverOpen=!approvalModePopoverOpen;contextPopoverOpen=false;modelPopoverOpen=false"><ShieldCheck :size="15"/><span>{{approvalPermissionLabel}}</span></button><div v-if="approvalModePopoverOpen" class="approval-mode-popover" role="menu" aria-label="Agent 权限模式"><button type="button" class="approval-mode-row" :class="{active:approvalPermissionMode==='ask'}" role="menuitemradio" :aria-checked="approvalPermissionMode==='ask'" @click="setApprovalPermissionMode('ask')"><span><strong>每次询问</strong><small>正式动作先生成待确认请求。</small></span><Check v-if="approvalPermissionMode==='ask'" :size="14"/></button><button type="button" class="approval-mode-row" :class="{active:approvalPermissionMode==='delegated_auto'}" role="menuitemradio" :aria-checked="approvalPermissionMode==='delegated_auto'" @click="setApprovalPermissionMode('delegated_auto')"><span><strong>按授权自动审批</strong><small>只对已授权且流程允许的节点自动同意。</small></span><Check v-if="approvalPermissionMode==='delegated_auto'" :size="14"/></button><p class="approval-mode-hint">授权节点在设置里的 Agent 自动审批中维护。</p></div></div><div class="composer-meta-group"><div class="context-meter-wrap"><button type="button" class="context-meter" :title="contextUsageTitle(latestContextUsage)" :aria-expanded="contextPopoverOpen" aria-label="查看上下文窗口用量" @click="contextPopoverOpen=!contextPopoverOpen;modelPopoverOpen=false"><span class="context-dot" :class="{warn:Number(latestContextUsage.used_percent)>75,danger:Number(latestContextUsage.used_percent)>92}"/>{{contextPercentText(latestContextUsage)}}</button><div v-if="contextPopoverOpen" class="context-popover" role="dialog" aria-label="上下文窗口"><div class="context-popover-head"><strong>剩余 {{formatTokenCount(latestContextUsage.remaining_tokens)}} tokens</strong><span>{{contextPercentText(latestContextUsage)}}</span></div><dl><dt>上下文窗口</dt><dd>{{formatTokenCount(latestContextUsage.used_tokens)}} / {{formatTokenCount(latestContextUsage.context_window)}} tokens</dd><dt>本轮合计</dt><dd>{{formatTokenCount(latestContextUsage.input_tokens||latestContextUsage.input_tokens_estimated)}} tokens <span v-if="latestContextUsage.token_source==='estimate'">估算</span></dd><dt>生成速度</dt><dd>{{latestContextUsage.generation_tokens_per_second?latestContextUsage.generation_tokens_per_second+' tokens/s':'—'}}</dd><dt>模型用量</dt><dd>输入 {{formatTokenCount(latestContextUsage.input_tokens||latestContextUsage.input_tokens_estimated)}}　输出 {{formatTokenCount(latestContextUsage.output_tokens)}}　推理 {{formatTokenCount(latestContextUsage.reasoning_tokens)}}</dd><dt>工具上下文</dt><dd>{{latestContextUsage.tool_count?`已记录 ${latestContextUsage.tool_count} 次工具调用，约 ${formatTokenCount(latestContextUsage.tool_message_tokens_estimated)} tokens`:'本轮没有调用工具'}}</dd><dt>压缩</dt><dd>{{latestContextUsage.compaction_count?`已自动压缩 ${latestContextUsage.compaction_count} 次`:'未触发压缩'}}</dd></dl><p v-if="latestContextUsage.latest_compaction" class="muted small">{{latestContextUsage.latest_compaction.summary}}</p></div></div><div class="model-selector-wrap"><button type="button" class="muted small composer-model-label" title="选择模型" :aria-expanded="modelPopoverOpen" aria-haspopup="menu" @click="modelPopoverOpen=!modelPopoverOpen;contextPopoverOpen=false"><Bot :size="16"/><span>{{modelName}}</span></button><div v-if="modelPopoverOpen" class="model-popover" role="menu" aria-label="选择模型"><button type="button" class="model-popover-row active" role="menuitemradio" aria-checked="true" @click="modelPopoverOpen=false"><span class="model-popover-label"><Bot :size="15"/>模型</span><strong>{{modelName}}</strong><Check :size="14"/></button></div></div></div><button class="send" type="submit" :disabled="!prompt.trim()||busy||uploading" aria-label="发送任务"><ArrowUp :size="17"/></button></div></form><small class="composer-note">结论需要业务证据，正式操作以系统回执为准。按当前权限执行。</small></section>
+  </div>
+  <form class="composer" @submit.prevent="send">
+    <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
+    <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
+    <textarea v-model="prompt" placeholder="输入任务或问题…" aria-label="输入任务或问题" rows="3" @keydown.enter.exact.prevent="send"/>
+    <div class="composer-toolbar">
+      <input ref="fileInput" hidden type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx" multiple aria-label="选择上传附件" @change="uploadFiles"/>
+      <button v-if="permissions.includes('file.upload')" type="button" class="icon-button" aria-label="上传附件" title="上传附件" :disabled="uploading||busy" @click="fileInput?.click()"><Paperclip :size="17"/></button>
+      <div class="approval-mode-wrap">
+        <button type="button" class="approval-mode-button" title="Agent 权限模式" :aria-expanded="approvalModePopoverOpen" aria-haspopup="menu" @click="approvalModePopoverOpen=!approvalModePopoverOpen;contextPopoverOpen=false;modelPopoverOpen=false"><ShieldCheck :size="15"/><span>{{approvalPermissionLabel}}</span></button>
+        <div v-if="approvalModePopoverOpen" class="approval-mode-popover" role="menu" aria-label="Agent 权限模式">
+          <button type="button" class="approval-mode-row" :class="{active:approvalPermissionMode==='ask'}" role="menuitemradio" :aria-checked="approvalPermissionMode==='ask'" @click="setApprovalPermissionMode('ask')"><span><strong>每次询问</strong><small>正式动作先生成待确认请求。</small></span><Check v-if="approvalPermissionMode==='ask'" :size="14"/></button>
+          <button type="button" class="approval-mode-row" :class="{active:approvalPermissionMode==='delegated_auto'}" role="menuitemradio" :aria-checked="approvalPermissionMode==='delegated_auto'" @click="setApprovalPermissionMode('delegated_auto')"><span><strong>按授权自动审批</strong><small>只对已授权且流程允许的节点自动同意。</small></span><Check v-if="approvalPermissionMode==='delegated_auto'" :size="14"/></button>
+          <p class="approval-mode-hint">授权节点在设置里的 Agent 自动审批中维护。</p>
+        </div>
+      </div>
+      <div class="composer-meta-group">
+        <div class="context-meter-wrap">
+          <button type="button" class="context-meter" :title="contextUsageTitle(latestContextUsage)" :aria-expanded="contextPopoverOpen" aria-label="查看上下文窗口用量" @click="contextPopoverOpen=!contextPopoverOpen;modelPopoverOpen=false"><span class="context-dot" :class="{warn:Number(latestContextUsage.used_percent)>75,danger:Number(latestContextUsage.used_percent)>92}"/>{{contextPercentText(latestContextUsage)}}</button>
+          <div v-if="contextPopoverOpen" class="context-popover" role="dialog" aria-label="上下文窗口">
+            <div class="context-popover-head"><strong>剩余 {{formatTokenCount(latestContextUsage.remaining_tokens)}} tokens</strong><span>{{contextPercentText(latestContextUsage)}}</span></div>
+            <dl>
+              <dt>上下文窗口</dt><dd>{{formatTokenCount(latestContextUsage.used_tokens)}} / {{formatTokenCount(latestContextUsage.context_window)}} tokens</dd>
+              <dt>本轮合计</dt><dd>{{formatTokenCount(latestContextUsage.input_tokens||latestContextUsage.input_tokens_estimated)}} tokens <span v-if="latestContextUsage.token_source==='estimate'">估算</span></dd>
+              <dt>生成速度</dt><dd>{{latestContextUsage.generation_tokens_per_second?latestContextUsage.generation_tokens_per_second+' tokens/s':'—'}}</dd>
+              <dt>模型用量</dt><dd>输入 {{formatTokenCount(latestContextUsage.input_tokens||latestContextUsage.input_tokens_estimated)}}　输出 {{formatTokenCount(latestContextUsage.output_tokens)}}　推理 {{formatTokenCount(latestContextUsage.reasoning_tokens)}}</dd>
+              <dt>工具上下文</dt><dd>{{latestContextUsage.tool_count?`已记录 ${latestContextUsage.tool_count} 次工具调用，约 ${formatTokenCount(latestContextUsage.tool_message_tokens_estimated)} tokens`:'本轮没有调用工具'}}</dd>
+              <dt>压缩</dt><dd>{{latestContextUsage.compaction_count?`已自动压缩 ${latestContextUsage.compaction_count} 次`:'未触发压缩'}}</dd>
+            </dl>
+            <p v-if="latestContextUsage.latest_compaction" class="muted small">{{latestContextUsage.latest_compaction.summary}}</p>
+          </div>
+        </div>
+        <div class="model-selector-wrap">
+          <button type="button" class="muted small composer-model-label" title="选择模型" :aria-expanded="modelPopoverOpen" aria-haspopup="menu" @click="modelPopoverOpen=!modelPopoverOpen;contextPopoverOpen=false"><Bot :size="16"/><span>{{modelName}}</span></button>
+          <div v-if="modelPopoverOpen" class="model-popover" role="menu" aria-label="选择模型"><button type="button" class="model-popover-row active" role="menuitemradio" aria-checked="true" @click="modelPopoverOpen=false"><span class="model-popover-label"><Bot :size="15"/>模型</span><strong>{{modelName}}</strong><Check :size="14"/></button></div>
+        </div>
+      </div>
+      <button class="send" :class="{stopping:running}" :type="running?'button':'submit'" :disabled="uploading||busy||(!running&&!prompt.trim())" :aria-label="running?'停止当前任务':'发送任务'" :title="running?'停止当前任务':'发送任务'" @click="running&&stopActiveRun()"><Square v-if="running" :size="13" fill="currentColor"/><ArrowUp v-else :size="17"/></button>
+    </div>
+  </form>
+  <small class="composer-note">结论需要业务证据，正式操作以系统回执为准。按当前权限执行。</small>
+</section>
   <div v-if="workspaceOpen&&!full" class="resize-handle" role="separator" tabindex="0" aria-label="调整工作区宽度" aria-orientation="vertical" @pointerdown="beginResize" @keydown.left.prevent="resizeBy(20)" @keydown.right.prevent="resizeBy(-20)"/>
-  <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs"><button class="active">{{labels[panel]}}</button><button v-if="detail&&panel==='approvals'" class="object-tab">{{numberText(detail.snapshot.number)}}</button></nav><div class="workspace-content">
+  <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs" aria-label="工作区页签"><button v-for="tab in workspaceTabs" :key="tab.key" :class="{active:panel===tab.key}" :aria-current="panel===tab.key?'page':undefined" :title="tab.hint" @click="openPanel(tab.key)">{{tab.name}}</button><button v-if="detail&&panel==='approvals'" class="object-tab">{{numberText(detail.snapshot.number)}}</button></nav><div class="workspace-content">
     <ContactPanel @approval="openApproval" v-if="panel==='contacts'" :key="contactTarget" :initial-id="contactTarget" @error="fail"/>
     <template v-else-if="panel==='approvals'&&detail"><button class="back-button" @click="collapse();openNotices()">← 返回消息通知</button><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
 </template>
-    <div v-else class="empty"><h3>业务材料工作区</h3><p>从会话结果或消息通知中选择具体事项，相关材料会在这里打开。</p></div>
+    <div v-else class="empty workspace-empty"><h3>{{workspaceEmptyTitle()}}</h3><p>{{workspaceEmptyText()}}</p><div class="workspace-empty-cards"><button type="button" :class="{active:panel==='approvals'}" @click="openPanel('approvals')"><strong>审批材料</strong><small>待审批事项、流程节点、附件和审批记录</small></button><button type="button" :class="{active:panel==='contacts'}" @click="openPanel('contacts')"><strong>联络单材料</strong><small>工程联络单、处理方案、附件和协作进度</small></button></div></div>
   </div></template></section>
-  <aside v-if="showNotices" class="notification-popover" aria-label="消息通知"><div class="section-heading"><h2>消息通知</h2><button class="icon-button" aria-label="关闭消息通知" @click="showNotices=false"><X :size="16"/></button></div>
-    <p v-if="noticeLoading" role="status">正在读取消息和待审批事项…</p>
-    <h3>待我审批</h3><p v-if="!approvals.length" class="muted">当前没有待审批事项。</p>
+  <aside v-if="showNotices" class="notification-popover" :style="notificationPopoverStyle" aria-label="待处理"><div class="section-heading notification-head"><div><h2>待处理</h2><small class="muted">{{noticeCount?noticeCount+' 项需要查看':'暂无需要处理'}}</small></div><button class="icon-button" aria-label="关闭待处理" @click="showNotices=false"><X :size="16"/></button></div>
+    <p v-if="noticeLoading" role="status" class="muted small">正在读取待处理事项…</p>
+    <h3>待我审批</h3><p v-if="!approvals.length" class="muted notification-empty">当前没有待审批。</p>
     <button v-for="a in approvals" :key="a.id" class="task-row" @click="openApproval(a.id)"><span><strong>{{numberText(a.snapshot.number)||a.definition.name}}</strong><small>{{a.snapshot.submitter?.name||'提交人待核对'}} · {{a.nodes[a.stage_index]?.name}}</small><small>{{a.snapshot.submitted_at?shanghai(a.snapshot.submitted_at):''}}</small></span><ChevronRight :size="16"/></button>
-    <h3>通知记录</h3><p v-if="!notices.length" class="muted">暂无通知记录。</p><button v-for="n in notices" :key="n.id" class="task-row" @click="notice(n)"><span><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small>{{shanghai(n.created_at)}}</small></span><span v-if="!n.read" class="unread-dot"/></button>
+    <h3>通知记录</h3><p v-if="!notices.length" class="muted notification-empty">暂无通知。</p><button v-for="n in notices" :key="n.id" class="task-row" @click="notice(n)"><span><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small>{{shanghai(n.created_at)}}</small></span><span v-if="!n.read" class="unread-dot"/></button>
   </aside>
 </main>
 
