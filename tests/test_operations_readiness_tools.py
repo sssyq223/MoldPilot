@@ -44,6 +44,9 @@ def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secret
         admin = db.scalar(select(User).where(User.username == "admin"))
         result = execute(db, admin, "query_operations_readiness_context", {})
     payload = result["data"][0]
+    assert payload["log_retention"]["retention_script"]["exists"] is True
+    assert payload["log_retention"]["retention_script"]["default_mode"] == "dry-run"
+    assert "--i-understand-this-will-prune-logs" in payload["log_retention"]["retention_script"]["execute_requires"]
     gates = {item["key"]: item for item in payload["acceptance_gates"]}
     for key in [
         "deployment_topology",

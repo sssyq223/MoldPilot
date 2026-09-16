@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：日志保留 dry-run 与受控清理工具（2026-09-16）
+
+- 新增 `scripts/log_retention.py`，默认 dry-run，只连接 `.env` 中的 PostgreSQL `moldpilot`，拒绝 SQLite 和非 `moldpilot` 数据库。
+- 真实执行必须同时传 `--execute` 与 `--i-understand-this-will-prune-logs`；审计日志会先归档 JSONL 到 `.local/log-archives` 再删除，登录会话只清理过期/超期会话。
+- 模型运行日志保留采用“归档后脱敏”而不是删除会话：归档 `ai_step.result` 与 `ai_run.checkpoint` 后用保留标记替换，不删除用户 prompt、最终业务摘要或会话记录。
+- `query_operations_readiness_context` 的 `log_retention` 结果新增 `retention_script`，返回脚本路径、dry-run 默认、执行确认条件、归档目录和处理范围。
+- 当前本机 `.env` 尚未配置四类 `MOLD_*_RETENTION_DAYS`，所以 readiness 仍会如实返回 `LOG_RETENTION_POLICY_INCOMPLETE`；需要用户/实施确认具体保留天数，以及部署层应用日志和访问日志采集/轮转/脱敏/归档策略。
+
 ## 持续开发：移除交付运行链路 SQLite 兜底（2026-09-16）
 
 - 运行时数据库入口 `make_engine` 现在直接拒绝 `sqlite` URL，API/Worker/交付脚本必须通过 `MOLD_DATABASE_URL` 连接 PostgreSQL。

@@ -62,6 +62,15 @@ $env:PYTHONPATH='backend'
 
 日志保留期限也通过 `.env` 显式配置。`MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS` 默认为 `0`，表示尚未确认，不会被运行就绪工具视为已验收。设置具体天数后，仍需补充日志采集位置、脱敏、归档、检索和删除策略的验收证据。
 
+本地日志保留脚本默认只做 dry-run，不会删除或脱敏数据：
+
+```powershell
+$env:PYTHONPATH='backend'
+.venv/Scripts/python.exe scripts/log_retention.py
+```
+
+真实执行必须同时传 `--execute --i-understand-this-will-prune-logs`。脚本只支持 PostgreSQL，拒绝 SQLite，并且只允许连接 `moldpilot`；审计事件会先归档到 `.local/log-archives` 再删除，模型工具步骤只归档并脱敏结果/checkpoint，不删除会话、用户 prompt 或最终业务摘要，登录会话只清理过期或超出保留期的会话。部署层应用日志和访问日志仍需在反向代理/服务管理器中配置采集、轮转、脱敏和归档。
+
 运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
 
 本地 Redis 可用 Docker 单独启动，不要求与应用共用 Compose：

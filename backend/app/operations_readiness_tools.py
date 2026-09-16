@@ -339,6 +339,7 @@ def _retention_item(days: int) -> dict:
 
 
 def _log_retention_status(db, cfg) -> dict:
+    retention_script = REPO_ROOT / "scripts" / "log_retention.py"
     audit_total = db.scalar(select(func.count()).select_from(AuditEvent)) or 0
     oldest = db.scalar(select(func.min(AuditEvent.created_at)))
     newest = db.scalar(select(func.max(AuditEvent.created_at)))
@@ -360,8 +361,17 @@ def _log_retention_status(db, cfg) -> dict:
             "oldest_created_at": oldest.isoformat() if oldest else None,
             "newest_created_at": newest.isoformat() if newest else None,
         },
+        "retention_script": {
+            "path": "scripts/log_retention.py",
+            "exists": retention_script.exists(),
+            "default_mode": "dry-run",
+            "execute_requires": ["--execute", "--i-understand-this-will-prune-logs"],
+            "postgresql_only": True,
+            "archive_dir": ".local/log-archives",
+            "handles": ["audit_event archive/delete", "login_session prune", "ai_step result redaction", "ai_run checkpoint redaction"],
+        },
         "status": "LOG_RETENTION_POLICY_CONFIGURED" if not missing_keys else "LOG_RETENTION_POLICY_INCOMPLETE",
-        "note": "这里只核对保留期限配置和审计表事实；正式验收仍需确认应用日志、访问日志、模型调用日志的采集位置、脱敏、归档、检索和删除策略。",
+        "note": "这里只核对保留期限配置、审计表事实和本地保留脚本存在性；正式验收仍需确认部署层应用/访问日志采集位置、脱敏、归档、检索和删除策略。",
     }
 
 
