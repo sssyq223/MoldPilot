@@ -220,6 +220,33 @@ class CustomerAcceptanceRecord(IdentityMixin, Base):
     )
 
 
+class SupplierProgressReport(IdentityMixin, Base):
+    """Authorized supplier node progress report/import for full-outsource collaboration."""
+    __tablename__ = 'supplier_progress_report'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    plan_task_id: Mapped[str | None] = mapped_column(ForeignKey('plan_task.id'), index=True)
+    stage_key: Mapped[str] = mapped_column(String(80))
+    stage_name: Mapped[str] = mapped_column(String(150))
+    report_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30))
+    progress_percent: Mapped[int | None] = mapped_column(Integer)
+    next_due_date: Mapped[date | None] = mapped_column(Date)
+    issue_summary: Mapped[str] = mapped_column(Text, default='')
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    reported_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    followed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('project_id','supplier_id','stage_key','report_date','source_ref', name='supplier_progress_report_unique_source'),
+        CheckConstraint("status IN ('ON_TRACK','AT_RISK','BLOCKED','DONE','REWORK')", name='supplier_progress_report_status'),
+        CheckConstraint('progress_percent IS NULL OR progress_percent BETWEEN 0 AND 100', name='supplier_progress_report_progress_range'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_progress_report_source_system'),
+    )
+
+
 class ReceiptInspection(IdentityMixin, Base):
     __tablename__ = 'receipt_inspection'
     receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)

@@ -247,6 +247,47 @@ def _order_tracking(db, user, project_id, allowed_tools):
     return {"orders": _order_headers(orders), **tracking}
 
 
+def _supplier_progress_reports(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    q = (
+        select(m.SupplierProgressReport, m.Supplier)
+        .join(m.Supplier, m.SupplierProgressReport.supplier_id == m.Supplier.id)
+        .where(m.SupplierProgressReport.project_id == project_id)
+        .order_by(m.SupplierProgressReport.report_date.desc(), m.SupplierProgressReport.created_at.desc(), m.SupplierProgressReport.id)
+        .limit(100)
+    )
+    today = now().date()
+    for report, supplier in db.execute(q):
+        overdue_followup = report.status in {"AT_RISK", "BLOCKED", "REWORK"} and report.next_due_date is not None and report.next_due_date < today
+        rows.append(
+            {
+                "id": report.id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": report.contract_subject_id,
+                "plan_task_id": report.plan_task_id,
+                "stage_key": report.stage_key,
+                "stage_name": report.stage_name,
+                "report_date": report.report_date.isoformat(),
+                "status": report.status,
+                "progress_percent": report.progress_percent,
+                "next_due_date": report.next_due_date.isoformat() if report.next_due_date else None,
+                "overdue_followup": overdue_followup,
+                "issue_summary": report.issue_summary,
+                "evidence": report.evidence,
+                "source_system": report.source_system,
+                "source_ref": report.source_ref,
+                "reported_by": report.reported_by,
+                "followed_by": report.followed_by,
+            }
+        )
+    return rows
+
+
 def _engineering_changes(rows):
     result = []
     for row in rows:
@@ -365,11 +406,13 @@ def _closure_items(db, user, project_id, allowed_tools):
     return rows[:100]
 
 
-def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_tasks, order_tracking, engineering_changes, contacts, payments, closure_items):
+def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_tasks, supplier_progress_reports, order_tracking, engineering_changes, contacts, payments, closure_items):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     totals = order_tracking["totals"]
     open_contacts = [row for row in contacts if row.get("collaboration_status") != "CLOSED"]
     open_change_impacts = [impact for row in engineering_changes for impact in row.get("unimplemented_impacts") or []]
+    risky_reports = [row for row in supplier_progress_reports if row.get("status") in {"AT_RISK", "BLOCKED", "REWORK"}]
+    overdue_reports = [row for row in supplier_progress_reports if row.get("overdue_followup")]
     deduction_tasks = [
         task
         for issue in contacts
@@ -393,6 +436,12 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
         warnings.append("当前可见范围未见有效项目计划，无法核对供应商节点上报与项目同步节奏。")
     if not plan_tasks:
         gaps.append("未见供应商设计、采购、生产、质检、装配、试模、验收或交付等委外协同计划节点。")
+    if not supplier_progress_reports:
+        gaps.append("未见结构化供应商节点上报/导入记录；无法核对供应商设计、采购、生产、质检、装配、试模、验收等阶段的最近进度与证据。")
+    if risky_reports:
+        warnings.append("存在供应商节点风险、阻塞或返工上报，需采购跟进并同步项目。")
+    if overdue_reports:
+        warnings.append("存在供应商风险/阻塞节点已超过下次跟进日期，需更新整改或复验进度。")
     if not totals.get("supplier_shipments") and not totals.get("goods_receipts"):
         gaps.append("未见供应商发货、仓库收货或交付节点执行事实；不能据此认定委外交付完成。")
     if totals.get("supplier_shipments") and not totals.get("goods_receipts"):
@@ -417,6 +466,7 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
             else None
         ),
         "outsource_plan_tasks": plan_tasks,
+        "supplier_progress_reports": supplier_progress_reports,
         "supplier_execution_tracking": order_tracking,
         "engineering_changes": engineering_changes,
         "outsource_quality_delay_contacts": contacts,
@@ -430,6 +480,9 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
             "has_full_outsource_mode": mode == "FULL_OUTSOURCE" or bool(quote_acceptance),
             "has_effective_full_outsource_contract": bool(contract_effective),
             "has_outsource_plan_node": bool(plan_tasks),
+            "has_supplier_progress_report": bool(supplier_progress_reports),
+            "has_supplier_progress_risk": bool(risky_reports),
+            "has_overdue_supplier_progress_followup": bool(overdue_reports),
             "has_supplier_shipment_or_receipt": bool(totals.get("supplier_shipments") or totals.get("goods_receipts")),
             "has_rejected_receipt": bool(totals.get("rejected_receipt_lines")),
             "has_open_outsource_issue": bool(open_contacts or open_change_impacts),
@@ -455,6 +508,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         contract_rows = _subject_rows(db, user, project.id, "full_outsource_contract", allowed_tools)
         plan_rows = _subject_rows(db, user, project.id, "project_plan", allowed_tools) + _subject_rows(db, user, project.id, "plan_change", allowed_tools)
         active_plan, plan_tasks = _plan_tasks(plan_rows)
+        supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         payments = _payment_summary(_subject_rows(db, user, project.id, "supplier_payment", allowed_tools))
@@ -492,6 +546,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         contract_rows,
                         active_plan,
                         plan_tasks,
+                        supplier_progress_reports,
                         order_tracking,
                         engineering_changes,
                         contacts,

@@ -1,7 +1,8 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
@@ -10,11 +11,12 @@ from app.models import Base
 from app.tool_gateway import execute, tool_schema
 
 
-def factory():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(engine, expire_on_commit=False)
-    return engine, Session
+@pytest.fixture
+def pg_session_factory(test_engine):
+    tables = ",".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+    with test_engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE " + tables + " CASCADE"))
+    return sessionmaker(test_engine, expire_on_commit=False)
 
 
 def user(db, username="operator", super_admin=False):
@@ -187,6 +189,30 @@ def order_flow(db, project, creator, mat, sup, wh):
     return order
 
 
+def supplier_progress(db, project, creator, sup, task=None, status="AT_RISK"):
+    row = m.SupplierProgressReport(
+        project_id=project.id,
+        supplier_id=sup.id,
+        contract_subject_id=None,
+        plan_task_id=task.id if task else None,
+        stage_key="supplier_trial",
+        stage_name="供应商试模与整改",
+        report_date=date.today(),
+        status=status,
+        progress_percent=70,
+        next_due_date=date.today() - timedelta(days=1),
+        issue_summary="试模整改延期，等待复验",
+        evidence="供应商进度上报",
+        source_system="MANUAL",
+        source_ref="SPR-" + project.code,
+        reported_by=creator.id,
+        followed_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def contact_issue(db, project, creator):
     group = m.AssignmentGroup(kind="DEPARTMENT", name="采购部")
     db.add(group)
@@ -245,85 +271,88 @@ def closure_acceptance(db, project, creator):
     return case
 
 
-def test_full_outsource_schema_and_context_summary():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            p = project(db, "OUT-M001")
-            full_outsource_profile(db, p, admin)
-            sup = supplier(db)
-            wh = warehouse(db)
-            acceptance(db, p, admin)
-            outsource_contract(db, p, admin, sup)
-            plan(db, p, admin)
-            order_flow(db, p, admin, material(db), sup, wh)
-            contact_issue(db, p, admin)
-            closure_acceptance(db, p, admin)
-        schema = tool_schema("query_full_outsource_context")["function"]["parameters"]
-        assert {"project_id", "identifier"} <= set(schema["properties"])
-        with Session() as db:
-            admin = db.query(m.User).filter_by(username="admin").one()
-            result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-M001"})
-            assert result["resolution"] == "RESOLVED"
-            analysis = result["data"][0]["analysis"]
-            status = analysis["derived_status"]
-            assert status["has_full_outsource_mode"] is True
-            assert status["has_effective_full_outsource_contract"] is True
-            assert status["has_outsource_plan_node"] is True
-            assert status["has_supplier_shipment_or_receipt"] is True
-            assert status["has_rejected_receipt"] is True
-            assert status["has_open_outsource_issue"] is True
-            assert status["has_deduction_or_cost_impact_signal"] is True
-            assert status["has_supplier_payment_request"] is True
-            assert status["has_customer_acceptance_or_close_evidence"] is True
-            assert "供应商门户" in "".join(analysis["gaps"])
-            assert "不合格" in "".join(analysis["warnings"])
-    finally:
-        engine.dispose()
+def test_full_outsource_schema_and_context_summary(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-M001")
+        full_outsource_profile(db, p, admin)
+        sup = supplier(db)
+        wh = warehouse(db)
+        acceptance(db, p, admin)
+        outsource_contract(db, p, admin, sup)
+        _, task = plan(db, p, admin)
+        supplier_progress(db, p, admin, sup, task)
+        order_flow(db, p, admin, material(db), sup, wh)
+        contact_issue(db, p, admin)
+        closure_acceptance(db, p, admin)
+    schema = tool_schema("query_full_outsource_context")["function"]["parameters"]
+    assert {"project_id", "identifier"} <= set(schema["properties"])
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-M001"})
+        assert result["resolution"] == "RESOLVED"
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        assert status["has_full_outsource_mode"] is True
+        assert status["has_effective_full_outsource_contract"] is True
+        assert status["has_outsource_plan_node"] is True
+        assert status["has_supplier_progress_report"] is True
+        assert status["has_supplier_progress_risk"] is True
+        assert status["has_overdue_supplier_progress_followup"] is True
+        assert status["has_supplier_shipment_or_receipt"] is True
+        assert status["has_rejected_receipt"] is True
+        assert status["has_open_outsource_issue"] is True
+        assert status["has_deduction_or_cost_impact_signal"] is True
+        assert status["has_supplier_payment_request"] is True
+        assert status["has_customer_acceptance_or_close_evidence"] is True
+        assert analysis["supplier_progress_reports"][0]["stage_name"] == "供应商试模与整改"
+        assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
+        assert "供应商门户" in "".join(analysis["gaps"])
+        warnings = "".join(analysis["warnings"])
+        assert "不合格" in warnings
+        assert "供应商节点风险" in warnings
+        assert "超过下次跟进日期" in warnings
 
 
-def test_full_outsource_does_not_leak_orders_without_order_tool():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            operator = user(db)
-            p = project(db, "OUT-LIMITED")
-            full_outsource_profile(db, p, admin)
-            sup = supplier(db)
-            wh = warehouse(db)
-            outsource_contract(db, p, admin, sup)
-            order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
-            grant(db, admin, operator, "project.read", project_id=p.id)
-            grant(db, admin, operator, "full_outsource_contract.read", project_id=p.id, category="outsource")
-            capability(db, operator, "query_full_outsource_context")
-        with Session() as db:
-            operator = db.query(m.User).filter_by(username="operator").one()
-            result = execute(db, operator, "query_full_outsource_context", {"identifier": "OUT-LIMITED"})
-            analysis = result["data"][0]["analysis"]
-            assert analysis["derived_status"]["has_effective_full_outsource_contract"] is True
-            assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
-            assert "SHIP-OUT-SECRET" not in str(result)
-            assert "PO-OUT-OUT-LIMITED" not in str(result)
-            assert result["data"][0]["analysis"]["supplier_execution_tracking"]["orders"] == []
-            assert "正式订单" in "".join(result["limitations"])
-    finally:
-        engine.dispose()
+def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        operator = user(db)
+        p = project(db, "OUT-LIMITED")
+        full_outsource_profile(db, p, admin)
+        sup = supplier(db)
+        wh = warehouse(db)
+        outsource_contract(db, p, admin, sup)
+        supplier_progress(db, p, admin, sup)
+        order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
+        grant(db, admin, operator, "project.read", project_id=p.id)
+        grant(db, admin, operator, "full_outsource_contract.read", project_id=p.id, category="outsource")
+        capability(db, operator, "query_full_outsource_context")
+    with Session() as db:
+        operator = db.query(m.User).filter_by(username="operator").one()
+        result = execute(db, operator, "query_full_outsource_context", {"identifier": "OUT-LIMITED"})
+        analysis = result["data"][0]["analysis"]
+        assert analysis["derived_status"]["has_effective_full_outsource_contract"] is True
+        assert analysis["derived_status"]["has_supplier_progress_report"] is True
+        assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
+        assert "SHIP-OUT-SECRET" not in str(result)
+        assert "PO-OUT-OUT-LIMITED" not in str(result)
+        assert result["data"][0]["analysis"]["supplier_execution_tracking"]["orders"] == []
+        assert analysis["supplier_progress_reports"][0]["source_ref"] == "SPR-OUT-LIMITED"
+        assert "正式订单" in "".join(result["limitations"])
 
 
-def test_full_outsource_reports_multiple_candidates_without_deciding():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            project(db, "OUT-A", "共同委外项目A")
-            project(db, "OUT-B", "共同委外项目B")
-        with Session() as db:
-            admin = db.query(m.User).filter_by(username="admin").one()
-            result = execute(db, admin, "query_full_outsource_context", {"identifier": "共同委外项目"})
-            assert result["resolution"] == "MULTIPLE_CANDIDATES"
-            assert {row["code"] for row in result["data"]} == {"OUT-A", "OUT-B"}
-            assert "请使用项目 ID" in "".join(result["limitations"])
-    finally:
-        engine.dispose()
+def test_full_outsource_reports_multiple_candidates_without_deciding(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        project(db, "OUT-A", "共同委外项目A")
+        project(db, "OUT-B", "共同委外项目B")
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "共同委外项目"})
+        assert result["resolution"] == "MULTIPLE_CANDIDATES"
+        assert {row["code"] for row in result["data"]} == {"OUT-A", "OUT-B"}
+        assert "请使用项目 ID" in "".join(result["limitations"])

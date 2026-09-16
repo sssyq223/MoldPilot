@@ -53,6 +53,11 @@ SELECT
     'customer_acceptance_record',
     COUNT(*)
 FROM customer_acceptance_record
+UNION ALL
+SELECT
+    'supplier_progress_report',
+    COUNT(*)
+FROM supplier_progress_report
 ORDER BY table_name;
 
 SELECT
