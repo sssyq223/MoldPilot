@@ -82,8 +82,9 @@ function capabilityDescription(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''
  if(detail.kind==='skill')return localizeCapabilityText(String(detail.item.agent_description||detail.item.description||'该技能会按当前授权工具组合完成任务。')
   .split('\n')
-  .filter(line=>!line.trim().startsWith('版本：')&&!/^第\s*[\d.]+\s*版/.test(line.trim()))
+  .filter(line=>!line.trim().startsWith('版本：')&&!/^第\s*[\d.]+\s*版/.test(line.trim())&&!/^#\s+/.test(line.trim()))
   .join('\n')
+  .replace(/\n{3,}/g,'\n\n')
   .trim())
  return detail.item.description||''
 }

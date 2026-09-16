@@ -793,3 +793,5 @@ from .contract_tools import router as contract_proposal_router
 app.include_router(contract_proposal_router)
 from .finance_context_tools import router as finance_proposal_router
 app.include_router(finance_proposal_router)
+from .full_outsource_tools import router as full_outsource_proposal_router
+app.include_router(full_outsource_proposal_router)

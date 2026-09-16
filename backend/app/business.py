@@ -387,6 +387,9 @@ def create_intent(db, user, action, resource_id, payload):
     elif action == 'contract.execute':
         from .contract_tools import validate_intent
         validate_intent(db,user,payload)
+    elif action == 'full_outsource.execute':
+        from .full_outsource_tools import validate_intent
+        validate_intent(db,user,payload)
     elif action == 'finance.execute':
         from .finance_context_tools import validate_intent
         validate_intent(db,user,payload)
@@ -431,6 +434,9 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
         result=confirm(db,user,intent.payload)
     elif intent.action=='contract.execute':
         from .contract_tools import confirm
+        result=confirm(db,user,intent.payload)
+    elif intent.action=='full_outsource.execute':
+        from .full_outsource_tools import confirm
         result=confirm(db,user,intent.payload)
     elif intent.action=='finance.execute':
         from .finance_context_tools import confirm

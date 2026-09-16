@@ -2,11 +2,11 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
-from app import models as m
-from app.authorization import PERMISSIONS
+from app import bpm, business, models as m
+from app.authorization import PERMISSIONS, fingerprint
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
 
@@ -490,6 +490,98 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert "客户验收记录涉及扣款" in warnings
         assert "要求合同变化" in warnings
         assert "交期影响天数" in warnings
+
+
+def test_prepare_supplier_material_handoff_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-HANDOFF-PREPARE", "资料交接项目")
+        sup = supplier(db, "S-HANDOFF")
+        contract = outsource_contract(db, p, admin, sup)
+        conversation = m.Conversation(user_id=admin.id, title="供应商资料交接")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记给供应商的客户资料交接证据", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "document_title": "客户原始资料包-盖章版",
+            "document_type": "CUSTOMER_MATERIAL",
+            "approval_status": "APPROVED",
+            "provided_date": date.today().isoformat(),
+            "provided_to": "供应商项目经理",
+            "handoff_channel": "EMAIL",
+            "evidence": "采购已通过邮件发送，供应商项目经理回复收到",
+            "source_ref": "HANDOFF-PREPARE-001",
+        }
+    schema = tool_schema("prepare_supplier_material_handoff")["function"]["parameters"]
+    assert {"project_id", "project_version", "supplier_id", "contract_subject_id", "document_title"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_supplier_material_handoff", args, run=run)
+        assert evidence["proposal"]["kind"] == "supplier_material_handoff"
+        assert evidence["proposal"]["requires_approval"] is False
+        assert evidence["proposal"]["display"]["资料标题"] == "客户原始资料包-盖章版"
+        assert db.scalar(select(m.SupplierMaterialHandoff).where(m.SupplierMaterialHandoff.source_ref == "HANDOFF-PREPARE-001")) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_material_handoff", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id, payload)
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        assert receipt["status"] == "CONFIRMED"
+        row = db.get(m.SupplierMaterialHandoff, receipt["supplier_material_handoff_id"])
+        assert row.document_title == "客户原始资料包-盖章版"
+        assert row.contract_subject_id == args["contract_subject_id"]
+        assert row.verified_by == admin.id
+        assert row.source_system == "MANUAL"
+
+
+def test_prepare_supplier_material_handoff_rejects_duplicate_and_missing_contract(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-HANDOFF-BLOCK", "资料交接阻断项目")
+        sup = supplier(db, "S-HANDOFF-BLOCK")
+        contract = outsource_contract(db, p, admin, sup)
+        material_handoff(db, p, admin, sup, contract, status="APPROVED")
+        conversation = m.Conversation(user_id=admin.id, title="资料交接重复")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记给供应商的客户资料交接证据", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "document_title": "客户原始资料包",
+            "document_type": "CUSTOMER_MATERIAL",
+            "approval_status": "APPROVED",
+            "provided_date": date.today().isoformat(),
+            "provided_to": "供应商项目经理",
+            "handoff_channel": "EMAIL",
+            "evidence": "重复邮件交接回执",
+            "source_ref": "HANDOFF-OUT-HANDOFF-BLOCK",
+        }
+        with pytest.raises(Exception) as duplicate:
+            execute(db, admin, "prepare_supplier_material_handoff", args, run=run)
+        assert getattr(duplicate.value, "code", None) == "SUPPLIER_MATERIAL_HANDOFF_DUPLICATE"
+        missing_contract = {**args, "document_title": "客户原始资料包-新增", "source_ref": "HANDOFF-MISSING-CONTRACT", "contract_subject_id": None}
+        with pytest.raises(Exception) as invalid:
+            execute(db, admin, "prepare_supplier_material_handoff", missing_contract, run=run)
+        assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
 
 
 def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_factory):

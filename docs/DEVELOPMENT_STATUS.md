@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：供应商资料交接证据对话办理闭环（2026-09-16）
+
+- 新增 `prepare_supplier_material_handoff` 工具，基于真实项目版本、供应商、已生效整套委外合同、资料标题/类型、交接日期、交接对象、交接渠道和交接依据，准备供应商资料交接证据登记 proposal。
+- 该能力不新增传统 ERP 页面：仍在对话框内展示 proposal 卡片，用户本人确认后才写入 `SupplierMaterialHandoff`；不创建供应商门户，不代表供应商已核验，不触发 ERP 发货、生产或验收执行。
+- 准备和确认阶段都会重新校验项目版本、供应商有效性、整套委外合同归属/供应商一致性/生效状态、资料文件访问权限、`project.read` / `full_outsource_contract.read` / `full_outsource_contract.execute` 精确项目分类权限，以及重复来源引用。
+- 整套委外 Skill 已同步办理规则：默认只读，只有用户明确要求登记客户资料、设计图纸、技术规范或质量标准交接证据，且上下文有真实项目/合同/供应商 ID 与依据时才准备卡片。
+- 前端通用 proposal 卡片已映射 `supplier_material_handoff` 到 `/api/full-outsource-proposals`，能力设置文案补充“准备供应商资料交接”。
+- 验证：`tests/test_full_outsource_tools.py` 覆盖 proposal 不直接写库、本人确认后写入已批准资料交接记录、重复来源阻断和正式获准交接缺少整套委外合同阻断；`tests/test_capability_catalog.py` 覆盖能力目录元数据。
+
 ## 持续开发：整套委外合同签署文件对话办理闭环（2026-09-16）
 
 - 新增 `prepare_contract_signing_record` 工具，基于真实项目版本、已生效整套委外合同、供应商、签署状态、签署日期、签署文件标题/引用和签署依据，准备合同签署证据登记 proposal。
@@ -133,7 +142,8 @@
 - 新增 `supplier_material_handoff` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人。
 - `query_full_outsource_context` 新增 `analysis.supplier_material_handoffs`，将客户资料/设计资料交接与委外合同、供应商节点上报、订单发货收货、验收整改分开展示。
 - 派生状态新增 `has_approved_supplier_material_handoff` 与 `has_draft_or_revoked_supplier_material_handoff`；有生效委外合同但无获准资料交接依据时返回 gaps，草稿或撤回记录进入 warnings，不作为正式交接依据。
-- PostgreSQL `moldpilot_test` 验证覆盖有效资料交接、订单权限隔离下仍可按合同权限查看资料交接依据，以及整套委外上下文汇总。
+- `prepare_supplier_material_handoff` 已提供对话内办理入口，用户本人确认后才写入资料交接证据；不创建供应商门户、不代表供应商已核验、不触发 ERP 发货或生产执行。
+- PostgreSQL `moldpilot_test` 验证覆盖有效资料交接、订单权限隔离下仍可按合同权限查看资料交接依据、整套委外上下文汇总、对话 proposal 不直接写库、本人确认后写入资料交接记录、重复来源和正式获准交接缺少合同阻断。
 - FR-072 仍为 NOT_VERIFIED：真实客户资料上传、附件安全、采购向供应商提供资料的正式审批/回执、供应商核验反馈和 ERP/文件存储联调尚未完成正式验收。
 
 ## 持续开发：FR-071 供应商节点上报与采购跟进上下文（2026-09-16）

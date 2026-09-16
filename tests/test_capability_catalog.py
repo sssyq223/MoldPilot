@@ -55,6 +55,17 @@ def test_contract_signing_record_tool_is_human_confirmed_operation_in_contract_p
     assert "prepare_contract_signing_record" in skill["optional_dependencies"]
 
 
+def test_supplier_material_handoff_tool_is_in_full_outsource_pack():
+    tool = capability_descriptor("TOOL", "prepare_supplier_material_handoff", TOOLS["prepare_supplier_material_handoff"])
+    assert tool["name"] == "准备供应商资料交接"
+    assert tool["department"] == "purchase"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "full_outsource_review", SKILLS["full_outsource_review"])
+    assert skill["dependencies"] == ["query_full_outsource_context"]
+    assert "prepare_supplier_material_handoff" in skill["optional_dependencies"]
+
+
 def test_contact_collaboration_skill_has_curated_activation_pack():
     item = capability_descriptor("SKILL", "contact_collaboration_review", SKILLS["contact_collaboration_review"])
     assert item["dependencies"] == ["query_contact_cases"]

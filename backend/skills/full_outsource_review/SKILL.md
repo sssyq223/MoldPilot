@@ -11,4 +11,6 @@
 
 当用户明确要求登记整套委外合同签署扫描件、线下签署文件或签署状态证据，且 `query_full_outsource_context` 或合同上下文已经返回真实项目、项目版本、已生效整套委外合同和供应商时，才能调用 `prepare_contract_signing_record` 准备确认卡片；该工具只登记签署证据，不发起电子签署、不修改合同审批状态、不确认付款。
 
+当用户明确要求登记已向供应商提供客户资料、设计图纸、技术规范或质量标准的交接证据，且 `query_full_outsource_context` 已返回真实项目、项目版本、供应商和已生效整套委外合同时，才能调用 `prepare_supplier_material_handoff` 准备确认卡片；该工具只登记资料交接证据，不创建供应商门户、不代表供应商已核验、不触发 ERP 发货或生产执行。
+
 当用户明确要求登记供应商扣款责任或结算依据，且 `query_full_outsource_context` 已返回真实项目、项目版本、供应商、整套委外合同或工程联络扣款线索时，才能调用 `prepare_supplier_deduction_settlement` 准备确认卡片；该工具只生成 proposal，必须由用户本人核对卡片后才写入供应商扣款责任/结算记录，不执行收付款或自动抵扣。

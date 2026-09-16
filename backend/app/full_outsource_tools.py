@@ -1,17 +1,137 @@
 from collections import Counter, defaultdict
+from datetime import date
 from decimal import Decimal
+from typing import Literal
 
+from fastapi import APIRouter, Depends
+from pydantic import Field, ValidationError
 from sqlalchemy import select
 
 from . import models as m
-from .authorization import access, predicate, select_fields
-from .db import now
+from .authorization import access, fingerprint, predicate, require, select_fields
+from .bpm import content_hash
+from .confirmation_policy import proposal_confirmation_policy
+from .db import get_db, now
 from .errors import DomainError
 from .plan_tools import ProjectPlanContextInput, _strength
+from .schemas import StrictModel
+from .security import current_user
 
 
 OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "supplier")
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
+FULL_OUTSOURCE_PROPOSAL_TOOLS = {"prepare_supplier_material_handoff"}
+
+
+class SupplierMaterialHandoffProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str | None = Field(default=None, max_length=36)
+    file_id: str | None = Field(default=None, max_length=36)
+    document_title: str = Field(min_length=1, max_length=200)
+    document_type: Literal["CUSTOMER_MATERIAL","DESIGN_DRAWING","TECHNICAL_SPEC","QUALITY_STANDARD","OTHER"] = "CUSTOMER_MATERIAL"
+    approval_status: Literal["DRAFT","APPROVED","REVOKED"] = "APPROVED"
+    provided_date: date
+    provided_to: str = Field(min_length=1, max_length=150)
+    handoff_channel: Literal["MANUAL","EMAIL","IMPORT","ERP","OTHER"] = "MANUAL"
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_ref: str | None = Field(default=None, max_length=120)
+
+
+def supplier_material_handoff_schema():
+    return SupplierMaterialHandoffProposalInput.model_json_schema()
+
+
+def parse_supplier_material_handoff(arguments):
+    try:
+        data = SupplierMaterialHandoffProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商资料交接参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.approval_status == "APPROVED" and not data.contract_subject_id:
+        raise DomainError("INVALID_TOOL_INPUT", "正式获准资料交接必须关联已生效整套委外合同")
+    return data
+
+
+def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "资料交接必须关联有效委外供应商", 409)
+    contract = None
+    contract_detail = None
+    if data.contract_subject_id:
+        contract = db.get(m.BusinessSubject, data.contract_subject_id)
+        if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract":
+            raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+        contract_detail = db.get(m.ContractDetail, contract.id)
+        if not contract_detail or contract_detail.supplier_id != supplier.id:
+            raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与资料交接供应商不一致", 409)
+        if data.approval_status == "APPROVED" and contract.status not in {"EFFECTIVE", "CLOSED"}:
+            raise DomainError("CONTRACT_NOT_EFFECTIVE", "正式获准资料交接必须关联已生效或已关闭整套委外合同", 409)
+    if data.file_id:
+        from .files import uploaded_file
+        uploaded_file(db, user, data.file_id)
+    if data.source_ref and db.scalar(select(m.SupplierMaterialHandoff.id).where(
+        m.SupplierMaterialHandoff.project_id == project.id,
+        m.SupplierMaterialHandoff.supplier_id == supplier.id,
+        m.SupplierMaterialHandoff.document_title == data.document_title,
+        m.SupplierMaterialHandoff.provided_date == data.provided_date,
+        m.SupplierMaterialHandoff.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_MATERIAL_HANDOFF_DUPLICATE", "该供应商资料交接来源已登记", 409)
+    display = {
+        "操作": "登记供应商资料交接证据",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number if contract_detail else "未关联",
+        "资料标题": data.document_title,
+        "资料类型": data.document_type,
+        "审批状态": data.approval_status,
+        "交接日期": data.provided_date.isoformat(),
+        "交接对象": data.provided_to,
+        "交接渠道": data.handoff_channel,
+        "资料文件": data.file_id or "未关联文件",
+        "来源引用": data.source_ref or "未填写",
+        "依据": data.evidence,
+        "说明": "本人确认后仅登记向供应商提供资料的证据；不创建供应商门户、不代表供应商已核验、不触发 ERP 发货或生产执行。",
+    }
+    return project, supplier, contract, display
+
+
+def create_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput):
+    _, supplier, contract, _ = preview_supplier_material_handoff(db, user, data)
+    row = m.SupplierMaterialHandoff(project_id=data.project_id, supplier_id=supplier.id,
+        contract_subject_id=contract.id if contract else None, file_id=data.file_id,
+        document_title=data.document_title, document_type=data.document_type,
+        approval_status=data.approval_status, provided_date=data.provided_date,
+        provided_to=data.provided_to, handoff_channel=data.handoff_channel,
+        evidence=data.evidence, source_system="MANUAL", source_ref=data.source_ref,
+        provided_by=user.id, verified_by=user.id if data.approval_status == "APPROVED" else None)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def execute_full_outsource_tool(db, user, key, arguments, run=None):
+    if key != "prepare_supplier_material_handoff":
+        raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
+    data = parse_supplier_material_handoff(arguments)
+    _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    proposal = {"kind": "supplier_material_handoff", "action": "confirm_supplier_material_handoff",
+        "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+        "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+    return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
+        "limitations": ["仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"]}
 
 
 def _project_card(db, user, project, matched_by=()):
@@ -891,3 +1011,63 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             "limitations": limitations + ["线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。"],
         }
     return {"resolution": "NOT_FOUND", "data": [], "source": "agent_db", "as_of": now().isoformat(), "limitations": limitations}
+
+
+def source(db, user, step_id):
+    from .tool_gateway import available_tools
+    step = db.get(m.Step, step_id)
+    run = db.get(m.Run, step.run_id) if step else None
+    if not run or run.user_id != user.id:
+        raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
+    if run.status not in {"RUNNING", "SUCCEEDED"}:
+        raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
+    if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
+        raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
+    proposal = step.result.get("proposal")
+    if step.tool not in available_tools(db, user) or step.tool not in FULL_OUTSOURCE_PROPOSAL_TOOLS or not proposal:
+        raise DomainError("TOOL_FORBIDDEN", "操作能力不可用", 403)
+    return proposal
+
+
+def validate_intent(db, user, payload):
+    proposal = source(db, user, payload["step_id"])
+    if content_hash(proposal) != payload["proposal_hash"]:
+        raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
+    if proposal.get("kind") != "supplier_material_handoff":
+        raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
+    data = parse_supplier_material_handoff(proposal["input"])
+    _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    if content_hash(display) != content_hash(proposal["display"]):
+        raise DomainError("VERSION_CONFLICT", "项目、合同、供应商或权限资料已变化，请重新准备", 409)
+    return proposal, data
+
+
+def confirm(db, user, payload):
+    _, data = validate_intent(db, user, payload)
+    row = create_supplier_material_handoff(db, user, data)
+    return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+        "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+
+
+router = APIRouter()
+
+
+@router.get("/api/full-outsource-proposals/{step_id}")
+def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)):
+    source(db, user, step_id)
+    intent = db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id == user.id,
+        m.HumanIntent.action == "full_outsource.execute", m.HumanIntent.resource_id == step_id,
+        m.HumanIntent.receipt.is_not(None)).order_by(m.HumanIntent.created_at.desc()))
+    return {"receipt": intent.receipt if intent else None}
+
+
+@router.post("/api/full-outsource-proposals/{step_id}/intent")
+def intent(step_id: str, user=Depends(current_user), db=Depends(get_db)):
+    from .business import create_intent
+    proposal = source(db, user, step_id)
+    payload = {"step_id": step_id, "proposal_hash": content_hash(proposal)}
+    result = create_intent(db, user, "full_outsource.execute", step_id, payload)
+    result["display"] = proposal["display"]
+    result["confirmation_policy"] = proposal.get("confirmation_policy")
+    db.commit()
+    return result
