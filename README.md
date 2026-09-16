@@ -58,7 +58,7 @@ $env:PYTHONPATH='backend'
 .venv/Scripts/python.exe scripts/restore_postgres.py --backup .local/backups/moldpilot_YYYYMMDD_HHMMSS.dump
 ```
 
-脚本只支持 PostgreSQL，拒绝 SQLite，默认输出到 `.local/backups`，不会提交到 Git。数据库密码只通过 `PGPASSWORD` 环境变量传给 `pg_dump` / `pg_restore`，不会打印到控制台或写入命令参数。恢复脚本默认读取 `MOLD_RESTORE_DATABASE_URL`，应指向 `moldpilot_restore` 这类隔离库；默认 dry-run，不会改库。真实恢复必须额外传 `--execute --i-understand-this-will-change-target-db`，且默认拒绝恢复到主库 `moldpilot`。若本机未安装 PostgreSQL 客户端工具，脚本可用 `--client-mode docker` 通过 `MOLD_PG_CLIENT_IMAGE`（默认 `postgres:16-alpine`）临时运行 pg_dump/pg_restore；如果已安装但未加入 PATH，可在 `.env` 设置 `MOLD_PG_DUMP_PATH` / `MOLD_PG_RESTORE_PATH`，或通过 `--pg-dump` / `--pg-restore` 指定路径。Docker 模式下访问本机 `127.0.0.1` PostgreSQL 会自动改用 `host.docker.internal`。
+脚本只支持 PostgreSQL，拒绝 SQLite，默认输出到 `.local/backups`，不会提交到 Git。数据库密码只通过 `PGPASSWORD` 环境变量传给 `pg_dump` / `pg_restore`，不会打印到控制台或写入命令参数。恢复脚本默认读取 `MOLD_RESTORE_DATABASE_URL`，应指向 `moldpilot_restore` 这类隔离库；默认 dry-run，不会改库。真实恢复必须额外传 `--execute --i-understand-this-will-change-target-db`，且默认拒绝恢复到主库 `moldpilot`。若本机未安装 PostgreSQL 客户端工具，脚本可用 `--client-mode docker` 通过 `MOLD_PG_CLIENT_IMAGE`（默认 `postgres:18-alpine`）临时运行 pg_dump/pg_restore；如果已安装但未加入 PATH，可在 `.env` 设置 `MOLD_PG_DUMP_PATH` / `MOLD_PG_RESTORE_PATH`，或通过 `--pg-dump` / `--pg-restore` 指定路径。Docker 模式下访问本机 `127.0.0.1` PostgreSQL 会自动改用 `host.docker.internal`。
 
 日志保留期限也通过 `.env` 显式配置。`MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS` 默认为 `0`，表示尚未确认，不会被运行就绪工具视为已验收。设置具体天数后，仍需补充日志采集位置、脱敏、归档、检索和删除策略的验收证据。
 
@@ -118,4 +118,5 @@ npm.cmd run build
 - 作者：sssyq
 - GitHub：[@sssyq223](https://github.com/sssyq223)
 - 邮箱：2372822523@qq.com
+
 

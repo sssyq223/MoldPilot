@@ -135,11 +135,18 @@ def _command_probe(command: list[str], timeout: float = 2.0) -> dict:
         return result
     stderr = (completed.stderr or "").strip()
     stdout = (completed.stdout or "").strip()
-    docker_connect_error = command[0] == "docker" and "error during connect" in stderr.lower()
+    combined = f"{stdout}\n{stderr}".lower()
+    docker_probe = command[0] == "docker"
+    docker_connect_error = docker_probe and (
+        "error during connect" in combined
+        or "internal server error" in combined
+        or "servererrors" in combined
+    )
+    docker_info_empty = docker_probe and len(command) > 1 and command[1] == "info" and not stdout.strip()
     output = (stdout or stderr or "").splitlines()
     result.update(
         {
-            "probe_ok": completed.returncode == 0 and not docker_connect_error,
+            "probe_ok": completed.returncode == 0 and not docker_connect_error and not docker_info_empty,
             "returncode": completed.returncode,
             "summary": output[0][:160] if output else "",
         }
@@ -311,7 +318,7 @@ def _backup_restore_status() -> dict:
     pg_restore = _tool_path("pg_restore", cfg.pg_restore_path)
     docker_cli = _command_probe(["docker", "--version"])
     docker_daemon = _command_probe(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=3.0)
-    docker_image = (cfg.pg_client_image or "postgres:16-alpine").strip()
+    docker_image = (cfg.pg_client_image or "postgres:18-alpine").strip()
     docker_image_present = _command_probe(["docker", "image", "inspect", docker_image], timeout=3.0) if docker_daemon.get("probe_ok") else {"probe_ok": False}
     docker_client = {
         "image": docker_image,
@@ -733,3 +740,4 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         "as_of": now().isoformat(),
         "limitations": warnings,
     }
+

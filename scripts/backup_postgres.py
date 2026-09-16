@@ -84,7 +84,8 @@ def _docker_probe() -> dict:
     result = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, check=False, timeout=5)
     stderr = (result.stderr or "").lower()
     stdout = (result.stdout or "").strip()
-    ok = result.returncode == 0 and "error during connect" not in stderr and bool(stdout)
+    combined = f"{stdout}\n{stderr}".lower()
+    ok = result.returncode == 0 and "error during connect" not in combined and "internal server error" not in combined and bool(stdout)
     return {
         "available": ok,
         "cli": True,
@@ -150,7 +151,7 @@ def main() -> int:
     parser.add_argument("--output-dir", default=".local/backups", help="Backup directory. Defaults to .local/backups.")
     parser.add_argument("--pg-dump", default="", help="Optional explicit pg_dump executable path.")
     parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
-    parser.add_argument("--docker-image", default="", help="Docker image containing pg_dump. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:16-alpine.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_dump. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:18-alpine.")
     parser.add_argument("--dry-run", action="store_true", help="Validate configuration and print the backup target only.")
     args = parser.parse_args()
 
@@ -162,7 +163,7 @@ def main() -> int:
 
     pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or _config_value(config, "MOLD_PG_DUMP_PATH"))
     docker = _docker_probe()
-    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:16-alpine")
+    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:18-alpine")
     client_mode = "native" if pg_dump and args.client_mode in {"auto", "native"} else ""
     if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
         client_mode = "docker"
@@ -210,3 +211,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

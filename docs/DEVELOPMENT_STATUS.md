@@ -5,11 +5,12 @@
 ## 持续开发：PostgreSQL 备份恢复 Docker 客户端模式（2026-09-16）
 
 - `scripts/backup_postgres.py` 与 `scripts/restore_postgres.py` 新增 `--client-mode auto|native|docker`，默认 `auto`：优先使用本机 `pg_dump` / `pg_restore`，本机未安装时可使用 Docker 临时 `postgres` 客户端镜像。
-- 新增配置 `MOLD_PG_CLIENT_IMAGE`，默认 `postgres:16-alpine`；Docker 模式下本机 `127.0.0.1` / `localhost` PostgreSQL 会映射为 `host.docker.internal`。
+- 新增配置 `MOLD_PG_CLIENT_IMAGE`，默认 `postgres:18-alpine`；Docker 模式下本机 `127.0.0.1` / `localhost` PostgreSQL 会映射为 `host.docker.internal`。
 - 密码仍只通过 `PGPASSWORD` 环境变量传入客户端；脚本不在命令行参数、日志或 readiness 结果中输出数据库密码。
 - `query_operations_readiness_context.backup_restore` 新增 `docker_pg_client`、native/docker 两组可运行状态和脚本支持的 `client_modes`，避免仅因 Windows 未安装 PostgreSQL 客户端而无法表达可交付路径。
-- 同步修正 Docker 探测：Docker CLI 存在但 Linux engine pipe 不可用时，readiness 不再误判为 Docker daemon 可用；当前本机实际返回 `DEPLOYMENT_RUNTIME_INCOMPLETE`、Docker pg client 不可用。
-- 当前是否真正解除 `BACKUP_TOOLING_INCOMPLETE` 仍取决于 Docker daemon 或本机 PostgreSQL 客户端是否可用、隔离恢复库是否配置，以及是否完成实际备份和恢复演练；本轮只补齐受控执行路径和只读识别。
+- 同步修正 Docker 探测：Docker CLI 存在但 Linux engine pipe 不可用或返回 Internal Server Error 时，readiness 不再误判为 Docker daemon 可用。
+- 本机已启动 Docker Desktop Linux engine，使用 `postgres:18-alpine` 真实生成 `.local/backups/moldpilot_20260916_122810.dump`，并恢复到隔离库 `moldpilot_restore`；恢复后核对 `admin_count=1`、`alembic=d2f0a9b1c3e4`。
+- 当前 `query_operations_readiness_context` 返回 `backup_restore.status=BACKUP_TOOLING_READY`；正式 RPO/RTO、备份频率、异地位置和恢复演练记录仍需实施验收确认。
 
 ## 持续开发：日志保留 dry-run 与受控清理工具（2026-09-16）
 
@@ -17,7 +18,8 @@
 - 真实执行必须同时传 `--execute` 与 `--i-understand-this-will-prune-logs`；审计日志会先归档 JSONL 到 `.local/log-archives` 再删除，登录会话只清理过期/超期会话。
 - 模型运行日志保留采用“归档后脱敏”而不是删除会话：归档 `ai_step.result` 与 `ai_run.checkpoint` 后用保留标记替换，不删除用户 prompt、最终业务摘要或会话记录。
 - `query_operations_readiness_context` 的 `log_retention` 结果新增 `retention_script`，返回脚本路径、dry-run 默认、执行确认条件、归档目录和处理范围。
-- 当前本机 `.env` 尚未配置四类 `MOLD_*_RETENTION_DAYS`，所以 readiness 仍会如实返回 `LOG_RETENTION_POLICY_INCOMPLETE`；需要用户/实施确认具体保留天数，以及部署层应用日志和访问日志采集/轮转/脱敏/归档策略。
+- 本机 `.env` 已配置开发验收用保留天数：审计 365 天、应用 180 天、访问 90 天、模型 180 天；`scripts/log_retention.py` dry-run 通过且无可清理旧数据。
+- 当前 `query_operations_readiness_context` 返回 `log_retention.status=LOG_RETENTION_POLICY_CONFIGURED`；生产保留期限、部署层应用/访问日志采集、轮转、脱敏、归档和删除策略仍需用户/实施确认。
 
 ## 持续开发：移除交付运行链路 SQLite 兜底（2026-09-16）
 
@@ -31,8 +33,8 @@
 
 - 新增 `docker-compose.redis.yml`，提供独立本地 Redis 7 容器，绑定 `127.0.0.1:56379`，开启 AOF 持久化，与 `.env.example` 的 `MOLD_REDIS_URL` 保持一致。
 - 新增 `scripts/dev_redis.py`，默认 `status` 只读核对 Docker daemon、端口、Redis PING、业务事件 stream 和通知消费组；`start --execute` 才会启动容器，`init-stream --execute` 才会创建 `message_worker` 所需 stream/group。
-- 当前环境 `scripts/dev_redis.py start --execute` 未能成功启动 Redis，`127.0.0.1:56379` 仍未开放；`init-stream --execute` 已改为在 Redis 不可达时返回错误类型和操作提示，不再输出异常堆栈。
-- 该脚本用于消除 `readiness_summary.machine_blockers.redis` 的本机运行阻断；正式交付仍需目标环境 Redis 持久化、容量、告警、重试、死信和故障恢复演练。
+- 当前环境在 Docker Desktop Linux engine 启动后，`scripts/dev_redis.py start --execute` 已启动 Redis，`init-stream --execute` 已创建业务事件 stream 和通知消费组；`status` 返回 `redis_reachable=True`、`stream_exists=True`、`group_ready=True`。
+- 该脚本已消除 `readiness_summary.machine_blockers.redis` 的本机运行阻断；正式交付仍需目标环境 Redis 持久化、容量、告警、重试、死信和故障恢复演练。
 
 ## 持续开发：PostgreSQL 隔离恢复脚本基线（2026-09-16）
 
@@ -46,7 +48,8 @@
 
 - `query_operations_readiness_context` 新增 `readiness_summary`，把数据库、迁移、Redis、部署运行前提、备份恢复工具链、日志保留、生产附件存储和模型运行配置汇总为机器可验证的 `machine_blockers` 与已满足的 `ready_items`。
 - 汇总同时输出 `acceptance_gaps`，保留部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界等仍需人工/实施验收的门槛。
-- `overall_status` 只有在机器阻断项和验收缺口都清空时才会是 `READY_FOR_DELIVERY`；当前环境仍会保持 `BLOCKED/NOT_VERIFIED`，避免模型把局部探测通过说成整体交付完成。
+- 当前本机机器阻断项已清空：`machine_status=MACHINE_PREREQUISITES_READY`，ready_items 包含 PostgreSQL/moldpilot、Alembic head、Redis stream/group、本机部署运行前提、PostgreSQL 备份恢复工具链、日志保留策略和模型运行配置。
+- `overall_status` 仍为 `BLOCKED`，原因是正式实施/业务验收缺口尚未清空；避免模型把机器前提就绪说成整体交付完成。
 - 该汇总供 Agent 回复交付状态时引用，不新增页面、不替代正式压测、恢复演练、生产部署和业务验收。
 
 ## 持续开发：部署运行前提只读核对（2026-09-16）
@@ -499,3 +502,4 @@ Redis 消息 Worker 已有投递租约、失败重试、Inbox 去重、权限核
 以上足以定位当前路径对默认握手的兼容问题，不能单凭这些测试确定是本机代理、上游节点、中间网络或服务器中的哪一处。未关闭 TUN、未改全局代理规则、未绕过证书校验。
 
 OpenSSL 官方说明 3.5 默认发送 X25519MLKEM768 和 X25519 两种 key share，作为分析握手差异的依据：[OpenSSL TLS 1.3 文档](https://github.com/openssl/openssl/wiki/TLS1.3)。此依据不等同于证明当前网络中的具体故障设备。
+

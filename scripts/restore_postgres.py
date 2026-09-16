@@ -96,7 +96,8 @@ def _docker_probe() -> dict:
     result = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, check=False, timeout=5)
     stderr = (result.stderr or "").lower()
     stdout = (result.stdout or "").strip()
-    ok = result.returncode == 0 and "error during connect" not in stderr and bool(stdout)
+    combined = f"{stdout}\n{stderr}".lower()
+    ok = result.returncode == 0 and "error during connect" not in combined and "internal server error" not in combined and bool(stdout)
     return {
         "available": ok,
         "cli": True,
@@ -180,7 +181,7 @@ def main() -> int:
     parser.add_argument("--backup", default="", help="Path to a pg_dump custom-format backup file.")
     parser.add_argument("--pg-restore", default="", help="Optional explicit pg_restore executable path.")
     parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
-    parser.add_argument("--docker-image", default="", help="Docker image containing pg_restore. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:16-alpine.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_restore. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:18-alpine.")
     parser.add_argument("--execute", action="store_true", help="Actually run pg_restore. Omit for dry-run.")
     parser.add_argument("--clean", action="store_true", help="Pass --clean --if-exists to pg_restore during execution.")
     parser.add_argument("--allow-primary-target", action="store_true", help="Allow restoring into database named moldpilot. Not recommended.")
@@ -198,7 +199,7 @@ def main() -> int:
     target = _parse_url(str(url), args.expected_db or None, args.allow_primary_target)
     pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or _config_value(config, "MOLD_PG_RESTORE_PATH"))
     docker = _docker_probe()
-    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:16-alpine")
+    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:18-alpine")
     client_mode = "native" if pg_restore and args.client_mode in {"auto", "native"} else ""
     if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
         client_mode = "docker"
@@ -252,3 +253,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
