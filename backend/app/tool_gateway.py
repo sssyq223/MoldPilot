@@ -47,6 +47,7 @@ TOOLS.update({
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
+    'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
     'prepare_project_plan_change':{'description':'准备项目计划变更审批建议；必须使用查询返回的真实项目、当前计划和节点清单，本人确认后才提交 Agent BPM。','permission':'plan_change.create'},
     'prepare_plan_department_confirmation':{'description':'准备计划变更生效后的部门影响确认；只能使用计划上下文返回的待确认项 ID 和版本，本人确认后仅记录本部门已核对。','permission':'plan_change.execute'},
@@ -87,7 +88,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'quote_evaluation_review':{'name':'报价评估与加工方式核对','tools':['query_quote_evaluation_context']},
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
-               'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness']},
+               'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
+                   'optional_tools':['prepare_internal_start']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context']},
                'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context','prepare_project_plan_change','prepare_plan_department_confirmation']},
                'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context'],
@@ -142,6 +144,7 @@ CAPABILITY_NAMES = {
     'query_bid_intake_context': '读取中标接收上下文',
     'query_contract_context': '读取合同上下文',
     'query_internal_start_readiness': '核对正式开工条件',
+    'prepare_internal_start': '准备正式开工通知',
     'query_project_plan_context': '读取项目计划上下文',
     'prepare_project_plan_change': '准备项目计划变更',
     'prepare_plan_department_confirmation': '准备计划部门影响确认',
@@ -193,6 +196,7 @@ CAPABILITY_DEPARTMENTS = {
     'query_finance_context': 'finance', 'finance_context_review': 'finance', 'query_governance_context': 'system',
     'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
+    'prepare_internal_start': 'project',
     'internal_start_readiness': 'project', 'query_project_plan_context': 'project',
     'prepare_project_plan_change': 'project', 'prepare_plan_department_confirmation': 'project',
     'project_plan_context_review': 'project', 'project_plan_change': 'project',
@@ -226,6 +230,7 @@ CAPABILITY_TYPES = {
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
+    'prepare_internal_start': 'approval',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
     'design_route_context_review': 'review',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
@@ -323,9 +328,10 @@ def tool_schema(key):
     if key=='query_contract_context':
         from .contract_tools import ContractContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ContractContextInput.model_json_schema()}}
-    if key=='query_internal_start_readiness':
-        from .start_tools import StartReadinessInput
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':StartReadinessInput.model_json_schema()}}
+    if key in {'query_internal_start_readiness','prepare_internal_start'}:
+        from .start_tools import StartReadinessInput, start_schema
+        parameters=start_schema() if key=='prepare_internal_start' else StartReadinessInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_project_plan_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
@@ -396,6 +402,9 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_project_plan_change','prepare_plan_department_confirmation'}:
         from .plan_tools import execute_plan_tool
         return execute_plan_tool(db,user,key,arguments,run=run)
+    if key=='prepare_internal_start':
+        from .start_tools import execute_start_tool
+        return execute_start_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from .project_dossier import ProjectDossierInput,query

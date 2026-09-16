@@ -8,7 +8,8 @@ import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
 const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme];openConversation:[conversation:any];modelUpdated:[model:string]}>()
-const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false)
+const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false),auditPage=ref(1),auditTotal=ref(0)
+const auditPageSize=8
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
 const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('all')
 const capabilityDropdown=ref<'department'|'type'|''>(''),capabilityToolbar=ref<HTMLElement|null>(null)
@@ -110,6 +111,24 @@ function auditSummary(entry:any){
  if(entry.summary)return entry.summary
  return entry.resource_id?`记录编号：${String(entry.resource_id).slice(0,8)}…`:'系统记录'
 }
+function auditBody(entry:any){
+ const text=auditSummary(entry)
+ return text.startsWith('记录编号：')?'系统记录':text
+}
+const auditPageCount=computed(()=>Math.max(1,Math.ceil(auditTotal.value/auditPageSize)))
+const auditPageStart=computed(()=>auditTotal.value?((auditPage.value-1)*auditPageSize+1):0)
+const auditPageEnd=computed(()=>Math.min(auditPage.value*auditPageSize,auditTotal.value))
+async function loadAudit(nextPage=auditPage.value){
+ auditLoading.value=true
+ auditPage.value=Math.max(1,nextPage)
+ try{
+  const offset=(auditPage.value-1)*auditPageSize
+  const result=await api(`/audit?offset=${offset}&limit=${auditPageSize}`)
+  const records=Array.isArray(result)?result:result.items
+  audit.value=(records||[]).slice(0,auditPageSize)
+  auditTotal.value=Array.isArray(result)?result.length:result.total
+ }catch(e:any){emit('error',e.message)}finally{auditLoading.value=false}
+}
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
 const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
 const activeModelName=computed(()=>{
@@ -143,8 +162,7 @@ async function select(key:string){
  if(!navigation.value.some(item=>item.key===key))return
  page.value=key
  if(key==='audit'){
-  auditLoading.value=true;audit.value=[]
- try{audit.value=await api('/audit')}catch(e:any){emit('error',e.message)}finally{auditLoading.value=false}
+  audit.value=[];auditTotal.value=0;await loadAudit(1)
  }
  if(key==='archived')await loadArchived()
  if(key==='model')await loadModelConfig()
@@ -446,7 +464,7 @@ async function clearAvatar(){
    </template>
    <AdminPanel v-else-if="page==='admin'&&permissions.includes('user.manage')" @error="emit('error',$event)"/>
    <WorkflowPanel v-else-if="page==='workflows'&&permissions.includes('workflow.design')" @error="emit('error',$event)"/>
-   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><h2>操作审计</h2><p v-if="auditLoading" role="status">正在读取审计记录…</p><article v-for="entry in audit" :key="entry.id" class="audit-row"><strong>{{auditName(entry.action)}}</strong><small>{{shanghai(entry.created_at)}}</small><p class="muted small">{{auditSummary(entry)}}<span v-if="entry.actor_name"> · 操作人：{{entry.actor_name}}</span></p></article></template>
+   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><div class="audit-page-head"><div><h2>操作审计</h2><p class="muted">记录关键登录、授权、流程和智能体任务操作。</p></div><span class="audit-count">{{auditTotal}} 条记录</span></div><p v-if="auditLoading" role="status" class="audit-loading">正在读取审计记录…</p><section v-else class="audit-list" aria-label="操作审计记录"><article v-for="entry in audit" :key="entry.id" class="audit-card"><div class="audit-card-main"><span class="audit-dot"/><div><div class="audit-card-title"><strong>{{auditName(entry.action)}}</strong><span v-if="entry.actor_name">操作人：{{entry.actor_name}}</span></div><p>{{auditBody(entry)}}</p><small class="muted">记录编号：{{String(entry.resource_id||entry.id).slice(0,8)}}…</small></div></div><time>{{shanghai(entry.created_at)}}</time></article><p v-if="!audit.length" class="audit-empty muted">暂无审计记录。</p></section><div class="audit-pagination" v-if="auditTotal>auditPageSize"><span>第 {{auditPageStart}}–{{auditPageEnd}} 条，共 {{auditTotal}} 条</span><div><button :disabled="auditLoading||auditPage<=1" @click="loadAudit(auditPage-1)">上一页</button><span>{{auditPage}} / {{auditPageCount}}</span><button :disabled="auditLoading||auditPage>=auditPageCount" @click="loadAudit(auditPage+1)">下一页</button></div></div></template>
   </div>
  </section>
 </main>

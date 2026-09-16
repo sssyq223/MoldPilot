@@ -11,8 +11,10 @@ const templates=ref<any[]>([]), users=ref<any[]>([])
 const editing=ref(false), busy=ref(false), name=ref(''), key=ref('')
 const nodes=ref<any[]>([]), simulation=ref<any>(null), materialContract=ref<any>(null)
 const editId=ref(''), editHash=ref(''), selected=ref<any>(null), historyKey=ref(''), history=ref<any[]>([]), historyNext=ref<number|null>(null), notice=ref('')
-const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),legacyCopy=ref(false)
+const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false)
 const categoryName=(id:string)=>flowCategories.value.find(c=>c.id===id)?.name||'待整理'
+const categoryFilterLabel=computed(()=>categoryFilter.value?categoryName(categoryFilter.value):'全部类别')
+function pickCategoryFilter(value:string){categoryFilter.value=value;categoryFilterOpen.value=false}
 async function refreshCategories(){try{flowCategories.value=await api('/workflow-categories')}catch(e:any){emit('error',e.message)}}
 const assignmentGroups=ref<any[]>([])
 const materialTemplates=ref<any[]>([]),materialTemplateId=ref('')
@@ -49,7 +51,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
   <div class="workflow-topbar">
     <MaterialTemplatePanel @changed="refreshMaterials" @error="emit('error',$event)"/>
     <WorkflowCategoryPanel :categories="flowCategories" @changed="refreshCategories" @error="emit('error',$event)"/>
-    <label class="workflow-category-filter"><span>按类别查看</span><select v-model="categoryFilter"><option value="">全部类别</option><option v-for="c in flowCategories" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
+    <label class="workflow-category-filter"><span>按类别查看</span><div class="workflow-filter-select" :class="{open:categoryFilterOpen}"><button type="button" class="workflow-filter-select-button" @click="categoryFilterOpen=!categoryFilterOpen"><span>{{categoryFilterLabel}}</span><i aria-hidden="true"></i></button><div v-if="categoryFilterOpen" class="workflow-filter-select-menu"><button type="button" :class="{active:!categoryFilter}" @click="pickCategoryFilter('')">全部类别</button><button v-for="c in flowCategories" :key="c.id" type="button" :class="{active:categoryFilter===c.id}" @click="pickCategoryFilter(c.id)">{{c.name}}</button></div></div></label>
   </div>
   <p v-if="notice" role="status">{{notice}}</p>
   <section v-if="selected" class="surface form-stack" aria-label="流程详情">

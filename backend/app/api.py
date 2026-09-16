@@ -594,9 +594,10 @@ def read_notification(notification_id: str, user=Depends(current_user), db=Depen
 
 
 @app.get("/api/audit")
-def audit(user=Depends(current_user), db=Depends(get_db)):
+def audit(offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50), user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "audit.read")
-    events = list(db.scalars(select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).limit(100)))
+    total = db.scalar(select(func.count()).select_from(m.AuditEvent)) or 0
+    events = list(db.scalars(select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).offset(offset).limit(limit)))
     user_ids = {value for event in events for value in (event.user_id, event.resource_id) if value}
     users_by_id = {row.id: row for row in db.scalars(select(m.User).where(m.User.id.in_(user_ids)))} if user_ids else {}
     def summary(event):
@@ -612,10 +613,11 @@ def audit(user=Depends(current_user), db=Depends(get_db)):
         if "kind" in detail:
             return f"类型：{detail['kind']}"
         return ""
-    return [{"id": a.id, "action": a.action, "resource_id": a.resource_id, "created_at": a.created_at.isoformat(),
-             "detail": a.detail, "actor_name": users_by_id[a.user_id].display_name if a.user_id in users_by_id else "系统",
-             "summary": summary(a)}
-            for a in events]
+    items = [{"id": a.id, "action": a.action, "resource_id": a.resource_id, "created_at": a.created_at.isoformat(),
+              "detail": a.detail, "actor_name": users_by_id[a.user_id].display_name if a.user_id in users_by_id else "系统",
+              "summary": summary(a)}
+             for a in events]
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/api/conversations")
@@ -776,3 +778,5 @@ from .project_closure_tools import router as project_closure_proposal_router
 app.include_router(project_closure_proposal_router)
 from .plan_tools import router as project_plan_proposal_router
 app.include_router(project_plan_proposal_router)
+from .start_tools import router as internal_start_proposal_router
+app.include_router(internal_start_proposal_router)

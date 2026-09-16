@@ -198,8 +198,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 客户工艺方案确认并收到客户开工通知后，满足正式启动条件。项目负责人正式下达内部开工通知，通知设计、采购、生产、装配、财务等相关部门。承接确认、客户开工条件和内部正式下达分别留存依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；正式下达、部门通知和客户开工条件校验仍需独立流程，不由本工具执行；query_internal_start_readiness 汇总项目状态、有效承接、正式开工通知、合同和计划上下文，区分承接确认、合同和内部正式下达；readiness.known_blockers/warnings/hints 只表达当前可见事实，不创建开工通知或发送部门任务
-- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态；tests/test_start_tools.py 覆盖具备承接依据时可准备开工、已有正式开工时不重复准备；客户工艺方案确认和部门通知矩阵尚未验收
+- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；query_internal_start_readiness 汇总项目状态、有效承接、正式开工通知、合同和计划上下文，区分承接确认、合同和内部正式下达；prepare_internal_start 基于查询返回的真实项目、项目版本、已生效承接记录和审批流程准备正式开工通知 proposal，本人确认后才创建 internal_start 材料并提交 Agent BPM，审批生效前不改变项目状态或发送 ERP 执行任务
+- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态；tests/test_start_tools.py 覆盖具备承接依据时可准备开工、已有正式开工时不重复准备、正式开工 proposal 不直接建单、人工确认后提交 BPM、项目审批前仍为 DRAFT、项目版本变化拒绝旧 proposal；客户工艺方案正式业务验收和完整部门通知矩阵尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-021
@@ -207,8 +207,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 正式下达前允许匹配数据、准备草稿和项目计划草案，并按业务需要开展开工前的工艺评估及客户确认；不得下达或执行生产、采购、装配、试模任务。正式下达后，部门任务仍应按项目计划审批结果执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行
-- 验证证据：tests/test_start_tools.py 验证工具只读核对与 can_prepare_start_from_known_facts；开工前草稿准备和正式任务门禁全流程尚未验收
+- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；prepare_internal_start 只生成待本人确认的开工通知提案并提交 BPM，审批生效前项目仍为 DRAFT，正式开工后仍须按项目计划审批结果执行
+- 验证证据：tests/test_start_tools.py 验证工具只读核对、can_prepare_start_from_known_facts、开工 proposal 人工确认链和审批前不改变项目状态；真实开工前工艺评估、客户确认资料和正式任务门禁全流程尚未业务验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-022
@@ -216,8 +216,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部开工业务状态为：待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中。中标接收、匹配等处理动作另留记录；拒单记录原因后结束，暂停和终止按第12章管理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态
-- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收
+- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；prepare_internal_start 将“待正式下达”推进为受控 BPM 提案，暂停、终止和拒单场景通过 blocker/warning 或领域校验阻断，不自动推进状态
+- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工、多候选、人工确认提交 BPM 和版本冲突；完整内部开工业务状态机、审批生效后全链路通知和真实 ERP 执行门禁仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-023
@@ -243,8 +243,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 财务按确认方式取得BPM等来源的开工通知，核对订单和合同信息；客户付款节点单独维护，不仅保存备注。移模时间按客户签收时间记录，由财务人工维护；签收不等于质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认；工具只读，不维护移模时间、不确认客户付款节点、不替代财务核对
-- 验证证据：tests/test_start_tools.py 覆盖开工通知独立于承接；tests/test_contract_tools.py 覆盖付款节点只读展示，财务取得 BPM 开工通知和移模维护尚未验收
+- 实现证据：正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认；prepare_internal_start 通过 Agent BPM 形成财务可追溯的开工通知来源，但不维护移模时间、不确认客户付款节点、不替代财务核对
+- 验证证据：tests/test_start_tools.py 覆盖开工通知独立于承接、正式开工通知提交 BPM；tests/test_contract_tools.py 覆盖付款节点只读展示，财务实际取得并核对 BPM 开工通知、移模维护和客户付款节点业务验收尚未完成
 - 验收状态：NOT_VERIFIED
 
 ## 合同上传与管理

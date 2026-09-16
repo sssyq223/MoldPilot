@@ -1,10 +1,15 @@
 from collections import defaultdict
-from pydantic import Field, model_validator
+from datetime import date
+from typing import Literal
+from pydantic import Field, ValidationError, model_validator
+from fastapi import APIRouter, Depends
 from sqlalchemy import select, and_
-from . import models as m
-from .authorization import access, predicate, select_fields
-from .db import now
+from . import models as m, domains, domain_schemas as s, workflow_selection
+from .authorization import access, predicate, require, select_fields, fingerprint
+from .bpm import content_hash
+from .db import get_db, now
 from .errors import DomainError
+from .security import current_user
 from .schemas import StrictModel
 
 
@@ -21,6 +26,22 @@ class StartReadinessInput(StrictModel):
             self.identifier=self.identifier.strip()
             if not self.identifier:raise ValueError('线索不能为空')
         return self
+
+
+class StartProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36,
+        description='query_internal_start_readiness 返回的真实 project_id。')
+    project_version: int = Field(ge=1,
+        description='query_internal_start_readiness 返回的项目 row_version。')
+    source_subject_id: str = Field(min_length=1, max_length=36,
+        description='query_internal_start_readiness 返回的已生效承接记录 ID。')
+    execution_mode: Literal['INTERNAL','FULL_OUTSOURCE'] | None = Field(default=None,
+        description='最终加工方式；未填时沿用承接记录中的 execution_mode。')
+    effective_date: date = Field(description='正式内部开工生效日期。')
+    evidence: str = Field(min_length=1, max_length=4000,
+        description='客户开工通知、工艺方案确认或项目负责人下达依据。')
+    workflow_definition_id: str = Field(min_length=1, max_length=36,
+        description='query_internal_start_readiness 返回或管理员配置的正式开工审批流程 ID。')
 
 
 def _strength(value,needle):
@@ -114,6 +135,20 @@ def _records(db,user,project_id,allowed_tools):
     return data
 
 
+def workflow_options(db,user,project):
+    scope={'project_id':project.id}
+    require(db,user,'internal_start.read',scope)
+    require(db,user,'internal_start.submit',scope)
+    rows=db.scalars(select(m.WorkflowDefinition).where(m.WorkflowDefinition.status=='PUBLISHED').order_by(
+        m.WorkflowDefinition.process_key,m.WorkflowDefinition.version.desc()))
+    result=[]
+    for row in rows:
+        if not workflow_selection.matches(row.config,{'business_type':'internal_start','categories':set(),'design_type':None}):continue
+        if row.config.get('material_contract') is not None:continue
+        result.append(workflow_selection.metadata(row,db))
+    return result
+
+
 def _latest_effective(records,kind,decision=None):
     for row in records.get(kind,[]):
         detail=row.get('detail') if isinstance(row.get('detail'),dict) else {}
@@ -172,6 +207,10 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
         if 'query_sales_contract' not in allowed_tools:skipped.append('销售合同')
         if 'query_project_plan' not in allowed_tools and 'query_plan_change' not in allowed_tools:skipped.append('项目计划')
         if skipped:limitations.append('未分配对应查询工具，无法返回：'+'、'.join(skipped))
+        workflows=[]
+        if 'prepare_internal_start' in allowed_tools:
+            try:workflows=workflow_options(db,user,project)
+            except DomainError as error:limitations.append('当前人员缺少正式开工提交权限，未返回可选开工审批流程：'+error.message)
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':_project_profile(db,user,project.id),
             'quote_acceptance':records['quote_acceptance'],
@@ -183,7 +222,8 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
             'sales_contracts':records['sales_contract'],
             'full_outsource_contracts':records['full_outsource_contract'],
             'plans':records['project_plan']+records['plan_change'],
-            'readiness':_readiness(project,records,allowed_tools)}],
+            'readiness':_readiness(project,records,allowed_tools),
+            'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),
@@ -193,3 +233,154 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
                 'limitations':limitations+['线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。']}
     return {'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':now().isoformat(),
             'limitations':limitations}
+
+
+def start_schema():
+    return StartProposalInput.model_json_schema()
+
+
+def parse_start(arguments):
+    try:return StartProposalInput.model_validate(arguments or {})
+    except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','正式开工参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def _effective_start_exists(db,project_id):
+    return db.scalar(select(m.BusinessSubject.id).where(m.BusinessSubject.project_id==project_id,
+        m.BusinessSubject.kind=='internal_start',m.BusinessSubject.status=='EFFECTIVE').limit(1))
+
+
+def preview_start(db,user,data:StartProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id}
+    require(db,user,'project.read',scope)
+    require(db,user,'quote_acceptance.read',scope)
+    require(db,user,'internal_start.read',scope)
+    require(db,user,'internal_start.create',scope)
+    require(db,user,'internal_start.submit',scope)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    if project.status!='DRAFT':
+        raise DomainError('START_STATE','只有未开工项目可准备正式开工',409)
+    if _effective_start_exists(db,project.id):
+        raise DomainError('START_EXISTS','当前项目已有有效正式开工通知',409)
+    source=domains.require_source(db,data.source_subject_id,project.id,{'quote_acceptance'})
+    source_detail=db.get(m.BusinessDecisionDetail,source.id)
+    if not source_detail or source_detail.decision!='ACCEPT':
+        raise DomainError('NOT_ACCEPTED','前置承接记录不是有效承接决定',409)
+    execution_mode=data.execution_mode or source_detail.execution_mode
+    detail=s.DecisionInput(source_subject_id=source.id,decision='START',execution_mode=execution_mode,
+        effective_date=data.effective_date,evidence=data.evidence,amount=None,currency=None)
+    options=workflow_options(db,user,project)
+    selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
+    if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
+    sales_contracts=[];sales_contract_visible=True
+    try:
+        require(db,user,'sales_contract.read',scope)
+        sales_contracts=list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project.id,
+            m.BusinessSubject.kind=='sales_contract',m.BusinessSubject.status=='EFFECTIVE').order_by(
+            m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(20)))
+    except DomainError:
+        sales_contract_visible=False
+    plans=[];plan_visible=True
+    try:
+        require(db,user,'project_plan.read',scope)
+        plans.extend(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project.id,
+            m.BusinessSubject.kind=='project_plan').order_by(m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(20)))
+    except DomainError:
+        plan_visible=False
+    try:
+        require(db,user,'plan_change.read',scope)
+        plans.extend(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project.id,
+            m.BusinessSubject.kind=='plan_change').order_by(m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(20)))
+    except DomainError:
+        plan_visible=False
+    warnings=[]
+    if not sales_contract_visible:warnings.append('当前人员未分配销售合同读取权限；不能在本提案中展示合同事实，合同核对需由有权人员处理。')
+    elif not sales_contracts:warnings.append('当前可见范围未见有效销售合同；合同晚到不必然阻塞开工，但需保留本次开工依据并后续补合同核对。')
+    if not plan_visible:warnings.append('当前人员未分配项目计划读取权限；正式开工后仍需由有权人员核对计划审批结果。')
+    elif not plans:warnings.append('当前可见范围未见项目计划；正式开工后仍需按项目计划审批结果执行，不能直接下达采购、生产、装配或试模任务。')
+    display={'操作':'正式内部开工通知',
+        '项目':project.code+' · '+project.name,
+        '项目版本':project.row_version,
+        '承接依据':source.number+' · 第'+str(source.revision)+'版',
+        '最终加工方式':execution_mode or '未登记（请核对承接记录）',
+        '正式开工日期':data.effective_date.isoformat(),
+        '开工依据':data.evidence,
+        '销售合同':('未授权查看' if not sales_contract_visible else ('已见 '+str(len(sales_contracts))+' 条有效合同' if sales_contracts else '当前未见有效销售合同')),
+        '项目计划':('未授权查看' if not plan_visible else ('已见 '+str(len(plans))+' 条计划/变更记录' if plans else '当前未见计划记录')),
+        '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
+        '注意事项':warnings or ['承接、合同、内部正式开工和项目计划仍是不同事实；审批生效前不会改变项目状态。'],
+        '说明':'本人确认后仅创建正式开工通知材料并提交 Agent BPM；审批生效后项目才从未开工转为执行中，不自动下达 ERP 执行任务。'}
+    return detail,display
+
+
+def execute_start_tool(db,user,key,arguments,run=None):
+    if key!='prepare_internal_start':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
+    data=parse_start(arguments)
+    _,display=preview_start(db,user,data)
+    from .confirmation_policy import proposal_confirmation_policy
+    proposal={'kind':'internal_start','action':'start','requires_approval':True,
+        'input':data.model_dump(mode='json'),'display':display,
+        'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+    return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+        'limitations':['仅准备正式开工通知建议；本人确认后才创建业务材料并提交审批，审批生效前不改变项目状态或执行任务。']}
+
+
+def source(db,user,step_id):
+    from .tool_gateway import available_tools
+    step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
+    if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
+    if run.status not in {'RUNNING','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
+        raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
+    proposal=step.result.get('proposal')
+    if step.tool not in available_tools(db,user) or step.tool!='prepare_internal_start' or not proposal:
+        raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
+    return proposal
+
+
+def validate_intent(db,user,payload):
+    proposal=source(db,user,payload['step_id'])
+    if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
+    data=parse_start(proposal['input'])
+    _,display=preview_start(db,user,data)
+    if content_hash(display)!=content_hash(proposal['display']):
+        raise DomainError('VERSION_CONFLICT','项目、承接依据或流程资料已变化，请重新准备',409)
+    return proposal,data
+
+
+def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
+    proposal,data=validate_intent(db,user,payload)
+    detail,_=preview_start(db,user,data)
+    subject=domains.create(db,user,s.SubjectInput(kind='internal_start',project_id=data.project_id,
+        remark=data.evidence,detail=detail.model_dump(mode='json')))
+    from .business import submit_subject
+    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        agent_permission_mode=agent_permission_mode_from_proposal(proposal))
+    return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
+        'action':'start','status':'SUBMITTED'}
+
+
+router=APIRouter()
+
+
+@router.get('/api/internal-start-proposals/{step_id}')
+def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    source(db,user,step_id)
+    intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
+        m.HumanIntent.action=='internal_start.execute',m.HumanIntent.resource_id==step_id,
+        m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))
+    return {'receipt':intent.receipt if intent else None}
+
+
+@router.post('/api/internal-start-proposals/{step_id}/intent')
+def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    from .business import create_intent
+    proposal=source(db,user,step_id)
+    payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
+    result=create_intent(db,user,'internal_start.execute',step_id,payload)
+    result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
+    db.commit();return result

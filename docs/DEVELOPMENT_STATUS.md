@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：正式开工通知对话办理闭环（2026-09-16）
+
+- 新增 `prepare_internal_start` 工具，基于 `query_internal_start_readiness` 返回的真实项目、项目版本、已生效承接记录和正式开工审批流程，生成正式开工通知 proposal。
+- 该能力不新增传统 ERP 菜单页面：仍在对话框内展示 proposal 卡片，用户本人确认后才创建 `internal_start` 业务材料并提交 Agent BPM；审批生效前项目仍为 DRAFT，不下达设计、采购、生产、装配或试模任务。
+- Skill 约束已更新：承接、销售合同、内部正式开工和项目计划是不同事实；不得凭自然语言、截图或历史对话构造开工通知；合同晚到不必然阻塞具备依据的开工，但必须保留依据并后续补合同核对。
+- 前端 proposal 卡片接入 `/api/internal-start-proposals/{step_id}`，沿用现有人工确认/授权模式，不增加新的 ERP 式页面。
+- PostgreSQL `moldpilot_test` 覆盖 schema、正式开工 proposal 不直接建单、人工确认后提交 BPM、项目审批前仍保持 DRAFT、项目版本冲突拒绝旧 proposal；前端构建与内置浏览器加载/控制台错误检查通过。
+
 ## 持续开发：项目计划变更部门影响确认会话闭环（2026-09-16）
 
 - 新增 `prepare_plan_department_confirmation` 工具，部门负责人或指定确认人可基于 `query_project_plan_context` 返回的真实 `department_confirmations.id/version` 准备确认 proposal。
