@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：设计改版到计划变更的桥接候选（2026-09-16）
+
+- `query_design_route_context` 在 `revision_impact` 存在 BOM/数量/路线/任务关联差异时新增 `analysis.plan_change_candidates`，把设计改版影响结构化为项目计划复核候选。
+- 候选只提供计划上下文复核种子：项目 ID、项目版本、可能的当前有效计划 ID、受影响任务 key、设计版本来源和改版意图；不会直接生成完整 `prepare_project_plan_change.tasks`，也不会自动修改计划。
+- 种子状态为 `READY_TO_QUERY_PLAN_CONTEXT` 时，也必须先调用 `query_project_plan_context`，以返回的真实 `previous_id`、完整任务清单和 `workflow_options` 为准；BOM 数量、采购/委外路线或任务关联变化不能自动推导节点日期、自动顺延全部节点或修改客户承诺交期。
+- “设计BOM与路线上下文核对”Skill 增加可选计划桥接规则，硬依赖仍只有 `query_design_route_context`；`query_project_plan_context` 与 `prepare_project_plan_change` 是可选能力，不会阻断纯设计核对。
+- 新增 SQLite 单元测试覆盖设计改版差异生成计划上下文查询种子、能力目录可选依赖不变成硬依赖。后续仍需把计划上下文复核结果与本人确认的计划变更 proposal 串成端到端浏览器验收流。
+
 ## 持续开发：设计图纸/BOM/路线改版影响评估（2026-09-16）
 
 - `query_design_route_context` 新增 `analysis.revision_impact`，按当前生效设计路线与上一版可比较设计路线输出图纸版本、BOM 新增/移除、数量变化、路线变化和计划任务关联变化。

@@ -267,7 +267,72 @@ def _revision_impact(designs,materials,tasks):
         'limitations':['改版影响仅比较当前可见上一版与当前生效版的 Agent 设计路线事实；不生成图纸、不同步 ERP BOM、不自动调整计划任务。']}
 
 
-def _analysis(designs,materials,tasks,contacts):
+def _design_plan_change_candidates(project,revision_impact,allowed_tools):
+    if revision_impact.get('status')!='COMPARED':
+        return []
+    if not revision_impact.get('derived_status',{}).get('has_bom_or_route_changes'):
+        return []
+    recommended=[]
+    if 'query_project_plan_context' in allowed_tools:
+        recommended.append('query_project_plan_context')
+        if 'prepare_project_plan_change' in allowed_tools:
+            recommended.append('prepare_project_plan_change')
+    affected_tasks=revision_impact.get('affected_plan_tasks') or []
+    plan_ids={task.get('plan_id') for task in affected_tasks if task.get('plan_id')}
+    primary_plan_tasks=[task for task in affected_tasks if task.get('plan_status')=='EFFECTIVE'] or affected_tasks
+    previous_id=primary_plan_tasks[0].get('plan_id') if len(plan_ids)==1 and primary_plan_tasks else None
+    previous_number=primary_plan_tasks[0].get('plan_number') if previous_id else None
+    evidence_gaps=[]
+    if not recommended:
+        evidence_gaps.append('当前会话未分配项目计划查询工具，不能继续核对计划变更基线。')
+    if not affected_tasks:
+        evidence_gaps.append('改版差异尚未匹配到当前权限内可见的计划任务。')
+    if affected_tasks and not previous_id:
+        evidence_gaps.append('改版影响关联到多个或未知计划版本，必须先由项目负责人确认当前有效计划。')
+    seed_status='READY_TO_QUERY_PLAN_CONTEXT' if previous_id and recommended else 'NEEDS_CONTEXT'
+    def item_change(row,change_type):
+        source=row if change_type!='CHANGED' else row.get('to',{})
+        return {'change_type':change_type,'material_id':source.get('material_id'),'code':source.get('code'),
+            'name':source.get('name'),'route':source.get('route'),'quantity':source.get('quantity'),
+            'task_id':source.get('task_id'),'changes':row.get('changes',[]) if change_type=='CHANGED' else []}
+    change_intent=[item_change(row,'ADDED') for row in revision_impact.get('added_items',[])]
+    change_intent.extend(item_change(row,'REMOVED') for row in revision_impact.get('removed_items',[]))
+    change_intent.extend(item_change(row,'CHANGED') for row in revision_impact.get('changed_items',[]))
+    latest=revision_impact.get('latest_design') or {}
+    previous=revision_impact.get('previous_design') or {}
+    return [{
+        'source':'design_revision_impact',
+        'candidate_status':'READY_FOR_PLAN_CONTEXT_QUERY' if seed_status=='READY_TO_QUERY_PLAN_CONTEXT' and not evidence_gaps else 'NEEDS_CONTEXT',
+        'design_revision':{'from':previous.get('drawing_revision'),'to':latest.get('drawing_revision'),
+            'previous_design_id':previous.get('id'),'latest_design_id':latest.get('id')},
+        'matched_plan_tasks':primary_plan_tasks[:20],
+        'evidence_gaps':evidence_gaps,
+        'recommended_next_tools':recommended,
+        'plan_change_prepare_seed':{
+            'status':seed_status,
+            'project_id':project.id,
+            'project_version':project.row_version,
+            'previous_id':previous_id,
+            'previous_plan_number':previous_number,
+            'source_design_id':latest.get('id'),
+            'source_design_number':latest.get('number'),
+            'source_previous_design_id':previous.get('id'),
+            'candidate_task_keys':[task.get('key') for task in primary_plan_tasks if task.get('key')],
+            'change_intent':change_intent[:50],
+            'reason_basis':'设计路线从 {old} 调整到 {new}，BOM/路线差异需项目负责人核对是否触发计划变更。'.format(
+                old=previous.get('drawing_revision') or previous.get('number') or '上一版',
+                new=latest.get('drawing_revision') or latest.get('number') or '当前版'),
+            'required_before_prepare':[
+                '必须先调用 query_project_plan_context，以当前有效计划 previous_id、project_version、完整任务清单和 workflow_options 为准。',
+                'prepare_project_plan_change 的 tasks 必须提交变更后的完整任务列表；未受影响节点保持原值。',
+                'BOM数量、采购/委外路线或任务关联变化只是计划调整依据，不能自动推导节点日期、自动顺延全部节点或修改客户承诺交期。',
+            ],
+        },
+        'guardrail':'只提示项目负责人核对并准备计划变更；不会自动改计划、自动同步 ERP BOM、自动下达采购/加工或跳过 BPM 审批。',
+    }]
+
+
+def _analysis(project,designs,materials,tasks,contacts,allowed_tools):
     effective=[row for row in designs if row.get('status')=='EFFECTIVE']
     open_designs=[row for row in designs if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED'}]
     latest=max(effective,key=lambda row:(row.get('created_at') or '',row.get('number') or '',row.get('id') or '')) if effective else None
@@ -276,6 +341,7 @@ def _analysis(designs,materials,tasks,contacts):
     unlinked=[item for item in current_materials if item.get('route')=='INTERNAL' and not item.get('task_id')]
     purchase_like=[item for item in current_materials if item.get('route') in {'PURCHASE','OUTSOURCE'}]
     revision_impact=_revision_impact(designs,materials,tasks)
+    plan_change_candidates=_design_plan_change_candidates(project,revision_impact,allowed_tools)
     warnings=[]
     if len(effective)>1:warnings.append('当前可见范围存在多个生效设计版本，请先核对唯一正式版本。')
     if not latest:warnings.append('当前可见范围未见生效设计版本，不能认定正式BOM或加工路线已确认。')
@@ -289,12 +355,14 @@ def _analysis(designs,materials,tasks,contacts):
         'route_summary':{'counts':route_counts,'materials':current_materials[:50],
             'internal_unlinked_items':[{'material_id':i.get('id'),'code':i.get('code'),'name':i.get('name')} for i in unlinked[:20]]},
         'linked_plan_tasks':tasks[:50],'engineering_contact_impacts':contacts,'revision_impact':revision_impact,
+        'plan_change_candidates':plan_change_candidates,
         'warnings':warnings,'derived_status':{
             'has_effective_design_route':bool(latest),
             'has_open_design_route':bool(open_designs),
             'has_unlinked_internal_route':bool(unlinked),
             'has_purchase_or_outsource_route':bool(purchase_like),
             'has_engineering_contact_impacts':bool(contacts),
+            'has_plan_change_candidates':bool(plan_change_candidates),
             **revision_impact['derived_status']}}
 
 
@@ -314,7 +382,7 @@ def query(db,user,data:DesignRouteContextInput,allowed_tools:set[str]):
         if 'query_contact_cases' not in allowed_tools:skipped.append('工程联络影响')
         if skipped:limitations.append('未分配对应查询工具，未返回：'+'、'.join(skipped))
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
-            'profile':_profile(db,user,project.id),'design_routes':designs,'analysis':_analysis(designs,materials,tasks,contacts)}],
+            'profile':_profile(db,user,project.id),'design_routes':designs,'analysis':_analysis(project,designs,materials,tasks,contacts,allowed_tools)}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),

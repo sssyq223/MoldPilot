@@ -32,3 +32,13 @@ def test_change_intake_skill_exposes_optional_plan_change_bridge_without_hard_de
     assert item["mode"] == "read_only"
     assert item["dependencies"] == ["query_change_intake_context"]
     assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]
+
+
+def test_design_route_skill_exposes_optional_plan_change_bridge_without_hard_dependency():
+    item = capability_descriptor("SKILL", "design_route_context_review", SKILLS["design_route_context_review"])
+    assert item["name"] == "设计BOM与路线上下文核对"
+    assert item["department"] == "design"
+    assert item["type"] == "review"
+    assert item["mode"] == "read_only"
+    assert item["dependencies"] == ["query_design_route_context"]
+    assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]

@@ -126,6 +126,17 @@ def test_design_route_context_schema_routes_plan_and_contacts():
             assert impact['summary']['quantity_changed']==1
             assert impact['derived_status']['has_bom_or_route_changes'] is True
             assert {task['key'] for task in impact['affected_plan_tasks']}=={'machining','trial-material'}
+            candidate=analysis['plan_change_candidates'][0]
+            assert candidate['candidate_status']=='READY_FOR_PLAN_CONTEXT_QUERY'
+            assert candidate['recommended_next_tools']==['query_project_plan_context','prepare_project_plan_change']
+            seed=candidate['plan_change_prepare_seed']
+            assert seed['status']=='READY_TO_QUERY_PLAN_CONTEXT'
+            assert seed['project_id']==p.id
+            assert seed['project_version']==p.row_version
+            assert seed['previous_id']==base.id
+            assert set(seed['candidate_task_keys'])=={'machining','trial-material'}
+            assert 'query_project_plan_context' in seed['required_before_prepare'][0]
+            assert analysis['derived_status']['has_plan_change_candidates'] is True
             assert any(item['code']=='STEEL-001' for item in analysis['route_summary']['materials'])
     finally:
         engine.dispose()
@@ -151,6 +162,7 @@ def test_design_context_hides_plan_and_contact_without_tools():
             assert analysis['linked_plan_tasks']==[]
             assert analysis['engineering_contact_impacts']==[]
             assert analysis['revision_impact']['status']=='NO_PREVIOUS_COMPARABLE_DESIGN'
+            assert analysis['plan_change_candidates']==[]
             assert '秘密加工' not in str(result)
             assert '工程联络影响' in ''.join(result['limitations'])
             assert analysis['route_summary']['materials'][0]['code']=='SECRET-MAT'
