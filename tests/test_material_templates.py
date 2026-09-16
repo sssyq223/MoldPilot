@@ -6,7 +6,7 @@ from zipfile import ZipFile
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from app.config import settings
-from app.models import WorkflowDefinition
+from app.models import ApprovalInstance,MaterialBinding,WorkflowDefinition
 from conftest import sign_in
 from test_material_rules import CONTRACT
 
@@ -223,3 +223,69 @@ def test_xlsx_review_with_issues_cannot_be_confirmed(client,data,local_file_stor
         json={'expected_hash':review['review_hash']})
     assert blocked.status_code==409
     assert blocked.json()['error']['code']=='MATERIAL_REVIEW_HAS_ISSUES'
+
+
+def test_confirmed_xlsx_review_can_be_bound_to_submission_snapshot(client,data,local_file_storage):
+    ids,factory=data;sign_in(client)
+    template=create(client,XLSX_CONTRACT)
+    published=client.post('/api/material-templates/'+template['id']+'/publish').json()
+    category=client.post('/api/workflow-categories',json={'name':'资料绑定提交'}).json()
+    config={'business_type':'generic','nodes':[{'key':'review','name':'资料核对','users':[ids['admin']],'mode':'ALL',
+        'reject_rules':[{'condition':{'field':'urgent','op':'eq','value':True},'reason':'紧急资料需人工退回核对'}]}]}
+    workflow=client.post('/api/workflows',json={'process_key':'material_bound_submit','name':'资料绑定审批',
+        'category_id':category['id'],'material_template_id':template['id'],'config':config}).json()
+    assert client.post('/api/workflows/'+workflow['id']+'/publish').status_code==200
+    purchase=client.post('/api/purchases',json={'project_id':ids['project'],'remark':'绑定资料提交测试',
+        'lines':[{'material_id':ids['hardware'],'quantity':'2','due_date':'2026-09-20'}]}).json()
+    file=upload_xlsx(client,xlsx([
+        (1,'B',True),(2,'B','2026-09-22'),(4,'A','料号'),(4,'B','数量'),(4,'C','币种'),(4,'D','单价'),
+        (5,'A','MAT-BIND'),(5,'B',2),(5,'C','CNY'),(5,'D','33')])).json()
+    mapping={'fields':{'urgent':'数据!B1','needed_on':'数据!B2'},'tables':{'design':{'sheet':'数据','header_row':4,'first_data_row':5}}}
+    client.post(f"/api/material-templates/{template['id']}/xlsx-mappings",
+        json={'name':'提交绑定映射','mapping':mapping,'expected_template_hash':published['package_hash']})
+    review=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews",json={'file_id':file['id']}).json()
+
+    unconfirmed=client.post(f"/api/purchases/{purchase['id']}/submit-intent",
+        json={'revision':1,'definition_id':workflow['id'],'material_review_id':review['id']})
+    assert unconfirmed.status_code==409
+    assert unconfirmed.json()['error']['code']=='MATERIAL_REVIEW_NOT_CONFIRMED'
+    confirmed=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews/{review['id']}/confirm",
+        json={'expected_hash':review['review_hash']}).json()
+    intent=client.post(f"/api/purchases/{purchase['id']}/submit-intent",
+        json={'revision':1,'definition_id':workflow['id'],'material_review_id':review['id']})
+    assert intent.status_code==200,intent.text
+    receipt=client.post(f"/api/human-actions/{intent.json()['id']}/confirm",json={'challenge':intent.json()['challenge']})
+    assert receipt.status_code==200,receipt.text
+    with factory() as db:
+        instance=db.get(ApprovalInstance,receipt.json()['instance_id'])
+        binding=db.get(MaterialBinding,instance.snapshot['material_binding']['binding_id'])
+        assert instance.snapshot['material_data']['fields']['urgent'] is True
+        assert instance.snapshot['material_binding']['review_hash']==confirmed['review_hash']
+        assert binding.review_id==review['id'] and binding.resource_id==purchase['id']
+        assert binding.template_id==template['id']
+
+
+def test_submission_rejects_review_for_different_material_template(client,data,local_file_storage):
+    ids,_=data;sign_in(client)
+    template=create(client,XLSX_CONTRACT)
+    other=create(client,{**XLSX_CONTRACT,'fields':[{'key':'urgent','label':'是否紧急','type':'boolean'}]})
+    client.post('/api/material-templates/'+template['id']+'/publish')
+    client.post('/api/material-templates/'+other['id']+'/publish')
+    category=client.post('/api/workflow-categories',json={'name':'资料版本不匹配'}).json()
+    config={'business_type':'generic','nodes':[{'key':'review','name':'资料核对','users':[ids['admin']],'mode':'ALL'}]}
+    workflow=client.post('/api/workflows',json={'process_key':'material_mismatch_submit','name':'资料不匹配审批',
+        'category_id':category['id'],'material_template_id':other['id'],'config':config}).json()
+    client.post('/api/workflows/'+workflow['id']+'/publish')
+    purchase=client.post('/api/purchases',json={'project_id':ids['project'],'remark':'资料版本不匹配测试',
+        'lines':[{'material_id':ids['hardware'],'quantity':'2','due_date':'2026-09-20'}]}).json()
+    file=upload_xlsx(client,xlsx([
+        (1,'B',False),(2,'B','2026-09-22'),(4,'A','料号'),(4,'B','数量'),(4,'C','币种'),(4,'D','单价'),
+        (5,'A','MAT-MISMATCH'),(5,'B',2),(5,'C','CNY'),(5,'D','33')])).json()
+    mapping={'fields':{'urgent':'数据!B1','needed_on':'数据!B2'},'tables':{'design':{'sheet':'数据','header_row':4,'first_data_row':5}}}
+    review=client.post(f"/api/material-templates/{template['id']}/xlsx-reviews",json={'file_id':file['id'],'mapping':mapping}).json()
+    client.post(f"/api/material-templates/{template['id']}/xlsx-reviews/{review['id']}/confirm",
+        json={'expected_hash':review['review_hash']})
+    response=client.post(f"/api/purchases/{purchase['id']}/submit-intent",
+        json={'revision':1,'definition_id':workflow['id'],'material_review_id':review['id']})
+    assert response.status_code==409
+    assert response.json()['error']['code']=='MATERIAL_TEMPLATE_MISMATCH'

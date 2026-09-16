@@ -61,6 +61,7 @@ class DefinitionInput(StrictModel):
 class SubmitInput(StrictModel):
     revision: int = Field(ge=1)
     definition_id: str
+    material_review_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class DefinitionEditInput(StrictModel):

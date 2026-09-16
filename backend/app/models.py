@@ -149,6 +149,20 @@ class MaterialReview(IdentityMixin, Base):
     __table_args__ = (CheckConstraint("status IN ('NEEDS_REVIEW','READY_FOR_CONFIRMATION','CONFIRMED','REJECTED')"),)
 
 
+class MaterialBinding(IdentityMixin, Base):
+    __tablename__ = 'material_binding'
+    resource_type: Mapped[str] = mapped_column(String(30), index=True)
+    resource_id: Mapped[str] = mapped_column(String(36), index=True)
+    resource_revision: Mapped[int] = mapped_column(Integer)
+    definition_id: Mapped[str] = mapped_column(ForeignKey('workflow_definition.id'), index=True)
+    template_id: Mapped[str] = mapped_column(ForeignKey('material_template.id'), index=True)
+    review_id: Mapped[str] = mapped_column(ForeignKey('material_review.id'), index=True)
+    material_hash: Mapped[str] = mapped_column(String(64))
+    review_hash: Mapped[str] = mapped_column(String(64))
+    bound_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'), index=True)
+    __table_args__ = (CheckConstraint("resource_type IN ('purchase_request','business_subject')"),)
+
+
 class WorkflowDefinition(IdentityMixin, Base):
     __tablename__ = "workflow_definition"
     process_key: Mapped[str] = mapped_column(String(80))

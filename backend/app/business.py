@@ -5,7 +5,8 @@ from sqlalchemy import select, exists, and_, or_
 from . import bpm
 from .db import now,aware
 from .models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
-                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation, HumanIntent)
+                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation, HumanIntent,
+                     MaterialBinding)
 from .models import BusinessSubject
 from .authorization import require, predicate, select_fields, access
 from .errors import DomainError
@@ -182,23 +183,45 @@ def process_agent_auto_approvals(db, instance_id, limit=12):
     return applied
 
 
-def submit_request(db, user, req_id, revision, definition_id):
+def bind_material_snapshot(db, user, resource_type, resource_id, resource_revision, definition, material_review_id):
+    from .workflow_selection import validate_material_review
+    review = validate_material_review(db, user, definition, material_review_id)
+    if not review:
+        return None
+    material_hash = bpm.content_hash(review.material_data)
+    binding = MaterialBinding(resource_type=resource_type, resource_id=resource_id, resource_revision=resource_revision,
+        definition_id=definition.id, template_id=review.template_id, review_id=review.id,
+        material_hash=material_hash, review_hash=review.review_hash, bound_by=user.id)
+    db.add(binding); db.flush()
+    return {'binding_id':binding.id,'review_id':review.id,'template_id':review.template_id,
+            'template_hash':review.template_hash,'mapping_id':review.mapping_id,'mapping_hash':review.mapping_hash,
+            'file_id':review.file_id,'file_sha256':review.file_sha256,'review_hash':review.review_hash,
+            'material_hash':material_hash,'confirmed_by':review.confirmed_by,
+            'confirmed_at':review.confirmed_at.isoformat() if review.confirmed_at else None,
+            'material_data':review.material_data}
+
+
+def submit_request(db, user, req_id, revision, definition_id, material_review_id=None):
     req = db.scalar(select(PurchaseRequest).where(PurchaseRequest.id == req_id).with_for_update())
     if not req: raise DomainError("NOT_FOUND", "申请不存在或无权访问", 404)
     request_access(db, user, req, "purchase.submit")
     if req.revision != revision: raise DomainError("VERSION_CONFLICT", "申请已变化，请重新核对", 409)
     if req.status not in {"DRAFT", "REJECTED", "RETURNED"}: raise DomainError("INVALID_STATE", "当前状态不能提交", 409)
     from .workflow_selection import require_template
-    definition = require_template(db, user, req, definition_id)
+    definition = require_template(db, user, req, definition_id, material_review_id)
     project = db.get(Project, req.project_id)
     if project.status in {"PAUSED", "TERMINATED", "CLOSED"}: raise DomainError("PROJECT_BLOCKED", "项目当前状态禁止采购流转")
     if req.status != "DRAFT": req.revision += 1
     req.status, req.round_no = "SUBMITTED", req.round_no + 1
+    material = bind_material_snapshot(db, user, 'purchase_request', req.id, req.revision, definition, material_review_id)
     snapshot = {"request_id": req.id, "number": req.number, "project_id": req.project_id,
                 "remark": req.remark, "submitted_at": now().isoformat(), "submitter": {
                     "id": user.id, "username": user.username, "name": user.display_name, "department": user.department},
                 "lines": [{"material_id": m.id, "material_name": m.name, "category": m.category,
                            "quantity": str(l.quantity), "unit": m.unit, "due_date": str(l.due_date)} for l, m in request_lines(db, req)]}
+    if material:
+        snapshot['material_data']=material.pop('material_data')
+        snapshot['material_binding']=material
     instance = ApprovalInstance(request_id=req.id, definition_id=definition.id, revision=req.revision,
                                 round_no=req.round_no, snapshot=snapshot, snapshot_hash=bpm.content_hash(snapshot),
                                 engine_state=bpm.start_engine(definition.bpmn_xml))
@@ -333,14 +356,14 @@ def create_intent(db, user, action, resource_id, payload):
         if not req: raise DomainError("NOT_FOUND", "申请不存在", 404)
         request_access(db, user, req, "purchase.submit")
         from .workflow_selection import require_template
-        require_template(db, user, req, payload['definition_id'])
+        require_template(db, user, req, payload['definition_id'], payload.get('material_review_id'))
     elif action == 'business.submit':
         from .domains import authorize
         subject=db.get(BusinessSubject,resource_id)
         if not subject:raise DomainError('NOT_FOUND','单据不存在',404)
         authorize(db,user,subject,'submit')
         from .workflow_selection import require_template
-        require_template(db, user, subject, payload['definition_id'])
+        require_template(db, user, subject, payload['definition_id'], payload.get('material_review_id'))
     elif action == 'contact.execute':
         from .contact_tools import validate_intent
         validate_intent(db,user,payload)
@@ -395,7 +418,7 @@ def load_subject(db,instance,lock=False):
     return db.scalar(q.with_for_update() if lock else q)
 
 
-def submit_subject(db,user,subject_id,revision,definition_id):
+def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=None):
     from . import domains
     subject=db.scalar(select(BusinessSubject).where(BusinessSubject.id==subject_id).with_for_update())
     if not subject:raise DomainError('NOT_FOUND','业务单据不存在',404)
@@ -403,7 +426,7 @@ def submit_subject(db,user,subject_id,revision,definition_id):
     if subject.revision!=revision:raise DomainError('VERSION_CONFLICT','业务资料已变化',409)
     if subject.status not in {'DRAFT','REJECTED','RETURNED'}:raise DomainError('INVALID_STATE','当前状态不能提交',409)
     from .workflow_selection import require_template
-    definition = require_template(db, user, subject, definition_id)
+    definition = require_template(db, user, subject, definition_id, material_review_id)
     domains.before_submit(db,user,subject)
     if subject.status!='DRAFT':subject.revision+=1
     subject.status='SUBMITTED';subject.round_no+=1
@@ -411,6 +434,10 @@ def submit_subject(db,user,subject_id,revision,definition_id):
     snapshot={**domains.values(subject),'detail':detail,'lines':[],
               'amount':detail.get('amount'),'currency':detail.get('currency'),
               'submitted_at':now().isoformat(),'submitter':{'id':user.id,'username':user.username,'name':user.display_name,'department':user.department}}
+    material = bind_material_snapshot(db, user, 'business_subject', subject.id, subject.revision, definition, material_review_id)
+    if material:
+        snapshot['material_data']=material.pop('material_data')
+        snapshot['material_binding']=material
     instance=ApprovalInstance(subject_id=subject.id,definition_id=definition.id,revision=subject.revision,
                               round_no=subject.round_no,snapshot=snapshot,snapshot_hash=bpm.content_hash(snapshot),
                               engine_state=bpm.start_engine(definition.bpmn_xml))
