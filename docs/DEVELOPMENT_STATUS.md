@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：报价承接/拒单对话办理闭环（2026-09-16）
+
+- 新增 `prepare_quote_acceptance_decision` 工具，基于 `query_quote_acceptance_context` 返回的真实项目、项目版本和报价承接审批流程，生成承接或拒单 proposal。
+- 承接时必须确认最终加工方式 `INTERNAL` 或 `FULL_OUTSOURCE`；拒单时禁止填写加工方式。工具会阻止已存在有效承接/拒单、待处理承接/拒单申请，以及已开工项目重复准备承接。
+- 该能力不新增传统 ERP 菜单页面：仍在对话框内展示 proposal 卡片，用户本人确认后才创建 `quote_acceptance` 业务材料并提交 Agent BPM；审批生效前不正式承接、不拒单、不正式开工、不修改合同或项目状态。
+- Skill 约束已更新：必须先查询报价承接上下文，不得凭自然语言、截图或历史对话构造项目或流程；合同、承接、拒单和正式开工继续作为不同事实处理。
+- PostgreSQL `moldpilot_test` 覆盖 schema、承接 proposal 不直接建单、人工确认后提交 BPM、拒单参数校验和重复有效决定阻断；前端构建通过。
+
 ## 持续开发：正式开工通知对话办理闭环（2026-09-16）
 
 - 新增 `prepare_internal_start` 工具，基于 `query_internal_start_readiness` 返回的真实项目、项目版本、已生效承接记录和正式开工审批流程，生成正式开工通知 proposal。

@@ -43,6 +43,7 @@ TOOLS['query_engineering_change']['description']='查询已有工程联络方案
 TOOLS.update({
     'query_business_object_candidates':{'description':'按项目号、项目名、模具号、合同号、订单号等线索查询当前权限内候选业务对象；只返回候选和来源，不自动匹配或创建。','permission':'project.dossier.read'},
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
+    'prepare_quote_acceptance_decision':{'description':'准备报价承接或拒单审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'quote_acceptance.create'},
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
@@ -84,7 +85,8 @@ for action,(_,permission,title) in contact_tools.SPECS.items():
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
-               'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context']},
+               'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context'],
+                   'optional_tools':['prepare_quote_acceptance_decision']},
                'quote_evaluation_review':{'name':'报价评估与加工方式核对','tools':['query_quote_evaluation_context']},
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
@@ -140,6 +142,7 @@ CAPABILITY_NAMES = {
     'query_purchase_requests': '查询采购申请',
     'query_business_object_candidates': '查询业务对象候选',
     'query_quote_acceptance_context': '读取报价承接上下文',
+    'prepare_quote_acceptance_decision': '准备报价承接/拒单',
     'query_quote_evaluation_context': '读取报价评估上下文',
     'query_bid_intake_context': '读取中标接收上下文',
     'query_contract_context': '读取合同上下文',
@@ -190,7 +193,8 @@ CAPABILITY_NAMES = {
 CAPABILITY_DEPARTMENTS = {
     'query_projects': 'project', 'query_project_dossier': 'project', 'query_business_object_candidates': 'project',
     'project_dossier_review': 'project', 'business_object_matching': 'project',
-    'query_quote_acceptance_context': 'sales', 'query_quote_evaluation_context': 'sales',
+    'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
+    'query_quote_evaluation_context': 'sales',
     'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
     'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'contract_context_review': 'finance',
     'query_finance_context': 'finance', 'finance_context_review': 'finance', 'query_governance_context': 'system',
@@ -227,6 +231,7 @@ CAPABILITY_DEPARTMENTS = {
 
 CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
+    'prepare_quote_acceptance_decision': 'approval',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
@@ -316,9 +321,10 @@ def tool_schema(key):
     if key=='query_business_object_candidates':
         from .business_matching import BusinessMatchInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':BusinessMatchInput.model_json_schema()}}
-    if key=='query_quote_acceptance_context':
-        from .quote_tools import QuoteContextInput
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
+    if key in {'query_quote_acceptance_context','prepare_quote_acceptance_decision'}:
+        from .quote_tools import QuoteContextInput, quote_decision_schema
+        parameters=quote_decision_schema() if key=='prepare_quote_acceptance_decision' else QuoteContextInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_quote_evaluation_context':
         from .quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
@@ -405,6 +411,9 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_internal_start':
         from .start_tools import execute_start_tool
         return execute_start_tool(db,user,key,arguments,run=run)
+    if key=='prepare_quote_acceptance_decision':
+        from .quote_tools import execute_quote_tool
+        return execute_quote_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from .project_dossier import ProjectDossierInput,query

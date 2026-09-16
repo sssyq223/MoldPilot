@@ -109,15 +109,13 @@ function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
 }
 function auditSummary(entry:any){
  if(entry.summary)return entry.summary
- return entry.resource_id?`记录编号：${String(entry.resource_id).slice(0,8)}…`:'系统记录'
+ return entry.resource_id?`记录编号：${String(entry.resource_id)}`:'系统记录'
 }
 function auditBody(entry:any){
  const text=auditSummary(entry)
  return text.startsWith('记录编号：')?'系统记录':text
 }
 const auditPageCount=computed(()=>Math.max(1,Math.ceil(auditTotal.value/auditPageSize)))
-const auditPageStart=computed(()=>auditTotal.value?((auditPage.value-1)*auditPageSize+1):0)
-const auditPageEnd=computed(()=>Math.min(auditPage.value*auditPageSize,auditTotal.value))
 async function loadAudit(nextPage=auditPage.value){
  auditLoading.value=true
  auditPage.value=Math.max(1,nextPage)
@@ -125,7 +123,7 @@ async function loadAudit(nextPage=auditPage.value){
   const offset=(auditPage.value-1)*auditPageSize
   const result=await api(`/audit?offset=${offset}&limit=${auditPageSize}`)
   const records=Array.isArray(result)?result:result.items
-  audit.value=(records||[]).slice(0,auditPageSize)
+  audit.value=(records||[]).length>auditPageSize?(records||[]).slice(offset,offset+auditPageSize):(records||[])
   auditTotal.value=Array.isArray(result)?result.length:result.total
  }catch(e:any){emit('error',e.message)}finally{auditLoading.value=false}
 }
@@ -464,7 +462,7 @@ async function clearAvatar(){
    </template>
    <AdminPanel v-else-if="page==='admin'&&permissions.includes('user.manage')" @error="emit('error',$event)"/>
    <WorkflowPanel v-else-if="page==='workflows'&&permissions.includes('workflow.design')" @error="emit('error',$event)"/>
-   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><div class="audit-page-head"><div><h2>操作审计</h2><p class="muted">记录关键登录、授权、流程和智能体任务操作。</p></div><span class="audit-count">{{auditTotal}} 条记录</span></div><p v-if="auditLoading" role="status" class="audit-loading">正在读取审计记录…</p><section v-else class="audit-list" aria-label="操作审计记录"><article v-for="entry in audit" :key="entry.id" class="audit-card"><div class="audit-card-main"><span class="audit-dot"/><div><div class="audit-card-title"><strong>{{auditName(entry.action)}}</strong><span v-if="entry.actor_name">操作人：{{entry.actor_name}}</span></div><p>{{auditBody(entry)}}</p><small class="muted">记录编号：{{String(entry.resource_id||entry.id).slice(0,8)}}…</small></div></div><time>{{shanghai(entry.created_at)}}</time></article><p v-if="!audit.length" class="audit-empty muted">暂无审计记录。</p></section><div class="audit-pagination" v-if="auditTotal>auditPageSize"><span>第 {{auditPageStart}}–{{auditPageEnd}} 条，共 {{auditTotal}} 条</span><div><button :disabled="auditLoading||auditPage<=1" @click="loadAudit(auditPage-1)">上一页</button><span>{{auditPage}} / {{auditPageCount}}</span><button :disabled="auditLoading||auditPage>=auditPageCount" @click="loadAudit(auditPage+1)">下一页</button></div></div></template>
+   <template v-else-if="page==='audit'&&permissions.includes('audit.read')"><div class="audit-page-head"><div><h2>操作审计</h2><p class="muted">记录关键登录、授权、流程和智能体任务操作。</p></div><span class="audit-count">{{auditTotal}} 条记录</span></div><p v-if="auditLoading" role="status" class="audit-loading">正在读取审计记录…</p><section v-else class="audit-list" aria-label="操作审计记录"><article v-for="entry in audit" :key="entry.id" class="audit-card"><div class="audit-card-main"><span class="audit-dot"/><div><div class="audit-card-title"><strong>{{auditName(entry.action)}}</strong><span v-if="entry.actor_name">操作人：{{entry.actor_name}}</span></div><p>{{auditBody(entry)}}</p><small class="muted">记录编号：{{String(entry.resource_id||entry.id)}}</small></div></div><time>{{shanghai(entry.created_at)}}</time></article><p v-if="!audit.length" class="audit-empty muted">暂无审计记录。</p></section><div class="audit-pagination" v-if="auditTotal>auditPageSize"><span>本页 {{audit.length}} 条，共 {{auditTotal}} 条</span><div><button :disabled="auditLoading||auditPage<=1" @click="loadAudit(auditPage-1)">上一页</button><span>{{auditPage}} / {{auditPageCount}}</span><button :disabled="auditLoading||auditPage>=auditPageCount" @click="loadAudit(auditPage+1)">下一页</button></div></div></template>
   </div>
  </section>
 </main>
