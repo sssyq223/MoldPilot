@@ -24,6 +24,7 @@ TOOLS.update({
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
+    'prepare_project_plan_change':{'description':'准备项目计划变更审批建议；必须使用查询返回的真实项目、当前计划和节点清单，本人确认后才提交 Agent BPM。','permission':'plan_change.create'},
     'query_design_route_context':{'description':'按项目、设计单、图纸、BOM物料或任务线索核对设计、BOM、加工路线、计划任务和工程联络影响；只读，不生成图纸或重复ERP设计模块。','permission':'design_route.read'},
     'query_manufacturing_quality_context':{'description':'按项目或工序线索核对制造计划任务、报工事实、设计路线、装配/试模、质检和整改上下文；只读，不登记报工或检验。','permission':'project_plan.read'},
     'query_assembly_trial_context':{'description':'按项目、装配任务或试模线索核对齐套前置、装配工单、完工确认、试模资源、试模报告和异常整改上下文；只读，不替代 ERP 装配/试模执行。','permission':'assembly_issue.read'},
@@ -63,6 +64,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context']},
+               'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context','prepare_project_plan_change']},
                'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context']},
                'manufacturing_quality_review':{'name':'制造工序与质检上下文核对','tools':['query_manufacturing_quality_context']},
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context']},
@@ -98,6 +100,7 @@ BUSINESS_DEPARTMENTS = {
     'assembly_issue': 'assembly', 'trial_request': 'trial', 'quotation': 'sales', 'quote_acceptance': 'sales',
     'sales_contract': 'sales', 'start_notice': 'project', 'internal_start': 'project',
     'outsource_contract': 'purchase', 'full_outsource_contract': 'purchase', 'project_plan': 'project',
+    'project_plan_change': 'project',
     'plan_change': 'project', 'shipment': 'warehouse', 'receipt': 'warehouse', 'inspection': 'warehouse',
     'stock': 'warehouse', 'risk': 'purchase', 'master': 'system', 'file': 'system', 'user': 'system',
     'grant': 'system', 'workflow': 'system', 'audit': 'system', 'agent': 'agent',
@@ -113,6 +116,7 @@ CAPABILITY_NAMES = {
     'query_contract_context': '读取合同上下文',
     'query_internal_start_readiness': '核对正式开工条件',
     'query_project_plan_context': '读取项目计划上下文',
+    'prepare_project_plan_change': '准备项目计划变更',
     'query_design_route_context': '读取设计BOM与路线上下文',
     'query_manufacturing_quality_context': '读取制造质检上下文',
     'query_assembly_trial_context': '读取装配试模上下文',
@@ -162,7 +166,9 @@ CAPABILITY_DEPARTMENTS = {
     'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
     'internal_start_readiness': 'project', 'query_project_plan_context': 'project',
-    'project_plan_context_review': 'project', 'query_design_route_context': 'design',
+    'prepare_project_plan_change': 'project',
+    'project_plan_context_review': 'project', 'project_plan_change': 'project',
+    'query_design_route_context': 'design',
     'design_route_context_review': 'design', 'query_manufacturing_quality_context': 'project',
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
@@ -192,13 +198,15 @@ CAPABILITY_TYPES = {
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
-    'project_plan_context_review': 'review', 'design_route_context_review': 'review',
+    'project_plan_context_review': 'review', 'project_plan_change': 'approval',
+    'design_route_context_review': 'review',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
     'delivery_logistics_review': 'review', 'full_outsource_review': 'review',
     'change_intake_review': 'review', 'procurement_price_context_review': 'review',
     'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
     'business_status_review': 'review', 'project_dossier_review': 'review',
     'project_pause_resume': 'approval', 'project_termination_closure': 'approval',
+    'prepare_project_plan_change': 'approval',
     'prepare_project_pause': 'approval', 'prepare_project_resume': 'approval',
     'prepare_project_closure_checklist': 'operation', 'prepare_project_termination': 'approval',
     'prepare_project_closure_item': 'operation', 'prepare_project_normal_close': 'approval',
@@ -292,6 +300,9 @@ def tool_schema(key):
     if key=='query_project_plan_context':
         from .plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
+    if key=='prepare_project_plan_change':
+        from .plan_tools import plan_change_schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':plan_change_schema()}}
     if key=='query_design_route_context':
         from .design_tools import DesignRouteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DesignRouteContextInput.model_json_schema()}}
@@ -351,6 +362,9 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
+    if key=='prepare_project_plan_change':
+        from .plan_tools import execute_plan_tool
+        return execute_plan_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from .project_dossier import ProjectDossierInput,query

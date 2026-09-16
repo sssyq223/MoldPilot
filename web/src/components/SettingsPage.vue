@@ -30,6 +30,11 @@ const groupedTools=computed(()=>groupedCapabilities(filteredTools.value))
 const groupedSkills=computed(()=>groupedCapabilities(filteredSkills.value))
 const showCapabilityTools=computed(()=>capabilityTab.value==='tools'||capabilityTab.value==='all')
 const showCapabilitySkills=computed(()=>capabilityTab.value==='skills'||capabilityTab.value==='all')
+const capabilityGroupTabs=ref<Record<string,string>>({})
+function capabilityGroupKey(kind:'tools'|'skills',department:any){return kind+':'+department.key}
+function capabilityGroupTab(kind:'tools'|'skills',department:any){return capabilityGroupTabs.value[capabilityGroupKey(kind,department)]||'all'}
+function setCapabilityGroupTab(kind:'tools'|'skills',department:any,typeKey:string){capabilityGroupTabs.value={...capabilityGroupTabs.value,[capabilityGroupKey(kind,department)]:typeKey}}
+function visibleCapabilityTypes(kind:'tools'|'skills',department:any){const active=capabilityGroupTab(kind,department);return active==='all'?department.types:department.types.filter((type:any)=>type.key===active)}
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
 const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
 const activeModelName=computed(()=>{
@@ -270,8 +275,8 @@ function delegationLabel(row:any){
     <h3 class="settings-section-title">工具</h3>
     <div class="capability-groups capability-grid" role="tabpanel" aria-label="工具">
      <section v-for="department in groupedTools" :key="department.key" class="capability-department">
-      <h3 class="capability-department-title"><span>{{department.name}}</span><small class="muted">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</small><span v-for="type in department.types" :key="type.key" class="capability-type-pill">{{type.name}}<small>{{type.items.length}} 项</small></span></h3>
-      <div v-for="type in department.types" :key="type.key" class="capability-type-block">
+      <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('tools',department)==='all'}" @click="setCapabilityGroupTab('tools',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('tools',department)===type.key}" @click="setCapabilityGroupTab('tools',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
+      <div v-for="type in visibleCapabilityTypes('tools',department)" :key="type.key" class="capability-type-block">
        <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><small class="muted">{{permissionName(tool.permission)}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
       </div>
      </section>
@@ -283,8 +288,8 @@ function delegationLabel(row:any){
     <h3 class="settings-section-title">技能</h3>
     <div class="capability-groups capability-grid" role="tabpanel" aria-label="技能">
      <section v-for="department in groupedSkills" :key="department.key" class="capability-department">
-      <h3 class="capability-department-title"><span>{{department.name}}</span><small class="muted">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</small><span v-for="type in department.types" :key="type.key" class="capability-type-pill">{{type.name}}<small>{{type.items.length}} 项</small></span></h3>
-      <div v-for="type in department.types" :key="type.key" class="capability-type-block">
+      <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('skills',department)==='all'}" @click="setCapabilityGroupTab('skills',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('skills',department)===type.key}" @click="setCapabilityGroupTab('skills',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
+      <div v-for="type in visibleCapabilityTypes('skills',department)" :key="type.key" class="capability-type-block">
        <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div></article>
       </div>
      </section>

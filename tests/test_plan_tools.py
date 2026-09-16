@@ -1,12 +1,15 @@
 from datetime import date, timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app import models as m
-from app.authorization import PERMISSIONS
+from app import bpm, business, models as m
+from app.authorization import PERMISSIONS, fingerprint
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
+from conftest import sign_in
+from test_agent_api import start, worker_headers
+from test_domains import workflow as create_workflow
 
 
 def factory():
@@ -133,5 +136,113 @@ def test_plan_context_reports_no_effective_plan_and_multiple_candidates():
             analysis=resolved['data'][0]['analysis']
             assert analysis['derived_status']['has_effective_plan'] is False
             assert '未见有效项目计划' in ''.join(analysis['warnings'])
+    finally:
+        engine.dispose()
+
+
+def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(client,data,monkeypatch):
+    ids,factory=data;sign_in(client)
+    definition=create_workflow(client,ids,'plan_change')
+    with factory.begin() as db:
+        admin=db.get(m.User,ids['admin']);project_row=db.get(m.Project,ids['project'])
+        baseline=m.BusinessSubject(kind='project_plan',number='PLAN-BASE-AGENT',project_id=project_row.id,
+            created_by=admin.id,status='EFFECTIVE')
+        db.add(baseline);db.flush()
+        db.add(m.PlanDetail(subject_id=baseline.id,reason='原始基线计划'))
+        done=m.PlanTask(plan_id=baseline.id,key='design',name='结构设计',owner_user_id=admin.id,
+            planned_start=date(2026,9,1),planned_end=date(2026,9,5),actual_start=date(2026,9,1),
+            actual_end=date(2026,9,5),status='DONE')
+        machining=m.PlanTask(plan_id=baseline.id,key='machining',name='加工',owner_user_id=admin.id,
+            planned_start=date(2026,9,6),planned_end=date(2026,9,20),status='PLANNED')
+        db.add_all([done,machining]);db.flush()
+        baseline_id=baseline.id;project_version=project_row.row_version
+    _,ctx=start(client,monkeypatch,'admin')
+    with factory.begin() as db:
+        run=db.get(m.Run,ctx['id'])
+        run.checkpoint={**run.checkpoint,'agent_permission_mode':'delegated_auto'}
+    args={'project_id':ids['project'],'project_version':project_version,'previous_id':baseline_id,
+        'reason':'客户确认加工节点顺延，并补充试模节点','workflow_definition_id':definition,
+        'tasks':[{'key':'design','name':'结构设计','owner_user_id':ids['admin'],
+            'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+            {'key':'machining','name':'加工','owner_user_id':ids['admin'],
+            'planned_start':'2026-09-08','planned_end':'2026-09-23','prerequisites':['design']},
+            {'key':'trial','name':'试模','owner_user_id':ids['admin'],
+            'planned_start':'2026-09-24','planned_end':'2026-09-26','prerequisites':['machining']}]}
+    response=client.post(f"/internal/runs/{ctx['id']}/tools",headers=worker_headers(),json={
+        'epoch':ctx['epoch'],'sequence':0,'key':'prepare_project_plan_change','arguments':args})
+    assert response.status_code==200,response.text
+    evidence=response.json()
+    assert evidence['proposal']['kind']=='project_plan_change'
+    assert evidence['proposal']['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
+    assert '2026-09-06~2026-09-20 → 2026-09-08~2026-09-23' in str(evidence['proposal']['display'])
+    with factory() as db:
+        assert not list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change')))
+    intent_response=client.post('/api/project-plan-proposals/'+evidence['evidence_id']+'/intent')
+    assert intent_response.status_code==200,intent_response.text
+    intent=intent_response.json()
+    assert intent['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
+    captured={}
+    original=business.submit_subject
+    def capture_mode(db,user,subject_id,revision,definition_id,material_review_id=None,agent_permission_mode="ask"):
+        captured['mode']=agent_permission_mode
+        return original(db,user,subject_id,revision,definition_id,material_review_id,agent_permission_mode)
+    monkeypatch.setattr(business,'submit_subject',capture_mode)
+    confirm=client.post('/api/human-actions/'+intent['id']+'/confirm',json={'challenge':intent['challenge']})
+    assert confirm.status_code==200,confirm.text
+    receipt=confirm.json()
+    assert receipt['status']=='SUBMITTED'
+    assert captured['mode']=='delegated_auto'
+    assert client.get('/api/project-plan-proposals/'+evidence['evidence_id']).json()['receipt']==receipt
+    with factory() as db:
+        change=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change'))
+        assert change and change.status=='SUBMITTED'
+        detail=db.get(m.PlanDetail,change.id)
+        assert detail.previous_id==baseline_id
+        assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==change.id))
+
+
+def test_plan_change_proposal_sqlite_confirm_chain(monkeypatch):
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-CHANGE')
+            config={'business_type':'plan_change','nodes':[{'key':'review','name':'计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='plan_change_sqlite',version=1,name='计划变更审批',
+                status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+            db.add(definition)
+            baseline=plan(db,p,admin,'PLAN-SQLITE')
+            task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
+            task(db,baseline,admin,'machining','加工',date(2026,9,6),date(2026,9,20),'PLANNED')
+            conversation=m.Conversation(user_id=admin.id,title='计划变更')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备计划变更',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'delegated_auto'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'previous_id':baseline.id,
+                'reason':'客户确认加工顺延','workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+                    {'key':'machining','name':'加工','owner_user_id':admin.id,
+                    'planned_start':'2026-09-08','planned_end':'2026-09-23','prerequisites':['design']}]}
+            evidence=execute(db,admin,'prepare_project_plan_change',args,run=run)
+            assert evidence['proposal']['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_project_plan_change',request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'project_plan.execute',step.id,payload)
+            assert not list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change')))
+            captured={}
+            original=business.submit_subject
+            def capture_mode(db,user,subject_id,revision,definition_id,material_review_id=None,agent_permission_mode="ask"):
+                captured['mode']=agent_permission_mode
+                return original(db,user,subject_id,revision,definition_id,material_review_id,agent_permission_mode)
+            monkeypatch.setattr(business,'submit_subject',capture_mode)
+            receipt=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            assert receipt['status']=='SUBMITTED'
+            assert captured['mode']=='delegated_auto'
+            change=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change'))
+            assert change and change.status=='SUBMITTED'
+            assert db.get(m.PlanDetail,change.id).previous_id==baseline.id
     finally:
         engine.dispose()

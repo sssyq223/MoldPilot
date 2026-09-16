@@ -878,17 +878,21 @@ html[data-theme="light"] .admin-empty{background:#fbfdff}
 }
 
 /* Compact tools/skills capability page. */
-.compact-capability-filter.surface{display:flex;align-items:center;gap:8px;margin:10px 0 12px;padding:8px;border-radius:999px}
+.compact-capability-filter.surface{display:flex;align-items:center;gap:8px;margin:8px 0 12px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 78%,transparent);background:color-mix(in srgb,var(--surface) 92%,var(--bg));box-shadow:none;border-radius:14px}
 .capability-filter-control{height:32px;display:inline-flex;flex-direction:row;align-items:center;gap:6px;min-width:0;color:var(--muted);font-size:12px}
-.capability-filter-control select{width:auto;min-width:112px;height:30px;padding:0 28px 0 9px;border-radius:999px;font-size:12px;background:color-mix(in srgb,var(--surface) 70%,var(--bg))}
-.capability-search-pill{height:32px;min-width:220px;flex:1 1 260px;display:flex;flex-direction:row;align-items:center;gap:7px;padding:0 11px;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:999px;background:color-mix(in srgb,var(--surface) 78%,var(--bg));color:var(--muted)}
+.capability-filter-control select{width:auto;min-width:112px;height:30px;padding:0 28px 0 9px;border-radius:8px;font-size:12px;background:color-mix(in srgb,var(--surface) 70%,var(--bg))}
+.capability-search-pill{height:32px;min-width:220px;flex:1 1 260px;display:flex;flex-direction:row;align-items:center;gap:7px;padding:0 11px;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:9px;background:color-mix(in srgb,var(--surface) 78%,var(--bg));color:var(--muted)}
 .capability-search-pill input{height:28px;border:0;background:transparent;padding:0;font-size:12px}
 .capability-groups.capability-grid{gap:14px}
 .capability-department{padding:10px 12px;border-radius:10px}
 .capability-department-title{margin:0 0 8px!important;display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
 .capability-department-title>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:14px}
-.capability-department-title small{height:22px;display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:999px;padding:0 8px;font-size:11px}
-.capability-type-pill{height:22px;display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));border-radius:999px;padding:0 8px;color:color-mix(in srgb,var(--accent) 72%,#fff);background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:12px;flex:0 0 auto}
+.capability-department-title small{height:22px;display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:7px;padding:0 8px;font-size:11px}
+.capability-type-pill{height:24px;display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:7px;padding:0 9px;color:var(--muted);background:#fff;font-size:12px;font-weight:500;flex:0 0 auto;box-shadow:none;cursor:pointer}
+.capability-type-pill:hover{background:color-mix(in srgb,var(--accent) 6%,#fff);border-color:color-mix(in srgb,var(--accent) 36%,var(--border));color:color-mix(in srgb,var(--accent) 76%,#172334)}
+.capability-type-pill.active{background:#356ea9;border-color:#356ea9;color:#fff}
+.capability-type-pill.total{color:var(--muted);background:#fff;border-color:color-mix(in srgb,var(--border) 72%,transparent)}
+.capability-type-pill.total.active{color:#fff;background:#356ea9;border-color:#356ea9}
 .capability-type-pill small{height:auto;border:0;padding:0;font-size:10px;color:inherit;opacity:.72}
 .capability-type-block{margin-top:0}
 .capability-type-heading.compact{margin:0 0 2px;padding:0}
@@ -899,11 +903,16 @@ html[data-theme="light"] .admin-empty{background:#fbfdff}
 .capability-row-meta{min-width:92px}
 .capability-row-meta small{white-space:nowrap}
 html[data-theme="light"] .capability-search-pill,html[data-theme="light"] .capability-filter-control select{background:#fff;border-color:#d7e1eb}
+html[data-theme="light"] .compact-capability-filter.surface{background:#fff;border-color:#d7e1eb}
 html[data-theme="light"] .capability-department-title small{border-color:#d7e1eb}
 html[data-theme="light"] .capability-type-heading.compact strong{background:#edf5fc;border-color:#cfe0f1;color:#244f7f}
-html[data-theme="light"] .capability-type-pill{background:#edf5fc;border-color:#cfe0f1;color:#244f7f}
+html[data-theme="light"] .capability-type-pill{background:#fff;border-color:#d7e1eb;color:#244f7f}
+html[data-theme="light"] .capability-type-pill:hover{background:#f2f7fc;border-color:#9bbddf;color:#172334}
+html[data-theme="light"] .capability-type-pill.active{background:#356ea9;border-color:#356ea9;color:#fff}
+html[data-theme="light"] .capability-type-pill.total{background:#fff;border-color:#d7e1eb;color:#627285}
+html[data-theme="light"] .capability-type-pill.total.active{background:#356ea9;border-color:#356ea9;color:#fff}
 @media(max-width:720px){
- .compact-capability-filter.surface{border-radius:14px;flex-wrap:wrap}
+ .compact-capability-filter.surface{flex-wrap:wrap}
  .capability-search-pill{order:-1;flex-basis:100%;min-width:0}
  .capability-filter-control{flex:1 1 140px}
  .capability-filter-control select{flex:1;min-width:0}

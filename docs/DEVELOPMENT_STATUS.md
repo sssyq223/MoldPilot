@@ -2,6 +2,14 @@
 
 更新：2026-09-15。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：项目计划变更会话提案闭环（2026-09-16）
+
+- 新增 `prepare_project_plan_change` 会话工具和“项目计划变更”能力。模型必须先通过 `query_project_plan_context` 获取真实项目、项目版本、当前有效计划 `previous_id` 和任务清单，再准备计划变更建议；不能只凭自然语言线索改计划。
+- 计划变更 prepare 阶段只返回 `project_plan_change` proposal，不创建业务材料、不关闭原计划、不修改任务日期。提案卡沿用统一 `confirmation_policy`，本人确认后才创建 `plan_change` 业务材料并提交 Agent BPM；审批生效前原计划和执行任务不改变，客户承诺交期也不自动修改。
+- 计划变更预览重新执行领域校验：必须关联有效原计划，项目版本和审批模板必须匹配，已开工任务不能删除，已完成任务不能重排，任务依赖不能成环或违反日期顺序。确认前再次对比 display 哈希，资料变化会阻断旧提案。
+- `/api/project-plan-proposals/{step_id}` 和 `/intent` 提供浏览器确认入口，并把来源 Run 的 `agent_permission_mode` 传递到 BPM 提交；显式授权模式下仅在后续流程节点满足委托条件时才可能自动同意。
+- 新增 SQLite 测试覆盖计划变更 proposal 不写业务、HumanIntent 确认后才创建 `plan_change` 并提交 BPM、`delegated_auto` 传递到 `submit_subject`。真实部门确认矩阵、审批附件上传、影响部门通知、ERP 执行进度联调、甘特图/看板完整样式仍待验收。
+
 ## 持续开发：资料模板 XLSX 解析与核对确认（2026-09-15）
 
 - 新增保守 XLSX 资料预览解析器和 `/api/material-templates/{id}/xlsx-preview`。用户可把本人有权访问的 XLSX 原件、已发布资料模板和临时列映射提交给后端，得到待人工核对的 `material_data` 草稿、模板版本、文件版本、问题列表和限制说明。

@@ -701,3 +701,5 @@ from .project_control_tools import router as project_control_proposal_router
 app.include_router(project_control_proposal_router)
 from .project_closure_tools import router as project_closure_proposal_router
 app.include_router(project_closure_proposal_router)
+from .plan_tools import router as project_plan_proposal_router
+app.include_router(project_plan_proposal_router)

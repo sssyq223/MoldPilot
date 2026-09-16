@@ -505,10 +505,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本",
-        "工具只读核对，不制定或重编计划，不代替部门确认和审批"
+        "prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM",
+        "计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖有效计划分析和未完成计划变更权限边界；计划重编审批流程尚未验收"
+        "tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；真实部门确认尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -595,10 +596,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对",
+        "prepare_project_plan_change 可把影响节点的调整方案封装为本人确认后的 plan_change BPM 提案",
         "普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖 open_plan_changes 和逾期节点分析；异常调整审批联动尚未验收"
+        "tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析和计划变更 proposal 确认链路；异常来源到计划变更的完整部门协同仍未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -610,10 +612,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围",
-        "工具只读，不更新相应计划及任务，不上传审批附件"
+        "prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM",
+        "审批生效前不更新相应计划及任务；审批附件上传和受影响部门通知仍待补齐"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖计划变更权限隔离；节点调整审批附件和受影响部门通知尚未验收"
+        "tests/test_plan_tools.py 覆盖计划变更权限隔离和确认后提交 BPM；节点调整审批附件和受影响部门通知尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

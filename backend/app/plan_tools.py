@@ -1,10 +1,13 @@
 from collections import defaultdict
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
+from fastapi import APIRouter, Depends
 from sqlalchemy import select, and_
-from . import models as m
-from .authorization import access, predicate, select_fields
-from .db import now
+from . import models as m, domains, domain_schemas as s, workflow_selection
+from .authorization import access, predicate, require, select_fields, fingerprint
+from .bpm import content_hash
+from .db import get_db, now
 from .errors import DomainError
+from .security import current_user
 from .schemas import StrictModel
 
 
@@ -21,6 +24,16 @@ class ProjectPlanContextInput(StrictModel):
             self.identifier=self.identifier.strip()
             if not self.identifier:raise ValueError('线索不能为空')
         return self
+
+
+class PlanChangeProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    previous_id: str = Field(min_length=1, max_length=36,
+        description='查询返回的当前有效 project_plan 或 plan_change 业务材料 ID。')
+    reason: str = Field(min_length=1, max_length=4000)
+    tasks: list[s.TaskInput] = Field(min_length=1, max_length=200)
+    workflow_definition_id: str = Field(min_length=1, max_length=36)
 
 
 def _strength(value,needle):
@@ -192,3 +205,138 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
                 'limitations':limitations+['线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。']}
     return {'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':now().isoformat(),
             'limitations':limitations}
+
+
+def workflow_options(db,user,project):
+    scope={'project_id':project.id}
+    require(db,user,'plan_change.read',scope)
+    require(db,user,'plan_change.submit',scope)
+    rows=db.scalars(select(m.WorkflowDefinition).where(m.WorkflowDefinition.status=='PUBLISHED').order_by(
+        m.WorkflowDefinition.process_key,m.WorkflowDefinition.version.desc()))
+    result=[]
+    for row in rows:
+        if not workflow_selection.matches(row.config,{'business_type':'plan_change','categories':set(),'design_type':None}):continue
+        if row.config.get('material_contract') is not None:continue
+        result.append(workflow_selection.metadata(row,db))
+    return result
+
+
+def plan_change_schema():
+    return PlanChangeProposalInput.model_json_schema()
+
+
+def parse_plan_change(arguments):
+    try:return PlanChangeProposalInput.model_validate(arguments or {})
+    except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','计划变更参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def _task_label(task):
+    return task.name+'（'+task.key+'：'+task.planned_start.isoformat()+' 至 '+task.planned_end.isoformat()+'）'
+
+
+def preview_plan_change(db,user,data:PlanChangeProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id}
+    require(db,user,'project.read',scope)
+    require(db,user,'project_plan.read',scope)
+    require(db,user,'plan_change.read',scope)
+    require(db,user,'plan_change.create',scope)
+    require(db,user,'plan_change.submit',scope)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    previous=domains.require_source(db,data.previous_id,project.id,{'project_plan','plan_change'})
+    detail=s.PlanInput(previous_id=data.previous_id,reason=data.reason,tasks=data.tasks)
+    domains.validate_plan(db,project.id,detail)
+    options=workflow_options(db,user,project)
+    selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
+    if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
+    previous_tasks={task.key:task for task in db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==previous.id))}
+    changed=[];new=[];removed=[]
+    incoming={task.key:task for task in data.tasks}
+    for task in data.tasks:
+        old=previous_tasks.get(task.key)
+        if not old:new.append(_task_label(task));continue
+        if old.name!=task.name or old.owner_user_id!=task.owner_user_id or old.planned_start!=task.planned_start or old.planned_end!=task.planned_end:
+            changed.append(task.name+'（'+task.key+'：'+old.planned_start.isoformat()+'~'+old.planned_end.isoformat()+
+                ' → '+task.planned_start.isoformat()+'~'+task.planned_end.isoformat()+'）')
+    for key,old in previous_tasks.items():
+        if key not in incoming:removed.append(old.name+'（'+old.key+'）')
+    display={'操作':'项目计划变更','项目':project.code+' · '+project.name,'项目版本':project.row_version,
+        '原计划':previous.number+' · 第'+str(previous.revision)+'版','变更原因':data.reason,
+        '计划任务数':len(data.tasks),'变更节点':changed or ['未调整已有节点日期或名称'],
+        '新增节点':new or ['无'],'删除节点':removed or ['无'],
+        '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
+        '说明':'本人确认后仅创建计划变更材料并提交 Agent BPM；审批生效前不会关闭原计划、不会重排执行任务，也不会修改客户承诺交期。'}
+    return detail,display
+
+
+def execute_plan_tool(db,user,key,arguments,run=None):
+    if key!='prepare_project_plan_change':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
+    data=parse_plan_change(arguments)
+    _,display=preview_plan_change(db,user,data)
+    from .confirmation_policy import proposal_confirmation_policy
+    proposal={'kind':'project_plan_change','action':'plan_change','requires_approval':True,
+        'input':data.model_dump(mode='json'),'display':display,
+        'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
+    return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+        'limitations':['仅准备计划变更操作建议；本人确认后才创建业务材料并提交审批，审批完成前不改变原计划或执行任务。']}
+
+
+def source(db,user,step_id):
+    from .tool_gateway import available_tools
+    step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
+    if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
+    if run.status not in {'RUNNING','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
+        raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
+    proposal=step.result.get('proposal')
+    if step.tool not in available_tools(db,user) or step.tool!='prepare_project_plan_change' or not proposal:
+        raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
+    return proposal
+
+
+def validate_intent(db,user,payload):
+    proposal=source(db,user,payload['step_id'])
+    if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
+    data=parse_plan_change(proposal['input'])
+    _,display=preview_plan_change(db,user,data)
+    if content_hash(display)!=content_hash(proposal['display']):
+        raise DomainError('VERSION_CONFLICT','项目、计划或流程资料已变化，请重新准备',409)
+    return proposal,data
+
+
+def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
+    proposal,data=validate_intent(db,user,payload)
+    subject=domains.create(db,user,s.SubjectInput(kind='plan_change',project_id=data.project_id,
+        remark=data.reason,detail={'previous_id':data.previous_id,'reason':data.reason,
+            'tasks':[task.model_dump(mode='json') for task in data.tasks]}))
+    from .business import submit_subject
+    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        agent_permission_mode=agent_permission_mode_from_proposal(proposal))
+    return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
+        'action':'plan_change','status':'SUBMITTED'}
+
+
+router=APIRouter()
+
+
+@router.get('/api/project-plan-proposals/{step_id}')
+def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    source(db,user,step_id)
+    intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
+        m.HumanIntent.action=='project_plan.execute',m.HumanIntent.resource_id==step_id,
+        m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))
+    return {'receipt':intent.receipt if intent else None}
+
+
+@router.post('/api/project-plan-proposals/{step_id}/intent')
+def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
+    from .business import create_intent
+    proposal=source(db,user,step_id)
+    payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
+    result=create_intent(db,user,'project_plan.execute',step_id,payload)
+    result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
+    db.commit();return result
