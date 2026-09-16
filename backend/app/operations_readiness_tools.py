@@ -260,21 +260,52 @@ def _migration_status(db) -> dict:
     return status
 
 
-def _tool_path(name: str) -> dict:
-    path = shutil.which(name)
+def _common_postgres_tool_paths(name: str) -> list[Path]:
+    executable = name if name.endswith(".exe") else f"{name}.exe"
+    roots = [
+        Path("C:/Program Files/PostgreSQL"),
+        Path("C:/Program Files (x86)/PostgreSQL"),
+        Path("D:/PostgreSQL"),
+    ]
+    paths: list[Path] = []
+    for root in roots:
+        try:
+            paths.extend(sorted(root.glob(f"*/bin/{executable}"), reverse=True))
+        except OSError:
+            continue
+    return paths
+
+
+def _tool_path(name: str, explicit_path: str = "") -> dict:
+    source = "PATH"
+    path = explicit_path.strip() if explicit_path else ""
+    if path:
+        source = "explicit"
+        found = Path(path).exists()
+    else:
+        path = shutil.which(name) or ""
+        found = bool(path)
+        if not found:
+            for candidate in _common_postgres_tool_paths(name):
+                if candidate.exists():
+                    path = str(candidate)
+                    found = True
+                    source = "common_install_dir"
+                    break
     return {
         "name": name,
-        "available": bool(path),
+        "available": bool(found),
         "path_present": bool(path),
+        "source": source if path else None,
     }
 
 
 def _backup_restore_status() -> dict:
     backup_script = REPO_ROOT / "scripts" / "backup_postgres.py"
     restore_script = REPO_ROOT / "scripts" / "restore_postgres.py"
-    pg_dump = _tool_path("pg_dump")
-    pg_restore = _tool_path("pg_restore")
     cfg = settings()
+    pg_dump = _tool_path("pg_dump", cfg.pg_dump_path)
+    pg_restore = _tool_path("pg_restore", cfg.pg_restore_path)
     restore_target = _safe_url(cfg.restore_database_url)
     can_backup = backup_script.exists() and pg_dump["available"]
     can_restore_rehearse = restore_script.exists() and pg_restore["available"] and restore_target.get("configured") is True

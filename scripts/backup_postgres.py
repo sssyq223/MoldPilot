@@ -48,6 +48,31 @@ def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
 
 
+def _common_postgres_tool_paths(name: str) -> list[Path]:
+    executable = name if name.endswith(".exe") else f"{name}.exe"
+    roots = [Path("C:/Program Files/PostgreSQL"), Path("C:/Program Files (x86)/PostgreSQL"), Path("D:/PostgreSQL")]
+    paths: list[Path] = []
+    for root in roots:
+        try:
+            paths.extend(sorted(root.glob(f"*/bin/{executable}"), reverse=True))
+        except OSError:
+            continue
+    return paths
+
+
+def _find_tool(name: str, explicit_path: str = "") -> tuple[str, str | None]:
+    if explicit_path.strip():
+        path = Path(explicit_path.strip())
+        return (str(path), "explicit") if path.exists() else ("", None)
+    path = shutil.which(name)
+    if path:
+        return path, "PATH"
+    for candidate in _common_postgres_tool_paths(name):
+        if candidate.exists():
+            return str(candidate), "common_install_dir"
+    return "", None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a MoldPilot PostgreSQL pg_dump backup.")
     parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
@@ -64,7 +89,7 @@ def main() -> int:
         raise SystemExit(f"{args.url_key} is missing in {args.env_file}")
     database = _parse_url(str(url), args.expected_db)
 
-    pg_dump = args.pg_dump or shutil.which("pg_dump")
+    pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or str(config.get("MOLD_PG_DUMP_PATH") or ""))
     if not pg_dump:
         print("pg_dump_available=False")
         print(f"database={database['database']}")
@@ -94,6 +119,7 @@ def main() -> int:
     ]
 
     print("pg_dump_available=True")
+    print(f"pg_dump_source={pg_dump_source}")
     print(f"database={database['database']}")
     print(f"host={database['host']}")
     print(f"port={database['port']}")

@@ -13,7 +13,8 @@
 
 - 新增 `scripts/restore_postgres.py`，默认 dry-run，只读取 `MOLD_RESTORE_DATABASE_URL` 指向的隔离恢复库，拒绝 SQLite，并默认拒绝恢复到主库 `moldpilot`。
 - 真实恢复必须同时传入 `--execute` 与 `--i-understand-this-will-change-target-db`；恢复到主库还需额外 `--allow-primary-target`，避免误覆盖当前业务库。
-- `.env.example` 新增 `MOLD_RESTORE_DATABASE_URL=.../moldpilot_restore`，运行就绪工具的 `backup_restore.restore_script` 会返回恢复脚本是否存在、恢复目标是否配置、`pg_restore` 是否可用。
+- `.env.example` 新增 `MOLD_RESTORE_DATABASE_URL=.../moldpilot_restore`、`MOLD_PG_DUMP_PATH` 和 `MOLD_PG_RESTORE_PATH`；运行就绪工具和脚本会优先使用显式路径，其次查 PATH 和常见 PostgreSQL 安装目录。
+- 运行就绪工具的 `backup_restore.restore_script` 会返回恢复脚本是否存在、恢复目标是否配置、`pg_restore` 是否可用。
 - 本轮仅完成受控恢复入口和 dry-run 核对；正式 RTO/RPO 仍需实际备份文件、PostgreSQL 客户端工具、隔离恢复库和恢复演练记录。
 
 ## 持续开发：运行就绪阻断项汇总（2026-09-16）

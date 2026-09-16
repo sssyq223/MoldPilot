@@ -53,6 +53,31 @@ def _run(command: list[str], password: str, execute: bool) -> int:
     return subprocess.run(command, env=env, check=False).returncode
 
 
+def _common_postgres_tool_paths(name: str) -> list[Path]:
+    executable = name if name.endswith(".exe") else f"{name}.exe"
+    roots = [Path("C:/Program Files/PostgreSQL"), Path("C:/Program Files (x86)/PostgreSQL"), Path("D:/PostgreSQL")]
+    paths: list[Path] = []
+    for root in roots:
+        try:
+            paths.extend(sorted(root.glob(f"*/bin/{executable}"), reverse=True))
+        except OSError:
+            continue
+    return paths
+
+
+def _find_tool(name: str, explicit_path: str = "") -> tuple[str, str | None]:
+    if explicit_path.strip():
+        path = Path(explicit_path.strip())
+        return (str(path), "explicit") if path.exists() else ("", None)
+    path = shutil.which(name)
+    if path:
+        return path, "PATH"
+    for candidate in _common_postgres_tool_paths(name):
+        if candidate.exists():
+            return str(candidate), "common_install_dir"
+    return "", None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate or restore a MoldPilot PostgreSQL pg_dump backup.")
     parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
@@ -75,7 +100,7 @@ def main() -> int:
         return 0 if not args.execute else 2
 
     target = _parse_url(str(url), args.expected_db or None, args.allow_primary_target)
-    pg_restore = args.pg_restore or shutil.which("pg_restore")
+    pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or str(config.get("MOLD_PG_RESTORE_PATH") or ""))
     if not pg_restore:
         print("pg_restore_available=False")
         print(f"database={target['database']}")
@@ -88,6 +113,7 @@ def main() -> int:
     backup_path = Path(args.backup) if args.backup else None
     backup_exists = bool(backup_path and backup_path.exists() and backup_path.is_file())
     print("pg_restore_available=True")
+    print(f"pg_restore_source={pg_restore_source}")
     print(f"database={target['database']}")
     print(f"host={target['host']}")
     print(f"port={target['port']}")
