@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：移除交付运行链路 SQLite 兜底（2026-09-16）
+
+- 运行时数据库入口 `make_engine` 现在直接拒绝 `sqlite` URL，API/Worker/交付脚本必须通过 `MOLD_DATABASE_URL` 连接 PostgreSQL。
+- 会话置顶归档字段和用户头像资料表的运行时补齐逻辑只支持 PostgreSQL，不再保留 SQLite 兼容分支，避免本地浏览器或开发验证绕过 `moldpilot`。
+- 浏览器验收种子脚本 `scripts/create_browser_smoke_fixture.py` 已改为只向 PostgreSQL 写入合成 `SMOKE-*` 数据；脚本拒绝 SQLite 文件路径，默认读取 `.env` 中的 `MOLD_DATABASE_URL`，并生成唯一项目号避免重复跑时污染已有业务流程。
+- 默认开发库名、测试库名和数据库角色维护脚本统一到 `moldpilot` / `moldpilot_test` / `moldpilot_restore`；README 明确数据库测试只能指向 `moldpilot_test`。
+- 本轮仍保留历史单元测试中直接构造的 SQLite 内存测试作为待迁移技术债；它们不得作为交付验收依据，真实开发/浏览器/数据库核对以 PostgreSQL/Navicat 基线为准。
+
 ## 持续开发：本地 Redis 启动与 stream 初始化脚本（2026-09-16）
 
 - 新增 `docker-compose.redis.yml`，提供独立本地 Redis 7 容器，绑定 `127.0.0.1:56379`，开启 AOF 持久化，与 `.env.example` 的 `MOLD_REDIS_URL` 保持一致。

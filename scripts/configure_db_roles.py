@@ -13,7 +13,8 @@ def main():
     url=os.environ.get('MOLD_MIGRATION_URL') or dotenv_values('.env').get('MOLD_MIGRATION_URL')
     if not url:raise SystemExit('Explicit migration DSN required')
     engine=create_engine(url)
-    if engine.url.database not in {'agent_db','agent_test'}:raise SystemExit('Refusing unrelated database')
+    if engine.url.database not in {'moldpilot','moldpilot_restore','moldpilot_test'}:
+        raise SystemExit('Refusing unrelated database')
     immutable={'audit_event','approval_action','payment_confirmation','supplier_shipment','goods_receipt','receipt_inspection','stock_movement','assembly_execution','trial_result','contact_record','contact_resolution','file_object','contact_attachment','agent_run_file'}
     with engine.begin() as connection:
         role=connection.execute(text("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname='agent_app'")).first()

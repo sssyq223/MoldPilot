@@ -63,43 +63,32 @@ def compact_conversation_title(prompt: str) -> str:
 
 
 def ensure_conversation_flags(db):
-    """Local dev fixtures may predate pinned/archived conversation columns."""
+    """Ensure conversation flags exist on the PostgreSQL baseline."""
     global _conversation_flags_checked
     if _conversation_flags_checked:
         return
     dialect = db.bind.dialect.name
-    if dialect == "sqlite":
-        columns = {row[1] for row in db.execute(text("PRAGMA table_info(ai_conversation)"))}
-        if "pinned" not in columns:
-            db.execute(text("ALTER TABLE ai_conversation ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0"))
-        if "archived" not in columns:
-            db.execute(text("ALTER TABLE ai_conversation ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"))
-        db.commit()
-    elif dialect == "postgresql":
-        db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false"))
-        db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
-        db.commit()
+    if dialect != "postgresql":
+        raise RuntimeError("MoldPilot runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
+    db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false"))
+    db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
+    db.commit()
     _conversation_flags_checked = True
 
 
 def ensure_user_profiles(db):
-    """Local dev fixtures may predate the optional user profile table."""
+    """Ensure the optional user profile table exists on the PostgreSQL baseline."""
     global _user_profiles_checked
     if _user_profiles_checked:
         return
     dialect = db.bind.dialect.name
-    if dialect == "sqlite":
-        db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
-            user_id VARCHAR(36) PRIMARY KEY,
-            avatar_url TEXT NOT NULL DEFAULT '',
-            updated_at DATETIME
-        )"""))
-    elif dialect == "postgresql":
-        db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
-            user_id VARCHAR(36) PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
-            avatar_url TEXT NOT NULL DEFAULT '',
-            updated_at TIMESTAMPTZ
-        )"""))
+    if dialect != "postgresql":
+        raise RuntimeError("MoldPilot runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
+    db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
+        user_id VARCHAR(36) PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
+        avatar_url TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ
+    )"""))
     db.commit()
     _user_profiles_checked = True
 

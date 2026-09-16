@@ -12,7 +12,7 @@ def now():
 
 
 def aware(value):
-    """SQLite smoke fixtures return naive datetimes; production PostgreSQL does not."""
+    """Normalize datetimes returned by legacy synthetic tests."""
     return value.replace(tzinfo=SHANGHAI) if value.tzinfo is None else value
 
 
@@ -21,8 +21,9 @@ class Base(DeclarativeBase):
 
 
 def make_engine(url: str):
-    engine = create_engine(url, pool_pre_ping=True,
-                           connect_args={'check_same_thread':False} if url.startswith('sqlite') else {})
+    if url.startswith("sqlite"):
+        raise RuntimeError("SQLite is not allowed for MoldPilot runtime; configure MOLD_DATABASE_URL for PostgreSQL.")
+    engine = create_engine(url, pool_pre_ping=True)
     if engine.dialect.name == "postgresql":
         @event.listens_for(engine, "connect")
         def configure(connection, _):

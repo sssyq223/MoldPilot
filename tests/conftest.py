@@ -22,8 +22,8 @@ def test_engine():
     if not url: pytest.skip("Isolated PostgreSQL test URL is required")
     engine = make_engine(url)
     # Destructive cleanup is strictly limited to a dedicated, explicitly named test DB.
-    if engine.url.database != "agent_test" or engine.url.host not in {"127.0.0.1", "localhost", "postgres"}:
-        raise RuntimeError("Refusing to initialize a database outside the isolated agent_test target")
+    if engine.url.database != "moldpilot_test" or engine.url.host not in {"127.0.0.1", "localhost", "postgres"}:
+        raise RuntimeError("Refusing to initialize a database outside the isolated moldpilot_test target")
     previous = os.environ.get("MOLD_MIGRATION_URL")
     os.environ["MOLD_MIGRATION_URL"] = url
     try: command.upgrade(Config('alembic.ini'), 'head')
