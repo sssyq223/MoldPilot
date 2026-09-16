@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：部署运行前提只读核对（2026-09-16）
+
+- `query_operations_readiness_context` 新增 `deployment_runtime`，只读探测 Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。
+- 探测不会启动 API、Worker 或 Docker 容器，不会构建前端，也不会修改本机进程；只返回命令是否可用、版本摘要、前端构建产物和入口文件是否存在。
+- 部署拓扑 gate 的当前证据不再只说“能读取配置”，而是区分 Docker/Node/前端构建产物/后端入口是否满足；缺任一项时保持 `DEPLOYMENT_RUNTIME_INCOMPLETE`。
+- 这仍不等于生产验收完成：正式交付还需要目标环境的 API、前端、数据库、Redis、对象存储、Worker 部署边界、健康检查、回滚和告警演练。
+
 ## 持续开发：Redis 消息链路只读核对（2026-09-16）
 
 - `query_operations_readiness_context` 的 Redis 核对从“只看 URL 是否配置”升级为只读运行探测：执行 `PING`、`INFO server`、`XINFO STREAM` 和 `XINFO GROUPS`，返回 Redis 是否可达、服务端版本、业务事件 stream、通知消费组是否存在。

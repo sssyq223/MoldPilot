@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 from urllib.parse import urlsplit
 
 from pydantic import Field
@@ -107,6 +109,80 @@ def _path_summary(value: str | None) -> dict:
         "is_absolute": path.is_absolute(),
         "name": path.name,
         "exists": path.exists(),
+    }
+
+
+def _command_probe(command: list[str], timeout: float = 2.0) -> dict:
+    executable = shutil.which(command[0])
+    result = {
+        "name": command[0],
+        "available": bool(executable),
+        "path_present": bool(executable),
+        "probe": command[1:],
+    }
+    if not executable:
+        return result
+    try:
+        completed = subprocess.run(
+            [executable, *command[1:]],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as error:  # pragma: no cover - depends on host tools
+        result.update({"probe_ok": False, "error_type": type(error).__name__})
+        return result
+    output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    result.update(
+        {
+            "probe_ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "summary": output[0][:160] if output else "",
+        }
+    )
+    return result
+
+
+def _deployment_runtime_status() -> dict:
+    docker_cli = _command_probe(["docker", "--version"])
+    docker_daemon = _command_probe(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=3.0)
+    docker_compose = _command_probe(["docker", "compose", "version"], timeout=3.0)
+    node = _command_probe(["node", "--version"])
+    npm = _command_probe(["npm", "--version"])
+    web_root = REPO_ROOT / "web"
+    frontend_build = {
+        "package_json_exists": (web_root / "package.json").exists(),
+        "node_modules_exists": (web_root / "node_modules").exists(),
+        "dist_index_exists": (web_root / "dist" / "index.html").exists(),
+    }
+    backend_entrypoints = {
+        "api_module_exists": (REPO_ROOT / "backend" / "app" / "api.py").exists(),
+        "agent_worker_module_exists": (REPO_ROOT / "backend" / "app" / "agent_worker.py").exists(),
+        "message_worker_module_exists": (REPO_ROOT / "backend" / "app" / "message_worker.py").exists(),
+    }
+    docker_ready = bool(docker_cli.get("probe_ok") and docker_daemon.get("probe_ok") and docker_compose.get("probe_ok"))
+    node_ready = bool(node.get("probe_ok") and npm.get("probe_ok"))
+    frontend_ready = bool(frontend_build["package_json_exists"] and frontend_build["dist_index_exists"])
+    backend_ready = all(backend_entrypoints.values())
+    return {
+        "python": {
+            "version": sys.version.split()[0],
+            "executable_present": bool(sys.executable),
+        },
+        "node": node,
+        "npm": npm,
+        "docker_cli": docker_cli,
+        "docker_daemon": docker_daemon,
+        "docker_compose": docker_compose,
+        "frontend_build": frontend_build,
+        "backend_entrypoints": backend_entrypoints,
+        "docker_ready": docker_ready,
+        "node_ready": node_ready,
+        "frontend_build_ready": frontend_ready,
+        "backend_entrypoints_ready": backend_ready,
+        "status": "DEPLOYMENT_RUNTIME_READY" if docker_ready and node_ready and frontend_ready and backend_ready else "DEPLOYMENT_RUNTIME_INCOMPLETE",
+        "note": "只读探测本机部署前提；不启动 Docker、不构建前端、不启动 API 或 Worker。",
     }
 
 
@@ -330,17 +406,18 @@ def _counts(db, include: bool) -> dict:
     }
 
 
-def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_status: dict) -> list[dict]:
+def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_status: dict, deployment_runtime: dict) -> list[dict]:
     s3_ready = cfg.file_backend == "s3" and _configured(cfg.file_s3_bucket) and _configured(cfg.file_s3_endpoint)
     backup_tooling_ready = backup_restore.get("status") == "BACKUP_TOOLING_READY"
     log_policy_ready = log_retention.get("policy_fully_configured") is True
     redis_ready = redis_status.get("status") == "REDIS_REACHABLE_STREAM_GROUP_READY"
+    deployment_ready = deployment_runtime.get("status") == "DEPLOYMENT_RUNTIME_READY"
     return [
         {
             "key": "deployment_topology",
             "name": "部署方式与隔离边界",
             "confirmed": False,
-            "current_evidence": "已能读取当前运行配置，但尚未登记正式 Docker/生产拓扑验收结果。",
+            "current_evidence": "Docker CLI/daemon/compose、Node/npm、前端构建产物和后端入口文件均可探测；正式生产拓扑验收仍未登记。" if deployment_ready else "已能读取当前运行配置；Docker、Node/npm、前端构建产物或后端入口文件仍有未满足项，尚未登记正式 Docker/生产拓扑验收结果。",
             "required_test": "实施方案中确认 API、前端、数据库、Redis、对象存储、Worker 的部署边界与回滚方式，并在目标环境演练。",
         },
         {
@@ -405,10 +482,11 @@ def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_stat
 def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
     model_cfg = model_settings()
+    deployment_runtime = _deployment_runtime_status()
     backup_restore = _backup_restore_status()
     log_retention = _log_retention_status(db, cfg)
     redis_status = _redis_status(cfg.redis_url)
-    gates = _gates(cfg, model_cfg, backup_restore, log_retention, redis_status)
+    gates = _gates(cfg, model_cfg, backup_restore, log_retention, redis_status, deployment_runtime)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
@@ -429,6 +507,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         warnings.append("当前日志保留期限尚未全部配置；请明确审计、应用访问和模型调用日志的保留天数、脱敏、归档和删除策略。")
     if redis_status.get("status") != "REDIS_REACHABLE_STREAM_GROUP_READY":
         warnings.append("当前 Redis 消息链路未达到运行就绪：需要 Redis 可达、业务事件 stream 存在且通知消费组已初始化。")
+    if deployment_runtime.get("status") != "DEPLOYMENT_RUNTIME_READY":
+        warnings.append("当前部署运行前提未完整满足；请核对 Docker daemon/compose、Node/npm、前端构建产物和后端 Worker/API 入口后再做生产拓扑验收。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -447,6 +527,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                     **_safe_url(cfg.redis_url),
                     **redis_status,
                 },
+                "deployment_runtime": deployment_runtime,
                 "file_storage": {
                     "backend": cfg.file_backend,
                     "local_root": _path_summary(cfg.file_local_root) if cfg.file_backend == "local" else None,

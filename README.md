@@ -62,6 +62,8 @@ $env:PYTHONPATH='backend'
 
 运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
 
+部署运行前提也由同一个工具只读核对：Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。该核对不会启动服务、不会构建前端、不会执行 Docker 操作；缺失项会保持 FR-118 部署拓扑门槛未通过。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。
