@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     pg_dump_path: str = ""
     pg_restore_path: str = ""
     pg_client_image: str = "postgres:18-alpine"
+    acceptance_evidence_file: str = ".local/acceptance-gates.json"
     origin: str = "http://127.0.0.1:5173"
     cookie_secure: bool = True
     environment: str = "development"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -489,13 +490,103 @@ def _counts(db, include: bool) -> dict:
     }
 
 
-def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_status: dict, deployment_runtime: dict) -> list[dict]:
+ACCEPTANCE_GATE_KEYS = [
+    "deployment_topology",
+    "user_scale",
+    "response_time",
+    "availability",
+    "backup_frequency",
+    "restore_objective",
+    "log_retention",
+    "production_storage",
+    "model_operations",
+]
+
+
+def _acceptance_evidence_status(cfg) -> dict:
+    path = Path(cfg.acceptance_evidence_file)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    status = {
+        "path": str(path.relative_to(REPO_ROOT)) if path.is_relative_to(REPO_ROOT) else str(path),
+        "exists": path.exists(),
+        "schema_version": None,
+        "environment": None,
+        "valid_gate_keys": [],
+        "invalid_gate_keys": [],
+        "status": "NOT_CONFIGURED",
+        "note": "正式验收确认文件不提交到 Git；需由实施/业务负责人填写 confirmed_by、confirmed_at 和 evidence_refs。",
+    }
+    if not path.exists():
+        return status
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return {**status, "status": "INVALID_JSON", "error_type": type(error).__name__}
+    if not isinstance(data, dict):
+        return {**status, "status": "INVALID_SHAPE"}
+    gates = data.get("gates")
+    if not isinstance(gates, dict):
+        return {**status, "status": "INVALID_SHAPE", "schema_version": data.get("schema_version"), "environment": data.get("environment")}
+    root_confirmed_by = str(data.get("confirmed_by") or "").strip()
+    root_confirmed_at = str(data.get("confirmed_at") or "").strip()
+    valid: dict[str, dict] = {}
+    invalid: list[str] = []
+    for key in ACCEPTANCE_GATE_KEYS:
+        item = gates.get(key)
+        if not isinstance(item, dict):
+            continue
+        confirmed_by = str(item.get("confirmed_by") or root_confirmed_by).strip()
+        confirmed_at = str(item.get("confirmed_at") or root_confirmed_at).strip()
+        evidence_refs = item.get("evidence_refs")
+        if item.get("confirmed") is True and confirmed_by and confirmed_at and isinstance(evidence_refs, list) and bool(evidence_refs):
+            valid[key] = {
+                "confirmed_by": confirmed_by,
+                "confirmed_at": confirmed_at,
+                "evidence_refs": [str(value) for value in evidence_refs],
+                "notes": str(item.get("notes") or ""),
+            }
+        elif item.get("confirmed"):
+            invalid.append(key)
+    return {
+        **status,
+        "schema_version": data.get("schema_version"),
+        "environment": data.get("environment"),
+        "valid_gate_keys": sorted(valid),
+        "invalid_gate_keys": sorted(invalid),
+        "status": "LOADED",
+        "records": valid,
+    }
+
+
+def _apply_acceptance_evidence(gates: list[dict], evidence_status: dict) -> list[dict]:
+    records = evidence_status.get("records") if isinstance(evidence_status.get("records"), dict) else {}
+    result = []
+    for gate in gates:
+        record = records.get(gate["key"])
+        if record:
+            gate = {
+                **gate,
+                "confirmed": True,
+                "confirmation_source": "acceptance_evidence_file",
+                "acceptance_record": record,
+            }
+        else:
+            gate = {
+                **gate,
+                "confirmation_source": "runtime" if gate.get("confirmed") else "missing_acceptance_evidence",
+            }
+        result.append(gate)
+    return result
+
+
+def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_status: dict, deployment_runtime: dict, acceptance_evidence: dict) -> list[dict]:
     s3_ready = cfg.file_backend == "s3" and _configured(cfg.file_s3_bucket) and _configured(cfg.file_s3_endpoint)
     backup_tooling_ready = backup_restore.get("status") == "BACKUP_TOOLING_READY"
     log_policy_ready = log_retention.get("policy_fully_configured") is True
     redis_ready = redis_status.get("status") == "REDIS_REACHABLE_STREAM_GROUP_READY"
     deployment_ready = deployment_runtime.get("status") == "DEPLOYMENT_RUNTIME_READY"
-    return [
+    gates = [
         {
             "key": "deployment_topology",
             "name": "部署方式与隔离边界",
@@ -560,6 +651,7 @@ def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_stat
             "required_test": "验证模型供应商、模型名、上下文窗口、超时、工具循环、强制压缩和失败回执。",
         },
     ]
+    return _apply_acceptance_evidence(gates, acceptance_evidence)
 
 
 def _readiness_summary(
@@ -645,7 +737,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     backup_restore = _backup_restore_status()
     log_retention = _log_retention_status(db, cfg)
     redis_status = _redis_status(cfg.redis_url)
-    gates = _gates(cfg, model_cfg, backup_restore, log_retention, redis_status, deployment_runtime)
+    acceptance_evidence = _acceptance_evidence_status(cfg)
+    gates = _gates(cfg, model_cfg, backup_restore, log_retention, redis_status, deployment_runtime, acceptance_evidence)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
@@ -714,6 +807,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                 },
                 "backup_restore": backup_restore,
                 "log_retention": log_retention,
+                "acceptance_evidence": acceptance_evidence,
                 "security_runtime": {
                     "worker_secret_configured": _configured(cfg.worker_secret),
                     "credential_encryption_key_configured": _configured(cfg.credential_encryption_key),

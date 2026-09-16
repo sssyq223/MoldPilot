@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：FR-118 正式验收证据登记机制（2026-09-16）
+
+- 新增配置 `MOLD_ACCEPTANCE_EVIDENCE_FILE`，默认 `.local/acceptance-gates.json`，用于登记部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产附件存储和模型运行边界的正式验收证据。
+- 新增 `scripts/acceptance_gates.py`，可生成本地验收模板或查看当前确认状态；模板文件不提交到 Git，避免代码提交冒充业务/实施签字。
+- `query_operations_readiness_context` 会读取该证据文件：只有 gate 填写 `confirmed=true`、确认人、确认时间和至少一条 `evidence_refs` 时才标记为 confirmed；格式不完整的确认会进入 `invalid_gate_keys`，不会通过。
+- 当前本机机器前提已就绪，但 `.local/acceptance-gates.json` 仍需由实施/业务负责人按实际验收结果填写；未填写前 `acceptance_status` 保持 `NOT_VERIFIED`。
+
 ## 持续开发：PostgreSQL 备份恢复 Docker 客户端模式（2026-09-16）
 
 - `scripts/backup_postgres.py` 与 `scripts/restore_postgres.py` 新增 `--client-mode auto|native|docker`，默认 `auto`：优先使用本机 `pg_dump` / `pg_restore`，本机未安装时可使用 Docker 临时 `postgres` 客户端镜像。

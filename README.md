@@ -88,6 +88,15 @@ $env:PYTHONPATH='backend'
 
 运行就绪返回中的 `readiness_summary` 会把机器可验证阻断项和仍需人工/实施验收的门槛分开列出。模型回答交付状态时应引用该汇总，不能只因为某个配置存在或某个本机探测通过就宣称整体已交付。
 
+正式验收项通过本机证据文件登记，默认路径为 `.local/acceptance-gates.json`，不会提交到 Git。先生成模板：
+
+```powershell
+$env:PYTHONPATH='backend'
+.venv/Scripts/python.exe scripts/acceptance_gates.py --write-template --confirmed-by sssyq
+```
+
+只有某个 gate 填写 `confirmed=true`、确认人、确认时间和至少一条 `evidence_refs` 后，`query_operations_readiness_context` 才会把该项标记为 confirmed。该机制用于登记正式验收，不替代实际压测、恢复演练、生产存储验证或业务签字。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。

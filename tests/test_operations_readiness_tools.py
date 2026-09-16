@@ -71,3 +71,44 @@ def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secret
     assert "secret-credential-value" not in serialized
     assert "secret-s3-value" not in serialized
     assert "未确认前不得承诺性能" in "".join(result["limitations"])
+
+
+def test_operations_readiness_acceptance_evidence_file_confirms_one_gate(sqlite_factory, monkeypatch, tmp_path):
+    evidence = tmp_path / "acceptance-gates.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "environment": "local-delivery-test",
+                "confirmed_by": "tester",
+                "confirmed_at": "2026-09-16T12:00:00+08:00",
+                "gates": {
+                    "deployment_topology": {
+                        "confirmed": True,
+                        "evidence_refs": ["test://deployment-topology"],
+                        "notes": "synthetic acceptance evidence",
+                    },
+                    "user_scale": {
+                        "confirmed": True,
+                        "evidence_refs": [],
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cfg = settings()
+    monkeypatch.setattr(cfg, "acceptance_evidence_file", str(evidence))
+    with sqlite_factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        result = execute(db, admin, "query_operations_readiness_context", {})
+    payload = result["data"][0]
+    gates = {item["key"]: item for item in payload["acceptance_gates"]}
+    assert payload["acceptance_evidence"]["status"] == "LOADED"
+    assert payload["acceptance_evidence"]["valid_gate_keys"] == ["deployment_topology"]
+    assert payload["acceptance_evidence"]["invalid_gate_keys"] == ["user_scale"]
+    assert gates["deployment_topology"]["confirmed"] is True
+    assert gates["deployment_topology"]["confirmation_source"] == "acceptance_evidence_file"
+    assert gates["deployment_topology"]["acceptance_record"]["evidence_refs"] == ["test://deployment-topology"]
+    assert gates["user_scale"]["confirmed"] is False
