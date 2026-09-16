@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：供应商扣款责任/结算依据对话办理闭环（2026-09-16）
+
+- 新增 `prepare_supplier_deduction_settlement` 工具，基于整套委外或财务上下文中的真实项目、项目版本、供应商、已生效整套委外合同、工程联络扣款线索和正式责任/结算依据，准备供应商扣款责任/结算 proposal。
+- 该能力不新增传统 ERP 页面：仍在对话框内展示 proposal 卡片，用户本人确认后才写入 `SupplierDeductionSettlement`；不会执行收付款，不自动抵扣供应商付款，也不代表客户对我方扣款已完成。
+- 准备和确认阶段都会重新校验项目版本、供应商、合同归属和生效状态、合同供应商一致性、工程联络单/事项归属、`full_outsource_contract.read` / `finance.confirm` 精确项目分类权限、重复来源引用和重复结算单号。
+- 整套委外 Skill 与财务 Skill 已同步办理规则：默认只读，只有用户明确要求登记扣款责任或结算依据，且上下文有真实业务 ID 与依据时才准备卡片。
+- 前端通用 proposal 卡片已映射 `supplier_deduction_settlement` 到 `/api/finance-proposals`，能力设置文案补充“准备供应商扣款结算”。
+- 验证：`tests/test_finance_context_tools.py` 覆盖 proposal 不直接写库、本人确认后写入已结算供应商扣款记录、重复来源阻断和已结算缺少结算依据阻断；`tests/test_finance_context_tools.py tests/test_full_outsource_tools.py tests/test_capability_catalog.py` 共 18 项通过，前端 `npm run build` 通过，内置浏览器刷新后控制台无新增 warn/error。
+
 ## 持续开发：供应商实际付款确认对话办理闭环（2026-09-16）
 
 - 新增 `prepare_supplier_payment_confirmation` 工具，基于 `query_finance_context` 返回的真实项目、项目版本、已审批供应商付款申请和授权占用余额，准备供应商实际付款确认 proposal。
@@ -96,6 +105,7 @@
 - 新增 `supplier_deduction_settlement` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、工程联络单/任务、扣款原因、责任归属、扣款金额、币种、结算状态、责任依据、结算依据、确认人和来源。
 - `query_full_outsource_context` 新增 `analysis.supplier_deduction_settlements`，并将 `has_confirmed_supplier_deduction`、`has_settled_supplier_deduction`、`has_pending_supplier_deduction` 纳入派生状态。
 - 存在扣款/费用影响线索但没有责任已确认的供应商扣款结算依据时，工具会提示不能仅凭延期或质量问题自动认定供应商扣款；责任已确认但未结算时提示同步供应商结算或财务依据。
+- `prepare_supplier_deduction_settlement` 已提供对话内办理入口，用户本人确认后才写入责任已确认或已结算扣款记录；不执行收付款，不自动抵扣供应商付款。
 - PostgreSQL `moldpilot_test` 验证覆盖责任确认、已结算扣款、合同权限下可见扣款依据、订单权限隔离和整套委外上下文汇总。
 - FR-076 仍为 NOT_VERIFIED：真实责任确认流程、整改/复验关闭、客户对我方扣款与我方对供应商扣款联动、财务结算写入和 ERP 财务联调尚未完成正式验收。
 

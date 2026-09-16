@@ -439,3 +439,119 @@ def test_prepare_supplier_payment_rejects_duplicate_reference_and_reservation_ov
     finally:
         engine.dispose()
 
+
+def test_prepare_supplier_deduction_settlement_requires_confirmation_then_records():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-DEDUCT-PREPARE")
+            supplier = db.scalar(select(m.Supplier).where(m.Supplier.code == "FIN-SUP"))
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "full_outsource_contract"))
+            case = db.scalar(select(m.ContactCase).where(m.ContactCase.project_id == p.id))
+            task = db.scalar(select(m.ContactTask).where(m.ContactTask.case_id == case.id))
+            conversation = m.Conversation(user_id=admin.id, title="供应商扣款结算")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记供应商扣款结算依据", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            args = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "supplier_id": supplier.id,
+                "contract_subject_id": contract.id,
+                "contact_case_id": case.id,
+                "contact_task_id": task.id,
+                "reason": "供应商质量延期责任扣款",
+                "responsibility": "SUPPLIER",
+                "deduction_amount": "3000.00",
+                "currency": "CNY",
+                "status": "SETTLED",
+                "responsibility_evidence": "质量复验记录与责任确认单",
+                "settlement_reference": "SETTLE-PREPARE-001",
+                "settlement_evidence": "供应商结算扣款单",
+                "source_ref": "DEDUCT-PREPARE-001",
+            }
+        schema = tool_schema("prepare_supplier_deduction_settlement")["function"]["parameters"]
+        assert {"project_id", "supplier_id", "deduction_amount", "responsibility", "status"} <= set(schema["properties"])
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            evidence = execute(db, admin, "prepare_supplier_deduction_settlement", args, run=run)
+            assert evidence["proposal"]["kind"] == "supplier_deduction_settlement"
+            assert evidence["proposal"]["display"]["结算单号"] == "SETTLE-PREPARE-001"
+            assert db.scalar(select(m.SupplierDeductionSettlement).where(m.SupplierDeductionSettlement.source_ref == "DEDUCT-PREPARE-001")) is None
+            step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_deduction_settlement", request_hash="hash", result=evidence)
+            db.add(step)
+            db.flush()
+            payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+            intent = business.create_intent(db, admin, "finance.execute", step.id, payload)
+            receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            assert receipt["status"] == "CONFIRMED"
+            row = db.get(m.SupplierDeductionSettlement, receipt["supplier_deduction_settlement_id"])
+            assert row.status == "SETTLED"
+            assert row.responsibility == "SUPPLIER"
+            assert row.deduction_amount == Decimal("3000.00")
+            assert row.settled_by == admin.id
+            assert row.settled_at is not None
+    finally:
+        engine.dispose()
+
+
+def test_prepare_supplier_deduction_settlement_rejects_duplicate_and_incomplete_settlement():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-DEDUCT-BLOCK")
+            supplier = db.scalar(select(m.Supplier).where(m.Supplier.code == "FIN-SUP"))
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "full_outsource_contract"))
+            db.add(m.SupplierDeductionSettlement(
+                project_id=p.id,
+                supplier_id=supplier.id,
+                contract_subject_id=contract.id,
+                reason="供应商质量延期责任扣款",
+                responsibility="SUPPLIER",
+                deduction_amount=Decimal("1000.00"),
+                currency="CNY",
+                status="RESPONSIBILITY_CONFIRMED",
+                responsibility_evidence="既有责任确认单",
+                source_system="MANUAL",
+                source_ref="DEDUCT-DUP-001",
+                confirmed_by=admin.id,
+            ))
+            conversation = m.Conversation(user_id=admin.id, title="供应商扣款阻断")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记供应商扣款", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            base = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "supplier_id": supplier.id,
+                "contract_subject_id": contract.id,
+                "reason": "供应商质量延期责任扣款",
+                "responsibility": "SUPPLIER",
+                "deduction_amount": "1000.00",
+                "currency": "CNY",
+                "status": "RESPONSIBILITY_CONFIRMED",
+                "responsibility_evidence": "责任确认单",
+                "source_ref": "DEDUCT-DUP-001",
+            }
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            with pytest.raises(Exception) as duplicate:
+                execute(db, admin, "prepare_supplier_deduction_settlement", base, run=run)
+            assert getattr(duplicate.value, "code", None) == "DEDUCTION_DUPLICATE_SOURCE"
+            incomplete = {**base, "source_ref": "DEDUCT-NEW-001", "status": "SETTLED", "settlement_reference": "SETTLE-MISSING-EVIDENCE"}
+            with pytest.raises(Exception) as invalid:
+                execute(db, admin, "prepare_supplier_deduction_settlement", incomplete, run=run)
+            assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
+    finally:
+        engine.dispose()
+

@@ -1221,10 +1221,11 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索",
+        "prepare_supplier_deduction_settlement 基于真实项目版本、供应商、委外合同或工程联络线索准备供应商扣款责任/结算依据确认卡片，本人确认后才写入 SupplierDeductionSettlement，不执行收付款或自动抵扣",
         "full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；责任确认、复验关闭、客户对我方/我方对供应商扣款联动及结算写入尚未验收"
+        "tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；tests/test_finance_context_tools.py 覆盖供应商扣款结算 proposal 不直接写库、本人确认后写入、重复来源阻断和已结算缺少依据阻断；真实复验关闭、客户对我方/我方对供应商扣款联动及 ERP/财务结算写入尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

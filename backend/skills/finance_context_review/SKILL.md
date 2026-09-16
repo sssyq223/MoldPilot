@@ -14,3 +14,5 @@
 当用户明确要求登记客户实际回款，且 `query_finance_context` 已返回真实项目、项目版本、已生效销售合同和收款节点时，才能调用 `prepare_customer_receipt_confirmation` 准备确认卡片；该工具只生成 proposal，必须由用户本人核对卡片后才写入客户实际回款台账。
 
 当用户明确要求登记供应商实际付款，且 `query_finance_context` 已返回真实项目、项目版本、已审批供应商付款申请和授权余额时，才能调用 `prepare_supplier_payment_confirmation` 准备确认卡片；该工具只生成 proposal，必须由用户本人核对卡片后才写入实际付款确认记录并扣减授权余额，不执行银行转账。
+
+当用户明确要求登记供应商扣款责任或结算依据，且上下文中已有供应商、委外合同或工程联络扣款线索以及正式责任/结算依据时，才能调用 `prepare_supplier_deduction_settlement` 准备确认卡片；该工具只生成 proposal，必须由用户本人核对卡片后才写入供应商扣款责任/结算记录，不执行收付款或自动抵扣。

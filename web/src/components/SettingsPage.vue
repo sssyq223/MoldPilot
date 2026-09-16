@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2,MessageSquare,RotateCcw} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName} from '../uiText'

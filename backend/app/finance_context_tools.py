@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import Field, ValidationError
@@ -19,6 +20,11 @@ from .security import current_user
 
 
 FINANCE_KINDS = {"sales_contract", "full_outsource_contract", "supplier_payment", "finance_correction", "project_close", "internal_start"}
+FINANCE_PROPOSAL_TOOLS = {
+    "prepare_customer_receipt_confirmation",
+    "prepare_supplier_payment_confirmation",
+    "prepare_supplier_deduction_settlement",
+}
 
 
 class CustomerReceiptProposalInput(StrictModel):
@@ -44,6 +50,24 @@ class SupplierPaymentConfirmationProposalInput(StrictModel):
     paid_date: date
     reference: str = Field(min_length=1, max_length=100)
     evidence: str = Field(min_length=1, max_length=4000)
+
+
+class SupplierDeductionSettlementProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str | None = Field(default=None, max_length=36)
+    contact_case_id: str | None = Field(default=None, max_length=36)
+    contact_task_id: str | None = Field(default=None, max_length=36)
+    reason: str = Field(min_length=1, max_length=4000)
+    responsibility: Literal["CUSTOMER", "SUPPLIER", "INTERNAL", "SHARED"]
+    deduction_amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    status: Literal["RESPONSIBILITY_CONFIRMED", "SETTLED"]
+    responsibility_evidence: str = Field(min_length=1, max_length=4000)
+    settlement_reference: str | None = Field(default=None, max_length=120)
+    settlement_evidence: str | None = Field(default=None, max_length=4000)
+    source_ref: str | None = Field(default=None, max_length=120)
 
 
 def _strength(value, needle):
@@ -480,6 +504,10 @@ def supplier_payment_confirmation_schema():
     return SupplierPaymentConfirmationProposalInput.model_json_schema()
 
 
+def supplier_deduction_settlement_schema():
+    return SupplierDeductionSettlementProposalInput.model_json_schema()
+
+
 def parse_customer_receipt(arguments):
     try:
         return CustomerReceiptProposalInput.model_validate(arguments or {})
@@ -494,6 +522,18 @@ def parse_supplier_payment_confirmation(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "供应商实付确认参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
 
 
+def parse_supplier_deduction_settlement(arguments):
+    try:
+        data = SupplierDeductionSettlementProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商扣款结算参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
+    if data.status == "SETTLED" and (not data.settlement_reference or not data.settlement_evidence):
+        raise DomainError("INVALID_TOOL_INPUT", "供应商扣款已结算必须填写结算单号和结算依据")
+    if data.status == "RESPONSIBILITY_CONFIRMED" and data.settlement_reference:
+        raise DomainError("INVALID_TOOL_INPUT", "仅确认责任时不要填写结算单号；结算完成后再登记已结算依据")
+    return data
+
+
 def _receipt_payload(data: CustomerReceiptProposalInput):
     return CustomerReceipt(amount=data.amount, currency=data.currency, received_date=data.received_date,
         reference=data.reference, evidence=data.evidence, stage_id=data.stage_id,
@@ -503,6 +543,112 @@ def _receipt_payload(data: CustomerReceiptProposalInput):
 def _supplier_payment_payload(data: SupplierPaymentConfirmationProposalInput):
     return Payment(amount=data.amount, currency=data.currency, paid_date=data.paid_date,
         reference=data.reference, evidence=data.evidence)
+
+
+def _deduction_scope(project_id):
+    return {"project_id": project_id, "category": "outsource"}
+
+
+def preview_supplier_deduction_settlement(db, user, data: SupplierDeductionSettlementProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    require(db, user, "project.read", {"project_id": project.id})
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    scope = _deduction_scope(project.id)
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "finance.confirm", scope)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier:
+        raise DomainError("NOT_FOUND", "供应商不存在或不属于当前可见范围", 404)
+    contract_number = "未关联委外合同"
+    if data.contract_subject_id:
+        contract = db.get(m.BusinessSubject, data.contract_subject_id)
+        if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract":
+            raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+        if contract.status != "EFFECTIVE":
+            raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商扣款结算只能关联已生效整套委外合同", 409)
+        detail = db.get(m.ContractDetail, contract.id)
+        if not detail or detail.supplier_id != supplier.id:
+            raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与扣款供应商不一致", 409)
+        contract_number = detail.contract_number
+    contact_title = "未关联工程联络单"
+    task_title = "未关联事项"
+    if data.contact_case_id:
+        case = db.get(m.ContactCase, data.contact_case_id)
+        if not case or case.project_id != project.id:
+            raise DomainError("CONTACT_NOT_FOUND", "工程联络单不存在或不属于该项目", 404)
+        require(db, user, "contact.read", {"project_id": project.id, "category": case.category})
+        contact_title = case.title
+        if data.contact_task_id:
+            task = db.get(m.ContactTask, data.contact_task_id)
+            if not task or task.case_id != case.id:
+                raise DomainError("CONTACT_TASK_NOT_FOUND", "工程联络事项不存在或不属于该联络单", 404)
+            task_title = task.title
+    elif data.contact_task_id:
+        raise DomainError("CONTACT_REQUIRED", "关联工程联络事项时必须同时提供工程联络单 ID")
+    duplicate = None
+    if data.source_ref:
+        duplicate = db.scalar(select(m.SupplierDeductionSettlement.id).where(
+            m.SupplierDeductionSettlement.project_id == project.id,
+            m.SupplierDeductionSettlement.supplier_id == supplier.id,
+            m.SupplierDeductionSettlement.reason == data.reason,
+            m.SupplierDeductionSettlement.source_ref == data.source_ref,
+        ))
+    if duplicate:
+        raise DomainError("DEDUCTION_DUPLICATE_SOURCE", "该供应商扣款来源已登记", 409)
+    if data.settlement_reference and db.scalar(select(m.SupplierDeductionSettlement.id).where(
+        m.SupplierDeductionSettlement.project_id == project.id,
+        m.SupplierDeductionSettlement.settlement_reference == data.settlement_reference,
+    )):
+        raise DomainError("DEDUCTION_DUPLICATE_SETTLEMENT", "该供应商扣款结算单号已登记", 409)
+    display = {
+        "操作": "登记供应商扣款责任/结算依据",
+        "项目": project.code+" · "+project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "关联合同": contract_number,
+        "工程联络单": contact_title,
+        "工程联络事项": task_title,
+        "扣款原因": data.reason,
+        "责任归属": data.responsibility,
+        "扣款金额": str(data.deduction_amount)+" "+data.currency,
+        "状态": "已结算" if data.status == "SETTLED" else "责任已确认",
+        "责任依据": data.responsibility_evidence,
+        "结算单号": data.settlement_reference or "未结算",
+        "结算依据": data.settlement_evidence or "未结算",
+        "来源引用": data.source_ref or "未填写",
+        "说明": "本人确认后仅登记供应商扣款责任和/或结算依据；不执行收付款，不自动抵扣供应商付款，不代表客户对我方扣款已完成。",
+    }
+    return display
+
+
+def create_supplier_deduction_settlement(db, user, data: SupplierDeductionSettlementProposalInput):
+    preview_supplier_deduction_settlement(db, user, data)
+    row = m.SupplierDeductionSettlement(
+        project_id=data.project_id,
+        supplier_id=data.supplier_id,
+        contract_subject_id=data.contract_subject_id,
+        contact_case_id=data.contact_case_id,
+        contact_task_id=data.contact_task_id,
+        reason=data.reason,
+        responsibility=data.responsibility,
+        deduction_amount=data.deduction_amount,
+        currency=data.currency,
+        status=data.status,
+        settlement_reference=data.settlement_reference,
+        responsibility_evidence=data.responsibility_evidence,
+        settlement_evidence=data.settlement_evidence or "",
+        confirmed_by=user.id,
+        settled_by=user.id if data.status == "SETTLED" else None,
+        settled_at=now() if data.status == "SETTLED" else None,
+        source_system="MANUAL",
+        source_ref=data.source_ref,
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def preview_customer_receipt(db, user, data: CustomerReceiptProposalInput):
@@ -574,7 +720,7 @@ def preview_supplier_payment_confirmation(db, user, data: SupplierPaymentConfirm
 
 
 def execute_finance_tool(db, user, key, arguments, run=None):
-    if key not in {"prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation"}:
+    if key not in FINANCE_PROPOSAL_TOOLS:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
     if key == "prepare_customer_receipt_confirmation":
         data = parse_customer_receipt(arguments)
@@ -584,12 +730,20 @@ def execute_finance_tool(db, user, key, arguments, run=None):
             "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
         limitations = ["仅准备客户实际回款登记建议；本人确认后才写入回款确认台账，不执行收款、不开票、不计算收入利润。"]
     else:
-        data = parse_supplier_payment_confirmation(arguments)
-        _, display = preview_supplier_payment_confirmation(db, user, data)
-        proposal = {"kind": "supplier_payment_confirmation", "action": "confirm_supplier_payment",
-            "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
-            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
-        limitations = ["仅准备供应商实际付款登记建议；本人确认后才写入付款确认记录，不执行银行转账，不代表全部付款完成。"]
+        if key == "prepare_supplier_payment_confirmation":
+            data = parse_supplier_payment_confirmation(arguments)
+            _, display = preview_supplier_payment_confirmation(db, user, data)
+            proposal = {"kind": "supplier_payment_confirmation", "action": "confirm_supplier_payment",
+                "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+                "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+            limitations = ["仅准备供应商实际付款登记建议；本人确认后才写入付款确认记录，不执行银行转账，不代表全部付款完成。"]
+        else:
+            data = parse_supplier_deduction_settlement(arguments)
+            display = preview_supplier_deduction_settlement(db, user, data)
+            proposal = {"kind": "supplier_deduction_settlement", "action": "confirm_supplier_deduction_settlement",
+                "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+                "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+            limitations = ["仅准备供应商扣款责任/结算依据登记建议；本人确认后才写入，不执行收付款或自动抵扣。"]
     return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
         "limitations": limitations}
 
@@ -605,7 +759,7 @@ def source(db, user, step_id):
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
     proposal = step.result.get("proposal")
-    if step.tool not in available_tools(db, user) or step.tool not in {"prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation"} or not proposal:
+    if step.tool not in available_tools(db, user) or step.tool not in FINANCE_PROPOSAL_TOOLS or not proposal:
         raise DomainError("TOOL_FORBIDDEN", "操作能力不可用", 403)
     return proposal
 
@@ -620,6 +774,9 @@ def validate_intent(db, user, payload):
     elif proposal.get("kind") == "supplier_payment_confirmation":
         data = parse_supplier_payment_confirmation(proposal["input"])
         _, display = preview_supplier_payment_confirmation(db, user, data)
+    elif proposal.get("kind") == "supplier_deduction_settlement":
+        data = parse_supplier_deduction_settlement(proposal["input"])
+        display = preview_supplier_deduction_settlement(db, user, data)
     else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
@@ -635,10 +792,14 @@ def confirm(db, user, payload):
         result = execute_command(db, user, "customer_receipt.confirm", data.contract_subject_id, receipt.model_dump(mode="json"))
         return {"project_id": data.project_id, "contract_subject_id": data.contract_subject_id,
             "customer_receipt_id": result["customer_receipt_id"], "action": "customer_receipt_confirm", "status": "CONFIRMED"}
-    payment = _supplier_payment_payload(data)
-    result = execute_command(db, user, "finance.confirm", data.payment_subject_id, payment.model_dump(mode="json"))
-    return {"project_id": data.project_id, "payment_subject_id": data.payment_subject_id,
-        "payment_confirmation_id": result["payment_confirmation_id"], "action": "supplier_payment_confirm", "status": "CONFIRMED"}
+    if proposal.get("kind") == "supplier_payment_confirmation":
+        payment = _supplier_payment_payload(data)
+        result = execute_command(db, user, "finance.confirm", data.payment_subject_id, payment.model_dump(mode="json"))
+        return {"project_id": data.project_id, "payment_subject_id": data.payment_subject_id,
+            "payment_confirmation_id": result["payment_confirmation_id"], "action": "supplier_payment_confirm", "status": "CONFIRMED"}
+    settlement = create_supplier_deduction_settlement(db, user, data)
+    return {"project_id": data.project_id, "supplier_deduction_settlement_id": settlement.id,
+        "action": "supplier_deduction_settlement_confirm", "status": "CONFIRMED"}
 
 
 def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
@@ -698,6 +859,8 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             limitations.append("可在取得真实销售合同和收款节点后准备客户实际回款确认；该操作仍需本人核对卡片后才写入。")
         if "prepare_supplier_payment_confirmation" in allowed_tools:
             limitations.append("可在取得已审批供应商付款申请和授权余额后准备供应商实际付款确认；该操作仍需本人核对卡片后才写入。")
+        if "prepare_supplier_deduction_settlement" in allowed_tools:
+            limitations.append("可在取得供应商、委外合同、工程联络扣款线索和责任/结算依据后准备供应商扣款结算确认；该操作仍需本人核对卡片后才写入。")
         return {
             "resolution": "RESOLVED",
             "data": [
