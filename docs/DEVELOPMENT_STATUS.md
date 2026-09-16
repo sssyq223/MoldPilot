@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：Redis 消息链路只读核对（2026-09-16）
+
+- `query_operations_readiness_context` 的 Redis 核对从“只看 URL 是否配置”升级为只读运行探测：执行 `PING`、`INFO server`、`XINFO STREAM` 和 `XINFO GROUPS`，返回 Redis 是否可达、服务端版本、业务事件 stream、通知消费组是否存在。
+- 探测不会创建 stream/group，不会发布、消费或 ACK 任何消息；不可达时只返回错误类型，不暴露 Redis URL、密码或服务端响应正文。
+- 可用性 gate 的当前证据现在会区分数据库可读与 Redis 消息链路未就绪，避免把配置了 `MOLD_REDIS_URL` 误判为消息链路可用。
+- 本机实际核对仍需以当前运行环境为准；若返回 `REDIS_UNREACHABLE`、`REDIS_REACHABLE_STREAM_NOT_INITIALIZED` 或 `REDIS_REACHABLE_STREAM_EXISTS_GROUP_MISSING`，FR-118 的 Redis/消息运行验收继续保持 NOT_VERIFIED。
+
 ## 持续开发：日志保留期限运行基线（2026-09-16）
 
 - 新增运行配置 `MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS`；默认值为 `0`，表示尚未确认，不会被当作交付验收通过。

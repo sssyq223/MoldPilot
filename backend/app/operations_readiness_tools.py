@@ -249,6 +249,67 @@ def _log_retention_status(db, cfg) -> dict:
     }
 
 
+def _redis_status(value: str | None) -> dict:
+    if not _configured(value):
+        return {
+            "status": "NOT_CONFIGURED",
+            "probe_performed": False,
+            "note": "未配置 Redis URL；消息流和缓存不能作为运行交付就绪项。",
+        }
+    try:
+        from redis import Redis
+        from redis.exceptions import ResponseError
+
+        from .message_worker import GROUP, STREAM
+
+        client = Redis.from_url(value, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
+        try:
+            client.ping()
+            server_info = client.info("server")
+            stream_exists = True
+            stream_length = None
+            groups: list[str] = []
+            try:
+                stream_info = client.xinfo_stream(STREAM)
+                stream_length = stream_info.get("length")
+                groups = [item.get("name") for item in client.xinfo_groups(STREAM) if item.get("name")]
+            except ResponseError:
+                stream_exists = False
+            stream_group_ready = GROUP in groups
+            if stream_group_ready:
+                status = "REDIS_REACHABLE_STREAM_GROUP_READY"
+            elif stream_exists:
+                status = "REDIS_REACHABLE_STREAM_EXISTS_GROUP_MISSING"
+            else:
+                status = "REDIS_REACHABLE_STREAM_NOT_INITIALIZED"
+            return {
+                "status": status,
+                "probe_performed": True,
+                "reachable": True,
+                "server_version": server_info.get("redis_version"),
+                "mode": server_info.get("redis_mode"),
+                "stream": {
+                    "key": STREAM,
+                    "exists": stream_exists,
+                    "length": stream_length,
+                    "expected_group": GROUP,
+                    "group_ready": stream_group_ready,
+                    "groups": groups,
+                },
+                "note": "只读执行 PING/INFO/XINFO；不会创建 stream/group，不会发布或消费消息。",
+            }
+        finally:
+            client.close()
+    except Exception as error:  # pragma: no cover - depends on local Redis availability
+        return {
+            "status": "REDIS_UNREACHABLE",
+            "probe_performed": True,
+            "reachable": False,
+            "error_type": type(error).__name__,
+            "note": "Redis 连接不可达或探测失败；返回错误类型，不包含 Redis URL、密码或服务端响应正文。",
+        }
+
+
 def _counts(db, include: bool) -> dict:
     if not include:
         return {"included": False}
@@ -269,10 +330,11 @@ def _counts(db, include: bool) -> dict:
     }
 
 
-def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict) -> list[dict]:
+def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict, redis_status: dict) -> list[dict]:
     s3_ready = cfg.file_backend == "s3" and _configured(cfg.file_s3_bucket) and _configured(cfg.file_s3_endpoint)
     backup_tooling_ready = backup_restore.get("status") == "BACKUP_TOOLING_READY"
     log_policy_ready = log_retention.get("policy_fully_configured") is True
+    redis_ready = redis_status.get("status") == "REDIS_REACHABLE_STREAM_GROUP_READY"
     return [
         {
             "key": "deployment_topology",
@@ -299,7 +361,7 @@ def _gates(cfg, model_cfg, backup_restore: dict, log_retention: dict) -> list[di
             "key": "availability",
             "name": "可用性",
             "confirmed": False,
-            "current_evidence": "数据库健康检查可读；正式可用性目标、监控和告警未验收。",
+            "current_evidence": "数据库健康检查可读；Redis 消息 stream 和消费组已可读；正式可用性目标、监控和告警未验收。" if redis_ready else "数据库健康检查可读；Redis 消息 stream 或消费组尚未确认可用；正式可用性目标、监控和告警未验收。",
             "required_test": "确认可用性口径、健康检查、进程守护、告警、故障切换和人工降级预案。",
         },
         {
@@ -345,7 +407,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     model_cfg = model_settings()
     backup_restore = _backup_restore_status()
     log_retention = _log_retention_status(db, cfg)
-    gates = _gates(cfg, model_cfg, backup_restore, log_retention)
+    redis_status = _redis_status(cfg.redis_url)
+    gates = _gates(cfg, model_cfg, backup_restore, log_retention, redis_status)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
@@ -364,6 +427,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         warnings.append("当前备份/恢复工具链未完整就绪；请安装 PostgreSQL 客户端工具或提供 pg_dump/pg_restore 路径后再做备份恢复演练。")
     if not log_retention.get("policy_fully_configured"):
         warnings.append("当前日志保留期限尚未全部配置；请明确审计、应用访问和模型调用日志的保留天数、脱敏、归档和删除策略。")
+    if redis_status.get("status") != "REDIS_REACHABLE_STREAM_GROUP_READY":
+        warnings.append("当前 Redis 消息链路未达到运行就绪：需要 Redis 可达、业务事件 stream 存在且通知消费组已初始化。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -380,8 +445,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                 },
                 "redis": {
                     **_safe_url(cfg.redis_url),
-                    "status": "CONFIGURED_NOT_PROBED" if _configured(cfg.redis_url) else "NOT_CONFIGURED",
-                    "note": "避免在只读工具中制造外部副作用；正式验收需单独验证 Redis 连接、重试和死信。",
+                    **redis_status,
                 },
                 "file_storage": {
                     "backend": cfg.file_backend,

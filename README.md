@@ -60,6 +60,8 @@ $env:PYTHONPATH='backend'
 
 日志保留期限也通过 `.env` 显式配置。`MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS` 默认为 `0`，表示尚未确认，不会被运行就绪工具视为已验收。设置具体天数后，仍需补充日志采集位置、脱敏、归档、检索和删除策略的验收证据。
 
+运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。
