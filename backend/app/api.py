@@ -569,6 +569,13 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     db.commit(); return result
 
 
+@app.post("/api/business/command-intents")
+def command_intent(data: s.CommandIntentInput, user=Depends(current_user), db=Depends(get_db)):
+    result = business.create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
+    db.commit()
+    return result
+
+
 @app.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
 def confirm_plan_department(confirmation_id: str, data: s.PlanDepartmentConfirmationInput,
                             user=Depends(current_user), db=Depends(get_db)):
@@ -784,3 +791,5 @@ from .quote_tools import router as quote_acceptance_proposal_router
 app.include_router(quote_acceptance_proposal_router)
 from .contract_tools import router as contract_proposal_router
 app.include_router(contract_proposal_router)
+from .finance_context_tools import router as finance_proposal_router
+app.include_router(finance_proposal_router)

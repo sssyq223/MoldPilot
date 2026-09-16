@@ -2,8 +2,11 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 
-from app import models as m
-from app.authorization import PERMISSIONS
+import pytest
+from sqlalchemy import select
+
+from app import bpm, business, models as m
+from app.authorization import PERMISSIONS, fingerprint
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
@@ -189,7 +192,7 @@ def test_finance_context_schema_and_summary():
             assert analysis["customer_receipt_summary"]["by_stage"][0]["stage_name"] == "DFM认证款"
             assert analysis["supplier_payment_summary"]["confirmed_totals"] == [{"currency": "CNY", "amount": "8000.00"}]
             assert "审批通过不等于已付款" in "".join(analysis["warnings"])
-            assert "实际回款确认" not in "".join(result["limitations"])
+            assert "未返回：客户实际回款确认" not in "".join(result["limitations"])
             assert "不同事实" in "".join(result["limitations"])
     finally:
         engine.dispose()
@@ -252,6 +255,99 @@ def test_finance_context_reports_multiple_candidates_without_deciding():
             assert result["resolution"] == "MULTIPLE_CANDIDATES"
             assert {row["code"] for row in result["data"]} == {"FIN-A", "FIN-B"}
             assert "请使用项目 ID" in "".join(result["limitations"])
+    finally:
+        engine.dispose()
+
+
+def test_prepare_customer_receipt_requires_confirmation_then_records_receipt():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-RCPT-PREPARE", with_customer_receipt=False)
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "sales_contract"))
+            stage = db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id == contract.id))
+            conversation = m.Conversation(user_id=admin.id, title="客户回款确认")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记客户实际回款", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            args = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "contract_subject_id": contract.id,
+                "stage_id": stage.id,
+                "amount": "12000.00",
+                "currency": "CNY",
+                "received_date": date.today().isoformat(),
+                "reference": "RCPT-PREPARE-001",
+                "evidence": "财务银行回单",
+                "source_ref": "BANK-PREPARE-001",
+                "note": "客户分次回款",
+            }
+        schema = tool_schema("prepare_customer_receipt_confirmation")["function"]["parameters"]
+        assert {"project_id", "project_version", "contract_subject_id", "amount", "reference"} <= set(schema["properties"])
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            evidence = execute(db, admin, "prepare_customer_receipt_confirmation", args, run=run)
+            assert evidence["proposal"]["kind"] == "customer_receipt"
+            assert evidence["proposal"]["requires_approval"] is False
+            assert evidence["proposal"]["display"]["银行流水/凭证号"] == "RCPT-PREPARE-001"
+            assert db.scalar(select(m.CustomerReceiptConfirmation).where(m.CustomerReceiptConfirmation.reference == "RCPT-PREPARE-001")) is None
+            step = m.Step(run_id=run.id, sequence=0, tool="prepare_customer_receipt_confirmation", request_hash="hash", result=evidence)
+            db.add(step)
+            db.flush()
+            payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+            intent = business.create_intent(db, admin, "finance.execute", step.id, payload)
+            receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            assert receipt["status"] == "CONFIRMED"
+            row = db.get(m.CustomerReceiptConfirmation, receipt["customer_receipt_id"])
+            assert row.reference == "RCPT-PREPARE-001"
+            assert row.amount == Decimal("12000.00")
+            assert row.stage_id == args["stage_id"]
+    finally:
+        engine.dispose()
+
+
+def test_prepare_customer_receipt_rejects_duplicate_reference_and_stage_overflow():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-RCPT-BLOCK", with_customer_receipt=True)
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "sales_contract"))
+            stage = db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id == contract.id))
+            conversation = m.Conversation(user_id=admin.id, title="客户回款阻断")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备登记客户实际回款", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            base = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "contract_subject_id": contract.id,
+                "stage_id": stage.id,
+                "amount": "1000.00",
+                "currency": "CNY",
+                "received_date": date.today().isoformat(),
+                "reference": "RCPT-SECRET-FIN-RCPT-BLOCK",
+                "evidence": "重复银行回单",
+            }
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            with pytest.raises(Exception) as duplicate:
+                execute(db, admin, "prepare_customer_receipt_confirmation", base, run=run)
+            assert getattr(duplicate.value, "code", None) == "RECEIPT_DUPLICATE"
+            overflow = {**base, "reference": "RCPT-OVERFLOW-001", "amount": "20000.01"}
+            with pytest.raises(Exception) as over:
+                execute(db, admin, "prepare_customer_receipt_confirmation", overflow, run=run)
+            assert getattr(over.value, "code", None) == "RECEIPT_STAGE_OVERFLOW"
     finally:
         engine.dispose()
 

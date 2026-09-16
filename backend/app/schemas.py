@@ -115,6 +115,12 @@ class ConfirmationInput(StrictModel):
     challenge: str = Field(min_length=32, max_length=200)
 
 
+class CommandIntentInput(StrictModel):
+    action: str = Field(min_length=1, max_length=100)
+    resource_id: str = Field(min_length=1, max_length=36)
+    payload: dict = Field(default_factory=dict)
+
+
 class PlanDepartmentConfirmationInput(StrictModel):
     expected_version: int = Field(ge=1)
     note: str = Field(min_length=1, max_length=1000)

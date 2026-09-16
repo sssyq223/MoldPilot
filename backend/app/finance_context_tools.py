@@ -1,16 +1,38 @@
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from fastapi import APIRouter, Depends
+from pydantic import Field, ValidationError
 from sqlalchemy import select
 
 from . import models as m
-from .authorization import access, predicate, select_fields
-from .db import now
+from .authorization import access, fingerprint, predicate, require, select_fields
+from .bpm import content_hash
+from .confirmation_policy import proposal_confirmation_policy
+from .db import get_db, now
+from .domain_commands import CustomerReceipt, validate_customer_receipt
 from .errors import DomainError
 from .project_dossier import ProjectDossierInput
+from .schemas import StrictModel
+from .security import current_user
 
 
 FINANCE_KINDS = {"sales_contract", "full_outsource_contract", "supplier_payment", "finance_correction", "project_close", "internal_start"}
+
+
+class CustomerReceiptProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    stage_id: str | None = Field(default=None, max_length=36)
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    received_date: date
+    reference: str = Field(min_length=1, max_length=100)
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_ref: str | None = Field(default=None, max_length=120)
+    note: str | None = Field(default=None, max_length=4000)
 
 
 def _strength(value, needle):
@@ -439,6 +461,103 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
     }
 
 
+def customer_receipt_schema():
+    return CustomerReceiptProposalInput.model_json_schema()
+
+
+def parse_customer_receipt(arguments):
+    try:
+        return CustomerReceiptProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "客户回款确认参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
+
+
+def _receipt_payload(data: CustomerReceiptProposalInput):
+    return CustomerReceipt(amount=data.amount, currency=data.currency, received_date=data.received_date,
+        reference=data.reference, evidence=data.evidence, stage_id=data.stage_id,
+        source_ref=data.source_ref, note=data.note)
+
+
+def preview_customer_receipt(db, user, data: CustomerReceiptProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "sales_contract.read", scope)
+    require(db, user, "customer_receipt.confirm", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    if not contract or contract.project_id != project.id:
+        raise DomainError("NOT_FOUND", "销售合同不存在或不属于该项目", 404)
+    payload = _receipt_payload(data)
+    detail, stage = validate_customer_receipt(db, contract, payload)
+    display = {
+        "操作": "登记客户实际回款确认",
+        "项目": project.code+" · "+project.name,
+        "项目版本": project.row_version,
+        "销售合同": detail.contract_number,
+        "收款节点": stage.name if stage else "未指定节点",
+        "回款金额": str(data.amount)+" "+data.currency,
+        "回款日期": data.received_date.isoformat(),
+        "银行流水/凭证号": data.reference,
+        "来源引用": data.source_ref or "未填写",
+        "依据": data.evidence,
+        "备注": data.note or "无",
+        "说明": "本人确认后仅登记财务已确认的客户实际回款事实；不代表开票、收入确认、项目关闭或 ERP 财务对账完成。",
+    }
+    return payload, display
+
+
+def execute_finance_tool(db, user, key, arguments, run=None):
+    if key != "prepare_customer_receipt_confirmation":
+        raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
+    data = parse_customer_receipt(arguments)
+    _, display = preview_customer_receipt(db, user, data)
+    proposal = {"kind": "customer_receipt", "action": "confirm_customer_receipt",
+        "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+        "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+    return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
+        "limitations": ["仅准备客户实际回款登记建议；本人确认后才写入回款确认台账，不执行收款、不开票、不计算收入利润。"]}
+
+
+def source(db, user, step_id):
+    from .tool_gateway import available_tools
+    step = db.get(m.Step, step_id)
+    run = db.get(m.Run, step.run_id) if step else None
+    if not run or run.user_id != user.id:
+        raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
+    if run.status not in {"RUNNING", "SUCCEEDED"}:
+        raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
+    if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
+        raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
+    proposal = step.result.get("proposal")
+    if step.tool not in available_tools(db, user) or step.tool != "prepare_customer_receipt_confirmation" or not proposal:
+        raise DomainError("TOOL_FORBIDDEN", "操作能力不可用", 403)
+    return proposal
+
+
+def validate_intent(db, user, payload):
+    proposal = source(db, user, payload["step_id"])
+    if content_hash(proposal) != payload["proposal_hash"]:
+        raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
+    data = parse_customer_receipt(proposal["input"])
+    _, display = preview_customer_receipt(db, user, data)
+    if content_hash(display) != content_hash(proposal["display"]):
+        raise DomainError("VERSION_CONFLICT", "项目、合同或回款资料已变化，请重新准备", 409)
+    return proposal, data
+
+
+def confirm(db, user, payload):
+    from .domain_commands import execute_command
+    _, data = validate_intent(db, user, payload)
+    receipt = _receipt_payload(data)
+    result = execute_command(db, user, "customer_receipt.confirm", data.contract_subject_id, receipt.model_dump(mode="json"))
+    return {"project_id": data.project_id, "contract_subject_id": data.contract_subject_id,
+        "customer_receipt_id": result["customer_receipt_id"], "action": "customer_receipt_confirm", "status": "CONFIRMED"}
+
+
 def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
     project, alternatives, truncated = _resolve(db, user, data)
     limitations = [
@@ -492,6 +611,8 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             limitations.append("未授权或未分配对应财务事实读取范围，未返回：" + "、".join(dict.fromkeys(skipped)))
         if "query_contact_cases" not in allowed_tools:
             limitations.append("未分配工程联络查询工具，未汇总设变费用、扣款或额外工时线索。")
+        if "prepare_customer_receipt_confirmation" in allowed_tools:
+            limitations.append("可在取得真实销售合同和收款节点后准备客户实际回款确认；该操作仍需本人核对卡片后才写入。")
         return {
             "resolution": "RESOLVED",
             "data": [
@@ -516,3 +637,27 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             "limitations": limitations + ["线索命中多个候选项目，请使用项目 ID 或更完整编号后再查询。"],
         }
     return {"resolution": "NOT_FOUND", "data": [], "source": "agent_db", "as_of": now().isoformat(), "limitations": limitations}
+
+
+router = APIRouter()
+
+
+@router.get("/api/finance-proposals/{step_id}")
+def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)):
+    source(db, user, step_id)
+    intent = db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id == user.id,
+        m.HumanIntent.action == "finance.execute", m.HumanIntent.resource_id == step_id,
+        m.HumanIntent.receipt["status"].as_string() == "CONFIRMED").order_by(m.HumanIntent.created_at.desc()))
+    return {"receipt": intent.receipt if intent else None}
+
+
+@router.post("/api/finance-proposals/{step_id}/intent")
+def intent(step_id: str, user=Depends(current_user), db=Depends(get_db)):
+    from .business import create_intent
+    proposal = source(db, user, step_id)
+    payload = {"step_id": step_id, "proposal_hash": content_hash(proposal)}
+    result = create_intent(db, user, "finance.execute", step_id, payload)
+    result["display"] = proposal["display"]
+    result["confirmation_policy"] = proposal.get("confirmation_policy")
+    db.commit()
+    return result

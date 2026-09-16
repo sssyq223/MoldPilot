@@ -991,8 +991,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 客户实际回款由财务人工确认，保存日期、金额、合同节点、凭证和对应项目关系。系统提醒或识别结果不替代实际回款确认；分次回款均留独立记录，并按确认关系汇总。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：CustomerReceiptConfirmation 保存客户实际回款的项目、销售合同、合同节点、金额、币种、回款日期、凭证、确认人、来源系统和来源引用；query_finance_context 将客户收款节点 customer_receivable_nodes 与实际回款 customer_receipt_summary 明确分离，按合同节点汇总 confirmed_totals/by_stage，并以 derived_status.has_customer_actual_receipt_ledger 标识真实回款台账是否存在
-- 验证证据：tests/test_finance_context_tools.py 覆盖客户实际回款确认进入上下文和按 DFM 认证节点汇总；同时覆盖有合同收款节点但无实际回款确认时 has_customer_actual_receipt_ledger 为 false 且输出告警；权限不足时不泄露回款引用或金额
+- 实现证据：CustomerReceiptConfirmation 保存客户实际回款的项目、销售合同、合同节点、金额、币种、回款日期、凭证、确认人、来源系统和来源引用；query_finance_context 将客户收款节点 customer_receivable_nodes 与实际回款 customer_receipt_summary 明确分离，按合同节点汇总 confirmed_totals/by_stage，并以 derived_status.has_customer_actual_receipt_ledger 标识真实回款台账是否存在；prepare_customer_receipt_confirmation 会话工具可基于真实项目版本、已生效销售合同和收款节点准备回款确认 proposal，本人核对确认后才写入客户回款确认台账，不执行收款、不开票、不计算收入利润
+- 验证证据：tests/test_finance_context_tools.py 覆盖客户实际回款确认进入上下文和按 DFM 认证节点汇总；同时覆盖有合同收款节点但无实际回款确认时 has_customer_actual_receipt_ledger 为 false 且输出告警；权限不足时不泄露回款引用或金额；新增覆盖回款确认 proposal 不直接写库、本人确认后写入 CustomerReceiptConfirmation、重复流水号阻断和节点累计超额阻断
 - 验收状态：NOT_VERIFIED
 
 ### FR-103

@@ -2,6 +2,14 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：客户实际回款确认对话办理闭环（2026-09-16）
+
+- 新增 `prepare_customer_receipt_confirmation` 工具，基于 `query_finance_context` 可见事实中的真实项目、项目版本、已生效销售合同和收款节点，准备客户实际回款确认 proposal。
+- 该能力不新增传统财务页面：仍在对话框内展示 proposal 卡片，用户本人确认后才写入 `CustomerReceiptConfirmation`；不会执行收款、不开票、不计算收入/利润，也不把合同节点、系统提醒或关闭清单当成实际回款。
+- 新增人工命令 `customer_receipt.confirm` 和通用 `/api/business/command-intents` 路由，复用 HumanIntent 二次确认；领域规则阻断非生效销售合同、非本合同节点、币种不一致、重复银行流水号、节点累计超额和合同累计超额。
+- 前端通用 proposal 卡片已映射 `customer_receipt` 到 `/api/finance-proposals`，人工命令名称补充“确认客户实际回款”。
+- 验证：`tests/test_finance_context_tools.py` 覆盖回款确认 proposal 不直接写库、本人确认后写入台账、重复流水号阻断和节点累计超额阻断；`tests/test_finance_context_tools.py tests/test_domains.py tests/test_manufacturing.py tests/test_agent_api.py tests/test_capability_catalog.py` 共 33 项通过，前端 `npm run build` 通过，内置浏览器加载工作台且控制台无 warn/error。
+
 ## 持续开发：合同登记对话办理闭环（2026-09-16）
 
 - 新增 `prepare_contract_record` 工具，基于 `query_contract_context` 返回的真实项目、项目版本和销售合同/整套委外合同审批流程，准备合同登记 proposal。

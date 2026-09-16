@@ -52,6 +52,16 @@ class Payment(Evidence):
     reference: str = Field(min_length=1,max_length=100)
 
 
+class CustomerReceipt(Evidence):
+    amount: Decimal = Field(gt=0,max_digits=18,decimal_places=2)
+    currency: str = Field(pattern=r'^[A-Z]{3}$')
+    received_date: date
+    reference: str = Field(min_length=1,max_length=100)
+    stage_id: str | None = None
+    source_ref: str | None = Field(default=None,max_length=120)
+    note: str | None = Field(default=None,max_length=4000)
+
+
 class TaskExecution(Evidence):
     action: Literal['START','DONE']
     actual_date: date
@@ -85,6 +95,7 @@ COMMANDS={
     'warehouse.configure':(m.Warehouse,WarehouseScope,'warehouse.configure'),
     'finance.condition':(m.PaymentStage,Evidence,'finance.condition'),
     'finance.confirm':(m.BusinessSubject,Payment,'finance.confirm'),
+    'customer_receipt.confirm':(m.BusinessSubject,CustomerReceipt,'customer_receipt.confirm'),
     'plan.execute':(m.PlanTask,TaskExecution,'plan.execute'),
     'change.implement':(m.ChangeImpact,Evidence,'change.implement'),
     'change.recheck':(m.ChangeImpact,Recheck,'change.recheck'),
@@ -122,6 +133,34 @@ def validate_command(db,user,key,resource_id,payload,lock=False):
     if isinstance(resource,m.PurchaseOrder):order_access(db,user,resource,permission)
     else:require(db,user,permission or f'{resource.kind}.execute',context)
     return resource,data,context
+
+
+def validate_customer_receipt(db, resource, data: CustomerReceipt):
+    if resource.kind!='sales_contract' or resource.status!='EFFECTIVE':
+        raise DomainError('CONTRACT_NOT_EFFECTIVE','客户回款只能登记到已生效销售合同')
+    detail=db.get(m.ContractDetail,resource.id)
+    if not detail or detail.customer_id is None:
+        raise DomainError('CONTRACT_ROLE_INVALID','客户回款必须关联销售合同')
+    if detail.currency!=data.currency:
+        raise DomainError('CURRENCY_MISMATCH','回款币种必须与销售合同币种一致')
+    if db.scalar(select(m.CustomerReceiptConfirmation.id).where(m.CustomerReceiptConfirmation.reference==data.reference)):
+        raise DomainError('RECEIPT_DUPLICATE','该回款流水号已登记',409)
+    stage=None
+    if data.stage_id:
+        stage=db.get(m.PaymentStage,data.stage_id)
+        if not stage or stage.contract_id!=resource.id:
+            raise DomainError('STAGE_NOT_FOUND','回款节点不属于该销售合同',404)
+        if stage.currency!=data.currency:
+            raise DomainError('CURRENCY_MISMATCH','回款币种必须与收款节点币种一致')
+        stage_received=db.scalar(select(func.coalesce(func.sum(m.CustomerReceiptConfirmation.amount),0)).where(
+            m.CustomerReceiptConfirmation.stage_id==stage.id))
+        if stage_received+data.amount>stage.amount:
+            raise DomainError('RECEIPT_STAGE_OVERFLOW','累计回款超过该合同收款节点金额',409)
+    contract_received=db.scalar(select(func.coalesce(func.sum(m.CustomerReceiptConfirmation.amount),0)).where(
+        m.CustomerReceiptConfirmation.contract_subject_id==resource.id))
+    if contract_received+data.amount>detail.amount:
+        raise DomainError('RECEIPT_CONTRACT_OVERFLOW','累计回款超过销售合同金额',409)
+    return detail,stage
 
 
 def execute_command(db,user,key,resource_id,payload):
@@ -184,6 +223,11 @@ def execute_command(db,user,key,resource_id,payload):
         if detail.currency!=data.currency or data.amount>detail.reservation:raise DomainError('PAYMENT_OVERFLOW','币种不一致或实付超出本次授权余额',409)
         confirmation=m.PaymentConfirmation(request_id=resource.id,confirmed_by=user.id,**data.model_dump());db.add(confirmation);db.flush()
         detail.reservation-=data.amount;result['payment_confirmation_id']=confirmation.id
+    elif key=='customer_receipt.confirm':
+        validate_customer_receipt(db,resource,data)
+        receipt=m.CustomerReceiptConfirmation(project_id=resource.project_id,contract_subject_id=resource.id,
+            confirmed_by=user.id,source_system='MANUAL',**data.model_dump())
+        db.add(receipt);db.flush();result['customer_receipt_id']=receipt.id
     elif key=='plan.execute':
         if data.actual_date>now().date():raise DomainError('DATE_INVALID','实际执行日期不能在未来')
         plan=require_source(db,resource.plan_id,context['project_id'],{'project_plan','plan_change'})
