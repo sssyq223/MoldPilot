@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：PostgreSQL 备份工具链基线（2026-09-16）
+
+- 新增 `scripts/backup_postgres.py`，只读取本机 `.env`，拒绝 SQLite，默认将 PostgreSQL 逻辑备份写入 `.local/backups`，通过 `PGPASSWORD` 环境变量向 `pg_dump` 传递密码，不在控制台或命令参数中暴露数据库密码。
+- `--dry-run` 可在不生成备份文件的情况下核对数据库配置、目标库名和 PostgreSQL 客户端工具可用性；本机当前 dry-run 如实返回 `pg_dump_available=False`，因此不能把备份演练标记为完成。
+- `query_operations_readiness_context` 新增 `backup_restore`，只读返回备份脚本是否存在、`pg_dump` / `pg_restore` 是否可用、是否具备本机备份和隔离恢复演练的工具前提；工具链不完整时会写入 limitations。
+- FR-118 的备份频率和恢复目标门槛仍为未确认：还需要安装/指定 PostgreSQL 客户端工具，执行正式备份，准备隔离恢复库，记录 RTO/RPO 和对象存储/模型配置恢复证据。
+
 ## 持续开发：运行就绪工具接入 PostgreSQL/Navicat 基线（2026-09-16）
 
 - `query_operations_readiness_context` 的数据库核对结果新增 `baseline`，明确返回期望引擎 PostgreSQL、期望库名 `moldpilot`、当前配置库名、是否 SQLite、是否匹配交付库名和 `delivery_ready`。

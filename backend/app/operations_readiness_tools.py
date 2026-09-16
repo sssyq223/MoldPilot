@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from urllib.parse import urlsplit
 
 from pydantic import Field
@@ -183,6 +184,37 @@ def _migration_status(db) -> dict:
     return status
 
 
+def _tool_path(name: str) -> dict:
+    path = shutil.which(name)
+    return {
+        "name": name,
+        "available": bool(path),
+        "path_present": bool(path),
+    }
+
+
+def _backup_restore_status() -> dict:
+    backup_script = REPO_ROOT / "scripts" / "backup_postgres.py"
+    pg_dump = _tool_path("pg_dump")
+    pg_restore = _tool_path("pg_restore")
+    can_backup = backup_script.exists() and pg_dump["available"]
+    can_restore_rehearse = pg_restore["available"]
+    return {
+        "backup_script": {
+            "path": "scripts/backup_postgres.py",
+            "exists": backup_script.exists(),
+            "mode": "logical_pg_dump_custom_format",
+            "default_output_dir": ".local/backups",
+        },
+        "pg_dump": pg_dump,
+        "pg_restore": pg_restore,
+        "can_run_local_backup": can_backup,
+        "can_rehearse_restore": can_restore_rehearse,
+        "status": "BACKUP_TOOLING_READY" if can_backup and can_restore_rehearse else "BACKUP_TOOLING_INCOMPLETE",
+        "note": "备份脚本只读取本机 .env，拒绝 SQLite，并通过 PGPASSWORD 环境变量传递密码；正式 RTO/RPO 仍需隔离恢复演练证明。",
+    }
+
+
 def _counts(db, include: bool) -> dict:
     if not include:
         return {"included": False}
@@ -203,8 +235,9 @@ def _counts(db, include: bool) -> dict:
     }
 
 
-def _gates(cfg, model_cfg) -> list[dict]:
+def _gates(cfg, model_cfg, backup_restore: dict) -> list[dict]:
     s3_ready = cfg.file_backend == "s3" and _configured(cfg.file_s3_bucket) and _configured(cfg.file_s3_endpoint)
+    backup_tooling_ready = backup_restore.get("status") == "BACKUP_TOOLING_READY"
     return [
         {
             "key": "deployment_topology",
@@ -238,14 +271,14 @@ def _gates(cfg, model_cfg) -> list[dict]:
             "key": "backup_frequency",
             "name": "备份频率",
             "confirmed": False,
-            "current_evidence": "未登记数据库、对象存储和模型配置的正式备份策略。",
+            "current_evidence": "已提供 PostgreSQL 逻辑备份脚本并检测到 pg_dump/pg_restore。" if backup_tooling_ready else "已提供 PostgreSQL 逻辑备份脚本；当前运行环境尚未同时检测到 pg_dump 和 pg_restore，且未登记正式备份策略。",
             "required_test": "确认全量/增量备份频率、保留周期、备份加密、备份介质和责任人。",
         },
         {
             "key": "restore_objective",
             "name": "恢复目标",
             "confirmed": False,
-            "current_evidence": "未登记 RTO/RPO 或恢复演练通过证据。",
+            "current_evidence": "已有备份/恢复客户端工具可用于演练，但未登记 RTO/RPO 或恢复演练通过证据。" if backup_tooling_ready else "未满足本机备份/恢复客户端工具基线，也未登记 RTO/RPO 或恢复演练通过证据。",
             "required_test": "在隔离环境恢复数据库、附件对象、模型配置和迁移版本，记录 RTO/RPO。",
         },
         {
@@ -275,7 +308,8 @@ def _gates(cfg, model_cfg) -> list[dict]:
 def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
     model_cfg = model_settings()
-    gates = _gates(cfg, model_cfg)
+    backup_restore = _backup_restore_status()
+    gates = _gates(cfg, model_cfg, backup_restore)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
     migration_status = _migration_status(db)
@@ -290,6 +324,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         warnings.append("当前实际 PostgreSQL 会话没有连到 moldpilot 数据库，请检查 .env 与 Navicat 连接库名是否一致。")
     if not migration_status.get("matches_repository_heads"):
         warnings.append("当前数据库迁移版本没有确认等于仓库 Alembic head；请先用迁移账号核对或执行 alembic upgrade head 后再验收。")
+    if backup_restore.get("status") != "BACKUP_TOOLING_READY":
+        warnings.append("当前备份/恢复工具链未完整就绪；请安装 PostgreSQL 客户端工具或提供 pg_dump/pg_restore 路径后再做备份恢复演练。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -322,6 +358,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                     "max_bytes": cfg.file_max_bytes,
                     "daily_bytes": cfg.file_daily_bytes,
                 },
+                "backup_restore": backup_restore,
                 "security_runtime": {
                     "worker_secret_configured": _configured(cfg.worker_secret),
                     "credential_encryption_key_configured": _configured(cfg.credential_encryption_key),

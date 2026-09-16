@@ -48,6 +48,16 @@ $env:PYTHONPATH='backend'
 
 该脚本只读取 `.env`，拒绝 SQLite，确认连接到 `moldpilot`、检查 `admin` 为启用的超级管理员，并比较数据库 `alembic_version` 与仓库 Alembic head；输出不会包含密码哈希。
 
+本地逻辑备份脚本：
+
+```powershell
+$env:PYTHONPATH='backend'
+.venv/Scripts/python.exe scripts/backup_postgres.py --dry-run
+.venv/Scripts/python.exe scripts/backup_postgres.py
+```
+
+脚本只支持 PostgreSQL，拒绝 SQLite，默认输出到 `.local/backups`，不会提交到 Git。数据库密码只通过 `PGPASSWORD` 环境变量传给 `pg_dump`，不会打印到控制台或写入命令参数。若本机未安装 PostgreSQL 客户端工具，dry-run 会提示 `pg_dump_available=False`，需安装客户端或通过 `--pg-dump` 指定路径后再执行正式备份和隔离恢复演练。
+
 ## 模型接入
 
 模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。
