@@ -14,7 +14,7 @@
 
 - 网页：http://127.0.0.1:5173
 - FastAPI：http://127.0.0.1:8000/api/health
-- 独立 PostgreSQL：以本机 `.env` 的 `MOLD_DATABASE_URL` 为准；当前开发库为 `127.0.0.1:5432/moldpilot`。Navicat 连接后可运行 [verify_moldpilot_navicat.sql](database/verify_moldpilot_navicat.sql) 核对当前库、连接用户、admin 超级管理员和关键表行数。
+- 独立 PostgreSQL：以本机 `.env` 的 `MOLD_DATABASE_URL` 为准；当前开发库为 `127.0.0.1:5432/moldpilot`。Navicat 连接后可运行 [verify_moldpilot_navicat.sql](database/verify_moldpilot_navicat.sql) 核对当前库、连接用户、admin 超级管理员、关键表行数和 Alembic 迁移版本。
 - 本地模拟账号保存在 `.local/test-accounts.txt`。该文件、`.env` 和 `.local` 原目录不得提交或打包。交接包仅单独导出数据库备份及已登记业务原件，不包含本机密码和运行目录。
 - ERP 源码、结构文件只作为关联参考，没有导入旧业务数据，没有修改 ERP，没有建立转发或投影数据库。
 
@@ -46,7 +46,7 @@ $env:PYTHONPATH='backend'
 .venv/Scripts/python.exe scripts/verify_postgres_baseline.py
 ```
 
-该脚本只读取 `.env`，拒绝 SQLite，确认连接到 `moldpilot` 并检查 `admin` 为启用的超级管理员；输出不会包含密码哈希。
+该脚本只读取 `.env`，拒绝 SQLite，确认连接到 `moldpilot`、检查 `admin` 为启用的超级管理员，并比较数据库 `alembic_version` 与仓库 Alembic head；输出不会包含密码哈希。
 
 ## 模型接入
 

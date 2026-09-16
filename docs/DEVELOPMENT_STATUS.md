@@ -6,15 +6,17 @@
 
 - `query_operations_readiness_context` 的数据库核对结果新增 `baseline`，明确返回期望引擎 PostgreSQL、期望库名 `moldpilot`、当前配置库名、是否 SQLite、是否匹配交付库名和 `delivery_ready`。
 - 运行时健康检查新增实际 SQLAlchemy 方言和 PostgreSQL `current_database()` 只读事实；本机实测返回 `dialect=postgresql`、`current_database=moldpilot`、`matches_expected_database=True`。
+- 数据库核对结果新增 `migrations`，只读比较数据库 `alembic_version` 与仓库 Alembic head；本机实测数据库版本和仓库 head 均为 `d2f0a9b1c3e4`，状态为 `MIGRATIONS_MATCH_REPOSITORY_HEADS`。
 - 当数据库配置不是 PostgreSQL、库名不是 `moldpilot`，或实际会话没有连到 `moldpilot` 时，工具会在 limitations 中明确警告“不能再用 SQLite 结果作为交付依据”。
+- 当数据库迁移版本不等于仓库 head 时，工具会提示先用迁移账号核对或执行 `alembic upgrade head` 后再验收。
 - 本轮验证只运行 `scripts/verify_postgres_baseline.py` 与运行时工具直连实际 PostgreSQL；没有新增 SQLite 测试或把 SQLite 结果作为验收依据。
 
 ## 持续开发：PostgreSQL 与 Navicat 验证基线修正（2026-09-16）
 
 - 撤回未提交的 SQLite 单元测试思路，后续开发业务库以 `.env` 中 `MOLD_DATABASE_URL` 指向的 PostgreSQL 为准。
 - 当前本机开发库已核对为 `127.0.0.1:5432/moldpilot`，`admin` 超级管理员存在且启用。
-- 新增 `database/verify_moldpilot_navicat.sql`，可在 Navicat 连接 `moldpilot` 后运行，用于核对当前库、连接用户、admin 账号和关键表行数；脚本不展示密码哈希。
-- 新增命令行校验脚本 `scripts/verify_postgres_baseline.py`，复用 Navicat SQL，拒绝 SQLite，检查当前连接库名和 admin 超级管理员状态，作为后续本地验收基线。
+- 新增 `database/verify_moldpilot_navicat.sql`，可在 Navicat 连接 `moldpilot` 后运行，用于核对当前库、连接用户、admin 账号、关键表行数和 Alembic 迁移版本；脚本不展示密码哈希。
+- 新增命令行校验脚本 `scripts/verify_postgres_baseline.py`，复用 Navicat SQL，拒绝 SQLite，检查当前连接库名、admin 超级管理员状态和 Alembic head 一致性，作为后续本地验收基线。
 - README 和 `.env.example` 删除旧的 `55432/agent_db` 说明，改为以 `.env` / `moldpilot` 为权威，并明确不要再使用 SQLite 作为开发业务库。
 
 ## 持续开发：对话依据中的设计改版与计划复核展示（2026-09-16）

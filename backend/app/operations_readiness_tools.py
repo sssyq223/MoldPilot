@@ -12,6 +12,9 @@ from .models import AuditEvent, Outbox, Run, Step
 from .schemas import StrictModel
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 class OperationsReadinessInput(StrictModel):
     include_runtime_counters: bool = Field(
         default=True,
@@ -130,6 +133,56 @@ def _db_status(db) -> dict:
     return status
 
 
+def _migration_repository_status() -> dict:
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        config = Config(str(REPO_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        script = ScriptDirectory.from_config(config)
+        heads = sorted(script.get_heads())
+        return {
+            "available": True,
+            "script_location": "alembic",
+            "heads": heads,
+            "head_count": len(heads),
+        }
+    except Exception as error:  # pragma: no cover - defensive status path
+        return {
+            "available": False,
+            "error_type": type(error).__name__,
+        }
+
+
+def _migration_status(db) -> dict:
+    repository = _migration_repository_status()
+    status: dict = {"repository": repository}
+    try:
+        versions = sorted(str(row[0]) for row in db.execute(text("SELECT version_num FROM alembic_version")).all())
+    except Exception as error:  # pragma: no cover - defensive status path
+        status.update(
+            {
+                "database_versions_available": False,
+                "error_type": type(error).__name__,
+                "matches_repository_heads": False,
+            }
+        )
+        return status
+    heads = repository.get("heads") if repository.get("available") else []
+    status.update(
+        {
+            "database_versions_available": True,
+            "database_versions": versions,
+            "database_version_count": len(versions),
+            "matches_repository_heads": bool(heads) and set(versions) == set(heads),
+            "status": "MIGRATIONS_MATCH_REPOSITORY_HEADS" if bool(heads) and set(versions) == set(heads) else "MIGRATIONS_OUT_OF_SYNC",
+            "note": "只读比较数据库 alembic_version 与仓库 Alembic head；不会执行迁移。",
+        }
+    )
+    return status
+
+
 def _counts(db, include: bool) -> dict:
     if not include:
         return {"included": False}
@@ -225,6 +278,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     gates = _gates(cfg, model_cfg)
     database_baseline = _database_baseline(cfg.database_url)
     database_health = _db_status(db)
+    migration_status = _migration_status(db)
     warnings = [
         "FR-118 要求在实施方案中确认部署、用户规模、响应时间、可用性、备份频率、恢复目标和日志保留期限；未确认前不得承诺性能、可用性或准确率。",
         "本工具只读核对当前运行事实和验收缺口；不执行部署、备份、恢复、压测或清理。",
@@ -234,6 +288,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
         warnings.append("当前数据库配置没有满足 PostgreSQL/moldpilot/Navicat 交付基线；不要再用 SQLite 结果作为交付依据。")
     if database_health.get("dialect") == "postgresql" and database_health.get("current_database") != "moldpilot":
         warnings.append("当前实际 PostgreSQL 会话没有连到 moldpilot 数据库，请检查 .env 与 Navicat 连接库名是否一致。")
+    if not migration_status.get("matches_repository_heads"):
+        warnings.append("当前数据库迁移版本没有确认等于仓库 Alembic head；请先用迁移账号核对或执行 alembic upgrade head 后再验收。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -246,6 +302,7 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                     **_safe_url(cfg.database_url),
                     "baseline": database_baseline,
                     "health": database_health,
+                    "migrations": migration_status,
                 },
                 "redis": {
                     **_safe_url(cfg.redis_url),

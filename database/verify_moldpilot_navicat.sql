@@ -34,3 +34,8 @@ SELECT
     COUNT(*)
 FROM audit_event
 ORDER BY table_name;
+
+SELECT
+    version_num AS alembic_version
+FROM alembic_version
+ORDER BY version_num;
