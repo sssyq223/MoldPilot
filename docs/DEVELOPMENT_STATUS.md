@@ -15,6 +15,7 @@
 
 - 参考 `D:\pi-desktop` 中“模型能看见的工具就会尝试，因此要在发送给模型前控制可见工具”的架构原则，调整 MoldPilot harness，不再把大批业务工具一次性列入模型上下文。
 - ToolSearch 从“工具名列表搜索”升级为“能力/场景包激活”：按 Skill 的必需工具和可选工具组成小工具集；搜索准确工具名时仍只激活单个工具，搜索业务场景时才激活对应工具包。
+- ToolSearch 新增 `activation_queries` 强匹配：合同、报价、开工、计划、设计、制造、装配试模、交付物流、整套委外、设变、财务、治理、采购价格、工程联络、项目暂停/关闭等场景先按明确触发词选择最佳场景包；没有强匹配时才回退到文本评分，避免“合同登记”同时激活报价承接、报价评估、项目档案等相邻工具。
 - Skill 新增 `activation_tools` 精选激活子集：后台能力目录仍保留完整 `optional_tools` 供授权、设置和能力说明使用，但模型通过 ToolSearch 激活场景时只看到精选工具，避免把完整办理工具海一次性喂给 30B 模型。
 - 工程联络单场景包已收窄为 `query_contact_cases`、`query_contact_context`、`prepare_contact_resolution`、`prepare_contact_review`、`prepare_contact_close`、`prepare_contact_respond` 六个高频闭环工具；发起、附件、分派、指定验收负责人、撤销事项等仍作为完整可选能力保留，可通过准确工具名或后续场景继续扩展，不新增传统菜单页面。
 - ToolSearch 增强中文业务词拆分，像“工程联络关闭”这类无空格短语会按工程联络、关闭、复验、反馈等业务词参与场景包匹配，减少模型因为搜索词不精确而退回自然语言兜底或误选其它业务工具。
@@ -22,7 +23,7 @@
 - `skill_context` 现在向 harness 提供 `tools` / `optional_tools` / `activation_tools` 元数据，worker 仍通过 MCP 发现全量授权工具，但模型每轮只看到当前激活的小工具集和 ToolSearch。
 - 新增工作台技术排障路由防护：当前端、模型、harness、接口、HTTP 500、数据库、Redis、Docker、Navicat、GitHub、构建、部署、日志、上下文窗口等请求不构成明确业务查询/办理时，harness 在模型调用前直接隐藏 ToolSearch 和全部业务工具；“用模型查询项目计划”这类明确业务查询仍可按场景包激活。
 - 该改动用于解决模型把技术排障/模型配置问题误导到业务工具链的问题；不是新增业务兜底，也不放宽工具内部权限、版本、审批确认和证据校验。
-- 验证：`tests/test_model_harness.py` 覆盖通用技术问题不调用业务工具、技术请求隐藏 ToolSearch、准确工具名只激活单工具、项目计划场景只激活项目计划小工具包、工程联络场景只激活精选子集而不暴露全部可选工具、按需目录不会列出全部工具，以及带“模型”字样的明确业务查询仍允许 ToolSearch；`tests/test_capability_catalog.py` 保持能力目录元数据和工程联络激活子集通过。
+- 验证：`tests/test_model_harness.py` 覆盖通用技术问题不调用业务工具、技术请求隐藏 ToolSearch、准确工具名只激活单工具、项目计划场景只激活项目计划小工具包、工程联络场景只激活精选子集而不暴露全部可选工具、合同登记不误激活报价承接/项目档案、按需目录不会列出全部工具，以及带“模型”字样的明确业务查询仍允许 ToolSearch；`tests/test_capability_catalog.py` 保持能力目录元数据和工程联络激活子集通过。本轮真实目录复查：`合同/合同登记/销售合同/整套委外合同` 只激活 `query_contract_context`、`prepare_contract_record`，`工程联络关闭` 只激活工程联络精选包，`项目计划` 只激活计划上下文/基线计划，`计划变更` 只激活计划变更包；测试 42 项通过。
 
 ## 持续开发：项目基线计划对话办理闭环（2026-09-16）
 

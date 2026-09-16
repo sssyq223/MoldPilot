@@ -110,7 +110,8 @@ def _skill_tool_groups(skills, all_tools):
         description = skill.get("agent_description") or spec.get("description") or spec.get("name") or ""
         result.append({"key": key, "name": spec.get("name", key), "description": description,
                        "tools": tool_names, "required": [name for name in required if name in all_tools],
-                       "optional": [name for name in optional if name in all_tools]})
+                       "optional": [name for name in optional if name in all_tools],
+                       "activation_queries": skill.get("activation_queries") or spec.get("activation_queries", [])})
     return result
 
 
@@ -148,8 +149,11 @@ def _optional_tools_prompt(deferred_tools, tool_groups):
     if not group_entries and not loose_entries:
         return ""
     visible_groups = group_entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES]
-    lines = [f"- {group['key']}（{group['name']}）: {_compact_description(group['description'], 72)}；工具包 {', '.join(group['tools'])}"
-             for group in visible_groups]
+    lines = []
+    for group in visible_groups:
+        aliases = [str(item) for item in group.get("activation_queries", []) if str(item).strip()]
+        alias_text = ("；触发 " + "、".join(aliases[:5])) if aliases else ""
+        lines.append(f"- {group['key']}（{group['name']}）: {_compact_description(group['description'], 72)}；工具包 {', '.join(group['tools'])}{alias_text}")
     remaining = len(group_entries) - len(visible_groups)
     if loose_entries and len(lines) < MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES:
         for name, description in loose_entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES - len(lines)]:
@@ -181,6 +185,24 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None):
     terms = _search_terms(normalized)
     if normalized in deferred_tools:
         return [normalized], [normalized], []
+    alias_scores = []
+    for group in tool_groups or []:
+        aliases = [str(alias).strip().lower() for alias in group.get("activation_queries", []) if str(alias).strip()]
+        score = max((len(alias) for alias in aliases if alias in normalized), default=0)
+        deferred_group_tools = [name for name in group["tools"] if name in deferred_tools]
+        if score and deferred_group_tools:
+            alias_scores.append((score, group["key"], deferred_group_tools))
+    if alias_scores:
+        matches, activated = [], []
+        best_score = max(score for score, _, _ in alias_scores)
+        for _, key, tool_names in sorted((item for item in alias_scores if item[0] == best_score), reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
+            matches.append(key)
+            for name in tool_names:
+                if name not in activated:
+                    activated.append(name)
+                if len(activated) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
+                    return matches, activated, matches
+        return matches, activated, matches
     group_scores = []
     for group in tool_groups or []:
         searchable_tools = " ".join(group["tools"])

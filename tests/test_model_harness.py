@@ -84,9 +84,11 @@ CONTACT_ASSIGN_TOOL = {'type': 'function', 'function': {'name': 'prepare_contact
 TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search1', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': 'query_projects'})}}]}
 PLAN_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-plan', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目计划'})}}]}
 CONTACT_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-contact', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '工程联络关闭'})}}]}
+CONTRACT_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-contract', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '合同登记'})}}]}
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
+CONTRACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract', 'type': 'function', 'function': {'name': 'query_contract_context', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -215,6 +217,43 @@ def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools
          'prepare_contact_close', 'prepare_contact_respond'],
     ]
     assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
+
+
+def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions():
+    contract_context = {'type': 'function', 'function': {'name': 'query_contract_context',
+                                                         'description': '按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文。'}}
+    contract_prepare = {'type': 'function', 'function': {'name': 'prepare_contract_record',
+                                                         'description': '准备销售合同或整套委外合同登记审批建议。'}}
+    quote_context = {'type': 'function', 'function': {'name': 'query_quote_acceptance_context',
+                                                      'description': '按项目线索读取报价、承接、拒单、正式开工和销售合同上下文。'}}
+    quote_prepare = {'type': 'function', 'function': {'name': 'prepare_quote_acceptance_decision',
+                                                      'description': '准备报价承接或拒单审批建议。'}}
+    dossier = {'type': 'function', 'function': {'name': 'query_project_dossier',
+                                                'description': '按项目编号、模具号、工程联络、合同或订单编号反查项目业务档案。'}}
+    gateway = Gateway()
+    model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_PROPOSAL, FINAL])
+    run_loop(context(core_tool_names=[], tools=[contract_context, contract_prepare, quote_context, quote_prepare, dossier],
+                     skills=[{'key': 'contract_context_review',
+                              'agent_description': '合同上下文核对',
+                              'tools': ['query_contract_context'],
+                              'optional_tools': ['prepare_contract_record'],
+                              'activation_queries': ['合同登记', '销售合同', '整套委外合同', '合同号']},
+                             {'key': 'quote_acceptance_review',
+                              'agent_description': '报价、承接、正式开工和销售合同上下文',
+                              'tools': ['query_quote_acceptance_context'],
+                              'optional_tools': ['prepare_quote_acceptance_decision'],
+                              'activation_queries': ['报价承接', '报价拒单', '承接', '拒单']},
+                             {'key': 'project_dossier_review',
+                              'agent_description': '项目业务档案核对',
+                              'tools': ['query_project_dossier'],
+                              'activation_queries': ['项目业务档案', '业务档案']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+    ]
+    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
 
 
 def test_business_query_mentioning_model_still_allows_tool_search():
