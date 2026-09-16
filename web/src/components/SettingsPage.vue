@@ -217,9 +217,10 @@ function delegationLabel(row:any){
    </form>
    </template>
    <template v-else-if="page==='agent-approvals'">
-    <div class="section-heading"><div><h2>Agent 自动审批</h2><p class="muted">你可以把明确允许自动审批的低风险节点授权给 Agent。授权只代表自动同意，不会自动驳回，也不会跳过审批席位、权限、资料版本和流程规则。</p></div><small class="muted">{{delegations.filter(d=>d.active).length}} 个有效授权</small></div>
+    <div class="agent-approval-head"><h2>Agent 自动审批</h2><span>{{delegations.filter(d=>d.active).length}} 个有效授权</span></div>
     <p v-if="delegationsLoading" role="status">正在读取自动审批授权…</p>
     <template v-else>
+     <div class="agent-approval-grid">
      <section class="surface agent-approval-card">
       <div class="agent-approval-copy"><ShieldCheck :size="22"/><div><strong>授权一个流程节点</strong><small class="muted">只有流程设计中打开了 Agent 自动审批的节点会出现在这里；高风险或强制人工节点不会接受授权。</small></div></div>
       <div v-if="delegationOptions.length" class="agent-delegation-form">
@@ -237,10 +238,11 @@ function delegationLabel(row:any){
        <div><strong>{{delegationLabel(row)}}</strong><p class="muted small">{{row.reason}}</p><small class="muted">创建于 {{shanghai(row.created_at)}}<span v-if="row.valid_to"> · 有效期至 {{shanghai(row.valid_to)}}</span><span v-if="row.revoked_at"> · 已于 {{shanghai(row.revoked_at)}} 撤销</span></small></div>
        <span v-if="row.active" class="status-pill ok"><ShieldCheck :size="14"/>有效</span>
        <span v-else class="status-pill muted-pill"><ShieldOff :size="14"/>已撤销</span>
-       <button v-if="row.active" class="danger-outline" :disabled="delegationSaving" @click="revokeDelegation(row)">撤销授权</button>
-      </article>
+      <button v-if="row.active" class="danger-outline" :disabled="delegationSaving" @click="revokeDelegation(row)">撤销授权</button>
+     </article>
       <p v-if="!delegations.length" class="muted archived-empty">还没有自动审批授权。</p>
      </section>
+     </div>
     </template>
    </template>
    <template v-else-if="page==='archived'">

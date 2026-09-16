@@ -23,7 +23,8 @@ TITLES={'approval.pending':'有新的审批待办','approval.assignment.blocked'
         'business.effective':'业务单据已生效','order.execution.draft.created':'采购执行草稿已生成',
         'contact.created':'有新的工程联络单待协调','contact.task_created':'工程联络事项待分派',
         'contact.assigned':'有新的工程联络事项待处理','contact.responded':'工程联络事项已有反馈',
-        'contact.resolution_effective':'工程联络处理方案已批准，请按影响项落实'}
+        'contact.resolution_effective':'工程联络处理方案已批准，请按影响项落实',
+        'plan.change.effective':'项目计划变更已生效，请核对受影响节点'}
 
 
 def claim(factory):

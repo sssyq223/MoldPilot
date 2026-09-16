@@ -55,6 +55,7 @@ export function groupedCapabilities(items:any[]=[]){
  return Object.values(departments).map(department=>({...department,types:Object.values(department.types)}))
 }
 const auditNames:Record<string,string>={'auth.login':'用户登录','user.created':'创建用户','permission.changed':'变更用户权限','permission.revoked':'撤销用户权限','capability.changed':'变更工具或技能授权','workflow.draft.created':'创建审批流程草稿','workflow.draft.updated':'修改审批流程草稿','workflow.published':'发布审批流程','purchase.draft.created':'创建采购草稿','purchase.submitted':'提交采购审批','approval.assignment.blocked':'审批人员分配待处理','approval.pending':'收到待审批事项','approval.decided':'提交审批决定','approval.routed':'审批流转至后续节点','human.confirmed':'人工确认操作','business.draft.created':'创建业务草稿','business.submitted':'提交业务审批','business.effective':'业务正式生效','agent.run.created':'创建智能体任务','project.created':'创建项目','master.created':'维护基础资料','risk.policy.published':'发布预警规则','order.execution.draft.created':'生成订单执行草稿','order.draft.updated':'修改订单草稿'}
+Object.assign(auditNames,{'user.avatar.updated':'更新用户头像'})
 export function auditName(value:string){return auditNames[value]||commandNames[value]||'业务操作记录'}
 Object.assign(auditNames,{'contact.created':'创建工程联络单','contact.note':'追加联络过程记录','contact.task_created':'新增联络协作事项','contact.assigned':'分派联络事项','contact.responded':'提交联络处理反馈'})
 export function statusName(value:string){return stateLabels[value]||({ACTIVE:'进行中',COMPLETED:'已完成',PENDING:'待处理',PUBLISHED:'已发布',BLOCKED:'等待处理',APPROVE:'同意',REJECT:'驳回',RETURN:'退回修改',WAITING:'等待处理',SKIPPED:'未经过此节点'} as Record<string,string>)[value]||'待核实状态'}
@@ -100,5 +101,6 @@ Object.assign(fields,{expected_resume_date:'预计恢复日期',task_snapshot:'�
 Object.assign(fields,{project_code:'项目编号',project_name:'项目名称',project_status:'项目状态',project_version:'项目版本',system_facts:'系统已知事实',closure_case:'结项清单',current_stage:'当前环节',item_key:'事项标识',label:'事项',allow_not_applicable:'可否不适用',system_managed:'系统事实校验',result:'处置或核对结果',evidence:'依据',source_system:'来源系统',source_ref:'来源原记录',source_as_of:'来源核对时点',history_count:'历史修订数',blockers:'未完成事项',active_plan_number:'有效计划单号',plan_task_count:'计划任务数',unfinished_plan_tasks:'未完成计划任务',open_contact_cases:'未关闭联络事项',open_payment_reservations:'未释放付款占用',open_local_purchase_orders:'本地未关闭采购订单',closure_case_version:'结项清单版本',completed_work_summary:'已完成工作',incurred_cost_summary:'已发生费用说明',incurred_cost_amount:'已发生费用金额'})
 Object.assign(auditNames,{'project.closure.opened':'发起项目结项清单','project.closure.cancelled':'取消原结项清单','project.closure.item.updated':'更新结项核对事项','project.terminated':'项目终止生效','project.closed':'项目关闭生效'})
 Object.assign(auditNames,{'contact.resolution_submitted':'提交联络方案审批','contact.reviewer_set':'指定联络验收负责人','contact.task_cancelled':'撤销联络事项','contact.task_reviewed':'复验联络处理结果','contact.closed':'人工关闭联络单'})
+Object.assign(auditNames,{'plan.change.effective':'项目计划变更已生效'})
 
 export function numberText(value:string=''){return value.replace(/^CONTACT_RESOLUTI-/, '联络方案-')}

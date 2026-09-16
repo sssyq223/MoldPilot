@@ -29,6 +29,7 @@ from .erp_design_upload import router as erp_design_upload_router
 app.include_router(erp_design_upload_router)
 
 _conversation_flags_checked = False
+_user_profiles_checked = False
 
 
 def compact_conversation_title(prompt: str) -> str:
@@ -79,6 +80,37 @@ def ensure_conversation_flags(db):
         db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
         db.commit()
     _conversation_flags_checked = True
+
+
+def ensure_user_profiles(db):
+    """Local dev fixtures may predate the optional user profile table."""
+    global _user_profiles_checked
+    if _user_profiles_checked:
+        return
+    dialect = db.bind.dialect.name
+    if dialect == "sqlite":
+        db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
+            user_id VARCHAR(36) PRIMARY KEY,
+            avatar_url TEXT NOT NULL DEFAULT '',
+            updated_at DATETIME
+        )"""))
+    elif dialect == "postgresql":
+        db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
+            user_id VARCHAR(36) PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
+            avatar_url TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ
+        )"""))
+    db.commit()
+    _user_profiles_checked = True
+
+
+def avatar_url_for(db, user_id: str) -> str:
+    ensure_user_profiles(db)
+    return db.execute(text("SELECT avatar_url FROM app_user_profile WHERE user_id = :user_id"), {"user_id": user_id}).scalar() or ""
+
+
+def public_user_with_profile(db, user):
+    return {**public_user(user), "avatar_url": avatar_url_for(db, user.id)}
 
 
 def run_trace(run, steps):
@@ -189,11 +221,26 @@ def sign_out(request: Request, response: Response, user=Depends(current_user), d
 def me(user=Depends(current_user), db=Depends(get_db)):
     permissions = list(auth.PERMISSIONS) if user.super_admin else [p for p in auth.PERMISSIONS if any(g.effect == "ALLOW" for g in auth.grants_for(db, user, p))]
     model_config = model_settings()
-    return {"user": {**public_user(user), "authorization_hash": auth.fingerprint(db, user)},
+    return {"user": {**public_user_with_profile(db, user), "authorization_hash": auth.fingerprint(db, user)},
             "permissions": permissions, "llm_configured": model_config.llm_enabled,
             "model": model_config.active_model if model_config.llm_enabled else None,
             "model_limits": {"context_window": model_config.llm_context_window,
                              "max_output_tokens": model_config.llm_max_output_tokens}}
+
+
+@app.put("/api/me/avatar")
+def update_my_avatar(data: s.AvatarInput, user=Depends(current_user), db=Depends(get_db)):
+    avatar = data.avatar_url.strip()
+    if avatar and not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", avatar):
+        raise DomainError("AVATAR_INVALID", "头像必须是 PNG、JPG 或 WebP 图片", 400)
+    ensure_user_profiles(db)
+    db.execute(text("DELETE FROM app_user_profile WHERE user_id = :user_id"), {"user_id": user.id})
+    if avatar:
+        db.execute(text("INSERT INTO app_user_profile (user_id, avatar_url, updated_at) VALUES (:user_id, :avatar_url, :updated_at)"),
+                   {"user_id": user.id, "avatar_url": avatar, "updated_at": now()})
+    record(db, user, "user.avatar.updated", user.id, {"has_avatar": bool(avatar)})
+    db.commit()
+    return public_user_with_profile(db, user)
 
 
 @app.get("/api/model-config")
@@ -221,7 +268,7 @@ def catalog(user=Depends(current_user)):
 @app.get("/api/users")
 def users(user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "user.manage")
-    return [public_user(u) for u in db.scalars(select(m.User).order_by(m.User.created_at))]
+    return [public_user_with_profile(db, u) for u in db.scalars(select(m.User).order_by(m.User.created_at))]
 
 
 @app.post("/api/users")
@@ -229,7 +276,7 @@ def create_user(data: s.UserInput, user=Depends(current_user), db=Depends(get_db
     auth.require(db, user, "user.manage")
     new = m.User(username=normalize_username(data.username), display_name=data.display_name, department=data.department, password_hash=hasher.hash(data.password))
     db.add(new); db.flush(); record(db, user, "user.created", new.id); db.commit()
-    return public_user(new)
+    return public_user_with_profile(db, new)
 
 
 @app.get("/api/users/{user_id}/grants")

@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app import bpm, business, models as m
+from app import bpm, business, domains, domain_schemas as s, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
@@ -167,6 +167,36 @@ def test_plan_context_reports_no_effective_plan_and_multiple_candidates():
             analysis=resolved['data'][0]['analysis']
             assert analysis['derived_status']['has_effective_plan'] is False
             assert '未见有效项目计划' in ''.join(analysis['warnings'])
+    finally:
+        engine.dispose()
+
+
+def test_plan_change_effective_notifies_changed_task_owners():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);old_owner=user(db,'old_owner');new_owner=user(db,'new_owner')
+            p=project(db,'PLAN-NOTIFY')
+            baseline=plan(db,p,admin,'PLAN-NOTIFY-BASE')
+            task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
+            task(db,baseline,old_owner,'machining','加工',date(2026,9,6),date(2026,9,20),'PLANNED')
+            change=domains.create(db,admin,s.SubjectInput(kind='plan_change',project_id=p.id,remark='加工顺延并新增试模',detail={
+                'previous_id':baseline.id,'reason':'客户确认加工顺延并新增试模节点',
+                'tasks':[{'key':'design','name':'结构设计','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+                    {'key':'machining','name':'加工','owner_user_id':new_owner.id,
+                    'planned_start':'2026-09-08','planned_end':'2026-09-23','prerequisites':['design']},
+                    {'key':'trial','name':'试模','owner_user_id':new_owner.id,
+                    'planned_start':'2026-09-24','planned_end':'2026-09-26','prerequisites':['machining']}]}))
+            domains.apply(db,admin,change)
+            event=db.scalar(select(m.Outbox).where(m.Outbox.kind=='plan.change.effective',m.Outbox.resource_id==change.id))
+            assert event
+            assert set(event.payload['recipients'])=={old_owner.id,new_owner.id}
+            audit=db.scalar(select(m.AuditEvent).where(m.AuditEvent.action=='plan.change.effective',m.AuditEvent.resource_id==change.id))
+            assert audit.detail['previous_id']==baseline.id
+            assert audit.detail['changed_task_keys']==['machining','trial']
+            assert audit.detail['changed_tasks'][0]['changes']['owner_user_id']=={'from':old_owner.id,'to':new_owner.id}
+            assert db.get(m.BusinessSubject,baseline.id).status=='CLOSED'
     finally:
         engine.dispose()
 

@@ -21,6 +21,10 @@ class UserInput(StrictModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class AvatarInput(StrictModel):
+    avatar_url: str = Field(default="", max_length=150000)
+
+
 class GrantInput(StrictModel):
     permission: str
     effect: Literal["ALLOW", "DENY"] = "ALLOW"

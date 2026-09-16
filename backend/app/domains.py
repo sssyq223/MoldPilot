@@ -131,6 +131,39 @@ def validate_plan(db,project_id,detail):
                     raise DomainError('TASK_HISTORY_PROTECTED','已完成任务不能重排')
 
 
+def plan_change_impact(db,subject):
+    detail=db.get(m.PlanDetail,subject.id)
+    if not detail or not detail.previous_id:return {},[]
+    previous={task.key:task for task in rows(db,m.PlanTask,plan_id=detail.previous_id)}
+    current={task.key:task for task in rows(db,m.PlanTask,plan_id=subject.id)}
+    recipients=set();added=[];removed=[];changed=[]
+    def task_card(task):
+        return {'key':task.key,'name':task.name,'owner_user_id':task.owner_user_id,
+            'planned_start':task.planned_start.isoformat(),'planned_end':task.planned_end.isoformat()}
+    for key,task in current.items():
+        old=previous.get(key)
+        if not old:
+            added.append(task_card(task));recipients.add(task.owner_user_id);continue
+        changes={}
+        if old.name!=task.name:changes['name']={'from':old.name,'to':task.name}
+        if old.owner_user_id!=task.owner_user_id:
+            changes['owner_user_id']={'from':old.owner_user_id,'to':task.owner_user_id}
+            recipients.add(old.owner_user_id)
+        if old.planned_start!=task.planned_start:
+            changes['planned_start']={'from':old.planned_start.isoformat(),'to':task.planned_start.isoformat()}
+        if old.planned_end!=task.planned_end:
+            changes['planned_end']={'from':old.planned_end.isoformat(),'to':task.planned_end.isoformat()}
+        if changes:
+            changed.append({'key':task.key,'name':task.name,'changes':changes})
+            recipients.add(task.owner_user_id)
+    for key,task in previous.items():
+        if key not in current:
+            removed.append(task_card(task));recipients.add(task.owner_user_id)
+    return {'previous_id':detail.previous_id,'reason':detail.reason,'added_tasks':added,
+        'removed_tasks':removed,'changed_tasks':changed,'changed_task_keys':sorted(
+            {item['key'] for item in added+removed}|{item['key'] for item in changed})},sorted(recipients)
+
+
 def active_plan(db,project_id):
     plans=list(db.scalars(select(m.BusinessSubject).where(
         m.BusinessSubject.project_id==project_id,
@@ -327,11 +360,14 @@ def apply(db,user,subject):
     elif kind in {'project_plan','plan_change'}:
         if project.status!='ACTIVE':raise DomainError('PROJECT_BLOCKED','项目未处于执行状态',409)
         prior=db.get(m.PlanDetail,subject.id).previous_id
+        impact_detail,impact_recipients=plan_change_impact(db,subject) if kind=='plan_change' else ({},[])
         active=list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project.id,
                     m.BusinessSubject.kind.in_(['project_plan','plan_change']),m.BusinessSubject.status=='EFFECTIVE')))
         if prior:
             old=require_source(db,prior,project.id,{'project_plan','plan_change'});old.status='CLOSED'
         elif active:raise DomainError('PLAN_EXISTS','项目已有基线，请通过计划变更生成新版本',409)
+        if kind=='plan_change' and impact_recipients:
+            record(db,user,'plan.change.effective',subject.id,impact_detail,impact_recipients)
     elif kind=='pause_resume':
         detail=db.get(m.ProjectPauseDetail,subject.id)
         if detail.decision=='PAUSE':
