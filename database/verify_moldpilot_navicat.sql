@@ -60,6 +60,11 @@ SELECT
 FROM customer_acceptance_record
 UNION ALL
 SELECT
+    'customer_receipt_confirmation',
+    COUNT(*)
+FROM customer_receipt_confirmation
+UNION ALL
+SELECT
     'contract_signing_record',
     COUNT(*)
 FROM contract_signing_record

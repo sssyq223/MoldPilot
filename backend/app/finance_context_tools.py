@@ -237,6 +237,66 @@ def _supplier_payments(rows, sales_contracts, outsource_contracts):
     }
 
 
+def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
+    if not access(db, user, "customer_receipt.read", {"project_id": project_id}).allowed:
+        return {"receipts": [], "confirmed_totals": [], "by_stage": [], "unallocated_receipts": []}, True
+
+    visible_contract_ids = {contract.get("id") for contract in sales_contracts if contract.get("id")}
+    stage_map = {
+        node.get("stage_id"): {
+            "contract_id": node.get("contract_id"),
+            "contract_number": node.get("contract_number"),
+            "stage_id": node.get("stage_id"),
+            "stage_name": node.get("name"),
+            "stage_condition": node.get("condition"),
+            "stage_amount": node.get("amount"),
+            "currency": node.get("currency"),
+        }
+        for node in customer_nodes
+        if node.get("stage_id")
+    }
+    receipts = []
+    for receipt in db.scalars(
+        select(m.CustomerReceiptConfirmation)
+        .where(m.CustomerReceiptConfirmation.project_id == project_id)
+        .order_by(m.CustomerReceiptConfirmation.received_date.desc(), m.CustomerReceiptConfirmation.created_at.desc(), m.CustomerReceiptConfirmation.id)
+        .limit(100)
+    ):
+        if receipt.contract_subject_id not in visible_contract_ids:
+            continue
+        stage = stage_map.get(receipt.stage_id, {})
+        receipts.append(
+            {
+                "id": receipt.id,
+                "contract_id": receipt.contract_subject_id,
+                "contract_number": stage.get("contract_number"),
+                "stage_id": receipt.stage_id,
+                "stage_name": stage.get("stage_name"),
+                "amount": str(receipt.amount),
+                "currency": receipt.currency,
+                "received_date": receipt.received_date.isoformat(),
+                "reference": receipt.reference,
+                "evidence_present": bool(receipt.evidence),
+                "confirmed_by": receipt.confirmed_by,
+                "source_system": receipt.source_system,
+                "source_ref": receipt.source_ref,
+            }
+        )
+
+    by_stage = []
+    for stage_id, stage in stage_map.items():
+        stage_receipts = [row for row in receipts if row.get("stage_id") == stage_id]
+        if stage_receipts:
+            by_stage.append({**stage, "confirmed_totals": _money_total(stage_receipts), "receipt_count": len(stage_receipts)})
+    unallocated = [row for row in receipts if not row.get("stage_id")]
+    return {
+        "receipts": receipts,
+        "confirmed_totals": _money_total(receipts),
+        "by_stage": by_stage,
+        "unallocated_receipts": unallocated,
+    }, False
+
+
 def _corrections(rows):
     result = []
     for row in rows:
@@ -315,9 +375,10 @@ def _closure_finance_items(db, user, project_id):
     return rows
 
 
-def _analysis(project, profile, starts, sales_contracts, customer_nodes, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items):
+def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items):
     open_reservation = bool(supplier_payments["outstanding_reservations"])
     supplier_paid = bool(supplier_payments["confirmed_totals"])
+    customer_received = bool(customer_receipts["confirmed_totals"])
     condition_pending = [node for node in customer_nodes if not node.get("condition_confirmed")]
     invoice_done = any(item.get("item_key") == "INVOICE" and item.get("status") == "DONE" for item in closure_items)
     customer_receipt_done = any(item.get("item_key") == "CUSTOMER_RECEIPT" and item.get("status") == "DONE" for item in closure_items)
@@ -330,8 +391,10 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, outsour
         gaps.append("未见正式开工通知上下文，无法证明已向财务形成开工交接。")
     if not sales_contracts:
         gaps.append("未见可见销售合同及客户收款节点；不能判断客户应收条件。")
-    if customer_nodes and not customer_receipt_done:
-        warnings.append("当前只见客户合同收款节点或关闭清单，未接入客户实际回款台账；不能把节点到期或清单核对当成实际回款。")
+    if customer_nodes and not customer_received:
+        warnings.append("当前只见客户合同收款节点或关闭清单，未见客户实际回款确认；不能把节点到期或清单核对当成实际回款。")
+    if customer_received and customer_receipt_done:
+        warnings.append("客户实际回款确认与关闭清单均存在；仍须按合同节点、发票和财务口径核对，不能用单次回款代表项目已结束。")
     if condition_pending:
         warnings.append("存在付款/收款节点条件未由财务确认，不能作为到期或付款依据。")
     if any(request.get("status") == "EFFECTIVE" for request in supplier_payments["requests"]):
@@ -342,7 +405,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, outsour
         warnings.append("存在财务冲正/更正记录，汇总必须按有符号实付和冲正依据计算，不能覆盖原付款记录。")
     if cost_tasks:
         warnings.append("存在设变、异常或联络单费用/工时线索；收入、成本、利润需财务适配口径，不能用报价成本或回款金额直接替代。")
-    gaps.append("客户实际回款、发票、收入确认、含税口径、工时计价、费用分摊和占用资金公式尚未完整接入；当前只做可见事实核对。")
+    gaps.append("发票、收入确认、含税口径、工时计价、费用分摊和占用资金公式尚未完整接入；当前只做可见事实核对。")
 
     return {
         "finance_handoff": {
@@ -352,6 +415,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, outsour
         },
         "sales_contracts": sales_contracts,
         "customer_receivable_nodes": customer_nodes,
+        "customer_receipt_summary": customer_receipts,
         "full_outsource_contracts": outsource_contracts,
         "supplier_payment_summary": supplier_payments,
         "finance_corrections": corrections,
@@ -363,7 +427,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, outsour
             "project_status": project.status,
             "has_effective_start_notice": bool(starts),
             "has_sales_contract_payment_nodes": bool(customer_nodes),
-            "has_customer_actual_receipt_ledger": False,
+            "has_customer_actual_receipt_ledger": customer_received,
             "has_invoice_or_customer_receipt_closure_evidence": invoice_done or customer_receipt_done,
             "has_supplier_payment_request": bool(supplier_payments["requests"]),
             "has_confirmed_supplier_payment": supplier_paid,
@@ -391,6 +455,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
         for kind, label in (
             ("internal_start", "正式开工通知"),
             ("sales_contract", "销售合同/客户收款节点"),
+            ("customer_receipt", "客户实际回款确认"),
             ("full_outsource_contract", "整套委外合同/供应商付款节点"),
             ("supplier_payment", "供应商付款申请和实付"),
             ("finance_correction", "财务冲正"),
@@ -415,13 +480,16 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                     }
                 )
         sales_contracts, customer_nodes = _contract_context(rows["sales_contract"], "CUSTOMER_RECEIVABLE")
+        customer_receipts, receipts_skipped = _customer_receipts(db, user, project.id, sales_contracts, customer_nodes)
         outsource_contracts, _ = _contract_context(rows["full_outsource_contract"], "SUPPLIER_PAYABLE")
         supplier_payments = _supplier_payments(rows["supplier_payment"], sales_contracts, outsource_contracts)
         corrections = _corrections(rows["finance_correction"])
         cost_impacts = _cost_impacts(db, user, project.id, allowed_tools)
         closure_items = _closure_finance_items(db, user, project.id)
+        if receipts_skipped:
+            skipped.append("客户实际回款确认")
         if skipped:
-            limitations.append("未授权或未分配对应财务事实读取范围，未返回：" + "、".join(skipped))
+            limitations.append("未授权或未分配对应财务事实读取范围，未返回：" + "、".join(dict.fromkeys(skipped)))
         if "query_contact_cases" not in allowed_tools:
             limitations.append("未分配工程联络查询工具，未汇总设变费用、扣款或额外工时线索。")
         return {
@@ -430,7 +498,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                 {
                     "project": _project_card(db, user, project, alternatives or ("项目定位",)),
                     "profile": profile,
-                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items),
+                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items),
                 }
             ],
             "source": "agent_db",

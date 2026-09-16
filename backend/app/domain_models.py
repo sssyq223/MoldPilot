@@ -377,6 +377,33 @@ class PaymentConfirmation(IdentityMixin, Base):
     __table_args__ = (CheckConstraint('amount <> 0'),)
 
 
+class CustomerReceiptConfirmation(IdentityMixin, Base):
+    """Finance-confirmed customer receipt evidence.
+
+    Contract payment stages are receivable conditions. This table is the
+    separate actual cash receipt ledger confirmed by finance, so reminders or
+    closure checklist text cannot be mistaken for money received.
+    """
+    __tablename__ = 'customer_receipt_confirmation'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    contract_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey('payment_stage.id'), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3))
+    received_date: Mapped[date] = mapped_column(Date)
+    reference: Mapped[str] = mapped_column(String(100), unique=True)
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    note: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        CheckConstraint('amount > 0', name='customer_receipt_amount_positive'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='customer_receipt_source_system'),
+        UniqueConstraint('project_id','source_system','source_ref', name='customer_receipt_unique_source'),
+    )
+
+
 class SupplierDeductionSettlement(IdentityMixin, Base):
     """Responsibility-confirmed supplier deduction/settlement evidence for quality or delay."""
     __tablename__ = 'supplier_deduction_settlement'

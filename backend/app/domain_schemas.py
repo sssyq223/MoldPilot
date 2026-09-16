@@ -184,6 +184,7 @@ PERMISSIONS.update({
     'order.edit':['*'], 'order.issue':['*'], 'shipment.confirm':['*'], 'exception.report':['*'],
     'exception.close':['*'], 'warehouse.read':['*'], 'warehouse.configure':['*'], 'receipt.confirm':['*'],
     'inspection.confirm':['*'], 'stock.issue':['*'], 'finance.confirm':['*'], 'finance.condition':['*'],
+    'customer_receipt.read':['*'], 'customer_receipt.confirm':['*'],
     'plan.execute':['*'], 'change.implement':['*'], 'change.recheck':['*'], 'risk.read':['*'], 'risk.configure':['*'],
     'assembly.execute':['*'], 'trial.confirm':['*'], 'identity.reference':['*'],
 })

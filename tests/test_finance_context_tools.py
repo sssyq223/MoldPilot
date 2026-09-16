@@ -72,8 +72,29 @@ def sales_contract(db, project, creator, customer):
     db.add(subject)
     db.flush()
     db.add(m.ContractDetail(subject_id=subject.id, customer_id=customer.id, supplier_id=None, amount=Decimal("100000.00"), currency="CNY", contract_number="SC-SECRET-" + project.code, expected_date=date.today() + timedelta(days=60), replaces_id=None))
-    db.add(m.PaymentStage(contract_id=subject.id, name="DFM认证款", amount=Decimal("30000.00"), currency="CNY", condition="DFM认证通过后15天", condition_confirmed=False, condition_evidence=None))
-    return subject
+    stage = m.PaymentStage(contract_id=subject.id, name="DFM认证款", amount=Decimal("30000.00"), currency="CNY", condition="DFM认证通过后15天", condition_confirmed=False, condition_evidence=None)
+    db.add(stage)
+    db.flush()
+    return subject, stage
+
+
+def customer_receipt(db, project, contract, stage, creator):
+    row = m.CustomerReceiptConfirmation(
+        project_id=project.id,
+        contract_subject_id=contract.id,
+        stage_id=stage.id,
+        amount=Decimal("12000.00"),
+        currency="CNY",
+        received_date=date.today(),
+        reference="RCPT-SECRET-" + project.code,
+        evidence="银行回单",
+        confirmed_by=creator.id,
+        source_system="MANUAL",
+        source_ref="BANK-" + project.code,
+        note="客户分次回款",
+    )
+    db.add(row)
+    return row
 
 
 def outsource_contract_and_payment(db, project, creator):
@@ -129,12 +150,14 @@ def closure_finance(db, project, creator):
     return case
 
 
-def seed_finance_project(db, code="FIN-M001"):
+def seed_finance_project(db, code="FIN-M001", with_customer_receipt=True):
     admin = user(db, "admin", True)
     p = project(db, code)
     customer = profile(db, p, admin)
     effective_start(db, p, admin)
-    sales_contract(db, p, admin, customer)
+    contract, stage = sales_contract(db, p, admin, customer)
+    if with_customer_receipt:
+        customer_receipt(db, p, contract, stage, admin)
     outsource_contract_and_payment(db, p, admin)
     contact_cost(db, p, admin)
     closure_finance(db, p, admin)
@@ -156,16 +179,35 @@ def test_finance_context_schema_and_summary():
             status = analysis["derived_status"]
             assert status["has_effective_start_notice"] is True
             assert status["has_sales_contract_payment_nodes"] is True
-            assert status["has_customer_actual_receipt_ledger"] is False
+            assert status["has_customer_actual_receipt_ledger"] is True
             assert status["has_supplier_payment_request"] is True
             assert status["has_confirmed_supplier_payment"] is True
             assert status["has_open_supplier_payment_reservation"] is True
             assert status["has_finance_correction"] is True
             assert status["has_cost_or_deduction_signal"] is True
+            assert analysis["customer_receipt_summary"]["confirmed_totals"] == [{"currency": "CNY", "amount": "12000.00"}]
+            assert analysis["customer_receipt_summary"]["by_stage"][0]["stage_name"] == "DFM认证款"
             assert analysis["supplier_payment_summary"]["confirmed_totals"] == [{"currency": "CNY", "amount": "8000.00"}]
             assert "审批通过不等于已付款" in "".join(analysis["warnings"])
-            assert "未接入客户实际回款台账" in "".join(analysis["warnings"] + analysis["gaps"])
+            assert "实际回款确认" not in "".join(result["limitations"])
             assert "不同事实" in "".join(result["limitations"])
+    finally:
+        engine.dispose()
+
+
+def test_finance_context_keeps_customer_receivable_nodes_separate_without_receipts():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            seed_finance_project(db, "FIN-NO-RECEIPT", with_customer_receipt=False)
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_finance_context", {"identifier": "FIN-NO-RECEIPT"})
+            analysis = result["data"][0]["analysis"]
+            assert analysis["derived_status"]["has_sales_contract_payment_nodes"] is True
+            assert analysis["derived_status"]["has_customer_actual_receipt_ledger"] is False
+            assert analysis["customer_receipt_summary"]["confirmed_totals"] == []
+            assert "未见客户实际回款确认" in "".join(analysis["warnings"])
     finally:
         engine.dispose()
 
@@ -188,8 +230,11 @@ def test_finance_context_does_not_leak_amounts_without_finance_permissions():
             text = str(result)
             assert "SC-SECRET-FIN-LIMITED" not in text
             assert "FOC-SECRET-FIN-LIMITED" not in text
+            assert "RCPT-SECRET-FIN-LIMITED" not in text
             assert "100000.00" not in text
+            assert "12000.00" not in text
             assert "供应商付款申请" in "".join(result["limitations"])
+            assert "客户实际回款确认" in "".join(result["limitations"])
     finally:
         engine.dispose()
 
