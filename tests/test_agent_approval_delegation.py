@@ -70,11 +70,27 @@ def draft(db, buyer, project, material, quantity=Decimal("2")):
     ))
 
 
-def test_agent_delegation_auto_approves_explicitly_enabled_node(sqlite_session):
+def test_agent_delegation_stays_pending_in_ask_mode_even_with_delegation(sqlite_session):
     db = sqlite_session
     _admin, buyer, reviewer, project, material, definition = fixture_data(db, auto_node=True)
     req = draft(db, buyer, project, material)
     result = business.submit_request(db, buyer, req.id, req.revision, definition.id)
+    assert result["status"] == "SUBMITTED"
+    assert result["agent_auto_approved"] == []
+    instance = db.get(m.ApprovalInstance, result["instance_id"])
+    assert instance.status == "RUNNING"
+    seat = db.scalar(select(m.ApprovalSeat).where(m.ApprovalSeat.instance_id == instance.id))
+    assert seat.user_id == reviewer.id
+    assert seat.status == "PENDING"
+    assert db.scalar(select(func.count()).select_from(m.ApprovalAction)) == 0
+
+
+def test_agent_delegation_auto_approves_explicitly_enabled_node_when_run_delegates(sqlite_session):
+    db = sqlite_session
+    _admin, buyer, reviewer, project, material, definition = fixture_data(db, auto_node=True)
+    req = draft(db, buyer, project, material)
+    result = business.submit_request(db, buyer, req.id, req.revision, definition.id,
+                                     agent_permission_mode="delegated_auto")
     assert result["status"] == "APPROVED"
     assert result["agent_auto_approved"][0]["user_id"] == reviewer.id
     instance = db.get(m.ApprovalInstance, result["instance_id"])

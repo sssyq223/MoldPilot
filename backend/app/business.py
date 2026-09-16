@@ -127,12 +127,14 @@ def _agent_auto_policy_allows(definition, node, snapshot):
     return result is True
 
 
-def process_agent_auto_approvals(db, instance_id, limit=12):
+def process_agent_auto_approvals(db, instance_id, agent_permission_mode="ask", limit=12):
     """Apply explicit user delegations for auto-approvable nodes only.
 
     This is not a model decision. It uses the same approval_detail/decide gates as
     a human decision and only fills the current user's already assigned seat.
     """
+    if agent_permission_mode != "delegated_auto":
+        return []
     applied = []
     for _ in range(limit):
         instance = db.scalar(select(ApprovalInstance).where(ApprovalInstance.id == instance_id).with_for_update())
@@ -201,7 +203,7 @@ def bind_material_snapshot(db, user, resource_type, resource_id, resource_revisi
             'material_data':review.material_data}
 
 
-def submit_request(db, user, req_id, revision, definition_id, material_review_id=None):
+def submit_request(db, user, req_id, revision, definition_id, material_review_id=None, agent_permission_mode="ask"):
     req = db.scalar(select(PurchaseRequest).where(PurchaseRequest.id == req_id).with_for_update())
     if not req: raise DomainError("NOT_FOUND", "申请不存在或无权访问", 404)
     request_access(db, user, req, "purchase.submit")
@@ -227,7 +229,7 @@ def submit_request(db, user, req_id, revision, definition_id, material_review_id
                                 engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance); db.flush()
     enter_stage(db, instance, definition, req)
-    auto_approved = process_agent_auto_approvals(db, instance.id)
+    auto_approved = process_agent_auto_approvals(db, instance.id, agent_permission_mode)
     record(db, user, "purchase.submitted", req.id, {"instance_id": instance.id})
     return {"request_id": req.id, "instance_id": instance.id, "status": req.status, "agent_auto_approved": auto_approved}
 
@@ -339,9 +341,9 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     return {"instance_id": instance.id, "status": instance.status, "business_status": req.status}
 
 
-def decide(db, user, payload):
+def decide(db, user, payload, agent_permission_mode="ask"):
     result = _decide(db, user, payload)
-    auto_approved = process_agent_auto_approvals(db, payload["instance_id"])
+    auto_approved = process_agent_auto_approvals(db, payload["instance_id"], agent_permission_mode)
     return {**result, "agent_auto_approved": auto_approved}
 
 
@@ -384,16 +386,16 @@ def create_intent(db, user, action, resource_id, payload):
     return {"id": intent.id, "challenge": challenge, "payload": payload, "expires_at": intent.expires_at.isoformat()}
 
 
-def confirm_intent(db, user, intent_id, challenge):
+def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     intent = db.scalar(select(HumanIntent).where(HumanIntent.id == intent_id, HumanIntent.user_id == user.id).with_for_update())
     if not intent or not secrets.compare_digest(intent.challenge_hash, digest(challenge)):
         raise DomainError("CONFIRMATION_INVALID", "确认凭证无效", 403)
     if intent.receipt is not None: return intent.receipt
     if aware(intent.expires_at) <= now(): raise DomainError("CONFIRMATION_EXPIRED", "请重新核对并确认", 409)
     if intent.payload_hash != bpm.content_hash(intent.payload): raise DomainError("CONFIRMATION_INVALID", "确认内容不一致", 409)
-    if intent.action == "approval.decide": result = decide(db, user, intent.payload)
-    elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload)
-    elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload)
+    if intent.action == "approval.decide": result = decide(db, user, intent.payload, agent_permission_mode=agent_permission_mode)
+    elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
+    elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
     elif intent.action=='contact.execute':
         from .contact_tools import confirm
         result=confirm(db,user,intent.payload)
@@ -418,7 +420,7 @@ def load_subject(db,instance,lock=False):
     return db.scalar(q.with_for_update() if lock else q)
 
 
-def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=None):
+def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=None,agent_permission_mode="ask"):
     from . import domains
     subject=db.scalar(select(BusinessSubject).where(BusinessSubject.id==subject_id).with_for_update())
     if not subject:raise DomainError('NOT_FOUND','业务单据不存在',404)
@@ -442,6 +444,6 @@ def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=
                               round_no=subject.round_no,snapshot=snapshot,snapshot_hash=bpm.content_hash(snapshot),
                               engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance);db.flush();enter_stage(db,instance,definition,subject)
-    auto_approved=process_agent_auto_approvals(db,instance.id)
+    auto_approved=process_agent_auto_approvals(db,instance.id,agent_permission_mode)
     record(db,user,'business.submitted',subject.id,{'instance_id':instance.id})
     return {'subject_id':subject.id,'instance_id':instance.id,'status':subject.status,'agent_auto_approved':auto_approved}
