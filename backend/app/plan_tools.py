@@ -34,6 +34,8 @@ class PlanChangeProposalInput(StrictModel):
     reason: str = Field(min_length=1, max_length=4000)
     tasks: list[s.TaskInput] = Field(min_length=1, max_length=200)
     workflow_definition_id: str = Field(min_length=1, max_length=36)
+    material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
+        description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
 
 
 def _strength(value,needle):
@@ -222,8 +224,13 @@ def workflow_options(db,user,project):
     result=[]
     for row in rows:
         if not workflow_selection.matches(row.config,{'business_type':'plan_change','categories':set(),'design_type':None}):continue
-        if row.config.get('material_contract') is not None:continue
-        result.append(workflow_selection.metadata(row,db))
+        item=workflow_selection.metadata(row,db)
+        item['material_required']=row.config.get('material_contract') is not None
+        item['material_template_id']=row.material_template_id
+        if row.material_template_id:
+            template=db.get(m.MaterialTemplate,row.material_template_id)
+            item['material_template_name']=template.name if template else None
+        result.append(item)
     return result
 
 
@@ -257,6 +264,8 @@ def preview_plan_change(db,user,data:PlanChangeProposalInput):
     options=workflow_options(db,user,project)
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
+    definition=db.get(m.WorkflowDefinition,data.workflow_definition_id)
+    review=workflow_selection.validate_material_review(db,user,definition,data.material_review_id)
     previous_tasks={task.key:task for task in db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==previous.id))}
     changed=[];new=[];removed=[]
     incoming={task.key:task for task in data.tasks}
@@ -274,6 +283,8 @@ def preview_plan_change(db,user,data:PlanChangeProposalInput):
         '新增节点':new or ['无'],'删除节点':removed or ['无'],
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建计划变更材料并提交 Agent BPM；审批生效前不会关闭原计划、不会重排执行任务，也不会修改客户承诺交期。'}
+    if selected.get('material_required'):
+        display['资料核对包']='已确认 · '+review.review_hash[:12] if review else '未绑定'
     return detail,display
 
 
@@ -320,6 +331,7 @@ def confirm(db,user,payload):
             'tasks':[task.model_dump(mode='json') for task in data.tasks]}))
     from .business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        material_review_id=data.material_review_id,
         agent_permission_mode=agent_permission_mode_from_proposal(proposal))
     return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
         'action':'plan_change','status':'SUBMITTED'}

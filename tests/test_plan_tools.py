@@ -1,10 +1,13 @@
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app import bpm, business, domains, domain_schemas as s, models as m
 from app.authorization import PERMISSIONS, fingerprint
+from app.db import now
+from app.errors import DomainError
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
 from conftest import sign_in
@@ -141,6 +144,7 @@ def test_plan_change_skill_context_returns_active_change_and_workflows_without_g
             assert row['analysis']['active_plan']['number']=='PLAN-CHANGE-EFFECTIVE'
             assert row['plan_changes'][0]['number']=='PLAN-CHANGE-EFFECTIVE'
             assert row['workflow_options'][0]['id']==definition.id
+            assert row['workflow_options'][0]['material_required'] is False
             assert '未返回：计划变更' not in ''.join(result['limitations'])
     finally:
         engine.dispose()
@@ -260,6 +264,67 @@ def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(clien
         detail=db.get(m.PlanDetail,change.id)
         assert detail.previous_id==baseline_id
         assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==change.id))
+
+
+def test_plan_change_proposal_accepts_confirmed_material_review():
+    engine,Session=factory()
+    contract={'fields':[{'key':'signed_change','label':'客户确认设变','type':'boolean'}],'tables':[]}
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-MATERIAL')
+            template=m.MaterialTemplate(template_key='plan_change_material',version=1,name='计划变更依据',
+                status='PUBLISHED',contract=contract,package_hash=bpm.content_hash(
+                    {'template_key':'plan_change_material','version':1,'contract':contract}))
+            db.add(template);db.flush()
+            conversation=m.Conversation(user_id=admin.id,title='计划变更附件')
+            db.add(conversation);db.flush()
+            file=m.FileObject(owner_id=admin.id,conversation_id=conversation.id,request_key='file-review',
+                filename='客户确认单.pdf',media_type='application/pdf',size=32,sha256='2'*64,
+                backend='local',storage_namespace='test',object_key='plan/material/'+'2'*64,storage_version=None)
+            db.add(file);db.flush()
+            material_data={'fields':{'signed_change':True},'tables':{}}
+            review=m.MaterialReview(template_id=template.id,mapping_id=None,file_id=file.id,owner_id=admin.id,
+                status='CONFIRMED',material_data=material_data,issues=[],template_hash=template.package_hash,
+                mapping_hash='1'*64,file_sha256=file.sha256,review_hash=bpm.content_hash(material_data),
+                confirmed_by=admin.id,confirmed_at=now())
+            config={'business_type':'plan_change','material_contract':contract,
+                'nodes':[{'key':'review','name':'计划变更依据核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='plan_change_material',version=1,name='计划变更带附件审批',
+                material_template_id=template.id,status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),
+                package_hash=bpm.content_hash({'config':config}))
+            db.add_all([review,definition])
+            baseline=plan(db,p,admin,'PLAN-MATERIAL-BASE')
+            task(db,baseline,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'DONE')
+            task(db,baseline,admin,'machining','加工',date(2026,9,6),date(2026,9,20),'PLANNED')
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备带附件的计划变更',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'previous_id':baseline.id,
+                'reason':'客户签字确认加工顺延','workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+                    {'key':'machining','name':'加工','owner_user_id':admin.id,
+                    'planned_start':'2026-09-08','planned_end':'2026-09-23','prerequisites':['design']}]}
+            with pytest.raises(DomainError) as missing:
+                execute(db,admin,'prepare_project_plan_change',args,run=run)
+            assert missing.value.code=='MATERIALS_NOT_BOUND'
+            evidence=execute(db,admin,'prepare_project_plan_change',{**args,'material_review_id':review.id},run=run)
+            assert evidence['proposal']['display']['资料核对包'].startswith('已确认')
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_project_plan_change',request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'project_plan.execute',step.id,payload)
+            receipt=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            assert receipt['status']=='SUBMITTED'
+            change=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change'))
+            instance=db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==change.id))
+            binding=db.scalar(select(m.MaterialBinding).where(m.MaterialBinding.review_id==review.id))
+            assert binding.resource_type=='business_subject' and binding.resource_id==change.id
+            assert instance.snapshot['material_data']['fields']['signed_change'] is True
+            assert instance.snapshot['material_binding']['review_hash']==review.review_hash
+    finally:
+        engine.dispose()
 
 
 def test_plan_change_proposal_sqlite_confirm_chain(monkeypatch):

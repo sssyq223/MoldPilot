@@ -323,8 +323,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；真实部门确认尚未验收
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-034
@@ -386,8 +386,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 节点调整记录原计划、新计划、原因、影响范围及审批附件。内部部门提出调整后通知项目负责人，由其协调并通知受影响部门；客户变更由项目负责人组织传达。不得只留延期说明而不更新相应计划及任务。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；审批附件上传、部门确认矩阵和更完整的受影响部门通知规则仍待补齐
-- 验证证据：tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM，以及生效后 Outbox 通知受影响任务负责人；节点调整审批附件和完整部门通知尚未验收
+- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；部门确认矩阵和更完整的受影响部门通知规则仍待补齐
+- 验证证据：tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人；完整部门通知尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-041
