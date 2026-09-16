@@ -34,6 +34,9 @@ def test_proposal_no_business_write_confirmation_and_retry(client,data,monkeypat
     ids,factory=data;_,ctx=start(client,monkeypatch,'admin')
     args={**create_args(ids),'category':'五金'};e=propose(client,ctx,'create',args)
     assert e['proposal']['input']['category']=='hardware'
+    assert e['proposal']['confirmation_policy']['status']=='HUMAN_CONFIRMATION_REQUIRED'
+    assert e['proposal']['confirmation_policy']['requires_human_confirmation'] is True
+    assert e['proposal']['confirmation_policy']['requires_approval'] is False
     assert 'challenge' not in str(e) and e['data']==[]
     assert propose(client,ctx,'create',args)['evidence_id']==e['evidence_id']
     with factory() as db:

@@ -677,7 +677,8 @@ html[data-theme="light"] .profile-menu button:hover{background:#edf3f8!important
 html[data-theme="light"] .agent-approval-copy{background:#eef5fc;border-color:#d6e6f5}
 html[data-theme="light"] .status-pill.ok{color:#17643a;background:#e9f8ef;border-color:#bde8ce}
 html[data-theme="light"] .danger-outline{color:#b42318;background:#fff2f1;border-color:#f4c7c3}
-.workspace{overflow:hidden;flex-shrink:1!important;min-width:320px;max-width:calc(100vw - 320px)}
+.workspace{overflow:hidden;flex-shrink:1!important;min-width:320px;max-width:calc(100vw - 320px);transition:width .16s ease,min-width .16s ease,max-width .16s ease,opacity .12s ease}
+.workspace.workspace-collapsed{width:0!important;min-width:0!important;max-width:0!important;border-left:0!important;box-shadow:none!important;opacity:0;pointer-events:none}
 .workspace-header{height:52px;padding:0 14px;gap:12px;min-width:0}
 .workspace-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-header>div{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto}
@@ -698,12 +699,12 @@ html[data-theme="light"] .run-process .agent-tool-head:hover,html[data-theme="li
 .sidebar{border-right-color:color-mix(in srgb,var(--border) 34%,transparent)!important;box-shadow:1px 0 0 color-mix(in srgb,#fff 4%,transparent)}
 .chat-header{border-bottom-color:color-mix(in srgb,var(--border) 30%,transparent)!important;box-shadow:none}
 .profile-area{border-top-color:color-mix(in srgb,var(--border) 32%,transparent)!important}
-.workspace{border-left-color:color-mix(in srgb,var(--border) 34%,transparent)!important}
+.workspace{border-left-color:transparent!important;box-shadow:-1px 0 0 color-mix(in srgb,var(--border) 18%,transparent),-10px 0 24px color-mix(in srgb,#000 4%,transparent)!important}
 .workspace-header,.workspace-tabs{border-bottom-color:color-mix(in srgb,var(--border) 32%,transparent)!important}
 html[data-theme="light"] .sidebar{border-right-color:#eef2f6!important;box-shadow:1px 0 0 #ffffffb8}
 html[data-theme="light"] .chat-header{border-bottom-color:#edf1f5!important}
 html[data-theme="light"] .profile-area{border-top-color:#edf1f5!important}
-html[data-theme="light"] .workspace{border-left-color:#edf1f5!important}
+html[data-theme="light"] .workspace{border-left-color:transparent!important;box-shadow:-1px 0 0 #edf2f7,-10px 0 24px #94a3b812!important}
 html[data-theme="light"] .workspace-header,html[data-theme="light"] .workspace-tabs{border-bottom-color:#edf1f5!important}
 
 /* Align the sidebar brand baseline with the chat header title. */
@@ -797,6 +798,14 @@ html[data-theme="light"] .chat-header .icon-button:hover,html[data-theme="light"
 /* Workspace fullscreen should occupy the entire workbench, not keep side-panel max width. */
 .panel-full .workspace{position:relative!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;width:100%!important;max-width:none!important;min-width:0!important;flex:1 1 100%!important;box-shadow:none!important}
 
+/* Softer divider between the chat and workspace: keep the resize target,
+   but render only a subtle hairline instead of a thick grey bar. */
+.resize-handle{position:relative;width:8px;margin-left:-4px;margin-right:-4px;background:transparent!important;z-index:12}
+.resize-handle::after{content:'';position:absolute;top:0;bottom:0;left:50%;width:1px;transform:translateX(-50%);background:color-mix(in srgb,var(--border) 18%,transparent);transition:background .15s ease,box-shadow .15s ease}
+.resize-handle:hover::after,.resize-handle:focus::after{background:color-mix(in srgb,var(--accent) 42%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 8%,transparent)}
+html[data-theme="light"] .resize-handle::after{background:#edf2f7}
+html[data-theme="light"] .resize-handle:hover::after,html[data-theme="light"] .resize-handle:focus::after{background:#b9cfe7;box-shadow:0 0 0 3px #dcebf966}
+
 /* When the workspace is open, the chat column becomes narrow: keep the
    composer controls on one row and compact labels instead of wrapping. */
 .composer-toolbar{flex-wrap:nowrap;min-width:0}
@@ -808,16 +817,18 @@ html[data-theme="light"] .chat-header .icon-button:hover,html[data-theme="light"
 .workspace-open .chat{min-width:300px}
 .workspace-open .composer{margin-inline:24px;padding-inline:12px}
 .workspace-open .composer-toolbar{gap:7px}
-.workspace-open .approval-mode-button{width:30px;padding:0;border-radius:8px}
-.workspace-open .approval-mode-button span{display:none}
+.workspace-open .approval-mode-wrap,.workspace-open .approval-mode-button{flex:0 0 auto}
+.workspace-open .approval-mode-button{width:auto;min-width:82px;padding:0 8px;border-radius:999px;gap:5px}
+.workspace-open .approval-mode-button span{display:inline;max-width:none;overflow:visible}
 .workspace-open .composer-meta-group{gap:7px;flex:1 1 auto;min-width:0}
-.workspace-open .model-selector-wrap{max-width:120px}
-.workspace-open .model-selector-wrap .composer-model-label span{max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workspace-open .model-selector-wrap{max-width:72px;min-width:0;flex:0 1 72px}
+.workspace-open .model-selector-wrap .composer-model-label{max-width:72px!important;padding-inline:2px}
+.workspace-open .model-selector-wrap .composer-model-label span{max-width:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-open .context-meter{padding-inline:2px}
 .workspace-open .composer-note{margin-top:6px;font-size:9px}
 @media(max-width:980px){
- .workspace-open .model-selector-wrap{display:none!important}
- .workspace-open .composer-meta-group{flex:0 0 auto;margin-left:auto}
+ .workspace-open .model-selector-wrap{display:block!important}
+ .workspace-open .composer-meta-group{flex:1 1 auto;margin-left:auto}
 }
 
 /* Compact personnel & permission management page. */
@@ -864,4 +875,36 @@ html[data-theme="light"] .admin-empty{background:#fbfdff}
  .admin-overview-grid{grid-template-columns:1fr}
  .admin-create-form{grid-template-columns:1fr 1fr}
  .admin-create-form .primary{grid-column:1/-1}
+}
+
+/* Compact tools/skills capability page. */
+.compact-capability-filter.surface{display:flex;align-items:center;gap:8px;margin:10px 0 12px;padding:8px;border-radius:999px}
+.capability-filter-control{height:32px;display:inline-flex;flex-direction:row;align-items:center;gap:6px;min-width:0;color:var(--muted);font-size:12px}
+.capability-filter-control select{width:auto;min-width:112px;height:30px;padding:0 28px 0 9px;border-radius:999px;font-size:12px;background:color-mix(in srgb,var(--surface) 70%,var(--bg))}
+.capability-search-pill{height:32px;min-width:220px;flex:1 1 260px;display:flex;flex-direction:row;align-items:center;gap:7px;padding:0 11px;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:999px;background:color-mix(in srgb,var(--surface) 78%,var(--bg));color:var(--muted)}
+.capability-search-pill input{height:28px;border:0;background:transparent;padding:0;font-size:12px}
+.capability-groups.capability-grid{gap:14px}
+.capability-department{padding:10px 12px;border-radius:10px}
+.capability-department-title{margin:0 0 8px!important;display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
+.capability-department-title>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.capability-department-title small{height:22px;display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:999px;padding:0 8px;font-size:11px}
+.capability-type-pill{height:22px;display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));border-radius:999px;padding:0 8px;color:color-mix(in srgb,var(--accent) 72%,#fff);background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:12px;flex:0 0 auto}
+.capability-type-pill small{height:auto;border:0;padding:0;font-size:10px;color:inherit;opacity:.72}
+.capability-type-block{margin-top:0}
+.capability-type-heading.compact{margin:0 0 2px;padding:0}
+.capability-type-heading.compact strong{height:22px;display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));border-radius:999px;padding:0 8px;color:color-mix(in srgb,var(--accent) 72%,#fff);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.capability-row{gap:8px;padding:7px 0}
+.capability-row h3{font-size:12px}
+.capability-row p{margin-top:1px;max-width:100%}
+.capability-row-meta{min-width:92px}
+.capability-row-meta small{white-space:nowrap}
+html[data-theme="light"] .capability-search-pill,html[data-theme="light"] .capability-filter-control select{background:#fff;border-color:#d7e1eb}
+html[data-theme="light"] .capability-department-title small{border-color:#d7e1eb}
+html[data-theme="light"] .capability-type-heading.compact strong{background:#edf5fc;border-color:#cfe0f1;color:#244f7f}
+html[data-theme="light"] .capability-type-pill{background:#edf5fc;border-color:#cfe0f1;color:#244f7f}
+@media(max-width:720px){
+ .compact-capability-filter.surface{border-radius:14px;flex-wrap:wrap}
+ .capability-search-pill{order:-1;flex-basis:100%;min-width:0}
+ .capability-filter-control{flex:1 1 140px}
+ .capability-filter-control select{flex:1;min-width:0}
 }

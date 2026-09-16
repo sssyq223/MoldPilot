@@ -343,14 +343,14 @@ def skill_context(db, user):
 def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
-        return contact_tools.execute_tool(db,user,key,arguments)
+        return contact_tools.execute_tool(db,user,key,arguments,run=run)
     from .project_closure_tools import ACTION_BY_TOOL
     if key in ACTION_BY_TOOL or key=='query_project_closure_context':
         from .project_closure_tools import execute_tool
-        return execute_tool(db,user,key,arguments)
+        return execute_tool(db,user,key,arguments,run=run)
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from .project_control_tools import execute_tool
-        return execute_tool(db,user,key,arguments)
+        return execute_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from .project_dossier import ProjectDossierInput,query

@@ -164,7 +164,7 @@ def preview(db,user,action,data):
     return display
 
 
-def execute_tool(db,user,key,arguments):
+def execute_tool(db,user,key,arguments,run=None):
     if key=='query_project_closure_context':
         try:data=ClosureContextInput.model_validate(arguments)
         except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效项目标识') from None
@@ -177,9 +177,11 @@ def execute_tool(db,user,key,arguments):
     action=ACTION_BY_TOOL[key]
     data=parse(action,arguments);display=preview(db,user,action,data)
     requires_approval=action in {'termination','normal_close','settlement_close'}
+    from .confirmation_policy import proposal_confirmation_policy
     return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),
         'proposal':{'kind':'project_closure','action':action,'requires_approval':requires_approval,
-            'input':data.model_dump(mode='json'),'display':display},
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=requires_approval)},
         'limitations':['仅准备操作建议；必须由当前人员在会话中核对确认',
             '提交审批不等于项目状态已生效；清单更新不修改 ERP 原记录']}
 
@@ -209,6 +211,7 @@ def validate_intent(db,user,payload):
 
 
 def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload);action=proposal['action']
     if action=='checklist':
         case=closure.open_normal_case(db,user,data.project_id,data.project_version,data.current_stage,data.reason)
@@ -228,7 +231,8 @@ def confirm(db,user,payload):
     subject=domains.create(db,user,s.SubjectInput(kind='project_close',project_id=data.project_id,
         remark=data.reason,detail=detail))
     from .business import submit_subject
-    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id)
+    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        agent_permission_mode=agent_permission_mode_from_proposal(proposal))
     return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
         'action':action,'status':'SUBMITTED'}
 
@@ -250,4 +254,5 @@ def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
     from .business import create_intent
     proposal=source(db,user,step_id);payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
     result=create_intent(db,user,'project_closure.execute',step_id,payload);result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
     db.commit();return result

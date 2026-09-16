@@ -1,5 +1,5 @@
 from sqlalchemy import select
-from app import models as m
+from app import business, models as m
 from app.contact_lifecycle import preview,CloseInput,ReviewInput,ReviewerInput
 from app.errors import DomainError
 from uuid import uuid4
@@ -65,6 +65,30 @@ def test_bpm_feedback_rework_verification_and_manual_close(client,data,monkeypat
     assert case['collaboration_status']=='CLOSED' and case['closed_by_name']=='测试管理员'
     assert client.post(f"/api/contacts/{case['id']}/tasks",json=operation(case,department_id=case['tasks'][0]['department_id'],**task_body(title='关闭后不可新增'))).status_code==409
     assert len([r for r in case['records'] if r['kind']=='CLOSED'])==1
+
+
+def test_contact_resolution_proposal_carries_run_auto_mode_to_bpm_submission(client,data,monkeypatch):
+    case,tid,definition,ctx,_=setup(client,data,monkeypatch)
+    ids,factory=data
+    with factory.begin() as db:
+        run=db.get(m.Run,ctx['id'])
+        run.checkpoint={**run.checkpoint,'agent_permission_mode':'delegated_auto'}
+    captured={}
+    original=business.submit_subject
+    def capture_mode(db,user,subject_id,revision,definition_id,material_review_id=None,agent_permission_mode="ask"):
+        captured['mode']=agent_permission_mode
+        return original(db,user,subject_id,revision,definition_id,material_review_id,agent_permission_mode)
+    monkeypatch.setattr(business,'submit_subject',capture_mode)
+    evidence=propose(client,ctx,'resolution',{'case_id':case['id'],'revision':case['revision'],
+        'definition_id':definition,'solution':'按授权自动审批模式提交方案',
+        'customer_due_affected':False,'customer_evidence':None})
+    policy=evidence['proposal']['confirmation_policy']
+    assert policy['agent_permission_mode']=='delegated_auto'
+    assert policy['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
+    prepared=intent(client,evidence)
+    assert prepared['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
+    assert confirm(client,prepared).status_code==200
+    assert captured['mode']=='delegated_auto'
 
 
 def test_changed_material_removes_approve_and_blocks_close(client,data,monkeypatch):

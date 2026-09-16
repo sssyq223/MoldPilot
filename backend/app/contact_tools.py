@@ -126,7 +126,7 @@ def preview(db,user,action,cid,tid,data):
     return result
 
 
-def execute_tool(db,user,key,arguments):
+def execute_tool(db,user,key,arguments,run=None):
     if key=='query_contact_context':
         try:data=ContextInput.model_validate(arguments)
         except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效联络单标识')
@@ -148,7 +148,9 @@ def execute_tool(db,user,key,arguments):
     if 'request_key' in args:raise DomainError('INVALID_TOOL_INPUT','操作标识由系统生成')
     data=parse(action,{**args,'request_key':str(uuid4())})
     display=preview(db,user,action,cid,tid,data)
-    proposal={'kind':'contact','action':action,'case_id':cid,'task_id':tid,'input':data.model_dump(mode='json'),'display':display}
+    from .confirmation_policy import proposal_confirmation_policy
+    proposal={'kind':'contact','action':action,'case_id':cid,'task_id':tid,'input':data.model_dump(mode='json'),
+              'display':display,'confirmation_policy':proposal_confirmation_policy(run,requires_approval=action=='resolution')}
     return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
         'limitations':['仅准备操作建议，尚未创建联络单、分派或保存反馈；必须由本人核对卡片并确认']}
 
@@ -176,9 +178,12 @@ def validate_intent(db,user,payload):
 
 
 def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload)
     action=proposal['action'];cid=proposal['case_id'];tid=proposal['task_id']
-    if action in lifecycle.SPECS:result=lifecycle.execute(db,user,cid,tid,action,data)
+    if action in lifecycle.SPECS:
+        result=lifecycle.execute(db,user,cid,tid,action,data,
+            agent_permission_mode=agent_permission_mode_from_proposal(proposal))
     elif action=='create':result=c.create(data,user,db)
     elif action=='note':result=c.add_note(cid,data,user,db)
     elif action=='task':result=c.add_task(cid,data,user,db)
@@ -210,4 +215,5 @@ def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
     payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
     result=create_intent(db,user,'contact.execute',step_id,payload)
     result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
     db.commit();return result

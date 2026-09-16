@@ -219,7 +219,7 @@ def preview(db,user,case,tid,action,data):
             '说明':'人工关闭联络协作事项；不会自动修改 ERP、采购订单或客户承诺。'}
 
 
-def execute(db,user,cid,tid,action,data):
+def execute(db,user,cid,tid,action,data,agent_permission_mode="ask"):
     case=c.load(db,user,cid,True);c.require(db,user,SPECS[action][1],case)
     digest,done=c.replay(db,user,case,data,action.upper()+':'+tid)
     if done:return c.serialize(db,case,True,user)
@@ -230,7 +230,7 @@ def execute(db,user,cid,tid,action,data):
         subject=domains.create(db,user,domain_schemas.SubjectInput(kind='contact_resolution',project_id=case.project_id,
             category=case.category,remark=case.title,detail={'case_id':case.id,'case_revision':case.revision,
             'solution':data.solution,'customer_due_affected':data.customer_due_affected,'customer_evidence':data.customer_evidence}))
-        result=business.submit_subject(db,user,subject.id,1,data.definition_id)
+        result=business.submit_subject(db,user,subject.id,1,data.definition_id,agent_permission_mode=agent_permission_mode)
         detail.update(result)
     elif action=='set_reviewer':
         detail.update(previous_reviewer_id=case.reviewer_id,reviewer_id=data.reviewer_id)

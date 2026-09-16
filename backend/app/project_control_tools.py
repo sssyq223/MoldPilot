@@ -231,7 +231,7 @@ def preview(db,user,action,data):
     return detail,display
 
 
-def execute_tool(db,user,key,arguments):
+def execute_tool(db,user,key,arguments,run=None):
     if key=='query_project_control_context':
         try:data=ProjectContextInput.model_validate(arguments)
         except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效项目标识')
@@ -252,7 +252,9 @@ def execute_tool(db,user,key,arguments):
     action=key.removeprefix('prepare_project_')
     data=parse(action,arguments)
     _,display=preview(db,user,action,data)
-    proposal={'kind':'project_control','action':action,'input':data.model_dump(mode='json'),'display':display}
+    from .confirmation_policy import proposal_confirmation_policy
+    proposal={'kind':'project_control','action':action,'input':data.model_dump(mode='json'),'display':display,
+              'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
     return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
         'limitations':['仅准备操作建议；本人确认后才创建单据并提交审批，审批完成前不改变项目或计划']}
 
@@ -281,6 +283,7 @@ def validate_intent(db,user,payload):
 
 
 def confirm(db,user,payload):
+    from .confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload)
     detail={'decision':'PAUSE' if proposal['action']=='pause' else 'RESUME','effective_date':data.effective_date,
         'expected_resume_date':getattr(data,'expected_resume_date',None),'reason':data.reason,'evidence':data.evidence,
@@ -288,7 +291,8 @@ def confirm(db,user,payload):
     subject=domains.create(db,user,s.SubjectInput(kind='pause_resume',project_id=data.project_id,
         remark=data.reason,detail=detail))
     from .business import submit_subject
-    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id)
+    submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
+        agent_permission_mode=agent_permission_mode_from_proposal(proposal))
     return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
         'action':proposal['action'],'status':'SUBMITTED'}
 
@@ -312,4 +316,5 @@ def intent(step_id:str,user=Depends(current_user),db=Depends(get_db)):
     payload={'step_id':step_id,'proposal_hash':content_hash(proposal)}
     result=create_intent(db,user,'project_control.execute',step_id,payload)
     result['display']=proposal['display']
+    result['confirmation_policy']=proposal.get('confirmation_policy')
     db.commit();return result

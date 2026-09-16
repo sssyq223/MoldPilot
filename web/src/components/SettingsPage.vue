@@ -261,19 +261,18 @@ function delegationLabel(row:any){
       <button role="tab" :class="{active:capabilityTab==='all'}" :aria-selected="capabilityTab==='all'" @click="capabilityTab='all'">全部<span>{{filteredTools.length+filteredSkills.length}}</span></button>
      </div>
     </div>
-    <div class="capability-filter surface">
-     <label>查找能力<input v-model="capabilitySearch" placeholder="输入工具、权限或说明关键词"/></label>
-     <label>部门<select v-model="capabilityDepartment"><option value="">全部部门</option><option v-for="[key,name] in capabilityDepartments" :key="key" :value="key">{{name}}</option></select></label>
-     <label>类型<select v-model="capabilityType"><option value="">全部类型</option><option v-for="[key,name] in capabilityTypes" :key="key" :value="key">{{name}}</option></select></label>
+    <div class="capability-filter surface compact-capability-filter">
+     <label class="capability-filter-control">部门<select v-model="capabilityDepartment"><option value="">全部部门</option><option v-for="[key,name] in capabilityDepartments" :key="key" :value="key">{{name}}</option></select></label>
+     <label class="capability-filter-control">类型<select v-model="capabilityType"><option value="">全部类型</option><option v-for="[key,name] in capabilityTypes" :key="key" :value="key">{{name}}</option></select></label>
+     <label class="capability-search-pill"><Search :size="15"/><input v-model="capabilitySearch" placeholder="查询工具、权限或说明"/></label>
     </div>
     <template v-if="showCapabilityTools">
     <h3 class="settings-section-title">工具</h3>
     <div class="capability-groups capability-grid" role="tabpanel" aria-label="工具">
      <section v-for="department in groupedTools" :key="department.key" class="capability-department">
-      <h3>{{department.name}}</h3>
+      <h3 class="capability-department-title"><span>{{department.name}}</span><small class="muted">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</small><span v-for="type in department.types" :key="type.key" class="capability-type-pill">{{type.name}}<small>{{type.items.length}} 项</small></span></h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
-       <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(tool).departmentName}}</span><span>{{capabilityMeta(tool).typeName}}</span></div><small class="muted">{{permissionName(tool.permission)}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
+       <article v-for="tool in type.items" :key="tool.key" class="capability-row"><div><h3><Wrench :size="15"/>{{capabilityName(tool)}}</h3><p class="muted">{{tool.description}}</p></div><div class="capability-row-meta"><small class="muted">{{permissionName(tool.permission)}} · {{tool.mode==='human_confirmed_proposal'?'需确认':'只读'}}</small></div></article>
       </div>
      </section>
     </div>
@@ -284,10 +283,9 @@ function delegationLabel(row:any){
     <h3 class="settings-section-title">技能</h3>
     <div class="capability-groups capability-grid" role="tabpanel" aria-label="技能">
      <section v-for="department in groupedSkills" :key="department.key" class="capability-department">
-      <h3>{{department.name}}</h3>
+      <h3 class="capability-department-title"><span>{{department.name}}</span><small class="muted">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</small><span v-for="type in department.types" :key="type.key" class="capability-type-pill">{{type.name}}<small>{{type.items.length}} 项</small></span></h3>
       <div v-for="type in department.types" :key="type.key" class="capability-type-block">
-       <div class="capability-type-heading"><strong>{{type.name}}</strong><small class="muted">{{type.items.length}} 项</small></div>
-       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div><div class="capability-row-meta"><div class="capability-tags"><span>{{capabilityMeta(skill).departmentName}}</span><span>{{capabilityMeta(skill).typeName}}</span></div></div></article>
+       <article v-for="skill in type.items" :key="skill.key" class="capability-row"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3><p class="muted">第 {{skill.version}} 版 · 使用当前授权工具</p></div></article>
       </div>
      </section>
     </div>
