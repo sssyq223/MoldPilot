@@ -61,6 +61,9 @@ def test_invalid_or_truncated_model_output_fails_closed(body):
 
 
 TOOL = {'type': 'function', 'function': {'name': 'query_projects'}}
+OTHER_TOOL = {'type': 'function', 'function': {'name': 'query_project_plan_context',
+                                               'description': '按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读。'}}
+TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search1', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': 'query_projects'})}}]}
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
@@ -70,6 +73,15 @@ class Model:
     def generate(self, messages, tools):
         self.calls += 1
         return copy.deepcopy(self.replies.pop(0))
+
+
+class InspectingRepliesModel(Model):
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.tool_names = []
+    def generate(self, messages, tools):
+        self.tool_names.append([(tool.get("function") or {}).get("name") for tool in tools])
+        return super().generate(messages, tools)
 
 
 class Gateway:
@@ -91,7 +103,30 @@ class Gateway:
     def finish(self, result): self.check(); self.final = result
 
 
-def context(**kwargs): return {'prompt': 'query', 'tools': [TOOL], 'skills': [], **kwargs}
+_DEFAULT_CORE = object()
+def context(core_tool_names=_DEFAULT_CORE, **kwargs):
+    if core_tool_names is _DEFAULT_CORE:
+        core_tool_names = ['query_projects']
+    return {'prompt': 'query', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
+
+
+def test_business_tools_are_deferred_and_direct_calls_are_blocked():
+    gateway = Gateway()
+    model = InspectingRepliesModel([PROPOSAL])
+    with pytest.raises(RuntimeError, match='TOOL_FORBIDDEN'):
+        run_loop(context(core_tool_names=[]), model, gateway)
+    assert model.tool_names == [['ToolSearch']]
+    assert gateway.physical_calls == 0
+
+
+def test_tool_search_activates_deferred_business_tool_for_next_turn():
+    gateway = Gateway()
+    model = InspectingRepliesModel([TOOL_SEARCH, PROPOSAL, FINAL])
+    result = run_loop(context(core_tool_names=[]), model, gateway)
+    assert result['summary'] == 'one visible project'
+    assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['active_tool_names'] == ['query_projects']
 
 
 def test_recovery_reuses_persisted_proposal_and_idempotent_receipt():
@@ -140,6 +175,24 @@ def test_model_decides_to_reply_or_clarify_without_forced_tools(kind):
     result=run_loop(context(prompt='这边情况怎么样'),Model([{'content':json.dumps({'response_kind':kind,'summary':'请告诉我是哪套模具。','evidence_ids':[]})}]),gateway)
     assert result['summary']=='请告诉我是哪套模具。'
     assert gateway.physical_calls==0
+
+
+def test_first_turn_natural_language_gets_protocol_repair_without_business_fallback():
+    gateway = Gateway()
+    result = run_loop(
+        context(prompt='测试 500 定位'),
+        Model([
+            {'content': '这是一个技术排查问题，不需要查询业务数据。'},
+            {'content': json.dumps({'response_kind': 'CONVERSATION',
+                                    'summary': '这是一个技术排查问题，不需要查询业务数据。',
+                                    'evidence_ids': [], 'suggestions': []})},
+        ]),
+        gateway,
+    )
+    assert result['response_kind'] == 'CONVERSATION'
+    assert result['summary'] == '这是一个技术排查问题，不需要查询业务数据。'
+    assert gateway.physical_calls == 0
+    assert gateway.saved['protocol_repairs'] == 1
 
 
 def test_mixed_greeting_and_business_request_can_call_tools():

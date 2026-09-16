@@ -78,7 +78,11 @@ def main():
                              max_output_tokens=runtime_config.llm_max_output_tokens)
                 except Exception as exc:
                     # Do not send arbitrary upstream responses or credentials into business logs.
-                    gateway.post("fail", {"code": str(exc) if isinstance(exc, ModelError) else type(exc).__name__})
+                    if isinstance(exc, (ModelError, RuntimeError)):
+                        code = str(exc) or type(exc).__name__
+                    else:
+                        code = type(exc).__name__
+                    gateway.post("fail", {"code": code})
             except httpx.HTTPError:
                 time.sleep(5)
 
