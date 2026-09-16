@@ -42,10 +42,55 @@ def _safe_url(value: str | None) -> dict:
         "scheme": parsed.scheme or None,
         "host": parsed.hostname or None,
         "port": port,
+        "database_name": parsed.path.lstrip("/") or None,
         "path_present": bool(parsed.path and parsed.path != "/"),
         "username_present": bool(parsed.username),
         "password_present": bool(parsed.password),
         "query_present": bool(parsed.query),
+    }
+
+
+def _database_baseline(value: str | None, expected_database: str = "moldpilot") -> dict:
+    if not _configured(value):
+        return {
+            "expected_engine": "postgresql",
+            "expected_database": expected_database,
+            "status": "NOT_CONFIGURED",
+            "delivery_ready": False,
+        }
+    try:
+        parsed = urlsplit(value or "")
+        _ = parsed.port
+    except ValueError:
+        return {
+            "expected_engine": "postgresql",
+            "expected_database": expected_database,
+            "status": "INVALID_DATABASE_URL",
+            "delivery_ready": False,
+        }
+    scheme = parsed.scheme or ""
+    database_name = parsed.path.lstrip("/") or None
+    is_postgresql = scheme.startswith("postgresql")
+    is_sqlite = scheme.startswith("sqlite")
+    if is_sqlite:
+        status = "SQLITE_NOT_ALLOWED_FOR_DELIVERY"
+    elif not is_postgresql:
+        status = "NON_POSTGRESQL_DATABASE"
+    elif database_name != expected_database:
+        status = "POSTGRESQL_WRONG_DATABASE"
+    else:
+        status = "POSTGRESQL_MOLDPILOT_READY_CONFIG"
+    return {
+        "expected_engine": "postgresql",
+        "expected_database": expected_database,
+        "configured_engine": scheme or None,
+        "configured_database": database_name,
+        "is_postgresql": is_postgresql,
+        "is_sqlite": is_sqlite,
+        "matches_expected_database": database_name == expected_database,
+        "status": status,
+        "delivery_ready": status == "POSTGRESQL_MOLDPILOT_READY_CONFIG",
+        "navicat_note": "Navicat 连接应指向同一个 PostgreSQL 实例和 moldpilot 数据库；本结果不会返回密码。",
     }
 
 
@@ -62,11 +107,27 @@ def _path_summary(value: str | None) -> dict:
 
 
 def _db_status(db) -> dict:
+    status: dict = {}
+    try:
+        bind = db.get_bind()
+        status["dialect"] = bind.dialect.name if bind is not None else None
+    except Exception:  # pragma: no cover - defensive status path
+        status["dialect"] = None
     try:
         db.execute(text("SELECT 1"))
-        return {"reachable": True}
+        status["reachable"] = True
     except Exception as error:  # pragma: no cover - defensive status path
-        return {"reachable": False, "error_type": type(error).__name__}
+        status["reachable"] = False
+        status["error_type"] = type(error).__name__
+        return status
+    if status.get("dialect") == "postgresql":
+        try:
+            current_database = db.scalar(text("SELECT current_database()"))
+            status["current_database"] = current_database
+            status["matches_expected_database"] = current_database == "moldpilot"
+        except Exception as error:  # pragma: no cover - defensive status path
+            status["current_database_error_type"] = type(error).__name__
+    return status
 
 
 def _counts(db, include: bool) -> dict:
@@ -162,11 +223,17 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
     model_cfg = model_settings()
     gates = _gates(cfg, model_cfg)
+    database_baseline = _database_baseline(cfg.database_url)
+    database_health = _db_status(db)
     warnings = [
         "FR-118 要求在实施方案中确认部署、用户规模、响应时间、可用性、备份频率、恢复目标和日志保留期限；未确认前不得承诺性能、可用性或准确率。",
         "本工具只读核对当前运行事实和验收缺口；不执行部署、备份、恢复、压测或清理。",
         "返回结果只包含脱敏后的配置形态和布尔状态，不返回数据库密码、API Key、S3 密钥或 Worker 密钥。",
     ]
+    if not database_baseline["delivery_ready"]:
+        warnings.append("当前数据库配置没有满足 PostgreSQL/moldpilot/Navicat 交付基线；不要再用 SQLite 结果作为交付依据。")
+    if database_health.get("dialect") == "postgresql" and database_health.get("current_database") != "moldpilot":
+        warnings.append("当前实际 PostgreSQL 会话没有连到 moldpilot 数据库，请检查 .env 与 Navicat 连接库名是否一致。")
     if cfg.environment.lower() in {"production", "prod"} and cfg.file_backend == "local":
         warnings.append("当前声明为生产环境但附件后端仍是 local，需改为私有对象存储并完成恢复演练后才能作为生产交付。")
     return {
@@ -177,7 +244,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                 "cookie_secure": cfg.cookie_secure,
                 "database": {
                     **_safe_url(cfg.database_url),
-                    "health": _db_status(db),
+                    "baseline": database_baseline,
+                    "health": database_health,
                 },
                 "redis": {
                     **_safe_url(cfg.redis_url),

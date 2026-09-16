@@ -2,6 +2,13 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：运行就绪工具接入 PostgreSQL/Navicat 基线（2026-09-16）
+
+- `query_operations_readiness_context` 的数据库核对结果新增 `baseline`，明确返回期望引擎 PostgreSQL、期望库名 `moldpilot`、当前配置库名、是否 SQLite、是否匹配交付库名和 `delivery_ready`。
+- 运行时健康检查新增实际 SQLAlchemy 方言和 PostgreSQL `current_database()` 只读事实；本机实测返回 `dialect=postgresql`、`current_database=moldpilot`、`matches_expected_database=True`。
+- 当数据库配置不是 PostgreSQL、库名不是 `moldpilot`，或实际会话没有连到 `moldpilot` 时，工具会在 limitations 中明确警告“不能再用 SQLite 结果作为交付依据”。
+- 本轮验证只运行 `scripts/verify_postgres_baseline.py` 与运行时工具直连实际 PostgreSQL；没有新增 SQLite 测试或把 SQLite 结果作为验收依据。
+
 ## 持续开发：PostgreSQL 与 Navicat 验证基线修正（2026-09-16）
 
 - 撤回未提交的 SQLite 单元测试思路，后续开发业务库以 `.env` 中 `MOLD_DATABASE_URL` 指向的 PostgreSQL 为准。
