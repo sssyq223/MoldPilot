@@ -369,6 +369,46 @@ def closure_acceptance(db, project, creator):
     return case
 
 
+def customer_signature(db, project, creator, reference="CUSTOMER-OUT-SIGN-001"):
+    row = m.CustomerDeliverySignature(
+        project_id=project.id,
+        shipment_reference=reference,
+        signed_date=date.today(),
+        signer_name="客户代表",
+        sign_status="SIGNED",
+        move_type="DELIVERY",
+        evidence="客户签收单",
+        recorded_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def customer_acceptance(db, project, creator, signature, result="CONDITIONALLY_PASSED", deduction=True):
+    row = m.CustomerAcceptanceRecord(
+        project_id=project.id,
+        signature_id=signature.id,
+        acceptance_type="INITIAL",
+        result=result,
+        accepted_date=date.today(),
+        issue_description="客户验收扣款后有条件通过" if result == "CONDITIONALLY_PASSED" else "客户验收不通过，要求整改复验",
+        responsibility="SUPPLIER",
+        corrective_due_date=date.today() + timedelta(days=5) if result == "FAILED" else None,
+        contact_case_id=None,
+        supplier_id=None,
+        deduction_amount=Decimal("8000.00") if deduction else None,
+        currency="CNY" if deduction else None,
+        schedule_impact_days=2,
+        contract_change_required=True,
+        evidence="客户验收记录",
+        confirmed_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def test_full_outsource_schema_and_context_summary(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:
@@ -387,6 +427,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         case, contact_task = contact_issue(db, p, admin)
         supplier_deduction(db, p, admin, sup, contract, case, contact_task)
         change_negotiation(db, p, admin, sup, contract, case, contact_task)
+        signature = customer_signature(db, p, admin)
+        customer_acceptance(db, p, admin, signature, result="CONDITIONALLY_PASSED", deduction=True)
         closure_acceptance(db, p, admin)
     schema = tool_schema("query_full_outsource_context")["function"]["parameters"]
     assert {"project_id", "identifier"} <= set(schema["properties"])
@@ -417,7 +459,18 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert status["has_open_outsource_issue"] is True
         assert status["has_deduction_or_cost_impact_signal"] is True
         assert status["has_supplier_payment_request"] is True
+        assert status["has_customer_signature"] is True
+        assert status["has_customer_acceptance_record"] is True
+        assert status["has_failed_customer_acceptance"] is False
+        assert status["has_customer_recheck_passed"] is False
+        assert status["has_customer_acceptance_deduction"] is True
+        assert status["has_customer_acceptance_contract_change"] is True
         assert status["has_customer_acceptance_or_close_evidence"] is True
+        customer = analysis["customer_delivery_acceptance"]
+        assert customer["signatures"][0]["shipment_reference"] == "CUSTOMER-OUT-SIGN-001"
+        assert customer["acceptance_records"][0]["result"] == "CONDITIONALLY_PASSED"
+        assert customer["acceptance_records"][0]["deduction_amount"] == "8000.00"
+        assert customer["derived_status"]["schedule_impact_days_total"] == 2
         assert analysis["supplier_progress_reports"][0]["stage_name"] == "供应商试模与整改"
         assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
         assert analysis["supplier_material_handoffs"][0]["document_title"] == "客户原始资料包"
@@ -434,6 +487,9 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert "不合格" in warnings
         assert "供应商节点风险" in warnings
         assert "超过下次跟进日期" in warnings
+        assert "客户验收记录涉及扣款" in warnings
+        assert "要求合同变化" in warnings
+        assert "交期影响天数" in warnings
 
 
 def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_factory):
@@ -451,6 +507,8 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         material_handoff(db, p, admin, sup, contract)
         supplier_deduction(db, p, admin, sup, contract)
         change_negotiation(db, p, admin, sup, contract)
+        signature = customer_signature(db, p, admin, reference="CUSTOMER-OUT-LIMITED")
+        customer_acceptance(db, p, admin, signature, result="FAILED", deduction=True)
         order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
         grant(db, admin, operator, "project.read", project_id=p.id)
         grant(db, admin, operator, "full_outsource_contract.read", project_id=p.id, category="outsource")
@@ -466,7 +524,14 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         assert analysis["derived_status"]["has_settled_supplier_deduction"] is True
         assert analysis["derived_status"]["has_approved_outsource_change_negotiation"] is True
         assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
+        assert analysis["derived_status"]["has_customer_signature"] is True
+        assert analysis["derived_status"]["has_customer_acceptance_record"] is False
+        assert analysis["customer_delivery_acceptance"]["visibility"]["acceptance_records_visible"] is False
+        assert analysis["customer_delivery_acceptance"]["signatures"][0]["shipment_reference"] == "CUSTOMER-OUT-LIMITED"
+        assert analysis["customer_delivery_acceptance"]["acceptance_records"] == []
         assert "SHIP-OUT-SECRET" not in str(result)
+        assert "客户验收不通过" not in str(result)
+        assert "8000.00" in str(analysis["supplier_deduction_settlements"])
         assert "PO-OUT-OUT-LIMITED" not in str(result)
         assert result["data"][0]["analysis"]["supplier_execution_tracking"]["orders"] == []
         assert analysis["contract_signing_records"][0]["source_ref"] == "SIGN-FOC-OUT-LIMITED"
@@ -475,6 +540,7 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         assert analysis["supplier_deduction_settlements"][0]["source_ref"] == "DEDUCT-OUT-LIMITED"
         assert analysis["outsource_change_negotiations"][0]["source_ref"] == "NEG-OUT-LIMITED"
         assert "正式订单" in "".join(result["limitations"])
+        assert "客户验收/复验/扣款记录" in "".join(result["limitations"])
 
 
 def test_full_outsource_reports_multiple_candidates_without_deciding(pg_session_factory):

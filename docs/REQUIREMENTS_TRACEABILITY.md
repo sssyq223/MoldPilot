@@ -747,8 +747,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 委外项目交付、客户验收、回款及关闭按相应通用规则执行，财务记录整套交期、合同号、委外金额、付款和扣款。采购合同、节点上报、交付及结算记录均可查询追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 关联整套委外合同、供应商付款申请与已付款、供应商发货/收货、客户验收/关闭清单和结算事项，用于追溯委外交付、验收、回款/付款与关闭上下文；derived_status.has_supplier_payment_request 和 has_customer_acceptance_or_close_evidence 分别标记供应商付款与客户验收/关闭依据，避免把交付、验收、付款、关闭混为同一事实
-- 验证证据：tests/test_full_outsource_tools.py 覆盖委外合同、供应商付款申请/确认、交付验收清单聚合；真实财务回款、扣款、整套交期、合同号与 ERP 结算记录联调尚未验收
+- 实现证据：query_full_outsource_context 关联整套委外合同、供应商付款申请与已付款、供应商发货/收货、客户签收、客户验收/复验/扣款、供应商扣款结算、客户验收/关闭清单和结算事项，用于追溯委外交付、验收、回款/付款与关闭上下文；新增 analysis.customer_delivery_acceptance，复用 customer_delivery_signature 与 customer_acceptance_record，不重复建立交付验收表；derived_status.has_supplier_payment_request、has_customer_signature、has_customer_acceptance_record、has_failed_customer_acceptance、has_customer_acceptance_deduction、has_customer_acceptance_contract_change 和 has_customer_acceptance_or_close_evidence 分别标记供应商付款、客户签收、客户验收、验收失败、验收扣款、合同变化和客户验收/关闭依据，避免把交付、签收、验收、付款、扣款、关闭混为同一事实；客户验收/复验/扣款记录受 project_close.read 与 query_project_closure_context 约束，有限权限下不泄露失败原因和扣款金额
+- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖委外合同、供应商付款申请/确认、客户签收、有条件通过验收、验收扣款、合同变化、交期影响、供应商已结算扣款、交付验收清单聚合，以及订单权限/验收权限隔离；真实财务回款、发票、正式付款/扣款入账、整套交期、合同号与 ERP 结算记录联调尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 设变承接

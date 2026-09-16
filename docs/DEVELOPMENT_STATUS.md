@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：FR-077 委外交付、客户验收、付款扣款和关闭追溯上下文（2026-09-16）
+
+- `query_full_outsource_context` 复用交付物流侧已有的 `customer_delivery_signature` 与 `customer_acceptance_record` 数据，不新增重复业务表；整套委外上下文新增 `analysis.customer_delivery_acceptance`。
+- 派生状态新增 `has_customer_signature`、`has_customer_acceptance_record`、`has_failed_customer_acceptance`、`has_customer_recheck_passed`、`has_customer_acceptance_deduction`、`has_customer_acceptance_contract_change`，并继续保留供应商付款、供应商扣款结算和关闭清单追溯。
+- 工具明确区分供应商发货、我方收货、客户签收、客户验收、供应商付款、供应商扣款、项目关闭：客户签收不会被当成客户验收，付款申请不会被当成项目关闭，客户验收扣款必须与供应商扣款/财务结算联动核对。
+- 客户验收/复验/扣款记录受 `project_close.read` 与 `query_project_closure_context` 约束；有限权限用户仍可看到客户签收事实，但不会泄露客户验收失败原因、扣款金额、合同变化要求等敏感验收记录。
+- PostgreSQL `moldpilot_test` 验证覆盖客户签收、有条件通过验收、验收扣款、合同变化、交期影响、供应商已结算扣款、供应商付款申请，以及订单权限/验收权限隔离。
+- FR-077 仍为 NOT_VERIFIED：真实客户回款、发票、正式财务付款/扣款入账、项目关闭清单业务签署、ERP 财务联调和生产附件安全验收尚未完成正式验收。
+
 ## 持续开发：FR-074～075 委外设变议价与交期任务影响上下文（2026-09-16）
 
 - 新增 `outsource_change_negotiation` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、工程联络单/任务、客户报价、供应商报价、议定金额、币种、交期影响天数、任务影响摘要、是否需要合同变化、状态、客户/供应商/议价依据和批准人。
