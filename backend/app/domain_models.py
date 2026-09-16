@@ -132,6 +132,47 @@ class GoodsReceipt(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint('shipment_id','reference'), CheckConstraint('quantity > 0'))
 
 
+class LogisticsRoute(IdentityMixin, Base):
+    """Approved route master data for delivery/logistics price matching."""
+    __tablename__ = 'logistics_route'
+    project_id: Mapped[str | None] = mapped_column(ForeignKey('project.id'), index=True)
+    route_code: Mapped[str] = mapped_column(String(80), unique=True)
+    origin: Mapped[str] = mapped_column(String(200))
+    destination: Mapped[str] = mapped_column(String(200))
+    carrier_name: Mapped[str] = mapped_column(String(150))
+    vehicle_type: Mapped[str] = mapped_column(String(80))
+    transport_mode: Mapped[str] = mapped_column(String(40), default='TRUCK')
+    price_unit: Mapped[str] = mapped_column(String(40))
+    tax_mode: Mapped[str] = mapped_column(String(30), default='TAX_INCLUDED')
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    evidence: Mapped[str] = mapped_column(Text, default='')
+    __table_args__ = (
+        CheckConstraint("transport_mode IN ('TRUCK','EXPRESS','SEA','AIR','RAIL','OTHER')", name='logistics_route_transport_mode'),
+        CheckConstraint("tax_mode IN ('TAX_INCLUDED','TAX_EXCLUDED','UNKNOWN')", name='logistics_route_tax_mode'),
+    )
+
+
+class LogisticsQuote(IdentityMixin, Base):
+    """Versioned logistics quote; settlement price is explicit, not inferred."""
+    __tablename__ = 'logistics_quote'
+    route_id: Mapped[str] = mapped_column(ForeignKey('logistics_route.id'), index=True)
+    supplier_id: Mapped[str | None] = mapped_column(ForeignKey('supplier.id'))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    currency: Mapped[str] = mapped_column(String(3), default='CNY')
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30), default='EFFECTIVE')
+    settlement_for_project_id: Mapped[str | None] = mapped_column(ForeignKey('project.id'), index=True)
+    quote_evidence: Mapped[str] = mapped_column(Text)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint('unit_price >= 0', name='logistics_quote_nonnegative_price'),
+        CheckConstraint('valid_to >= valid_from', name='logistics_quote_valid_range'),
+        CheckConstraint("status IN ('DRAFT','SUBMITTED','EFFECTIVE','EXPIRED','CANCELLED')", name='logistics_quote_status'),
+    )
+
+
 class ReceiptInspection(IdentityMixin, Base):
     __tablename__ = 'receipt_inspection'
     receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)

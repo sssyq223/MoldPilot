@@ -1,7 +1,8 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
@@ -10,11 +11,12 @@ from app.models import Base
 from app.tool_gateway import execute, tool_schema
 
 
-def factory():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(engine, expire_on_commit=False)
-    return engine, Session
+@pytest.fixture
+def pg_session_factory(test_engine):
+    tables = ",".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+    with test_engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE " + tables + " CASCADE"))
+    return sessionmaker(test_engine, expire_on_commit=False)
 
 
 def user(db, username="operator", super_admin=False):
@@ -198,78 +200,129 @@ def contact_issue(db, project, creator):
     return case
 
 
-def test_delivery_logistics_schema_and_context_summary():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            p = project(db, "DLV-M001")
-            wh = warehouse(db)
-            plan(db, p, admin)
-            order_with_flow(db, p, admin, material(db), wh)
-            trial_result(db, p, admin, passed=True)
-            closure_acceptance(db, p, admin, status="DONE")
-            contact_issue(db, p, admin)
-        schema = tool_schema("query_delivery_logistics_context")["function"]["parameters"]
-        assert {"project_id", "identifier"} <= set(schema["properties"])
-        with Session() as db:
-            admin = db.query(m.User).filter_by(username="admin").one()
-            result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-M001"})
-            assert result["resolution"] == "RESOLVED"
-            analysis = result["data"][0]["analysis"]
-            status = analysis["derived_status"]
-            assert status["has_delivery_plan_node"] is True
-            assert status["has_supplier_shipment"] is True
-            assert status["has_goods_receipt"] is True
-            assert status["has_receipt_inspection"] is True
-            assert status["has_rejected_receipt"] is True
-            assert status["has_stock_out_movement"] is True
-            assert status["has_trial_passed"] is True
-            assert status["has_customer_acceptance"] is True
-            assert status["has_structured_logistics_price"] is False
-            assert "物流报价" in "".join(analysis["gaps"])
-            assert "试模通过只代表试模结论" in "".join(analysis["warnings"])
-    finally:
-        engine.dispose()
+def logistics_quote(db, project, creator, settlement=True):
+    today = date.today()
+    route = m.LogisticsRoute(
+        project_id=project.id,
+        route_code="ROUTE-" + project.code,
+        origin="昆山工厂",
+        destination="客户工厂",
+        carrier_name="顺达物流",
+        vehicle_type="4.2米厢车",
+        transport_mode="TRUCK",
+        price_unit="车次",
+        tax_mode="TAX_INCLUDED",
+        evidence="物流路线审批记录",
+    )
+    db.add(route)
+    db.flush()
+    quote = m.LogisticsQuote(
+        route_id=route.id,
+        supplier_id=supplier(db, "logistics").id,
+        unit_price=Decimal("1800.00"),
+        currency="CNY",
+        valid_from=today - timedelta(days=1),
+        valid_to=today + timedelta(days=180),
+        status="EFFECTIVE",
+        settlement_for_project_id=project.id if settlement else None,
+        quote_evidence="物流报价审批单",
+        approved_by=creator.id,
+    )
+    db.add(quote)
+    db.flush()
+    return route, quote
 
 
-def test_delivery_logistics_does_not_leak_order_without_order_tool():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            operator = user(db)
-            p = project(db, "DLV-LIMITED")
-            wh = warehouse(db)
-            order_with_flow(db, p, admin, material(db, "SECRET-MAT", "秘密发货物料"), wh)
-            grant(db, admin, operator, "project.read", project_id=p.id)
-            grant(db, admin, operator, "warehouse.read", warehouse_id=wh.id)
-            capability(db, operator, "query_delivery_logistics_context")
-        with Session() as db:
-            operator = db.query(m.User).filter_by(username="operator").one()
-            result = execute(db, operator, "query_delivery_logistics_context", {"identifier": "DLV-LIMITED"})
-            analysis = result["data"][0]["analysis"]
-            assert analysis["derived_status"]["has_supplier_shipment"] is False
-            assert "SHIP-SECRET" not in str(result)
-            assert "PO-DLV-LIMITED" not in str(result)
-            assert result["data"][0]["purchase_orders"] == []
-            assert "正式采购订单" in "".join(result["limitations"])
-    finally:
-        engine.dispose()
+def test_delivery_logistics_schema_and_context_summary(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-M001")
+        wh = warehouse(db)
+        plan(db, p, admin)
+        order_with_flow(db, p, admin, material(db), wh)
+        trial_result(db, p, admin, passed=True)
+        closure_acceptance(db, p, admin, status="DONE")
+        contact_issue(db, p, admin)
+    schema = tool_schema("query_delivery_logistics_context")["function"]["parameters"]
+    assert {"project_id", "identifier"} <= set(schema["properties"])
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-M001"})
+        assert result["resolution"] == "RESOLVED"
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        assert status["has_delivery_plan_node"] is True
+        assert status["has_supplier_shipment"] is True
+        assert status["has_goods_receipt"] is True
+        assert status["has_receipt_inspection"] is True
+        assert status["has_rejected_receipt"] is True
+        assert status["has_stock_out_movement"] is True
+        assert status["has_trial_passed"] is True
+        assert status["has_customer_acceptance"] is True
+        assert status["has_structured_logistics_price"] is False
+        assert "固定物流路线" in "".join(analysis["gaps"])
+        assert "试模通过只代表试模结论" in "".join(analysis["warnings"])
 
 
-def test_delivery_logistics_reports_multiple_candidates_without_deciding():
-    engine, Session = factory()
-    try:
-        with Session.begin() as db:
-            admin = user(db, "admin", True)
-            project(db, "DLV-A", "共同交付项目A")
-            project(db, "DLV-B", "共同交付项目B")
-        with Session() as db:
-            admin = db.query(m.User).filter_by(username="admin").one()
-            result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "共同交付项目"})
-            assert result["resolution"] == "MULTIPLE_CANDIDATES"
-            assert {row["code"] for row in result["data"]} == {"DLV-A", "DLV-B"}
-            assert "请使用项目 ID" in "".join(result["limitations"])
-    finally:
-        engine.dispose()
+def test_delivery_logistics_returns_effective_route_quote_and_settlement_price(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-PRICE")
+        wh = warehouse(db)
+        plan(db, p, admin)
+        order_with_flow(db, p, admin, material(db, "PRICE-MAT"), wh)
+        closure_acceptance(db, p, admin, status="DONE")
+        logistics_quote(db, p, admin, settlement=True)
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-PRICE"})
+        assert result["resolution"] == "RESOLVED"
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        pricing = analysis["logistics_pricing"]
+        assert status["has_structured_logistics_price"] is True
+        assert status["has_project_logistics_settlement_price"] is True
+        assert pricing["derived_status"]["has_effective_quote"] is True
+        assert pricing["derived_status"]["has_project_settlement_price"] is True
+        assert pricing["effective_quotes"][0]["route"]["carrier_name"] == "顺达物流"
+        assert pricing["effective_quotes"][0]["route"]["vehicle_type"] == "4.2米厢车"
+        assert pricing["settlement_price_candidates"][0]["quote"]["unit_price"] == "1800.00"
+        assert "物流报价" not in "".join(analysis["gaps"])
+
+
+def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        operator = user(db)
+        p = project(db, "DLV-LIMITED")
+        wh = warehouse(db)
+        order_with_flow(db, p, admin, material(db, "SECRET-MAT", "秘密发货物料"), wh)
+        grant(db, admin, operator, "project.read", project_id=p.id)
+        grant(db, admin, operator, "warehouse.read", warehouse_id=wh.id)
+        capability(db, operator, "query_delivery_logistics_context")
+    with Session() as db:
+        operator = db.query(m.User).filter_by(username="operator").one()
+        result = execute(db, operator, "query_delivery_logistics_context", {"identifier": "DLV-LIMITED"})
+        analysis = result["data"][0]["analysis"]
+        assert analysis["derived_status"]["has_supplier_shipment"] is False
+        assert "SHIP-SECRET" not in str(result)
+        assert "PO-DLV-LIMITED" not in str(result)
+        assert result["data"][0]["purchase_orders"] == []
+        assert "正式采购订单" in "".join(result["limitations"])
+
+
+def test_delivery_logistics_reports_multiple_candidates_without_deciding(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        project(db, "DLV-A", "共同交付项目A")
+        project(db, "DLV-B", "共同交付项目B")
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "共同交付项目"})
+        assert result["resolution"] == "MULTIPLE_CANDIDATES"
+        assert {row["code"] for row in result["data"]} == {"DLV-A", "DLV-B"}
+        assert "请使用项目 ID" in "".join(result["limitations"])

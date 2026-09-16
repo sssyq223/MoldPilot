@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from dotenv import dotenv_values
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from alembic.config import Config
@@ -16,9 +17,23 @@ from app.demo_seed import seed
 PASSWORD = "OnlyForSyntheticTests-2026!"
 
 
+def _test_database_url():
+    values = dotenv_values('.env')
+    explicit = os.environ.get("MOLD_TEST_DATABASE_URL") or values.get("MOLD_TEST_DATABASE_URL")
+    if explicit:
+        return explicit
+    main = os.environ.get("MOLD_DATABASE_URL") or values.get("MOLD_DATABASE_URL")
+    if not main:
+        return None
+    url = make_url(main)
+    if url.drivername.startswith("sqlite"):
+        return None
+    return url.set(database="moldpilot_test").render_as_string(hide_password=False)
+
+
 @pytest.fixture(scope="session")
 def test_engine():
-    url = os.environ.get("MOLD_TEST_DATABASE_URL") or dotenv_values('.env').get("MOLD_TEST_DATABASE_URL")
+    url = _test_database_url()
     if not url: pytest.skip("Isolated PostgreSQL test URL is required")
     engine = make_engine(url)
     # Destructive cleanup is strictly limited to a dedicated, explicitly named test DB.

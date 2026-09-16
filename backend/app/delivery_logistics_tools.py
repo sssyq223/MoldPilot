@@ -1,7 +1,7 @@
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from . import models as m
 from .authorization import access, predicate, select_fields
@@ -405,7 +405,73 @@ def _contact_issues(db, user, project_id, allowed_tools):
     return issues[:20]
 
 
-def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts):
+def _logistics_pricing(db, project_id):
+    today = now().date()
+    rows = []
+    q = (
+        select(m.LogisticsRoute, m.LogisticsQuote)
+        .join(m.LogisticsQuote, m.LogisticsQuote.route_id == m.LogisticsRoute.id)
+        .where(
+            m.LogisticsRoute.active.is_(True),
+            or_(m.LogisticsRoute.project_id.is_(None), m.LogisticsRoute.project_id == project_id),
+        )
+        .order_by(m.LogisticsQuote.valid_from.desc(), m.LogisticsQuote.created_at.desc(), m.LogisticsQuote.id)
+        .limit(100)
+    )
+    for route, quote in db.execute(q):
+        is_valid_now = quote.status == "EFFECTIVE" and quote.valid_from <= today <= quote.valid_to
+        is_settlement = quote.settlement_for_project_id == project_id
+        rows.append(
+            {
+                "route": {
+                    "id": route.id,
+                    "project_id": route.project_id,
+                    "route_code": route.route_code,
+                    "origin": route.origin,
+                    "destination": route.destination,
+                    "carrier_name": route.carrier_name,
+                    "vehicle_type": route.vehicle_type,
+                    "transport_mode": route.transport_mode,
+                    "price_unit": route.price_unit,
+                    "tax_mode": route.tax_mode,
+                    "evidence": route.evidence,
+                },
+                "quote": {
+                    "id": quote.id,
+                    "supplier_id": quote.supplier_id,
+                    "unit_price": str(quote.unit_price),
+                    "currency": quote.currency,
+                    "valid_from": quote.valid_from.isoformat(),
+                    "valid_to": quote.valid_to.isoformat(),
+                    "status": quote.status,
+                    "settlement_for_project_id": quote.settlement_for_project_id,
+                    "quote_evidence": quote.quote_evidence,
+                    "approved_by": quote.approved_by,
+                    "approved_at": quote.approved_at.isoformat() if quote.approved_at else None,
+                    "is_valid_now": is_valid_now,
+                    "is_settlement_price_for_project": is_settlement,
+                },
+            }
+        )
+    effective = [row for row in rows if row["quote"]["is_valid_now"]]
+    settlement = [row for row in effective if row["quote"]["is_settlement_price_for_project"]]
+    open_reviews = [row for row in rows if row["quote"]["status"] in {"DRAFT", "SUBMITTED"}]
+    expired = [row for row in rows if row["quote"]["status"] == "EXPIRED" or row["quote"]["valid_to"] < today.isoformat()]
+    return {
+        "effective_quotes": effective[:20],
+        "settlement_price_candidates": settlement[:20],
+        "open_price_reviews": open_reviews[:20],
+        "expired_quotes": expired[:20],
+        "derived_status": {
+            "has_route": bool(rows),
+            "has_effective_quote": bool(effective),
+            "has_project_settlement_price": bool(settlement),
+            "has_open_price_review": bool(open_reviews),
+        },
+    }
+
+
+def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing):
     totals = shipment_tracking["totals"]
     trial_passed = [row for row in trials if row.get("passed") is True]
     trial_failed = [row for row in trials if row.get("passed") is False]
@@ -440,7 +506,15 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         gaps.append("未见结项/归档清单中的交付或发货完成依据。")
     if not customer_acceptance_done:
         gaps.append("未见客户签收与客户质量验收分别确认的正式依据。")
-    gaps.append("未见结构化固定物流路线、承运商车型、物流报价有效期或本次结算价格；FR-065～067 仍需后续模型/ERP 适配。")
+    pricing_status = logistics_pricing["derived_status"]
+    if not pricing_status["has_route"]:
+        gaps.append("未见结构化固定物流路线、承运商车型、计价单位、含税方式和有效期。")
+    elif not pricing_status["has_effective_quote"]:
+        gaps.append("已登记物流路线，但未见当前有效的物流报价。")
+    if pricing_status["has_effective_quote"] and not pricing_status["has_project_settlement_price"]:
+        warnings.append("存在有效物流报价，但尚未明确本项目本次结算价格；费用对账仍需按项目确认。")
+    if pricing_status["has_open_price_review"]:
+        warnings.append("存在未完成的物流报价审批，正式结算价格可能即将变化。")
 
     return {
         "active_plan": (
@@ -459,6 +533,7 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         "trial_results": trials[:50],
         "closure_delivery_acceptance_items": closure_items[:100],
         "delivery_quality_contacts": contacts,
+        "logistics_pricing": logistics_pricing,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -476,7 +551,8 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
             "has_customer_signature": False,
             "has_customer_acceptance": bool(customer_acceptance_done),
             "has_open_delivery_or_quality_issue": bool(open_contacts),
-            "has_structured_logistics_price": False,
+            "has_structured_logistics_price": pricing_status["has_effective_quote"],
+            "has_project_logistics_settlement_price": pricing_status["has_project_settlement_price"],
         },
     }
 
@@ -503,6 +579,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         trials = _trial_results(_visible_subjects(db, user, project.id, "trial_request", allowed_tools))
         closure_items = _closure_items(db, user, project.id, allowed_tools)
         contacts = _contact_issues(db, user, project.id, allowed_tools)
+        logistics_pricing = _logistics_pricing(db, project.id)
         profile = _profile(db, user, project.id)
         skipped = []
         if not records["project_plan"] and not records["plan_change"]:
@@ -526,7 +603,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                     "project_plans": _plan_headers(records)["project_plan"],
                     "plan_changes": _plan_headers(records)["plan_change"],
                     "purchase_orders": _order_headers(orders),
-                    "analysis": _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts),
+                    "analysis": _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing),
                 }
             ],
             "source": "agent_db",

@@ -635,8 +635,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 固定物流路线维护出发地、接收地、承运商、车型或运输方式、计价单位、含税方式和有效期。现有固定路线主要用于冲压业务；模具物流按实际路线处理，两类业务均保存地点、重量、车型及历史价格。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 在 gaps 中明确未见结构化固定物流路线、承运商车型、物流报价有效期或本次结算价格时不能编造路线或价格；交付物流 Skill 要求区分模具物流实际路线与固定路线，当前只读上下文不创建物流路线、不维护报价
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖无结构化物流价格时返回缺口；固定路线维护、地点/重量/车型/历史价格结构化模型仍未实现
+- 实现证据：新增 logistics_route / logistics_quote PostgreSQL 模型与迁移，保存项目/全局路线、出发地、接收地、承运商、车型/运输方式、计价单位、含税方式、报价有效期和审批证据；query_delivery_logistics_context 返回 analysis.logistics_pricing，区分有效路线报价、过期报价、待审批报价和缺口，没有结构化路线或有效报价时不编造路线、承运商、车型或价格
+- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖无结构化物流路线时返回缺口，以及有效路线报价返回承运商、车型、计价单位、含税方式和有效期；路线/报价正式维护入口、地点/重量/历史价格完整维护和真实业务验收仍未完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-066
@@ -644,8 +644,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 仓库确认路线后匹配审批有效价格并形成物流费用。无固定路线或未匹配有效价格时，由采购主管询比议价并审批，生成本次结算价格及对账依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 明确仓库收货、检验和物流结算依据缺口，不把供应商发货或仓库收货推断为已形成物流费用；工具 limitations 声明不维护物流报价、不生成本次结算价格，后续需单独适配固定路线或询比议价结果
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖物流报价/结算价格缺口提示；有效价格匹配、采购主管询比议价审批和对账依据尚未实现
+- 实现证据：logistics_quote 可绑定 settlement_for_project_id 作为项目本次结算价候选；query_delivery_logistics_context 在 analysis.logistics_pricing.settlement_price_candidates 返回匹配项目的有效结算价，并用 has_project_logistics_settlement_price 区分“已有有效报价”和“已有本项目结算价”；仓库收货、检验和供应商发货不会被推断为已形成物流费用
+- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖有效路线报价和项目结算价候选；仓库确认路线、采购主管询比议价审批、费用对账依据和财务结算联动尚未正式实现/验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-067
@@ -653,8 +653,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 物流报价保存有效期，现有业务约定最长半年，期满或价格变化后重新维护并按需要多家比价。具体期限作为适配参数确认。发货时间、物流单、费用及对应项目模具应可追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；同时标记 has_structured_logistics_price=false；交付物流 Skill 要求物流报价有效期、本次结算价格和对账依据缺失时只作为缺口说明，不编造承运商或价格
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖发货、收货、出库移动追溯和物流报价缺口；半年有效期、多家比价和物流费用对账模型尚未实现
+- 实现证据：query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；新增 logistics_quote.valid_from / valid_to 并在 analysis.logistics_pricing 中返回有效、过期和待审批报价，保留本次结算价候选与项目模具追溯关系
+- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖发货、收货、出库移动追溯、有效报价期和项目结算价候选；半年上限参数、多家比价、物流费用对账、客户签收和 ERP/财务联调尚未正式实现/验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-068
