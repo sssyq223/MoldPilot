@@ -711,8 +711,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 采购合同按模板、审批和签订流程办理，供应商在线签署属于原需求中的目标能力，其具体服务及签署方式须确认。未确定电子签署接入前，不将草稿自动生成等同于合同已签署。
 
 - 最新口径：在线电子签署已由用户取消；保留模板、人工审核签订及签署文件上传。
-- 实现证据：query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数和生效状态；合同草稿、模板生成或报价依据不会被认定为已签署合同；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
-- 验证证据：tests/test_full_outsource_tools.py 覆盖已生效委外合同上下文；合同模板生成、人工签署文件上传、审批签订流程和正式合同附件管理尚未完整验收
+- 实现证据：新增 contract_signing_record PostgreSQL 模型与迁移，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人和证据；query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数、生效状态和 analysis.contract_signing_records，合同草稿、模板生成、审批上下文或非已签署记录不会被认定为已签署合同；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
+- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖已生效委外合同上下文、已签署合同文件证据和合同权限下签署依据可见；合同模板生成、采购主管提交、总经理审批、正式合同附件安全和文件存储联调尚未完整验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-074

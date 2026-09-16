@@ -317,6 +317,31 @@ class ContractDetail(Base):
     __table_args__ = (CheckConstraint('amount > 0'),)
 
 
+class ContractSigningRecord(IdentityMixin, Base):
+    """Manual/template-based contract signing evidence; does not imply e-sign integration."""
+    __tablename__ = 'contract_signing_record'
+    contract_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    template_name: Mapped[str] = mapped_column(String(150), default='')
+    signing_method: Mapped[str] = mapped_column(String(40), default='MANUAL')
+    status: Mapped[str] = mapped_column(String(30), default='SIGNED')
+    signed_date: Mapped[date | None] = mapped_column(Date)
+    signed_file_id: Mapped[str | None] = mapped_column(ForeignKey('file_object.id'), index=True)
+    signed_file_title: Mapped[str] = mapped_column(String(200), default='')
+    supplier_signer: Mapped[str] = mapped_column(String(120), default='')
+    buyer_reviewer_id: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    recorded_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('contract_subject_id','status','source_ref', name='contract_signing_record_unique_source'),
+        CheckConstraint("signing_method IN ('MANUAL','OFFLINE_FILE','IMPORT','ERP','OTHER')", name='contract_signing_method'),
+        CheckConstraint("status IN ('DRAFT','UNDER_REVIEW','SIGNED','REJECTED','CANCELLED')", name='contract_signing_status'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='contract_signing_source_system'),
+    )
+
+
 class PaymentStage(IdentityMixin, Base):
     __tablename__ = 'payment_stage'
     contract_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))

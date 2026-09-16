@@ -211,6 +211,49 @@ def _payment_summary(rows):
     }
 
 
+def _contract_signing_records(db, user, contract_rows, allowed_tools):
+    if not contract_rows or not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    contract_ids = [row.get("id") for row in contract_rows if row.get("id")]
+    if not contract_ids:
+        return []
+    allowed_contracts = {
+        row.get("id")
+        for row in contract_rows
+        if access(db, user, "full_outsource_contract.read", {"project_id": row.get("project_id"), "category": row.get("category")}).allowed
+    }
+    if not allowed_contracts:
+        return []
+    rows = []
+    q = (
+        select(m.ContractSigningRecord)
+        .where(m.ContractSigningRecord.contract_subject_id.in_(list(allowed_contracts)))
+        .order_by(m.ContractSigningRecord.created_at.desc(), m.ContractSigningRecord.id)
+        .limit(100)
+    )
+    for record in db.scalars(q):
+        rows.append(
+            {
+                "id": record.id,
+                "contract_subject_id": record.contract_subject_id,
+                "template_name": record.template_name,
+                "signing_method": record.signing_method,
+                "status": record.status,
+                "signed_date": record.signed_date.isoformat() if record.signed_date else None,
+                "signed_file_id": record.signed_file_id,
+                "signed_file_title": record.signed_file_title,
+                "supplier_signer": record.supplier_signer,
+                "buyer_reviewer_id": record.buyer_reviewer_id,
+                "approved_by": record.approved_by,
+                "evidence": record.evidence,
+                "source_system": record.source_system,
+                "source_ref": record.source_ref,
+                "recorded_by": record.recorded_by,
+            }
+        )
+    return rows
+
+
 def _plan_tasks(rows):
     tasks = []
     active = next((row for row in rows if row.get("status") == "EFFECTIVE"), None)
@@ -443,8 +486,10 @@ def _closure_items(db, user, project_id, allowed_tools):
     return rows[:100]
 
 
-def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, order_tracking, engineering_changes, contacts, payments, closure_items):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, order_tracking, engineering_changes, contacts, payments, closure_items):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
+    signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
+    non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
     totals = order_tracking["totals"]
     open_contacts = [row for row in contacts if row.get("collaboration_status") != "CLOSED"]
     open_change_impacts = [impact for row in engineering_changes for impact in row.get("unimplemented_impacts") or []]
@@ -471,6 +516,10 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
         warnings.append("有效承接为整套委外，但项目档案加工方式不是整套委外，需核对是否已有后续变更依据。")
     if not contract_effective:
         gaps.append("未见已生效整套委外合同；不能把合同草稿或报价委外金额当成合同已签署。")
+    if contract_effective and not signed_contracts:
+        gaps.append("未见整套委外合同的人工签署文件或签署依据；不能把模板草稿、合同号或审批上下文等同于已签署合同。")
+    if non_signed_contracts:
+        warnings.append("存在非已签署状态的合同签署记录，不能作为正式合同签署依据。")
     if contract_effective and not approved_handoffs:
         gaps.append("未见按合同或业务需要向供应商提供获准客户资料/设计资料的交接依据。")
     if draft_or_revoked_handoffs:
@@ -503,6 +552,7 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
 
     return {
         "latest_full_outsource_acceptance": quote_acceptance,
+        "contract_signing_records": signing_records,
         "active_plan": (
             {"id": active_plan.get("id"), "number": active_plan.get("number"), "status": active_plan.get("status"), "created_at": active_plan.get("created_at")}
             if active_plan
@@ -523,6 +573,8 @@ def _analysis(project, profile, quote_acceptance, contracts, active_plan, plan_t
             "profile_execution_mode": mode,
             "has_full_outsource_mode": mode == "FULL_OUTSOURCE" or bool(quote_acceptance),
             "has_effective_full_outsource_contract": bool(contract_effective),
+            "has_signed_full_outsource_contract_file": bool(signed_contracts),
+            "has_unsigned_contract_signing_record": bool(non_signed_contracts),
             "has_outsource_plan_node": bool(plan_tasks),
             "has_supplier_progress_report": bool(supplier_progress_reports),
             "has_supplier_progress_risk": bool(risky_reports),
@@ -552,6 +604,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         profile = _profile(db, user, project.id)
         quote_rows = _subject_rows(db, user, project.id, "quote_acceptance", allowed_tools)
         contract_rows = _subject_rows(db, user, project.id, "full_outsource_contract", allowed_tools)
+        signing_records = _contract_signing_records(db, user, contract_rows, allowed_tools)
         plan_rows = _subject_rows(db, user, project.id, "project_plan", allowed_tools) + _subject_rows(db, user, project.id, "plan_change", allowed_tools)
         active_plan, plan_tasks = _plan_tasks(plan_rows)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
@@ -591,6 +644,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         profile,
                         _latest_outsource_acceptance(quote_rows),
                         contract_rows,
+                        signing_records,
                         active_plan,
                         plan_tasks,
                         supplier_progress_reports,

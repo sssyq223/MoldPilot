@@ -55,6 +55,11 @@ SELECT
 FROM customer_acceptance_record
 UNION ALL
 SELECT
+    'contract_signing_record',
+    COUNT(*)
+FROM contract_signing_record
+UNION ALL
+SELECT
     'supplier_progress_report',
     COUNT(*)
 FROM supplier_progress_report

@@ -236,6 +236,28 @@ def material_handoff(db, project, creator, sup, contract=None, status="APPROVED"
     return row
 
 
+def contract_signing(db, contract, creator, status="SIGNED"):
+    row = m.ContractSigningRecord(
+        contract_subject_id=contract.id,
+        template_name="整套委外合同模板",
+        signing_method="OFFLINE_FILE",
+        status=status,
+        signed_date=date.today() if status == "SIGNED" else None,
+        signed_file_id=None,
+        signed_file_title="整套委外合同签署扫描件.pdf" if status == "SIGNED" else "",
+        supplier_signer="供应商负责人" if status == "SIGNED" else "",
+        buyer_reviewer_id=creator.id,
+        approved_by=creator.id if status == "SIGNED" else None,
+        evidence="人工签署文件上传记录",
+        source_system="MANUAL",
+        source_ref="SIGN-" + contract.number,
+        recorded_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def contact_issue(db, project, creator):
     group = m.AssignmentGroup(kind="DEPARTMENT", name="采购部")
     db.add(group)
@@ -304,6 +326,7 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         wh = warehouse(db)
         acceptance(db, p, admin)
         contract = outsource_contract(db, p, admin, sup)
+        contract_signing(db, contract, admin)
         material_handoff(db, p, admin, sup, contract)
         _, task = plan(db, p, admin)
         supplier_progress(db, p, admin, sup, task)
@@ -320,6 +343,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         status = analysis["derived_status"]
         assert status["has_full_outsource_mode"] is True
         assert status["has_effective_full_outsource_contract"] is True
+        assert status["has_signed_full_outsource_contract_file"] is True
+        assert status["has_unsigned_contract_signing_record"] is False
         assert status["has_outsource_plan_node"] is True
         assert status["has_supplier_progress_report"] is True
         assert status["has_supplier_progress_risk"] is True
@@ -336,6 +361,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
         assert analysis["supplier_material_handoffs"][0]["document_title"] == "客户原始资料包"
         assert analysis["supplier_material_handoffs"][0]["approval_status"] == "APPROVED"
+        assert analysis["contract_signing_records"][0]["signed_file_title"] == "整套委外合同签署扫描件.pdf"
+        assert analysis["contract_signing_records"][0]["status"] == "SIGNED"
         assert "供应商门户" in "".join(analysis["gaps"])
         warnings = "".join(analysis["warnings"])
         assert "不合格" in warnings
@@ -353,6 +380,7 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         sup = supplier(db)
         wh = warehouse(db)
         contract = outsource_contract(db, p, admin, sup)
+        contract_signing(db, contract, admin)
         supplier_progress(db, p, admin, sup)
         material_handoff(db, p, admin, sup, contract)
         order_flow(db, p, admin, material(db, "SECRET-OUT-MAT"), sup, wh)
@@ -364,12 +392,14 @@ def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_facto
         result = execute(db, operator, "query_full_outsource_context", {"identifier": "OUT-LIMITED"})
         analysis = result["data"][0]["analysis"]
         assert analysis["derived_status"]["has_effective_full_outsource_contract"] is True
+        assert analysis["derived_status"]["has_signed_full_outsource_contract_file"] is True
         assert analysis["derived_status"]["has_supplier_progress_report"] is True
         assert analysis["derived_status"]["has_approved_supplier_material_handoff"] is True
         assert analysis["derived_status"]["has_supplier_shipment_or_receipt"] is False
         assert "SHIP-OUT-SECRET" not in str(result)
         assert "PO-OUT-OUT-LIMITED" not in str(result)
         assert result["data"][0]["analysis"]["supplier_execution_tracking"]["orders"] == []
+        assert analysis["contract_signing_records"][0]["source_ref"] == "SIGN-FOC-OUT-LIMITED"
         assert analysis["supplier_progress_reports"][0]["source_ref"] == "SPR-OUT-LIMITED"
         assert analysis["supplier_material_handoffs"][0]["source_ref"] == "HANDOFF-OUT-LIMITED"
         assert "正式订单" in "".join(result["limitations"])

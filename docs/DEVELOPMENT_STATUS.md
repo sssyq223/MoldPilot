@@ -2,6 +2,15 @@
 
 更新：2026-09-16。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：FR-073 整套委外合同签署文件上下文（2026-09-16）
+
+- 新增 `contract_signing_record` PostgreSQL 迁移与领域模型，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人、证据和来源。
+- `query_full_outsource_context` 新增 `analysis.contract_signing_records`，并将 `has_signed_full_outsource_contract_file`、`has_unsigned_contract_signing_record` 纳入派生状态。
+- 有生效整套委外合同但无已签署文件/签署依据时返回 gaps；草稿、审核中、驳回或取消的签署记录进入 warnings，不会被当作正式签署合同。
+- 该能力仅覆盖模板/人工审核签订/签署文件上传证据，不接入在线电子签署服务。
+- PostgreSQL `moldpilot_test` 验证覆盖已签署合同文件证据、合同权限下可见签署依据、订单权限隔离和整套委外上下文汇总。
+- FR-073 仍为 NOT_VERIFIED：真实合同模板生成、采购主管提交、总经理审批、正式签署文件上传、附件安全和 ERP/文件存储联调尚未完成正式验收。
+
 ## 持续开发：FR-072 客户资料交接与供应商核验上下文（2026-09-16）
 
 - 新增 `supplier_material_handoff` PostgreSQL 迁移与领域模型，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人。
