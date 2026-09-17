@@ -9,6 +9,7 @@ from .errors import DomainError
 from .proposal_registry import require_tool_handler
 from .security import current_user
 from .agent_resume import queue_after_proposal_decision
+from .run_events import publish_run_update
 
 
 router = APIRouter(prefix="/api/proposals", tags=["agent-proposals"])
@@ -54,6 +55,10 @@ def proposal_intent(step_id: str, user=Depends(current_user), db=Depends(get_db)
 @router.post("/{step_id}/dismiss")
 def dismiss_proposal(step_id: str, user=Depends(current_user), db=Depends(get_db)):
     proposal_source(db, user, step_id)
-    queue_after_proposal_decision(db, user, step_id, "dismissed")
+    step = db.get(m.Step, step_id)
+    run = db.get(m.Run, step.run_id)
+    resumed = queue_after_proposal_decision(db, user, step_id, "dismissed")
     db.commit()
+    if resumed:
+        publish_run_update(run.conversation_id, run.id, run.status)
     return {"status": "dismissed"}

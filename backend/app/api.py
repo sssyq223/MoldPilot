@@ -4,9 +4,11 @@ import json
 import re
 import secrets
 from fastapi import FastAPI, Depends, Request, Response, Query
-from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, func, text, delete, literal
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
 from .config import (settings, model_settings, public_model_config, save_model_config,
                      create_model_profile, update_model_profile, activate_model_profile,
@@ -15,6 +17,7 @@ from . import models as m, schemas as s, authorization as auth, business, bpm
 from .security import current_user, login, public_user, hasher, normalize_username, digest
 from .errors import DomainError
 from .events import record
+from .run_events import publish_run_update, subscribe_run_updates
 
 app = FastAPI(title="模具工作台 · 独立 Agent", version="0.1.0")
 from .organization_api import router as organization_router
@@ -209,6 +212,53 @@ def run_duration_seconds(run, steps):
             return max(1, int(round(model_elapsed_ms / 1000)))
         end = aware(run.created_at)
     return max(0, int((end - aware(run.created_at)).total_seconds()))
+
+
+def conversation_runs_payload(db, user, conversation_id: str):
+    """Build the only client-visible run projection for HTTP and live events."""
+    from .files import run_files
+    current_hash = auth.fingerprint(db, user)
+    result = []
+    for r in db.scalars(select(m.Run).where(
+            m.Run.conversation_id == conversation_id,
+            m.Run.user_id == user.id,
+    ).order_by(m.Run.created_at)):
+        checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
+        authorization_hash = checkpoint.get("authorization_hash")
+        visible = r.security_version == user.security_version and (
+            not authorization_hash or authorization_hash == current_hash
+        )
+        steps = list(db.scalars(select(m.Step).where(
+            m.Step.run_id == r.id
+        ).order_by(m.Step.sequence))) if visible else []
+        decisions = proposal_decisions(db, user.id, r, steps) if visible else {}
+        result.append({
+            "id": r.id,
+            "prompt": r.prompt,
+            "status": r.status,
+            "created_at": r.created_at,
+            "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
+            "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
+            "files": run_files(db, user, r) if visible else [],
+            "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
+            "trace": run_trace(r, steps, decisions) if visible else [],
+            "context_usage": checkpoint.get("context_usage") if visible else None,
+            "progress": {
+                "turn": checkpoint.get("turn", 0),
+                "phase": checkpoint.get("phase"),
+                "model_elapsed_ms": checkpoint.get("model_elapsed_ms", 0),
+                "context_usage": checkpoint.get("context_usage"),
+                "elapsed_seconds": max(0, int((now() - aware(r.created_at)).total_seconds()))
+                    if r.status in {"QUEUED", "RUNNING"} else None,
+                "tools": [{"id": step.id, "name": step.tool} for step in steps],
+            } if visible else None,
+        })
+    return result
+
+
+def _sse_event(name: str, data) -> str:
+    payload = json.dumps(jsonable_encoder(data), ensure_ascii=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {payload}\n\n"
 
 
 @app.exception_handler(DomainError)
@@ -662,12 +712,18 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     intent = db.scalar(select(m.HumanIntent).where(
         m.HumanIntent.id == intent_id, m.HumanIntent.user_id == user.id))
     result = business.confirm_intent(db, user, intent_id, data.challenge)
+    resumed_run = None
     if intent:
         from .agent_resume import queue_after_proposal_decision
         step = db.get(m.Step, intent.resource_id)
         if step:
-            queue_after_proposal_decision(db, user, step.id, "approved", result)
-    db.commit(); return result
+            candidate = db.get(m.Run, step.run_id)
+            if queue_after_proposal_decision(db, user, step.id, "approved", result):
+                resumed_run = candidate
+    db.commit()
+    if resumed_run:
+        publish_run_update(resumed_run.conversation_id, resumed_run.id, resumed_run.status)
+    return result
 
 
 @app.post("/api/business/command-intents")
@@ -802,35 +858,66 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
     record(db, user, "agent.run.created", run.id, {"agent_permission_mode": permission_mode}); db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
     return {"id": run.id, "conversation_id": conversation.id, "status": run.status, "agent_permission_mode": permission_mode}
 
 
 @app.get("/api/conversations/{conversation_id}/runs")
 def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    from .files import run_files
-    current_hash = auth.fingerprint(db, user)
-    result = []
-    for r in db.scalars(select(m.Run).where(m.Run.conversation_id == conversation_id, m.Run.user_id == user.id).order_by(m.Run.created_at)):
-        checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
-        authorization_hash = checkpoint.get("authorization_hash")
-        visible = r.security_version == user.security_version and (not authorization_hash or authorization_hash == current_hash)
-        steps = list(db.scalars(select(m.Step).where(m.Step.run_id == r.id).order_by(m.Step.sequence))) if visible else []
-        decisions = proposal_decisions(db, user.id, r, steps) if visible else {}
-        result.append({"id": r.id, "prompt": r.prompt, "status": r.status,
-                       "created_at": r.created_at,
-                       "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
-                       "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
-                       "files": run_files(db,user,r) if visible else [],
-                       "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
-                       "trace": run_trace(r, steps, decisions) if visible else [],
-                       "context_usage": checkpoint.get("context_usage") if visible else None,
-                       "progress": {"turn": checkpoint.get("turn", 0),
-                                    "phase": checkpoint.get('phase'),
-                                    "model_elapsed_ms": checkpoint.get('model_elapsed_ms', 0),
-                                    "context_usage": checkpoint.get("context_usage"),
-                                    "elapsed_seconds": max(0, int((now()-aware(r.created_at)).total_seconds())) if r.status in {'QUEUED','RUNNING'} else None,
-                                    "tools": [{"id": step.id, "name": step.tool} for step in steps]} if visible else None})
-    return result
+    return conversation_runs_payload(db, user, conversation_id)
+
+
+@app.get("/api/conversations/{conversation_id}/runs/events")
+def run_events(conversation_id: str, request: Request, user=Depends(current_user), db=Depends(get_db)):
+    conversation = db.scalar(select(m.Conversation).where(
+        m.Conversation.id == conversation_id,
+        m.Conversation.user_id == user.id,
+    ))
+    if not conversation:
+        raise DomainError("NOT_FOUND", "会话不存在", 404)
+
+    user_id = user.id
+    session_expires_at = request.state.session.expires_at
+    stream_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+
+    async def stream():
+        initial_sent = False
+        async for signal in subscribe_run_updates(conversation_id):
+            if await request.is_disconnected():
+                return
+            if aware(session_expires_at) <= now():
+                yield _sse_event("authorization", {"status": "expired"})
+                return
+            kind = signal.get("type")
+            if kind == "heartbeat":
+                yield ": keep-alive\n\n"
+                continue
+            if kind in {"ready", "update", "unavailable"}:
+                with stream_factory() as stream_db:
+                    live_user = stream_db.get(m.User, user_id)
+                    live_conversation = stream_db.scalar(select(m.Conversation.id).where(
+                        m.Conversation.id == conversation_id,
+                        m.Conversation.user_id == user_id,
+                    ))
+                    if not live_user or not live_user.active or not live_conversation:
+                        yield _sse_event("authorization", {"status": "revoked"})
+                        return
+                    payload = conversation_runs_payload(stream_db, live_user, conversation_id)
+                if not initial_sent or kind == "update":
+                    initial_sent = True
+                    yield _sse_event("runs", payload)
+                if kind == "unavailable":
+                    yield _sse_event("transport", {"status": "redis_unavailable"})
+                    return
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/runs/{run_id}/cancel")
@@ -840,7 +927,9 @@ def cancel(run_id: str, user=Depends(current_user), db=Depends(get_db)):
     if run.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
         run.status = "CANCELLED"; run.lease_epoch += 1
         run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
-    db.commit(); return {"status": run.status}
+    db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
+    return {"status": run.status}
 
 
 @app.get("/api/capabilities")

@@ -9,6 +9,7 @@ from .models import Run, User, Step
 from . import tool_gateway as tools
 from .bpm import content_hash
 from .authorization import fingerprint
+from .run_events import publish_run_update
 
 
 def worker_auth(request: Request):
@@ -43,10 +44,12 @@ def execute_step(db, run_id, data):
         if data["key"] not in tools.available_tools(db, user):
             raise DomainError("TOOL_FORBIDDEN", "工具授权已变化", 403)
         db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
         return {"evidence_id": prior.id, **prior.result}
     result = tools.execute(db, user, data["key"], data["arguments"], run=run)
     step = Step(run_id=run.id, sequence=sequence, tool=data["key"], request_hash=h, result=result)
     db.add(step); db.flush(); db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
     return {"evidence_id": step.id, **result}
 
 def recent_requests(db,user,run):
@@ -71,18 +74,24 @@ def install(app):
         if not run: return {"run": None}
         user = db.get(User, run.user_id)
         if not user or not user.active or user.security_version != run.security_version:
-            run.status = "FAILED"; run.result = {"message": "权限已变化，请重新发起"}; db.commit(); return {"run": None}
+            run.status = "FAILED"; run.result = {"message": "权限已变化，请重新发起"}; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
+            return {"run": None}
         authorization_hash = fingerprint(db, user)
         checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
         existing_authorization_hash = checkpoint.get("authorization_hash")
         if existing_authorization_hash and existing_authorization_hash != authorization_hash:
-            run.status = "FAILED"; run.result = {"message": "授权范围或有效期已变化，请重新发起"}; db.commit(); return {"run": None}
+            run.status = "FAILED"; run.result = {"message": "授权范围或有效期已变化，请重新发起"}; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
+            return {"run": None}
         run.checkpoint = {**checkpoint, "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"), "authorization_hash": authorization_hash}
         run.status, run.lease_epoch, run.lease_until = "RUNNING", run.lease_epoch+1, now()+timedelta(seconds=120)
         from .files import run_files
         context = {"recent_requests":recent_requests(db,user,run),"files":run_files(db,user,run),"id": run.id, "epoch": run.lease_epoch, "prompt": run.prompt,
                    "tools": [tools.tool_schema(k) for k in tools.available_tools(db, user)], "skills": tools.skill_context(db, user), **run.checkpoint}
-        db.commit(); return {"run": context}
+        db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"run": context}
 
     @app.post("/internal/runs/{run_id}/check", dependencies=[Depends(worker_auth)])
     def check(run_id: str, data: dict, db=Depends(get_db)):
@@ -99,7 +108,9 @@ def install(app):
         run.checkpoint = {**data["checkpoint"],
                           "agent_permission_mode": data["checkpoint"].get("agent_permission_mode", previous.get("agent_permission_mode", "ask")),
                           "authorization_hash": previous["authorization_hash"]}
-        db.commit(); return {"ok": True}
+        db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/finish", dependencies=[Depends(worker_auth)])
     def finish(run_id: str, data: dict, db=Depends(get_db)):
@@ -110,7 +121,9 @@ def install(app):
             raise DomainError("EVIDENCE_INVALID", "结果证据不属于本次任务")
         run.result = {**result, "evidence": [{"id": step.id, "tool": step.tool, **step.result} for step in steps]}
         run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
-        run.status = "SUCCEEDED"; run.lease_until = None; db.commit(); return {"ok": True}
+        run.status = "SUCCEEDED"; run.lease_until = None; db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/fail", dependencies=[Depends(worker_auth)])
     def fail(run_id: str, data: dict, db=Depends(get_db)):
@@ -127,4 +140,5 @@ def install(app):
             run.status = "FAILED"; run.result = {"message": message, "error_code": code}
             run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
         return {"ok": True}

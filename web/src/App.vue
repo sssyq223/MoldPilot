@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, Folder, ShoppingCart, Settings, Bot, ChevronRight, LogOut, X, Square, ArrowRight, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from './uiText'
@@ -24,6 +24,8 @@ let conversationEpoch=0
 const me=ref<any>(null),permissions=ref<string[]>([]),loading=ref(true),error=ref(''),busy=ref(false),username=ref(''),password=ref('')
 const panel=ref(''),expanded=ref(false),full=ref(false),width=ref(DEFAULT_WORKSPACE_WIDTH),sidebarWidth=ref(DEFAULT_SIDEBAR_WIDTH),conversations=ref<any[]>([]),conversation=ref(''),activeConversationTitle=ref(''),activeConversationArchived=ref(false),runs=ref<any[]>([]),prompt=ref(''),search=ref(''),notices=ref<any[]>([]),showNotices=ref(false)
 const approvals=ref<any[]>([]),detail=ref<any>(null),capabilities=ref<any>({tools:[],skills:[]})
+const runEventsReady=ref(false)
+let runEvents:EventSource|null=null
 const runProcessOpen=ref<Record<string,boolean>>({})
 const confirmedProposalSteps=ref<Record<string,boolean>>({})
 const sidebarCollapsed=ref(false)
@@ -45,6 +47,21 @@ const notificationPopoverStyle=ref<Record<string,string>>({left:'96px',top:'44px
 const workspaceOpen=computed(()=>expanded.value)
 const noticeCount=computed(()=>new Set([...approvals.value.map(a=>'approval:'+a.id),...notices.value.filter(n=>!n.read).map(n=>n.kind?.startsWith('approval.')?'approval:'+n.resource_id:'notice:'+n.id)]).size)
 function closeProfile(){showProfile.value=false;profileButton.value?.focus()}
+function closeRunEvents(){runEvents?.close();runEvents=null;runEventsReady.value=false}
+function connectRunEvents(id:string){
+ closeRunEvents()
+ if(!id||!me.value||typeof EventSource==='undefined')return
+ const source=new EventSource(`/api/conversations/${encodeURIComponent(id)}/runs/events`)
+ runEvents=source
+ source.onopen=()=>{if(runEvents===source)runEventsReady.value=true}
+ source.onerror=()=>{if(runEvents===source)runEventsReady.value=false}
+ source.addEventListener('runs',(event:MessageEvent)=>{
+  if(runEvents!==source||conversation.value!==id)return
+  try{const payload=JSON.parse(event.data);if(Array.isArray(payload))runs.value=payload}catch{}
+ })
+ source.addEventListener('transport',()=>{if(runEvents===source)runEventsReady.value=false})
+}
+watch([()=>me.value?.id,conversation],([userId,id])=>connectRunEvents(userId?String(id||''):''))
 function openSettings(page:any='account'){settingsInitialPage.value=typeof page==='string'?page:'account';showProfile.value=false;showNotices.value=false;settingsOpen.value=true}
 function toggleSidebarSearch(){
  if(showSidebarSearch.value||search.value){showSidebarSearch.value=false;search.value='';return}
@@ -302,7 +319,7 @@ async function handleCurrentProposalDecision(dismissed=false){
 async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const savedMode=localStorage.getItem(approvalModeStorageKey());approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const layout=JSON.parse(localStorage.getItem('mold.layout.'+me.value.id)??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await restore()}catch{}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
-function clearSessionData(){conversationEpoch++;selectedFiles.value=[];me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
+function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem('mold.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
 async function openPanel(key:string){if(!['materials','contacts','approvals'].includes(key))return;panel.value=key;expanded.value=true;saveLayout()}
@@ -339,8 +356,8 @@ function resizeSidebarBy(delta:number){sidebarWidth.value=Math.max(190,Math.min(
 function resetSidebarWidth(){sidebarWidth.value=DEFAULT_SIDEBAR_WIDTH;saveLayout()}
 let polling=false,pollTick=0,runPolling=false
 const timer=setInterval(async()=>{pollTick++;if(!me.value||polling||(!running.value&&pollTick%4!==0))return;polling=true;try{const info=await api('/me');if(info.user.authorization_hash!==me.value.authorization_hash){me.value=info.user;permissions.value=info.permissions;detail.value=null;runs.value=[];expanded.value=false;panel.value='';await refresh();error.value='权限已更新，相关材料已清理，请重新查询'}if(pollTick%12===0)[notices.value,approvals.value]=await Promise.all([api('/notifications'),api('/approvals')])}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{polling=false}},1000)
-const runTimer=setInterval(async()=>{if(!me.value||!running.value||!conversation.value||runPolling)return;runPolling=true;try{runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{runPolling=false}},200)
-onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer)})
+const runTimer=setInterval(async()=>{if(!me.value||runEventsReady.value||!running.value||!conversation.value||runPolling)return;runPolling=true;try{runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{runPolling=false}},1000)
+onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 </script>
 <template>
 <div v-if="loading" class="loading-screen">正在连接工作台…</div>

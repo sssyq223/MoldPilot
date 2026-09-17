@@ -14,6 +14,20 @@ FORMAL_ACTION_TERMS = (
     "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算",
     "prepare", "submit", "create", "record", "sign", "execute action",
 )
+# Complete negative scopes are removed before the Harness tests for a positive
+# formal-action request.  Long combined phrases are intentionally listed so
+# the shared conjunction in “不准备或执行” does not leave a false “执行”.
+FORMAL_ACTION_NEGATED_PHRASES = (
+    "不要准备或执行任何操作", "不准备或执行任何操作", "无需准备或执行任何操作",
+    "不要准备也不要执行", "不准备也不执行", "无需准备也无需执行",
+    "不要创建或提交", "不创建也不提交", "无需创建或提交",
+    "不要准备", "不准备", "无需准备",
+    "不要办理", "不办理", "无需办理",
+    "不要提交", "不提交", "无需提交",
+    "不要执行", "不执行", "无需执行",
+    "do not prepare or execute action", "do not prepare or execute",
+    "do not prepare", "do not submit", "do not execute", "read only",
+)
 WORKBENCH_SUPPORT_HINTS = (
     "harness", "toolsearch", "工具调用", "工具选择", "模型", "model", "llm", "qwen", "30b",
     "上下文窗口", "context", "token", "tokens", "压缩", "配置", "接口", "api", "http", "500", "404",

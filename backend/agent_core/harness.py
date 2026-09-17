@@ -16,6 +16,7 @@ MAX_ACTIVATED_TOOLS_PER_SEARCH = 4
 LEASE_HEARTBEAT_SECONDS = 30
 ACTION_INTENT_TERMS = _policy.ACTION_INTENT_TERMS
 FORMAL_ACTION_TERMS = getattr(_policy, "FORMAL_ACTION_TERMS", ACTION_INTENT_TERMS)
+FORMAL_ACTION_NEGATED_PHRASES = getattr(_policy, "FORMAL_ACTION_NEGATED_PHRASES", ())
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
 BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
@@ -138,6 +139,21 @@ def _is_elliptical_business_action(prompt):
         remainder = remainder.replace(term, "")
     remainder = remainder.strip("请一下下吧啊呀哦呢啦的了")
     return not remainder and _contains_any(compact, ELLIPTICAL_ACTION_TERMS)
+
+
+def _has_formal_action_intent(prompt):
+    """Detect a positive formal-action request after removing explicit negation.
+
+    The operation-receipt invariant is safety-critical, but matching raw words
+    reverses intent for requests such as "只查询，不准备或执行".  Negated action
+    phrases come from the active domain pack; after removing their complete
+    scope, a remaining positive action phrase still wins (for example
+    "不要准备草稿，直接提交审批").
+    """
+    compact = _compact_intent_text(prompt)
+    for phrase in sorted(FORMAL_ACTION_NEGATED_PHRASES, key=len, reverse=True):
+        compact = compact.replace(_compact_intent_text(phrase), "")
+    return _contains_any(compact, FORMAL_ACTION_TERMS)
 
 
 def _business_tool_activation_allowed(context):
@@ -503,7 +519,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     active_tool_names |= core_tool_names & set(all_tools)
     business_tools_allowed = _business_tool_activation_allowed(context)
     formal_action_requested = bool(
-        _contains_any(context.get("prompt", ""), FORMAL_ACTION_TERMS)
+        _has_formal_action_intent(context.get("prompt", ""))
         and _contains_any(context.get("prompt", ""), BUSINESS_OBJECT_HINTS)
     )
     if not business_tools_allowed:

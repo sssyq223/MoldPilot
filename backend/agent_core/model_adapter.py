@@ -61,6 +61,11 @@ class ModelAdapter:
                    "temperature": 0.2}
         if tools:
             payload["tools"] = tools
+        else:
+            # A no-tool turn is the Harness terminal protocol, not free-form
+            # chat. Ask compatible OpenAI-style providers to constrain it as a
+            # JSON object instead of trying to recover prose/YAML afterward.
+            payload["response_format"] = {"type": "json_object"}
         if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}

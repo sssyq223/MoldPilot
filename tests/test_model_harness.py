@@ -28,10 +28,25 @@ def test_model_request_shape_and_tool_call():
         assert request.headers['authorization'] == 'Bearer synthetic-key'
         assert body['model'] == 'test-model'
         assert 'tools' not in body
+        assert body['response_format'] == {'type': 'json_object'}
         return httpx.Response(200, json={'choices': [{'finish_reason': 'tool_calls', 'message': {
             'role': 'assistant', 'tool_calls': [{'id': 'c1', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}}]})
     model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model', transport=httpx.MockTransport(serve))
     assert model.generate([{'role': 'user', 'content': 'query'}], [])['tool_calls'][0]['id'] == 'c1'
+
+
+def test_tool_stage_does_not_force_terminal_json_mode():
+    def serve(request):
+        body = json.loads(request.content)
+        assert 'response_format' not in body
+        assert body['tools'] == [TOOL]
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'tool_calls', 'message': {
+            'role': 'assistant', 'tool_calls': [{'id': 'c1', 'function': {
+                'name': 'query_projects', 'arguments': '{}'}}]}}]})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    assert model.generate([{'role': 'user', 'content': 'query'}], [TOOL])['tool_calls'][0]['id'] == 'c1'
 
 
 def test_model_stream_coalesces_visible_text_and_tool_call_deltas():
@@ -428,6 +443,47 @@ def test_formal_action_request_cannot_use_read_only_evidence_to_claim_a_confirma
     assert model.calls == 3
     assert '没有任何成功的正式操作工具回执' in model.transcripts[2][0]['content']
     assert all(message['role'] != 'system' for message in model.transcripts[2][1:])
+
+
+@pytest.mark.parametrize('prompt', [
+    '请查询项目资料；只查询分析，不准备或执行任何操作。',
+    '核对项目状态，不准备也不执行。',
+    '查询项目；do not prepare or execute action.',
+])
+def test_explicitly_negated_formal_action_does_not_require_an_operation_receipt(prompt):
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, FINAL])
+
+    result = run_loop(context(prompt=prompt), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['evidence_ids'] == ['e1']
+    assert model.calls == 2
+    assert gateway.saved['protocol_repairs'] == 0
+
+
+def test_positive_action_after_a_negated_alternative_still_requires_a_receipt():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已经提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '尚未提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, false_success, clarification])
+
+    result = run_loop(context(
+        prompt='不要准备项目草稿，直接提交项目审批',
+        tools=[TOOL, action_tool],
+        tool_annotations={'query_projects': {'readOnlyHint': True},
+                          'prepare_demo_action': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert model.calls == 3
 
 
 def test_current_prompt_action_intent_survives_a_narrower_tool_search_query():
