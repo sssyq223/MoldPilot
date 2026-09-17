@@ -42,6 +42,26 @@ def test_agent_core_source_does_not_embed_mold_business_policy():
         assert business_term not in runtime_source
 
 
+def test_delivery_logistics_implementation_lives_in_mold_pack_not_host():
+    project_root = Path(__file__).resolve().parents[1]
+    handlers = component("proposal_handlers")
+    logistics = handlers.handler_for_tool("prepare_logistics_route")
+
+    assert logistics is not None
+    assert logistics.module == "domain_packs.mold.delivery_logistics"
+    assert logistics.implementation().__name__ == logistics.module
+
+    host_facade = (project_root / "backend" / "app" / "delivery_logistics_tools.py").read_text(encoding="utf-8")
+    pack_source = (project_root / "backend" / "domain_packs" / "mold" / "delivery_logistics.py").read_text(encoding="utf-8")
+    gateway_source = (project_root / "backend" / "domain_packs" / "mold" / "tool_gateway.py").read_text(encoding="utf-8")
+
+    assert "class LogisticsRouteProposalInput" not in host_facade
+    assert "domain_packs.mold.delivery_logistics" in host_facade
+    assert "class LogisticsRouteProposalInput" in pack_source
+    assert "app.delivery_logistics_tools" not in gateway_source
+    assert "from .delivery_logistics" in gateway_source
+
+
 def test_template_pack_boots_host_without_registering_mold_http_surface():
     project_root = Path(__file__).resolve().parents[1]
     environment = {

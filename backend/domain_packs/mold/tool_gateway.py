@@ -434,10 +434,10 @@ def tool_schema(key):
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote'}:
         if key == 'prepare_logistics_route':
-            from app.delivery_logistics_tools import logistics_route_schema
+            from .delivery_logistics import logistics_route_schema
             parameters = logistics_route_schema()
         elif key == 'prepare_logistics_quote':
-            from app.delivery_logistics_tools import logistics_quote_schema
+            from .delivery_logistics import logistics_quote_schema
             parameters = logistics_quote_schema()
         else:
             from app.plan_tools import ProjectPlanContextInput
@@ -531,7 +531,7 @@ def execute(db, user, key, arguments, run=None):
         from app.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
     if key in {'prepare_logistics_route','prepare_logistics_quote'}:
-        from app.delivery_logistics_tools import execute_delivery_logistics_tool
+        from .delivery_logistics import execute_delivery_logistics_tool
         return execute_delivery_logistics_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
@@ -606,7 +606,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='query_delivery_logistics_context':
         from pydantic import ValidationError
         from app.plan_tools import ProjectPlanContextInput
-        from app.delivery_logistics_tools import query
+        from .delivery_logistics import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','交付物流上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))

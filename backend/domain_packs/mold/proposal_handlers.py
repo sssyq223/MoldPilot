@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from importlib import import_module
 
 
+DELIVERY_LOGISTICS_MODULE = f"{__package__}.delivery_logistics"
+
+
 @dataclass(frozen=True)
 class ProposalHandler:
     action: str
@@ -53,7 +56,7 @@ HANDLERS = (
         "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",
         "prepare_supplier_deduction_settlement",
     })),
-    ProposalHandler("delivery_logistics.execute", "app.delivery_logistics_tools", frozenset({
+    ProposalHandler("delivery_logistics.execute", DELIVERY_LOGISTICS_MODULE, frozenset({
         "prepare_logistics_route", "prepare_logistics_quote",
     })),
 )

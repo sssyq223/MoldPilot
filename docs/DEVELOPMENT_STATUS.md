@@ -2,6 +2,15 @@
 
 更新：2026-09-17。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 架构治理：领域包抽离复审与交付物流应用服务迁移（2026-09-17）
+
+- 已暂停新增业务功能，优先处理通用 `LLM + Harness + Tool + Skill` 宿主与模具 ERP 领域包的边界。独立子智能体复审结论为“部分独立”：当前可动态替换产品外壳、系统策略、Skill、工具目录、提案处理映射、领域路由和 ERP HTTP 适配器，但尚不能仅替换 `domain_packs/mold` 就切换成车辆或工装业务。
+- 本批将交付物流应用服务从 `app/delivery_logistics_tools.py` 迁至 `domain_packs/mold/delivery_logistics.py`；路线/报价 schema、查询投影、业务校验、proposal 准备与本人确认后的写入均由领域包持有。领域工具网关和 proposal handler 直接指向包内实现，`app` 同名文件仅保留旧调用兼容 facade。
+- 已增加架构门禁，验证领域 handler 指向包内实现、宿主 facade 不再承载物流业务类、领域网关不反向调用旧实现；`AGENT_BUSINESS_PACK=template` 仍能以 `Agent Workbench` 启动且不注册模具 HTTP 路由。
+- 当前仍不是完整领域抽离：物流 ORM/配置/Alembic 迁移仍在 `app` 与全局迁移链，物流服务仍依赖 `app.plan_tools`、`app.domains`、`app.procurement`、`app.contacts` 等相邻模具服务；整套委外仍通过兼容 facade 复用四个物流投影；模板包的 SQLAlchemy metadata 仍注册项目、采购、工程联络、供应商和物流表；Agent Core、API 与前端仍有模具语义和确认卡字段硬编码。
+- 后续拆分顺序固定为：先建立只能由领域包依赖的 `host_ports`/pack 注册协议；再迁移模具共享模型、权限和项目解析；随后迁移物流上游 read providers；最后迁移 ORM、配置、领域迁移、API 与前端呈现元数据并删除兼容 facade。达到模板包 metadata 不含任何模具表后，才可认定业务包可完整替换。
+- 验证：交付物流、整套委外、能力目录和领域包定向回归 38 项通过；完整后端回归在仓库隔离临时目录下 444 项通过，Python 编译/import smoke 通过。内置浏览器复核已确认物流卡：卡片在折叠执行链中永久保留，详情可回看，已确认后的“暂不执行/已确认执行”按钮均禁用；本批没有新增业务功能或传统 ERP 页面。
+
 ## 持续开发：FR-065～067 物流路线、核准报价与结算价办理闭环（2026-09-17）
 
 - 扩展 `LogisticsRoute` 与 `LogisticsQuote` PostgreSQL 模型：固定路线/项目实际路线保存地点、承运商、车型、重量、运输方式、计价单位、含税方式、有效期、确认人和来源；报价保存计价方式、比价数量/摘要、对账依据、来源、创建/批准人及被替代报价 ID。
