@@ -1055,11 +1055,13 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 在 gaps 中明确未见结构化固定物流路线、承运商车型、物流报价有效期或本次结算价格时不能编造路线或价格",
-        "交付物流 Skill 要求区分模具物流实际路线与固定路线，当前只读上下文不创建物流路线、不维护报价"
+        "LogisticsRoute 结构化保存全局固定路线或项目实际路线、地点、承运商、车型、重量、运输方式、计价单位、含税方式、有效期、确认人、确认时间、来源引用和历史记录",
+        "prepare_logistics_route 要求 project.read 与 warehouse.configure 精确范围权限，项目实际路线绑定当前项目版本；只生成对话确认卡，本人确认后才追加仓库已核对路线",
+        "query_delivery_logistics_context 同时返回路线历史与当前有效路线；只有路线存在但没有有效报价时明确返回价格缺口，不编造承运商、车型或价格"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖无结构化物流价格时返回缺口；固定路线维护、地点/重量/车型/历史价格结构化模型仍未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖确认前不写库、本人确认后保存项目实际路线、项目版本/重量/有效期/来源/确认人持久化，以及有路线无报价的只读回查",
+        "tests/test_capability_catalog.py 与 tests/test_model_harness.py 覆盖仓库路线确认能力、按需激活和只读请求不得开放 prepare 工具；真实仓库路线核对、ERP 发运关联和业务签字仍待验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1070,11 +1072,14 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 明确仓库收货、检验和物流结算依据缺口，不把供应商发货或仓库收货推断为已形成物流费用",
-        "工具 limitations 声明不维护物流报价、不生成本次结算价格，后续需单独适配固定路线或询比议价结果"
+        "prepare_logistics_quote 基于当前有效且已确认路线准备通用有效报价或项目本次结算价格，要求 warehouse.read、purchase_price.approve，并在项目结算场景重新核验 project.read 与项目版本",
+        "报价确认卡保存供应商、单价、币种、有效期、计价方式、比价数量/摘要、报价依据、对账依据、来源引用和明确替换的原报价；本人确认后才登记 EFFECTIVE 价格",
+        "同一路线及结算范围内有效期重叠的价格必须明确 supersedes_quote_id；确认后原报价标记 CANCELLED、新报价保留替代链，不能静默覆盖历史价格",
+        "query_delivery_logistics_context 只把当前有效路线上的 EFFECTIVE 报价列为有效价格，并单独标识项目结算价候选；不会把路线、发货、签收、付款或财务对账相互推断"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖物流报价/结算价格缺口提示；有效价格匹配、采购主管询比议价审批和对账依据尚未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖确认前不写库、采购价格权限确认后生成有效项目结算价、询比议价与对账依据持久化、有效报价匹配、显式价格替换和重叠报价阻断",
+        "实际物流费用单生成、真实采购主管签字、承运商对账单/发运单核验及 ERP/财务入账仍待正式业务验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1085,11 +1090,13 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；同时标记 has_structured_logistics_price=false",
-        "交付物流 Skill 要求物流报价有效期、本次结算价格和对账依据缺失时只作为缺口说明，不编造承运商或价格"
+        "物流报价有效期由 MOLD_LOGISTICS_QUOTE_MAX_VALID_DAYS 配置，默认 183 天；倒置日期和超期报价在准备阶段即阻断",
+        "COMPETITIVE 多家比价必须至少登记两家并填写参与方/比较结论摘要；报价变化必须显式关联被替换价格，保留新旧来源和历史链",
+        "query_delivery_logistics_context 继续追溯供应商发货 reference、仓库收货 reference、库存移动 source_key、项目、路线、报价和本次结算价格，但不把这些线索冒充实际物流费用或财务对账完成"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖发货、收货、出库移动追溯和物流报价缺口；半年有效期、多家比价和物流费用对账模型尚未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖 183 天配置边界的超期阻断、多家比价数量/摘要必填、价格替换历史、来源追溯及路线/报价治理字段回查",
+        "真实报价附件、承运商物流单、实际费用对账、付款和 ERP/财务联调仍待正式业务验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

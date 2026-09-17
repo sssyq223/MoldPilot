@@ -96,6 +96,22 @@ def test_supplier_progress_policy_tool_is_human_confirmed_full_outsource_operati
     assert "prepare_supplier_progress_policy" in skill["optional_dependencies"]
 
 
+def test_delivery_logistics_skill_exposes_separate_route_and_price_authorities():
+    route = capability_descriptor("TOOL", "prepare_logistics_route", TOOLS["prepare_logistics_route"])
+    assert route["name"] == "准备物流路线确认"
+    assert route["department"] == "warehouse"
+    assert route["type"] == "operation"
+    assert route["mode"] == "human_confirmed_proposal"
+    quote = capability_descriptor("TOOL", "prepare_logistics_quote", TOOLS["prepare_logistics_quote"])
+    assert quote["name"] == "准备物流报价/结算价确认"
+    assert quote["department"] == "purchase"
+    assert quote["type"] == "approval"
+    assert quote["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "delivery_logistics_review", SKILLS["delivery_logistics_review"])
+    assert skill["dependencies"] == ["query_delivery_logistics_context"]
+    assert skill["optional_dependencies"] == ["prepare_logistics_route", "prepare_logistics_quote"]
+
+
 def test_contact_collaboration_skill_has_curated_activation_pack():
     item = capability_descriptor("SKILL", "contact_collaboration_review", SKILLS["contact_collaboration_review"])
     assert item["dependencies"] == ["query_contact_cases"]

@@ -105,9 +105,23 @@ def install(app):
     def checkpoint(run_id: str, data: dict, db=Depends(get_db)):
         run, _ = fence(db, run_id, data["epoch"])
         previous = run.checkpoint if isinstance(run.checkpoint, dict) else {}
-        run.checkpoint = {**data["checkpoint"],
-                          "agent_permission_mode": data["checkpoint"].get("agent_permission_mode", previous.get("agent_permission_mode", "ask")),
-                          "authorization_hash": previous["authorization_hash"]}
+        # Proposal decisions and the preceding final answer are host-owned
+        # conversation state.  The generic harness replaces its own execution
+        # checkpoint on every streamed update and must not erase them while a
+        # confirmed proposal is resumed for the final receipt response.
+        host_state = {
+            key: previous[key]
+            for key in ("proposal_decisions", "proposal_resolution", "prior_finals")
+            if key in previous
+        }
+        run.checkpoint = {
+            **data["checkpoint"],
+            **host_state,
+            "agent_permission_mode": data["checkpoint"].get(
+                "agent_permission_mode", previous.get("agent_permission_mode", "ask")
+            ),
+            "authorization_hash": previous["authorization_hash"],
+        }
         db.commit()
         publish_run_update(run.conversation_id, run.id, run.status)
         return {"ok": True}

@@ -141,14 +141,23 @@ class LogisticsRoute(IdentityMixin, Base):
     destination: Mapped[str] = mapped_column(String(200))
     carrier_name: Mapped[str] = mapped_column(String(150))
     vehicle_type: Mapped[str] = mapped_column(String(80))
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
     transport_mode: Mapped[str] = mapped_column(String(40), default='TRUCK')
     price_unit: Mapped[str] = mapped_column(String(40))
     tax_mode: Mapped[str] = mapped_column(String(30), default='TAX_INCLUDED')
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     evidence: Mapped[str] = mapped_column(Text, default='')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         CheckConstraint("transport_mode IN ('TRUCK','EXPRESS','SEA','AIR','RAIL','OTHER')", name='logistics_route_transport_mode'),
         CheckConstraint("tax_mode IN ('TAX_INCLUDED','TAX_EXCLUDED','UNKNOWN')", name='logistics_route_tax_mode'),
+        CheckConstraint('weight_kg IS NULL OR weight_kg > 0', name='logistics_route_positive_weight'),
+        CheckConstraint('valid_from IS NULL OR valid_to IS NULL OR valid_to >= valid_from', name='logistics_route_valid_range'),
+        UniqueConstraint('source_ref', name='logistics_route_unique_source'),
     )
 
 
@@ -166,10 +175,20 @@ class LogisticsQuote(IdentityMixin, Base):
     quote_evidence: Mapped[str] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pricing_method: Mapped[str] = mapped_column(String(30), default='LEGACY')
+    comparison_count: Mapped[int] = mapped_column(Integer, default=0)
+    comparison_summary: Mapped[str | None] = mapped_column(Text)
+    reconciliation_basis: Mapped[str | None] = mapped_column(Text)
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    created_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    supersedes_quote_id: Mapped[str | None] = mapped_column(ForeignKey('logistics_quote.id'))
     __table_args__ = (
         CheckConstraint('unit_price >= 0', name='logistics_quote_nonnegative_price'),
         CheckConstraint('valid_to >= valid_from', name='logistics_quote_valid_range'),
         CheckConstraint("status IN ('DRAFT','SUBMITTED','EFFECTIVE','EXPIRED','CANCELLED')", name='logistics_quote_status'),
+        CheckConstraint("pricing_method IN ('LEGACY','FIXED_ROUTE','COMPETITIVE','NEGOTIATED','SINGLE_SOURCE')", name='logistics_quote_pricing_method'),
+        CheckConstraint('comparison_count >= 0', name='logistics_quote_comparison_count_nonnegative'),
+        UniqueConstraint('route_id','source_ref', name='logistics_quote_unique_source'),
     )
 
 

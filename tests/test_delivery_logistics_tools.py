@@ -2,11 +2,14 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
-from app.authorization import PERMISSIONS
+from app import bpm, business
+from app.authorization import PERMISSIONS, fingerprint
+from app.db import now
+from app.errors import DomainError
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
 
@@ -209,9 +212,12 @@ def logistics_quote(db, project, creator, settlement=True):
         destination="客户工厂",
         carrier_name="顺达物流",
         vehicle_type="4.2米厢车",
+        weight_kg=Decimal("2500.000"),
         transport_mode="TRUCK",
         price_unit="车次",
         tax_mode="TAX_INCLUDED",
+        valid_from=today - timedelta(days=10),
+        valid_to=today + timedelta(days=355),
         evidence="物流路线审批记录",
     )
     db.add(route)
@@ -227,6 +233,9 @@ def logistics_quote(db, project, creator, settlement=True):
         settlement_for_project_id=project.id if settlement else None,
         quote_evidence="物流报价审批单",
         approved_by=creator.id,
+        pricing_method="NEGOTIATED",
+        comparison_count=1,
+        reconciliation_basis="按审批报价、实际发运单和承运商对账单核对",
     )
     db.add(quote)
     db.flush()
@@ -422,3 +431,316 @@ def test_delivery_logistics_reports_multiple_candidates_without_deciding(pg_sess
         assert result["resolution"] == "MULTIPLE_CANDIDATES"
         assert {row["code"] for row in result["data"]} == {"DLV-A", "DLV-B"}
         assert "请使用项目 ID" in "".join(result["limitations"])
+
+
+def test_prepare_project_logistics_route_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-ROUTE-PREPARE")
+        conversation = m.Conversation(user_id=admin.id, title="物流路线确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记模具项目实际物流路线",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "route_scope": "PROJECT_ACTUAL",
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "route_code": "DLV-ROUTE-001",
+            "origin": "昆山模具工厂",
+            "destination": "上海客户工厂",
+            "carrier_name": "顺达物流",
+            "vehicle_type": "9.6米厢车",
+            "weight_kg": "12800.000",
+            "transport_mode": "TRUCK",
+            "price_unit": "车次",
+            "tax_mode": "TAX_INCLUDED",
+            "valid_from": date.today().isoformat(),
+            "valid_to": (date.today() + timedelta(days=90)).isoformat(),
+            "evidence": "仓库核对车辆、装载重量和客户收货地点",
+            "source_ref": "ROUTE-CONFIRM-001",
+        }
+    schema = tool_schema("prepare_logistics_route")["function"]["parameters"]
+    assert {"route_scope", "weight_kg", "valid_from", "valid_to", "source_ref"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_logistics_route", args, run=run)
+        assert evidence["proposal"]["kind"] == "logistics_route"
+        assert evidence["proposal"]["display"]["路线重量(kg)"] == "12800.000"
+        assert db.scalar(select(m.LogisticsRoute).where(m.LogisticsRoute.route_code == "DLV-ROUTE-001")) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_logistics_route", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(
+            db,
+            admin,
+            "delivery_logistics.execute",
+            step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])},
+        )
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.LogisticsRoute, receipt["logistics_route_id"])
+        assert receipt["status"] == "CONFIRMED"
+        assert row.project_id == args["project_id"]
+        assert row.weight_kg == Decimal("12800.000")
+        assert row.valid_to == date.today() + timedelta(days=90)
+        assert row.confirmed_by == admin.id
+        assert row.source_ref == "ROUTE-CONFIRM-001"
+        context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ROUTE-PREPARE"})
+        pricing = context["data"][0]["analysis"]["logistics_pricing"]
+        assert pricing["derived_status"]["has_route"] is True
+        assert pricing["derived_status"]["has_effective_quote"] is False
+        assert pricing["current_routes"][0]["route_code"] == "DLV-ROUTE-001"
+        assert "已登记物流路线，但未见当前有效的物流报价" in "".join(context["data"][0]["analysis"]["gaps"])
+
+
+def test_prepare_logistics_quote_requires_confirmation_and_preserves_comparison_evidence(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-QUOTE-PREPARE")
+        sup = supplier(db, "logistics-quote")
+        route = m.LogisticsRoute(
+            project_id=p.id,
+            route_code="DLV-QUOTE-ROUTE",
+            origin="昆山模具工厂",
+            destination="上海客户工厂",
+            carrier_name="顺达物流",
+            vehicle_type="9.6米厢车",
+            weight_kg=Decimal("12800.000"),
+            transport_mode="TRUCK",
+            price_unit="车次",
+            tax_mode="TAX_INCLUDED",
+            valid_from=date.today(),
+            valid_to=date.today() + timedelta(days=365),
+            evidence="仓库路线确认",
+            source_ref="QUOTE-ROUTE-001",
+            confirmed_by=admin.id,
+        )
+        db.add(route)
+        db.flush()
+        conversation = m.Conversation(user_id=admin.id, title="物流报价确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="确认项目本次物流结算价格",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "route_id": route.id,
+            "supplier_id": sup.id,
+            "unit_price": "5680.00",
+            "currency": "CNY",
+            "valid_from": date.today().isoformat(),
+            "valid_to": (date.today() + timedelta(days=180)).isoformat(),
+            "settlement_for_project_id": p.id,
+            "project_version": p.row_version,
+            "pricing_method": "COMPETITIVE",
+            "comparison_count": 3,
+            "comparison_summary": "顺达5680、安达5920、捷运6100；综合时效与车型选择顺达",
+            "quote_evidence": "三家盖章报价单及采购议价邮件",
+            "reconciliation_basis": "按本次路线、实际发运单和顺达对账单核对，含税按车次结算",
+            "source_ref": "LOGISTICS-QUOTE-001",
+        }
+    schema = tool_schema("prepare_logistics_quote")["function"]["parameters"]
+    assert {"pricing_method", "comparison_count", "comparison_summary", "reconciliation_basis"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_logistics_quote", args, run=run)
+        assert evidence["proposal"]["display"]["比价数量"] == 3
+        assert db.scalar(select(m.LogisticsQuote).where(m.LogisticsQuote.source_ref == "LOGISTICS-QUOTE-001")) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_logistics_quote", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(
+            db,
+            admin,
+            "delivery_logistics.execute",
+            step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])},
+        )
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.LogisticsQuote, receipt["logistics_quote_id"])
+        assert row.status == "EFFECTIVE"
+        assert row.pricing_method == "COMPETITIVE"
+        assert row.comparison_count == 3
+        assert "安达5920" in row.comparison_summary
+        assert "实际发运单" in row.reconciliation_basis
+        assert row.approved_by == admin.id
+
+
+def test_logistics_quote_rejects_invalid_validity_and_incomplete_comparison(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-QUOTE-BLOCK")
+        route, _ = logistics_quote(db, p, admin, settlement=False)
+        conversation = m.Conversation(user_id=admin.id, title="物流报价拦截")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="准备物流报价",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        base = {
+            "route_id": route.id,
+            "supplier_id": None,
+            "unit_price": "1000.00",
+            "currency": "CNY",
+            "valid_from": date.today().isoformat(),
+            "valid_to": (date.today() + timedelta(days=184)).isoformat(),
+            "settlement_for_project_id": p.id,
+            "project_version": p.row_version,
+            "pricing_method": "COMPETITIVE",
+            "comparison_count": 1,
+            "comparison_summary": None,
+            "quote_evidence": "报价材料",
+            "reconciliation_basis": "按实际运单核对",
+            "source_ref": "LOGISTICS-QUOTE-BLOCK",
+        }
+        with pytest.raises(DomainError) as validity:
+            execute(db, admin, "prepare_logistics_quote", base, run=run)
+        assert validity.value.code == "LOGISTICS_QUOTE_VALIDITY_TOO_LONG"
+        base["valid_to"] = (date.today() + timedelta(days=180)).isoformat()
+        with pytest.raises(DomainError) as comparison:
+            execute(db, admin, "prepare_logistics_quote", base, run=run)
+        assert comparison.value.code == "LOGISTICS_COMPARISON_REQUIRED"
+
+
+def test_delivery_logistics_query_exposes_governed_route_and_quote_metadata(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-GOVERNED")
+        route, quote = logistics_quote(db, p, admin, settlement=True)
+        route.source_ref = "ROUTE-GOVERNED"
+        route.confirmed_by = admin.id
+        route.confirmed_at = now()
+        quote.source_ref = "QUOTE-GOVERNED"
+        quote.created_by = admin.id
+        quote.comparison_summary = "两家报价比较后议价"
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-GOVERNED"})
+        item = result["data"][0]["analysis"]["logistics_pricing"]["effective_quotes"][0]
+        assert item["route"]["weight_kg"] == "2500.000"
+        assert item["route"]["source_ref"] == "ROUTE-GOVERNED"
+        assert item["quote"]["pricing_method"] == "NEGOTIATED"
+        assert item["quote"]["reconciliation_basis"].startswith("按审批报价")
+        assert item["quote"]["source_ref"] == "QUOTE-GOVERNED"
+
+
+def test_logistics_price_change_explicitly_supersedes_effective_quote_and_keeps_history(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-QUOTE-REPLACE")
+        route, old_quote = logistics_quote(db, p, admin, settlement=True)
+        old_quote.source_ref = "QUOTE-OLD"
+        conversation = m.Conversation(user_id=admin.id, title="物流价格变更")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="替换当前物流结算价格",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "route_id": route.id,
+            "supplier_id": old_quote.supplier_id,
+            "unit_price": "1880.00",
+            "currency": "CNY",
+            "valid_from": date.today().isoformat(),
+            "valid_to": (date.today() + timedelta(days=120)).isoformat(),
+            "settlement_for_project_id": p.id,
+            "project_version": p.row_version,
+            "pricing_method": "NEGOTIATED",
+            "comparison_count": 1,
+            "comparison_summary": "与原承运商重新议价",
+            "quote_evidence": "价格变化议价邮件",
+            "reconciliation_basis": "新价格按实际发运单核对",
+            "source_ref": "QUOTE-NEW",
+            "supersedes_quote_id": old_quote.id,
+        }
+        evidence = execute(db, admin, "prepare_logistics_quote", args, run=run)
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_logistics_quote", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(
+            db, admin, "delivery_logistics.execute", step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])},
+        )
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        new_quote = db.get(m.LogisticsQuote, receipt["logistics_quote_id"])
+        assert db.get(m.LogisticsQuote, old_quote.id).status == "CANCELLED"
+        assert new_quote.status == "EFFECTIVE"
+        assert new_quote.supersedes_quote_id == old_quote.id
+        assert new_quote.unit_price == Decimal("1880.00")
+
+
+def test_logistics_price_change_cannot_hide_an_overlapping_effective_quote(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-QUOTE-OVERLAP")
+        route, _ = logistics_quote(db, p, admin, settlement=True)
+        conversation = m.Conversation(user_id=admin.id, title="物流价格重叠")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="新增重叠物流结算价格",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "route_id": route.id,
+            "supplier_id": None,
+            "unit_price": "1880.00",
+            "currency": "CNY",
+            "valid_from": date.today().isoformat(),
+            "valid_to": (date.today() + timedelta(days=120)).isoformat(),
+            "settlement_for_project_id": p.id,
+            "project_version": p.row_version,
+            "pricing_method": "NEGOTIATED",
+            "comparison_count": 1,
+            "comparison_summary": "重新议价",
+            "quote_evidence": "议价邮件",
+            "reconciliation_basis": "按实际发运单核对",
+            "source_ref": "QUOTE-OVERLAP",
+        }
+        with pytest.raises(DomainError) as error:
+            execute(db, admin, "prepare_logistics_quote", args, run=run)
+        assert error.value.code == "LOGISTICS_QUOTE_EFFECTIVE_OVERLAP"

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     app_log_retention_days: int = Field(default=0, ge=0, le=3650)
     access_log_retention_days: int = Field(default=0, ge=0, le=3650)
     model_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    logistics_quote_max_valid_days: int = Field(default=183, ge=1, le=3660)
     llm_base_url: str = ""
     # Explicit HTTP origin for a trusted private-IP model service; empty requires HTTPS.
     llm_trusted_http_origin: str = ""

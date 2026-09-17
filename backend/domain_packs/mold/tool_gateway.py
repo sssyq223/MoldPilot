@@ -59,6 +59,8 @@ TOOLS.update({
     'query_manufacturing_quality_context':{'description':'按项目或工序线索核对制造计划任务、报工事实、设计路线、装配/试模、质检和整改上下文；只读，不登记报工或检验。','permission':'project_plan.read'},
     'query_assembly_trial_context':{'description':'按项目、装配任务或试模线索核对齐套前置、装配工单、完工确认、试模资源、试模报告和异常整改上下文；只读，不替代 ERP 装配/试模执行。','permission':'assembly_issue.read'},
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
+    'prepare_logistics_route':{'description':'准备登记仓库已确认的固定物流路线或模具项目实际路线；包含地点、承运商、车型、重量、运输方式、计价单位、税制、有效期与来源依据，本人确认后才写入。','permission':'warehouse.configure'},
+    'prepare_logistics_quote':{'description':'准备由采购价格审批人确认的物流有效报价或项目本次结算价格；包含有效期、询比议价方式、比较摘要、报价依据和对账依据，本人确认后才登记生效。','permission':'purchase_price.approve'},
     'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
     'prepare_supplier_material_handoff':{'description':'准备向供应商提供客户资料、设计图纸或技术标准的交接证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和交接依据，本人确认后才写入资料交接记录。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_material_verification':{'description':'准备登记供应商对一条已批准资料交接的收到、接受、待澄清或退回核验结果；必须使用查询返回的真实交接记录，本人确认后才追加核验事实。','permission':'full_outsource_contract.execute'},
@@ -121,8 +123,9 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'activation_queries':['制造工序','现场报工','质检报告','整改复检','生产进度']},
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context'],
                    'activation_queries':['装配齐套','装配工单','试模安排','试模报告','装配试模']},
-               'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context'],
-                   'activation_queries':['出库发货','物流报价','客户签收','客户验收','发货物流']},
+               'delivery_logistics_review':{'name':'交付物流路线与价格协同','tools':['query_delivery_logistics_context'],
+                   'optional_tools':['prepare_logistics_route','prepare_logistics_quote'],
+                   'activation_queries':['出库发货','物流路线','固定路线','实际路线','物流报价','物流询价','物流比价','物流议价','本次物流结算价格','本次结算价格','物流对账','客户签收','客户验收','发货物流']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context'],
                    'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_supplier_deduction_settlement'],
                    'activation_queries':['整套委外执行','整套委外加工','供应商节点上报','供应商上报规则','上报频率','证据模板','供应商节点','供应商上报','进度上报','委外验收','委外扣款','委外合同签署','签署扫描件','资料交接','资料核验','资料接受','资料退回','供应商资料']},
@@ -202,6 +205,8 @@ CAPABILITY_NAMES = {
     'query_manufacturing_quality_context': '读取制造质检上下文',
     'query_assembly_trial_context': '读取装配试模上下文',
     'query_delivery_logistics_context': '读取交付物流上下文',
+    'prepare_logistics_route': '准备物流路线确认',
+    'prepare_logistics_quote': '准备物流报价/结算价确认',
     'query_full_outsource_context': '读取整套委外上下文',
     'prepare_supplier_material_handoff': '准备供应商资料交接',
     'prepare_supplier_material_verification': '准备供应商资料核验',
@@ -266,6 +271,7 @@ CAPABILITY_DEPARTMENTS = {
     'design_route_context_review': 'design', 'query_manufacturing_quality_context': 'project',
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
+    'prepare_logistics_route': 'warehouse', 'prepare_logistics_quote': 'purchase',
     'delivery_logistics_review': 'warehouse', 'query_full_outsource_context': 'purchase',
     'prepare_supplier_material_handoff': 'purchase', 'prepare_supplier_material_verification': 'purchase',
     'prepare_supplier_progress_policy': 'purchase',
@@ -302,7 +308,8 @@ CAPABILITY_TYPES = {
     'prepare_project_plan_baseline': 'approval',
     'design_route_context_review': 'review',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
-    'delivery_logistics_review': 'review', 'full_outsource_review': 'review',
+    'delivery_logistics_review': 'review', 'prepare_logistics_route': 'operation',
+    'prepare_logistics_quote': 'approval', 'full_outsource_review': 'review',
     'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_material_verification': 'operation',
     'prepare_supplier_progress_policy': 'operation',
     'prepare_supplier_progress_report': 'operation',
@@ -425,9 +432,17 @@ def tool_schema(key):
     if key=='query_assembly_trial_context':
         from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key=='query_delivery_logistics_context':
-        from app.plan_tools import ProjectPlanContextInput
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
+    if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote'}:
+        if key == 'prepare_logistics_route':
+            from app.delivery_logistics_tools import logistics_route_schema
+            parameters = logistics_route_schema()
+        elif key == 'prepare_logistics_quote':
+            from app.delivery_logistics_tools import logistics_quote_schema
+            parameters = logistics_quote_schema()
+        else:
+            from app.plan_tools import ProjectPlanContextInput
+            parameters = ProjectPlanContextInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         if key=='prepare_supplier_material_handoff':
             from app.full_outsource_tools import supplier_material_handoff_schema
@@ -515,6 +530,9 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         from app.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
+    if key in {'prepare_logistics_route','prepare_logistics_quote'}:
+        from app.delivery_logistics_tools import execute_delivery_logistics_tool
+        return execute_delivery_logistics_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
         from app.project_dossier import ProjectDossierInput,query

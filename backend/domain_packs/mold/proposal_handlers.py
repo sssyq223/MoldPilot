@@ -53,6 +53,9 @@ HANDLERS = (
         "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",
         "prepare_supplier_deduction_settlement",
     })),
+    ProposalHandler("delivery_logistics.execute", "app.delivery_logistics_tools", frozenset({
+        "prepare_logistics_route", "prepare_logistics_quote",
+    })),
 )
 
 

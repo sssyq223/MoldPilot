@@ -93,6 +93,7 @@ UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数�
 ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
 ACTION_EVIDENCE_REPAIR_REMINDER = """上一轮遗漏了正式操作的成功证据。只要结论声称已经准备、提交或执行操作，evidence_ids 就必须包含本轮所有成功正式操作工具返回的证据编号；不得只引用前置查询证据。请重新输出约定 JSON。"""
 ACTION_NOT_COMPLETED_REPAIR_REMINDER = """本轮用户明确要求准备或办理正式操作，但目前没有任何成功的正式操作工具回执或待确认操作证据。只读查询结果不能证明操作已经准备、提交或执行。不得声称已有确认卡；请输出 response_kind=CLARIFICATION，明确说明操作尚未完成以及需要用户补充或系统配置的条件。"""
+PROPOSAL_RESOLVED_REPAIR_REMINDER = """本轮是确认卡处理完成后的恢复回复，ProposalResolution 工具消息已经提供可信人工决定和权威执行回执。不得再次输出 AWAITING_APPROVAL，不得要求用户重复确认。批准后的回复必须使用 response_kind=BUSINESS，并依据权威回执说明本次实际完成、提交或生效到哪一步；暂不执行后的回复应明确尊重该决定。最终 JSON 还必须原样包含 proposal_decision（approved 或 dismissed），证明已经消费该权威回执。请重新输出约定 JSON。"""
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 MAX_PROTOCOL_REPAIRS = 2
@@ -543,7 +544,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     core_tool_names = set(context.get("core_tool_names", []))
     active_tool_names = set(context.get("active_tool_names", [])) & set(all_tools)
     active_tool_names |= core_tool_names & set(all_tools)
-    business_tools_allowed = _business_tool_activation_allowed(context)
+    proposal_resolution = (context.get("proposal_resolution")
+                           if isinstance(context.get("proposal_resolution"), dict) else None)
+    resolution_decision = (proposal_resolution or {}).get("decision")
+    business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
     formal_action_requested = bool(
         _has_formal_action_intent(context.get("prompt", ""))
         and _contains_any(context.get("prompt", ""), BUSINESS_OBJECT_HINTS)
@@ -574,7 +578,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     model_started_at = None
     model_elapsed_ms = context.get('model_elapsed_ms', 0)
     model_metrics = context.get('model_metrics', {})
-    finalizing = context.get('finalizing', False)
+    finalizing = bool(proposal_resolution) or context.get('finalizing', False)
     protocol_repairs = context.get('protocol_repairs', 0)
     executed_tool_signatures = list(context.get('executed_tool_signatures', []))
     tool_annotations = context.get('tool_annotations', {})
@@ -852,6 +856,18 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         kind = result.get('response_kind', 'BUSINESS')
         if kind not in {'BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION'}: raise RuntimeError('MODEL_OUTPUT_INVALID')
         result['response_kind'] = kind
+        if proposal_resolution and (
+                kind == 'AWAITING_APPROVAL'
+                or (resolution_decision == 'approved' and kind != 'BUSINESS')
+                or result.get('proposal_decision') != resolution_decision):
+            request_protocol_repair(
+                PROPOSAL_RESOLVED_REPAIR_REMINDER
+                + "\n本次可信决定：proposal_decision=" + json.dumps(resolution_decision)
+                + "；权威回执：" + json.dumps(
+                    proposal_resolution.get('authoritative_receipt'), ensure_ascii=False
+                )
+            )
+            continue
         unresolved_actions = [outcome for outcome in action_outcomes.values()
                               if outcome.get('status') == 'error']
         successful_action_evidence = {outcome.get('evidence_id') for outcome in action_outcomes.values()

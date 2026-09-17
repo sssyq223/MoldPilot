@@ -1,10 +1,12 @@
 from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import now
-from app.models import Grant, Step, User
+from app.models import Grant, Run, Step, User
+from app.agent_resume import queue_after_proposal_decision
 from conftest import sign_in
 
 
@@ -45,6 +47,97 @@ def test_run_persists_agent_permission_mode_for_worker_context(client, data, mon
     assert history[0]['agent_permission_mode'] == 'delegated_auto'
 
 
+def test_worker_checkpoint_preserves_proposal_resume_history(client, data, monkeypatch):
+    ids, factory = data
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client, 'test_buyer')
+    created = client.post('/api/runs', json={'prompt': '确认后继续说明'}).json()
+    with factory.begin() as db:
+        run = db.get(Run, created['id'])
+        run.checkpoint = {
+            **(run.checkpoint or {}),
+            'proposal_decisions': {'proposal-step': 'approved'},
+            'proposal_resolution': {
+                'decision': 'approved',
+                'proposal_step_id': 'proposal-step',
+                'authoritative_receipt': {'status': 'executed'},
+            },
+            'prior_finals': [{
+                'response_kind': 'AWAITING_APPROVAL',
+                'summary': '确认前的业务结论与确认卡说明',
+                'suggestions': [],
+            }],
+        }
+
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert claimed['id'] == created['id']
+    response = client.post(
+        f"/internal/runs/{created['id']}/checkpoint",
+        headers=worker_headers(),
+        json={'epoch': claimed['epoch'], 'checkpoint': {
+            'messages': [{'role': 'assistant', 'content': '确认前的业务结论与确认卡说明'}],
+            'turn': 3,
+            'phase': 'MODEL_WAITING',
+        }},
+    )
+    assert response.status_code == 200
+
+    history = client.get(f"/api/conversations/{created['conversation_id']}/runs").json()[0]
+    assert history['trace'][-1]['historical'] is True
+    assert history['trace'][-1]['type'] == 'message'
+    assert history['trace'][-1]['text'] == '确认前的业务结论与确认卡说明'
+    assert sum(item.get('text') == '确认前的业务结论与确认卡说明'
+               for item in history['trace']) == 1
+    with factory() as db:
+        checkpoint = db.get(Run, created['id']).checkpoint
+        assert checkpoint['proposal_decisions'] == {'proposal-step': 'approved'}
+        assert checkpoint['proposal_resolution']['decision'] == 'approved'
+        assert checkpoint['prior_finals'][0]['response_kind'] == 'AWAITING_APPROVAL'
+
+
+def test_confirmed_proposal_is_requeued_as_a_new_model_turn(monkeypatch):
+    run = Run(
+        id='resume-run', conversation_id='conversation', user_id='user-1', security_version=1,
+        prompt='准备操作', status='SUCCEEDED',
+        checkpoint={'messages': [{'role': 'user', 'content': '准备操作'}],
+                    'completed_at': '2026-09-17T10:00:00+08:00', 'protocol_repairs': 2},
+        result={'response_kind': 'AWAITING_APPROVAL', 'summary': '确认卡已准备，请确认。',
+                'evidence_ids': ['proposal-step'], 'suggestions': ['请核对后确认']},
+    )
+    step = Step(id='proposal-step', run_id=run.id, sequence=0, tool='prepare_demo',
+                request_hash='hash', result={})
+
+    class FakeDb:
+        def get(self, model, identity):
+            if model is Step and identity == step.id:
+                return step
+            if model is Run and identity == run.id:
+                return run
+            return None
+
+    monkeypatch.setattr('app.agent_resume.model_settings', lambda: SimpleNamespace(llm_enabled=True))
+    receipt = {'status': 'executed', 'resource_id': 'resource-1'}
+
+    assert queue_after_proposal_decision(FakeDb(), SimpleNamespace(id='user-1'),
+                                         step.id, 'approved', receipt) is True
+    assert run.status == 'QUEUED'
+    assert run.result is None
+    assert 'completed_at' not in run.checkpoint
+    assert run.checkpoint['protocol_repairs'] == 0
+    assert run.checkpoint['next_model_instructions'] == []
+    assert run.checkpoint['streaming_model_message'] is None
+    assert run.checkpoint['proposal_resolution']['decision'] == 'approved'
+    assert run.checkpoint['proposal_resolution']['authoritative_receipt'] == receipt
+    assert run.checkpoint['prior_finals'][0]['response_kind'] == 'AWAITING_APPROVAL'
+    assert [message['role'] for message in run.checkpoint['messages'][-5:]] == [
+        'assistant', 'user', 'assistant', 'tool', 'system'
+    ]
+    assert '完成本人确认' in run.checkpoint['messages'][-4]['content']
+    tool_receipt = run.checkpoint['messages'][-2]
+    assert tool_receipt['tool_call_id'].startswith('proposal_resolution_')
+    assert '"event": "proposal_resolved"' in tool_receipt['content']
+
+
 def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monkeypatch):
     run, claimed = start(client, monkeypatch)
     checkpoint = {
@@ -82,6 +175,28 @@ def test_tool_search_result_is_projected_as_harness_activity(client, data, monke
     assert activity['type'] == 'tool_search'
     assert activity['activated'] == ['query_project_plan_context']
     assert activity['as_of'] == '2026-09-16T16:46:45+0800'
+
+
+def test_trusted_proposal_resolution_is_projected_as_confirmation_activity(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    messages = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'proposal-resolution-1', 'type': 'function',
+            'function': {'name': 'ProposalResolution', 'arguments': '{"decision":"approved"}'},
+        }]},
+        {'role': 'tool', 'tool_call_id': 'proposal-resolution-1', 'content': (
+            '{"source":"trusted_host","event":"proposal_resolved","decision":"approved",'
+            '"proposal_step_id":"proposal-step","authoritative_receipt":{"status":"CONFIRMED"}}'
+        )},
+    ]
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': {'messages': messages, 'turn': 1}}).status_code == 200
+
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    activity = history[0]['trace'][0]
+    assert activity['type'] == 'proposal_resolution'
+    assert activity['decision'] == 'approved'
+    assert activity['receipt']['status'] == 'CONFIRMED'
 
 
 def test_tool_error_is_projected_as_recoverable_activity_not_interrupted_run(client, data, monkeypatch):

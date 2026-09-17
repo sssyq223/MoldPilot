@@ -195,6 +195,18 @@ function evidenceSections(row:any){
 function evidenceCardTitle(row:any,index:number,title:string){
  return isRecord(row)?(compactRecordTitle(row)||`${title} ${Number(index)+1}`):`${title} ${Number(index)+1}`
 }
+function evidenceBriefTitle(item:any){
+ const rows=Array.isArray(item?.data)?item.data:[]
+ if(!rows.length)return '暂无可见记录'
+ const title=compactRecordTitle(rows[0])||'业务记录'
+ return rows.length>1?`${title} 等 ${rows.length} 条记录`:title
+}
+function evidenceBriefSummary(item:any){
+ const rows=Array.isArray(item?.data)?item.data:[]
+ if(!rows.length)return '本次查询未返回当前权限范围内的业务记录。'
+ const facts=compactRecordFields(rows[0]).map(fact=>`${fact.label} ${fact.value}`)
+ return facts.length?facts.join(' · '):`${rows.length} 条记录 · 按当前权限返回`
+}
 function hasBusinessFactHighlights(row:any){
  const analysis=row?.analysis
  return Boolean(analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
@@ -208,7 +220,7 @@ function runTrace(run:any){
  }
  return items
 }
-function runProcessTrace(run:any){return runTrace(run).filter((item:any)=>item.type!=='final')}
+function runProcessTrace(run:any){return runTrace(run).filter((item:any)=>!['final','proposal_resolution'].includes(item.type))}
 function streamedTextKey(run:any,item:any,index:number){return `${run.id}:${item?.message_key||`index:${index}`}`}
 function stopStreamedTextAnimation(key:string){
  const frame=streamedTextFrames.get(key)
@@ -300,6 +312,12 @@ function runPendingProposals(run:any){
  if(['QUEUED','RUNNING'].includes(run.status))return []
  return runProcessTrace(run).filter((item:any)=>item.proposal&&item.id&&!item.proposal_decision&&!confirmedProposalSteps.value[item.id])
 }
+function runResolvedProposals(run:any){
+ return runProcessTrace(run).filter((item:any)=>item.proposal&&item.id&&(item.proposal_decision||confirmedProposalSteps.value[item.id]))
+}
+function proposalResolutionFor(run:any,stepId:string){
+ return runTrace(run).find((item:any)=>item.type==='proposal_resolution'&&item.proposal_step_id===stepId)
+}
 function runFinalTraces(run:any){return runTrace(run).filter((item:any)=>item.type==='final')}
 function visibleRunFinalTrace(run:any){return runFinalTrace(run)}
 const pendingApprovalContext=computed(()=>{
@@ -314,9 +332,10 @@ function setProposalConfirmed(stepId:string,confirmed=true){
  confirmedProposalSteps.value={...confirmedProposalSteps.value,[stepId]:confirmed}
 }
 function runProcessExpanded(run:any){
+ if(['QUEUED','RUNNING'].includes(run.status))return true
  const chosen=runProcessOpen.value[run.id]
  if(chosen!==undefined)return chosen
- return ['QUEUED','RUNNING'].includes(run.status)
+ return false
 }
 function toggleRunProcess(run:any){runProcessOpen.value={...runProcessOpen.value,[run.id]:!runProcessExpanded(run)}}
 function runDurationSeconds(run:any){
@@ -469,7 +488,6 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
         <div class="answer-body">
           <div v-if="runPendingProposal(run)||run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&visibleRunFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING'].includes(run.status)||runPendingProposal(run)}"/>{{runPendingProposal(run)?'等待批准':(runStatus[run.status]??'任务状态待确认')}}<template v-if="['QUEUED','RUNNING'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
           <p v-if="run.status==='WAITING_CONFIGURATION'" class="muted">任务已保存。模型尚未完成配置，当前不会生成业务结论。待审批事项仍可从消息通知中查看。</p>
-          <p v-if="run.status==='RUNNING'" class="muted small">{{run.progress?.phase==='MODEL_STREAMING'?'正在接收模型回复':run.progress?.phase==='MODEL_WAITING'?'正在等待模型回复':run.progress?.phase==='TOOL_RUNNING'?'正在调用业务工具':run.progress?.phase==='VALIDATING'?'正在核对模型结果':'正在准备任务'}}<span v-if="run.progress?.tools?.length"> · 已完成 {{run.progress.tools.length}} 次工具调用</span></p>
           <div v-if="runTrace(run).length" class="react-trace" aria-label="执行链路">
             <button v-if="runProcessTrace(run).length&&!['QUEUED','RUNNING'].includes(run.status)" type="button" class="run-duration-toggle" :aria-expanded="runProcessExpanded(run)" @click="toggleRunProcess(run)">
               {{runDurationLabel(run)}}<ChevronRight class="run-duration-caret" :size="13"/>
@@ -493,16 +511,13 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                       <span class="agent-tool-caret"><ChevronRight :size="12"/></span>
                     </summary>
                     <div class="agent-tool-body">
-                      <p class="agent-tool-meta">{{item.proposal?'已生成待确认卡，请在下方正文区域处理。':(shanghai(item.as_of)+' · 按当前权限返回')}}</p>
-                      <div v-if="!item.proposal" class="agent-tool-main agent-records">
-                        <p v-if="!item.data?.length" class="muted small">暂无可见记录。</p>
-                        <article v-for="(row,rowIndex) in (item.data||[]).slice(0,3)" :key="rowIndex" class="agent-evidence-record">
-                          <div class="agent-record-title">{{compactRecordTitle(row)||`业务记录 ${Number(rowIndex)+1}`}}</div>
-                          <div v-if="compactRecordFields(row).length" class="agent-record-fields">
-                            <span v-for="fact in compactRecordFields(row)" :key="fact.key"><b>{{fact.label}}</b>{{fact.value}}</span>
-                          </div>
-                        </article>
-                        <button v-if="item.data?.length" class="agent-inline-action" @click="selectedEvidence=item">查看完整依据</button>
+                      <p v-if="item.proposal" class="agent-tool-meta">已生成待确认卡，请在下方正文区域处理。</p>
+                      <div v-else class="agent-tool-main agent-evidence-brief">
+                        <span>
+                          <strong>{{evidenceBriefTitle(item)}}</strong>
+                          <small>{{evidenceBriefSummary(item)}}</small>
+                        </span>
+                        <button v-if="item.data?.length" @click="selectedEvidence=item">查看详情</button>
                       </div>
                       <div v-if="['query_contact_cases','query_contact_context'].includes(item.tool)" class="actions">
                         <button v-for="row in item.data" :key="row.id" @click="contactTarget=row.id;openPanel('contacts')">查看联络材料：{{row.title}}</button>
@@ -519,6 +534,15 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                     <span class="agent-tool-summary">{{item.message}} · {{item.code}}</span>
                   </div>
                 </template>
+              </div>
+            </div>
+            <div v-if="runResolvedProposals(run).length" class="resolved-proposals" aria-label="已处理确认卡">
+              <div v-for="item in runResolvedProposals(run)" :key="'resolved:'+item.id" class="resolved-proposal">
+                <ContactProposal placement="message" :product-name="product.product_name" :step-id="item.id" :proposal="item.proposal" :decision="item.proposal_decision||'approved'" @status="confirmed=>setProposalConfirmed(item.id,confirmed)" @open="id=>{contactTarget=id;openPanel('contacts')}"/>
+                <div v-if="proposalResolutionFor(run,item.id)" class="agent-tool-row proposal-resolution-row">
+                  <span class="agent-tool-icon"><Check :size="13"/></span>
+                  <span class="proposal-resolution-copy">{{proposalResolutionFor(run,item.id).decision==='approved'?'本人已确认':'本人已取消'}} · {{proposalResolutionFor(run,item.id).receipt?.status==='CONFIRMED'?'执行回执已确认':(proposalResolutionFor(run,item.id).receipt?.status||'决定已记录')}}</span>
+                </div>
               </div>
             </div>
             <div v-for="(finalItem,finalIndex) in runFinalTraces(run)" :key="'final:'+finalIndex" class="assistant-prose final">

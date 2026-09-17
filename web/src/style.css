@@ -456,6 +456,10 @@ html[data-theme="light"] .final-answer-title{color:#14283f}
 .run-label{min-height:24px;margin:0;color:var(--muted);font-size:14px;line-height:24px}
 .run-label>span{width:5px;height:5px;background:color-mix(in srgb,var(--accent) 54%,var(--muted))}
 .react-trace{width:100%;margin:0}
+.resolved-proposals{display:grid;gap:8px;margin:2px 0 4px}
+.resolved-proposal{display:grid;gap:6px}
+.proposal-resolution-row{display:flex;align-items:center;gap:5px;min-height:24px;font-size:14px;line-height:24px}
+.proposal-resolution-copy{color:var(--muted);font:inherit;font-weight:400;letter-spacing:0}
 .agent-activity{width:100%;margin:4px 0 12px;padding-top:0;border-top:0}
 .agent-tool-row{width:100%;margin:3px 0;color:var(--muted);font-size:13px;line-height:1.7}
 .agent-tool-row summary{list-style:none}
@@ -497,6 +501,11 @@ html[data-theme="light"] .final-answer-title{color:#14283f}
 .agent-inline-action{height:auto;padding:0;border:0;background:transparent;color:color-mix(in srgb,var(--accent) 68%,#fff);font-size:12px}
 .agent-inline-action:hover{background:transparent;text-decoration:underline;text-underline-offset:3px}
 .agent-records{display:flex;flex-direction:column;gap:5px}
+.agent-evidence-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 38%,transparent)}
+.agent-evidence-brief>span{min-width:0;display:grid;gap:2px}
+.agent-evidence-brief strong{overflow:hidden;color:var(--text);font-size:14px;font-weight:500;line-height:1.45;text-overflow:ellipsis;white-space:nowrap}
+.agent-evidence-brief small{overflow:hidden;color:var(--muted);font-size:12px;line-height:1.45;text-overflow:ellipsis;white-space:nowrap}
+.agent-evidence-brief button{flex-shrink:0;height:30px;padding:0 11px;border-radius:8px;font-size:12px;white-space:nowrap}
 .evidence-modal{width:min(900px,calc(100vw - 48px));max-height:min(760px,calc(100vh - 56px));display:flex;flex-direction:column;padding:0;overflow:hidden}
 .evidence-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px 16px;border-bottom:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
 .evidence-modal-head h2{margin:0;color:color-mix(in srgb,#fff 92%,var(--muted));font-size:20px;line-height:1.45}
@@ -602,6 +611,7 @@ html[data-theme="light"] .user-message{background:#edf1f5;border-color:#cbd5df;c
 .run-process .agent-tool-body:hover::before{background:color-mix(in srgb,var(--border) 90%,transparent)}
 .run-process .agent-tool-meta{margin:0 0 8px;color:var(--muted);font-size:12px;line-height:1.7;white-space:normal}
 .run-process .agent-records{display:block}
+.run-process .agent-evidence-brief{display:flex}
 .run-process .agent-evidence-record{display:block;max-width:760px;margin:0 0 8px;padding:0}
 .run-process .agent-record-title{display:block;margin:0 0 5px;color:inherit;font-size:13px;font-weight:600;line-height:1.7}
 .run-process .agent-record-fields{display:flex;flex-wrap:wrap;gap:5px 14px;margin:0;color:var(--muted);font-size:12px;line-height:1.7}

@@ -824,6 +824,67 @@ def test_read_only_prompt_cannot_open_exact_prepare_tool_name():
     ) == ([], [], [])
 
 
+def test_logistics_tool_search_opens_only_the_requested_route_or_quote_action():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_delivery_logistics_context',
+        'description': '读取交付、物流路线、报价和结算价上下文。',
+    }}
+    route_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_route',
+        'description': '准备仓库确认固定物流路线或模具项目实际路线。',
+    }}
+    quote_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_quote',
+        'description': '准备采购主管确认物流报价或项目本次结算价格。',
+    }}
+    deferred = {tool['function']['name']: tool for tool in (query_tool, route_tool, quote_tool)}
+    groups = [{'key': 'delivery_logistics_review',
+               'name': '交付物流路线与价格协同',
+               'description': '查询并准备物流路线、报价和项目结算价格。',
+               'tools': ['query_delivery_logistics_context', 'prepare_logistics_route', 'prepare_logistics_quote'],
+               'required': ['query_delivery_logistics_context'],
+               'optional_tools': ['prepare_logistics_route', 'prepare_logistics_quote'],
+               'activation_queries': ['物流路线', '物流报价', '本次物流结算价格', '本次结算价格']}]
+
+    _, route_candidates, _ = harness_module._find_deferred_tools(
+        '登记模具项目实际物流路线', deferred, groups,
+        action_intent=True, current_prompt='请登记模具项目实际物流路线并准备确认卡。')
+    assert route_candidates == ['query_delivery_logistics_context', 'prepare_logistics_route']
+
+    _, quote_candidates, _ = harness_module._find_deferred_tools(
+        '确认本次物流结算价格', deferred, groups,
+        action_intent=True, current_prompt='请确认本次物流结算价格并准备确认卡。')
+    assert quote_candidates == ['query_delivery_logistics_context', 'prepare_logistics_quote']
+
+
+def test_read_only_logistics_query_never_activates_route_or_quote_prepare_tools():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_delivery_logistics_context',
+        'description': '读取交付物流上下文。',
+    }}
+    route_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_route',
+        'description': '准备物流路线确认。',
+    }}
+    quote_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_quote',
+        'description': '准备物流报价确认。',
+    }}
+    deferred = {tool['function']['name']: tool for tool in (query_tool, route_tool, quote_tool)}
+    groups = [{'key': 'delivery_logistics_review',
+               'name': '交付物流路线与价格协同',
+               'description': '查询并准备物流路线和报价。',
+               'tools': ['query_delivery_logistics_context', 'prepare_logistics_route', 'prepare_logistics_quote'],
+               'required': ['query_delivery_logistics_context'],
+               'optional_tools': ['prepare_logistics_route', 'prepare_logistics_quote'],
+               'activation_queries': ['物流路线', '物流报价']}]
+    _, candidates, _ = harness_module._find_deferred_tools(
+        '查询物流路线和报价', deferred, groups,
+        action_intent=False,
+        current_prompt='只读查询 BROWSER-OUT-001 的物流路线和报价，不要准备或执行任何操作。')
+    assert candidates == ['query_delivery_logistics_context']
+
+
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():
     risk_tool = {'type': 'function', 'function': {'name': 'analyze_delivery_risk',
                                                   'description': '分析供应商发货延期和临期风险。'}}
@@ -1046,6 +1107,47 @@ def test_duplicate_repair_is_transient_and_provider_receives_one_leading_system_
     assert '已经用相同参数返回过证据' in repaired_request[0]['content']
     assert all(message['role'] != 'system' for message in repaired_request[1:])
     assert all(message['role'] != 'system' for message in gateway.saved['messages'][1:])
+
+
+def test_confirmed_proposal_resume_cannot_return_to_awaiting_approval():
+    waiting_again = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '确认卡已经准备好，请再次确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    receipt_reply = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'proposal_decision': 'approved',
+        'summary': '已收到本人确认，权威回执表明本次登记已经完成。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    messages = [
+        {'role': 'system', 'content': '通用智能体协议'},
+        {'role': 'user', 'content': '请准备正式业务操作'},
+        {'role': 'assistant', 'content': '确认卡已经准备，请本人确认。'},
+        {'role': 'user', 'content': '我已在可信确认界面完成本人确认，请根据执行回执继续回复。'},
+        {'role': 'system', 'content': '可信人工决定：{"decision":"approved"}'},
+    ]
+    gateway = Gateway()
+    model = TranscriptModel([waiting_again, receipt_reply])
+
+    result = run_loop(context(
+        prompt='请准备项目正式操作确认卡',
+        messages=messages,
+        evidence_ids=['e1'],
+        finalizing=True,
+        action_outcomes={'prepare_demo_action': {'status': 'success', 'evidence_id': 'e1'}},
+        proposal_resolution={'decision': 'approved', 'authoritative_receipt': {'status': 'executed'}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['proposal_decision'] == 'approved'
+    assert result['summary'].startswith('已收到本人确认')
+    assert model.calls == 2
+    assert '不得再次输出 AWAITING_APPROVAL' in model.transcripts[1][0]['content']
+    assert gateway.saved['protocol_repairs'] == 1
     assert gateway.saved['next_model_instructions'] == []
 
 

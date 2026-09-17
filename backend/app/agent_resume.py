@@ -15,6 +15,18 @@ def _final_snapshot(result):
     return snapshot or None
 
 
+def _assistant_history_message(snapshot):
+    """Project the saved terminal result back into the resumed model transcript."""
+    if not snapshot:
+        return None
+    summary = snapshot.get("summary") or snapshot.get("message")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    suggestions = snapshot.get("suggestions") or []
+    suffix = "" if not suggestions else "\n" + "\n".join(f"- {item}" for item in suggestions)
+    return {"role": "assistant", "content": summary.strip() + suffix}
+
+
 def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     """Persist the decision and queue the same run for a natural Agent follow-up."""
     if decision not in {"approved", "dismissed"}:
@@ -41,7 +53,8 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
 
     if decision == "approved":
         fact = {
-            "decision": "用户已在可信确认界面批准该操作建议",
+            "decision": "approved",
+            "decision_message": "用户已在可信确认界面批准该操作建议",
             "proposal_step_id": step_id,
             "authoritative_receipt": receipt,
         }
@@ -51,19 +64,62 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         )
     else:
         fact = {
-            "decision": "用户已在可信确认界面选择暂不执行该操作建议",
+            "decision": "dismissed",
+            "decision_message": "用户已在可信确认界面选择暂不执行该操作建议",
             "proposal_step_id": step_id,
         }
         instruction = "请根据这一用户决定自然回应；当前不再等待批准，不得调用工具。"
 
     messages = list(checkpoint.get("messages") or [])
+    prior_message = _assistant_history_message(prior)
+    if prior_message:
+        messages.append(prior_message)
+    messages.append({
+        "role": "user",
+        "content": (
+            "我已在可信确认界面完成本人确认，请根据执行回执继续回复。"
+            if decision == "approved"
+            else "我已在可信确认界面选择暂不执行，请继续回复。"
+        ),
+    })
+    receipt_call_id = "proposal_resolution_" + step_id
+    messages.append({
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": receipt_call_id,
+            "type": "function",
+            "function": {
+                "name": "ProposalResolution",
+                "arguments": json.dumps({
+                    "proposal_step_id": step_id,
+                    "decision": decision,
+                }, ensure_ascii=False),
+            },
+        }],
+    })
+    messages.append({
+        "role": "tool",
+        "tool_call_id": receipt_call_id,
+        "content": json.dumps({
+            "source": "trusted_host",
+            "event": "proposal_resolved",
+            **fact,
+        }, ensure_ascii=False),
+    })
     messages.append({
         "role": "system",
-        "content": instruction + "\n可信人工决定：" + json.dumps(fact, ensure_ascii=False),
+        "content": (
+            instruction
+            + f" 最终 JSON 必须包含 proposal_decision={json.dumps(decision)}，"
+              "用于证明已消费前面的 ProposalResolution 权威回执。"
+        ),
     })
+    checkpoint.pop("completed_at", None)
     checkpoint.update({
         "messages": messages,
         "proposal_decisions": decisions,
+        "proposal_resolution": fact,
         "prior_finals": prior_finals,
         "pending": [],
         "pending_index": 0,
@@ -71,6 +127,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         "deadline": None,
         "phase": "PREPARING",
         "model_started_at": None,
+        "protocol_repairs": 0,
+        "next_model_instructions": [],
+        "streaming_model_message": None,
+        "last_model_message": None,
     })
     run.checkpoint = checkpoint
     run.result = None

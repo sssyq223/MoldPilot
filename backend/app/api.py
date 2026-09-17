@@ -105,10 +105,24 @@ def run_trace(run, steps, decisions=None):
     step_by_id = {step.id: step for step in steps}
     decisions = decisions or {}
     messages = run.checkpoint.get("messages", []) if isinstance(run.checkpoint, dict) else []
+    prior_finals = (run.checkpoint or {}).get("prior_finals", [])
+
+    def prior_text(prior):
+        text = prior.get("summary") or prior.get("message") or ""
+        suggestions = prior.get("suggestions") or []
+        if suggestions:
+            text += "\n" + "\n".join(f"- {item}" for item in suggestions)
+        return text.strip()
+
+    prior_texts = {
+        text for prior in prior_finals if isinstance(prior, dict)
+        if (text := prior_text(prior))
+    }
     tool_result_call_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")}
     tool_names_by_call = {}
     trace = []
     assistant_turn = 0
+    assistant_texts = set()
     for msg in messages:
         role = msg.get("role")
         if role == "assistant":
@@ -116,7 +130,9 @@ def run_trace(run, steps, decisions=None):
             assistant_turn += 1
             text = (msg.get("content") or "").strip()
             if text:
-                trace.append({"type": "message", "text": text, "message_key": message_key})
+                assistant_texts.add(text)
+                trace.append({"type": "message", "text": text, "message_key": message_key,
+                              **({"historical": True} if text in prior_texts else {})})
             for call in msg.get("tool_calls") or []:
                 call_id = call.get("id")
                 tool_names_by_call[call_id] = (call.get("function") or {}).get("name") or "业务工具"
@@ -144,6 +160,13 @@ def run_trace(run, steps, decisions=None):
                 trace.append({"type": "tool_search", "tool": "ToolSearch", "query": payload.get("query", ""),
                               "activated": payload.get("activated", []), "matches": payload.get("matches", []),
                               "message": payload.get("message", ""), "as_of": payload.get("as_of")})
+            elif payload.get("source") == "trusted_host" and payload.get("event") == "proposal_resolved":
+                trace.append({
+                    "type": "proposal_resolution",
+                    "decision": payload.get("decision"),
+                    "proposal_step_id": payload.get("proposal_step_id"),
+                    "receipt": payload.get("authoritative_receipt"),
+                })
             else:
                 trace.append({"type": "tool", "tool": "业务工具", "data": [], "as_of": payload.get("as_of")})
     streaming = (run.checkpoint or {}).get("streaming_model_message")
@@ -163,9 +186,17 @@ def run_trace(run, steps, decisions=None):
             trace.append({"type": "tool_pending", "tool": name,
                           "call_id": call.get("id"), "run_status": run.status,
                           "streaming": True})
-    for prior in (run.checkpoint or {}).get("prior_finals", []):
+    for prior in prior_finals:
         if isinstance(prior, dict):
-            trace.append({"type": "final", "historical": True, **prior})
+            text = prior_text(prior)
+            if text.strip() and text.strip() not in assistant_texts:
+                trace.append({
+                    "type": "message",
+                    "text": text.strip(),
+                    "historical": True,
+                    "message_key": f"assistant:{assistant_turn}",
+                })
+                assistant_turn += 1
     result = run.result if isinstance(run.result, dict) else {}
     if result:
         trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),
