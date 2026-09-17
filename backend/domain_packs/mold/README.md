@@ -48,6 +48,12 @@ generic approval envelope. The host persists approvals as
 `resource_type/resource_id` and no longer has foreign keys or check constraints
 that name mold tables. Both contracts are empty in the template pack.
 
+`migrations.py` selects the existing `alembic.ini` history and
+`alembic_version` table. This preserves all deployed MoldPilot databases while
+the mixed historical chain is retired gradually; new migration commands go
+through `scripts/migrate.py` so another active pack cannot accidentally run
+the mold history.
+
 The generic runtime loads it with:
 
 ```text

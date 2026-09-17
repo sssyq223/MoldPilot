@@ -68,7 +68,8 @@ flowchart LR
 MoldPilot/
 ├─ backend/             # FastAPI、Agent Worker 与业务服务
 ├─ web/                 # Vue 3 前端
-├─ alembic/             # 数据库迁移
+├─ alembic/             # MoldPilot 现有兼容迁移链
+├─ alembic_core/        # 通用智能体宿主迁移链
 ├─ mcp/                 # MCP 服务
 ├─ tests/               # 后端测试
 ├─ scripts/             # 开发与运维辅助脚本
@@ -100,7 +101,7 @@ Copy-Item .env.example .env
 
 ```dotenv
 MOLD_DATABASE_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
-MOLD_MIGRATION_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
+AGENT_MIGRATION_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
 MOLD_REDIS_URL=redis://127.0.0.1:6379/0
 MOLD_WORKER_SECRET=替换为本地随机密钥
 ```
@@ -122,9 +123,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock
 
 $env:PYTHONPATH='backend'
-.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe scripts\migrate.py upgrade head
 .\.venv\Scripts\python.exe -m app.bootstrap --username admin --name 管理员
 ```
+
+迁移命令会根据 `AGENT_BUSINESS_PACK` 选择数据库版本链：默认 `mold`
+继续使用现有 MoldPilot 历史迁移，`template` 使用不包含项目、采购、工程联络
+或物流表的通用宿主迁移。不要在切换业务包后直接运行固定的 Alembic 配置。
 
 创建管理员时，命令行会提示输入初始密码，密码长度至少为 12 个字符。
 

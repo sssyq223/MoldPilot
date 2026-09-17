@@ -14,11 +14,13 @@
 - ORM 基础契约已从 `app.models` 抽到不加载领域包的 `app.model_base`，消除了 `app.models ↔ pack.models` 循环；通用审批实例改为 `resource_type/resource_id`，不再外键引用采购申请或业务材料，资料绑定也不再在数据库约束中写死两种模具资源。可审批资源类型由 active pack 的 `resources.py` 注册并在写入前校验。
 - 权限词汇与数据范围维度已改为 active pack 契约：宿主只保留账号、流程设计、文件和审计等通用权限，项目、采购、工程联络、仓库等权限及 `project_id/category/warehouse_id` 维度由 mold 包提供；template 包加载后只有 6 项通用权限、零业务范围维度。
 - 新增 PostgreSQL 正向迁移，将旧 `request_id/subject_id` 数据无损归一为通用审批资源引用，并移除业务外键和资料绑定业务类型约束；用户头像表也从 API 运行时 DDL 纳入 Alembic/ORM 正式管理，历史复合/部分索引补齐 ORM 声明。正式库已升级至新 head，`alembic check` 无模型漂移。
+- 迁移入口现由 active pack 契约选择：`scripts/migrate.py` 对 mold 保持既有 `alembic.ini/alembic_version`，对 template 使用独立 `alembic-core.ini/alembic_core_version`。通用宿主基线是带 SHA-256 校验的冻结 PostgreSQL SQL，不依赖运行时模型偷偷建表；在 `moldpilot_test` 的隔离 schema 中已完成空库升级、current、autogenerate check、降级，并确认只生成 27 张宿主表和版本表，零模具业务表。直接误用不属于当前 pack 的迁移环境会明确阻断。
 - 已增加架构门禁，验证领域 handler 指向包内实现、宿主 facade 不再承载物流业务类、领域网关不反向调用旧实现；`AGENT_BUSINESS_PACK=template` 仍能以 `Agent Workbench` 启动且不注册模具 HTTP 路由。
-- 当前仍不是完整领域抽离：迁移连接已支持通用 `AGENT_MIGRATION_URL`（兼容旧 `MOLD_MIGRATION_URL`），但 Alembic 仍使用全局模具迁移链；物流及多数工具/API 实现仍依赖或位于 `app.plan_tools`、`app.domains`、`app.procurement`、`app.contacts` 等宿主模块；`uiText.ts`、`businessForms.ts`、快捷问题和具体工作区面板仍静态包含模具语义。ORM、权限与审批资源契约完成后，template 已是有效的通用后端 metadata，但业务包仍不能单独发布，也还不能仅替换目录就得到完整的车辆/工装前后端。
-- 后续拆分顺序固定为：先将全局 Alembic 改为 core + active-pack 迁移组合；随后按业务纵切迁移遗留 API/tool/service 与物流上游 read providers；最后把前端快捷问题、业务表单和工作区面板改为 pack registry/lazy-load，并删除兼容 facade。只有 template 可独立迁移建库、启动前后端且 bundle 不含模具语义后，才可认定业务包可完整替换。
+- 当前仍不是完整领域抽离：template 已有独立通用迁移链，但 mold 的历史迁移仍是 core 与模具表混合的兼容链，新建的非空车辆/工装 pack 仍需提供自己的领域迁移仓库；物流及多数工具/API 实现仍依赖或位于 `app.plan_tools`、`app.domains`、`app.procurement`、`app.contacts` 等宿主模块；`uiText.ts`、`businessForms.ts`、快捷问题和具体工作区面板仍静态包含模具语义。业务包仍不能单独发布，也还不能仅替换目录就得到完整的车辆/工装前后端。
+- 后续拆分顺序固定为：先为非空 pack 补齐“core 基线 + pack 自有迁移”的组合/安装协议并逐步退役 mold 混合历史链；随后按业务纵切迁移遗留 API/tool/service 与物流上游 read providers；最后把前端快捷问题、业务表单和工作区面板改为 pack registry/lazy-load，并删除兼容 facade。只有 template 可独立迁移建库、启动前后端且 bundle 不含模具语义后，才可认定业务包可完整替换。
 - 验证：确认卡领域元数据契约定向回归 7 项通过，Vue 类型检查和生产构建通过；完整后端回归在仓库隔离临时目录下 447 项通过，Python 编译/import smoke 通过。内置浏览器重启真实后端后复核已确认物流卡：标题由领域元数据从“确认物流路线”归一化为“物流路线已确认”，卡片在折叠执行链中永久保留，详情字段可回看，已确认后的“暂不执行/已确认执行”按钮均禁用；本批没有新增业务功能或传统 ERP 页面。
 - 本轮 ORM/权限契约验证：template 独立进程成功启动，`Base.metadata.sorted_tables` 与全部 PostgreSQL `CREATE TABLE` 可编译，未加载 mold 模块/表/权限/范围维度/审批资源类型；正式 PostgreSQL 已升级至 `d5b8f3c20e71 (head)`，`alembic check` 返回无新增迁移；隔离临时目录下完整后端回归 447 项通过、Python compileall 通过。内置浏览器重启真实后端后，会话历史和已确认物流正文完整保留，确认卡仍位于执行链与正文之间，详情弹层字段完整且两个执行按钮禁用，控制台无 warn/error。本轮未增加业务功能或 ERP 页面。
+- 本轮迁移分包验证：新增 PostgreSQL 空 schema 集成门禁实际执行 template 的 `upgrade head → current → check → downgrade base`，确认 `a10c0e000001` 基线可逆且不创建任何模具表；默认 mold 分发仍定位 `d5b8f3c20e71 (head)` 并通过 check。迁移 URL 统一保证进程级 `AGENT_MIGRATION_URL`/旧别名优先于 `.env`，测试夹具显式覆盖并恢复新变量，避免配置新变量后测试误向正式库执行迁移；对应优先级回归已纳入门禁。完整后端回归增至 450 项全部通过、Python compileall 通过；真实后端重启后内置浏览器成功恢复历史会话、已处理确认卡和最终正文，控制台无 warn/error。本轮仍未增加业务功能或传统 ERP 页面。
 
 ## 持续开发：FR-065～067 物流路线、核准报价与结算价办理闭环（2026-09-17）
 

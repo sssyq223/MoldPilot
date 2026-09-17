@@ -3,8 +3,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
-from alembic.config import Config
 from alembic import command
+from agent_core.migration_runtime import alembic_config
 from app.models import Base
 from app.db import get_db, make_engine
 from app.api import app
@@ -28,12 +28,12 @@ def test_engine():
     # Destructive cleanup is strictly limited to a dedicated, explicitly named test DB.
     if engine.url.database != "moldpilot_test" or engine.url.host not in {"127.0.0.1", "localhost", "postgres"}:
         raise RuntimeError("Refusing to initialize a database outside the isolated moldpilot_test target")
-    previous = os.environ.get("MOLD_MIGRATION_URL")
-    os.environ["MOLD_MIGRATION_URL"] = url
-    try: command.upgrade(Config('alembic.ini'), 'head')
+    previous = os.environ.get("AGENT_MIGRATION_URL")
+    os.environ["AGENT_MIGRATION_URL"] = url
+    try: command.upgrade(alembic_config(), 'head')
     finally:
-        if previous is None: os.environ.pop("MOLD_MIGRATION_URL", None)
-        else: os.environ["MOLD_MIGRATION_URL"] = previous
+        if previous is None: os.environ.pop("AGENT_MIGRATION_URL", None)
+        else: os.environ["AGENT_MIGRATION_URL"] = previous
     yield engine
     engine.dispose()
 

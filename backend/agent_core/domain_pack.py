@@ -117,9 +117,25 @@ def resource_contract():
     return value
 
 
+@lru_cache
+def migration_contract():
+    """Return the Alembic repository selected by the active business pack."""
+    value = component("migrations")
+    config_file = getattr(value, "ALEMBIC_CONFIG", None)
+    version_table = getattr(value, "VERSION_TABLE", None)
+    if not isinstance(config_file, str) or not config_file.endswith(".ini"):
+        raise RuntimeError("Domain-pack migrations.ALEMBIC_CONFIG must name an ini file")
+    if not isinstance(version_table, str) or not _PACK_NAME.fullmatch(version_table):
+        raise RuntimeError(
+            "Domain-pack migrations.VERSION_TABLE must be a simple lowercase identifier"
+        )
+    return value
+
+
 def reset_domain_pack_cache():
     """Test helper for applications that switch pack configuration before startup."""
     manifest.cache_clear()
     authorization_contract.cache_clear()
     resource_contract.cache_clear()
+    migration_contract.cache_clear()
     component.cache_clear()

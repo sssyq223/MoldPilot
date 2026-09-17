@@ -223,16 +223,16 @@ def _db_status(db) -> dict:
 
 def _migration_repository_status() -> dict:
     try:
-        from alembic.config import Config
         from alembic.script import ScriptDirectory
+        from agent_core.migration_runtime import alembic_config, version_table
 
-        config = Config(str(REPO_ROOT / "alembic.ini"))
-        config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        config = alembic_config(REPO_ROOT)
         script = ScriptDirectory.from_config(config)
         heads = sorted(script.get_heads())
         return {
             "available": True,
-            "script_location": "alembic",
+            "script_location": config.get_main_option("script_location"),
+            "version_table": version_table(),
             "heads": heads,
             "head_count": len(heads),
         }
@@ -247,7 +247,12 @@ def _migration_status(db) -> dict:
     repository = _migration_repository_status()
     status: dict = {"repository": repository}
     try:
-        versions = sorted(str(row[0]) for row in db.execute(text("SELECT version_num FROM alembic_version")).all())
+        version_table = repository.get("version_table", "alembic_version")
+        if not version_table.replace("_", "").isalnum():
+            raise RuntimeError("Invalid migration version table")
+        versions = sorted(str(row[0]) for row in db.execute(
+            text(f'SELECT version_num FROM "{version_table}"')
+        ).all())
     except Exception as error:  # pragma: no cover - defensive status path
         status.update(
             {
@@ -265,7 +270,7 @@ def _migration_status(db) -> dict:
             "database_version_count": len(versions),
             "matches_repository_heads": bool(heads) and set(versions) == set(heads),
             "status": "MIGRATIONS_MATCH_REPOSITORY_HEADS" if bool(heads) and set(versions) == set(heads) else "MIGRATIONS_OUT_OF_SYNC",
-            "note": "只读比较数据库 alembic_version 与仓库 Alembic head；不会执行迁移。",
+            "note": f"只读比较数据库 {version_table} 与活动业务包的 Alembic head；不会执行迁移。",
         }
     )
     return status

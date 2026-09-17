@@ -14,8 +14,30 @@ from agent_core.domain_pack import (
     validate_public_metadata,
 )
 from agent_core.host_ports import HostPorts, host_ports
+from agent_core.migration_runtime import resolve_migration_url
 from agent_core import tool_gateway as core_gateway
 from app import tool_gateway as host_gateway
+
+
+def test_migration_url_process_overrides_dotenv(monkeypatch):
+    monkeypatch.delenv("AGENT_MIGRATION_URL", raising=False)
+    monkeypatch.setenv("MOLD_MIGRATION_URL", "postgresql://process-legacy")
+    assert resolve_migration_url({
+        "AGENT_MIGRATION_URL": "postgresql://dotenv-agent",
+        "MOLD_MIGRATION_URL": "postgresql://dotenv-legacy",
+    }) == "postgresql://process-legacy"
+
+    monkeypatch.setenv("AGENT_MIGRATION_URL", "postgresql://process-agent")
+    assert resolve_migration_url({
+        "AGENT_MIGRATION_URL": "postgresql://dotenv-agent",
+    }) == "postgresql://process-agent"
+
+
+def test_migration_url_requires_explicit_configuration(monkeypatch):
+    monkeypatch.delenv("AGENT_MIGRATION_URL", raising=False)
+    monkeypatch.delenv("MOLD_MIGRATION_URL", raising=False)
+    with pytest.raises(RuntimeError, match="AGENT_MIGRATION_URL is required"):
+        resolve_migration_url({})
 
 
 def test_product_selects_installed_business_pack_and_core_uses_its_contract():
@@ -43,6 +65,8 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert resource_contract().APPROVAL_RESOURCE_TYPES == {
         "purchase_request", "business_subject",
     }
+    assert component("migrations").ALEMBIC_CONFIG == "alembic.ini"
+    assert component("migrations").VERSION_TABLE == "alembic_version"
     assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
     assert core_gateway.SKILLS is host_gateway.SKILLS
@@ -162,6 +186,7 @@ from app.erp_adapter import ERPClient
 from agent_core.harness import _tool_search_schema, permission_mode_instruction
 from agent_core.ollama_adapter import REACT_GUIDANCE
 from agent_core.domain_pack import manifest, resource_contract
+from agent_core.domain_pack import migration_contract
 paths = {route.path for route in app.routes if hasattr(route, 'path')}
 sorted_tables = list(Base.metadata.sorted_tables)
 ddl = [str(CreateTable(table).compile(dialect=postgresql.dialect())) for table in sorted_tables]
@@ -176,6 +201,8 @@ print(json.dumps({
     'permissions': sorted(PERMISSIONS),
     'dimensions': sorted(DIMENSIONS),
     'approval_resource_types': sorted(resource_contract().APPROVAL_RESOURCE_TYPES),
+    'alembic_config': migration_contract().ALEMBIC_CONFIG,
+    'version_table': migration_contract().VERSION_TABLE,
     'mold_modules': sorted(name for name in sys.modules if name.startswith('domain_packs.mold')),
     'policy_text': ' '.join([
         _tool_search_schema()['function']['description'],
@@ -215,6 +242,8 @@ print(json.dumps({
     ]
     assert payload["dimensions"] == []
     assert payload["approval_resource_types"] == []
+    assert payload["alembic_config"] == "alembic-core.ini"
+    assert payload["version_table"] == "alembic_core_version"
     assert not ({
         "project", "material", "purchase_request", "purchase_request_line",
         "business_subject", "supplier", "customer", "mold", "project_mold",
