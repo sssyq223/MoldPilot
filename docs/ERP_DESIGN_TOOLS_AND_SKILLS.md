@@ -31,7 +31,7 @@ flowchart LR
   A --> O[聊天结果]
 ```
 
-实现上，工具注册和权限在 [`backend/app/tool_gateway.py`](../backend/app/tool_gateway.py)，严格参数模型、文件校验和 ERP 调用在 [`backend/app/erp_design_mcp.py`](../backend/app/erp_design_mcp.py)。适配层只把请求转发到固定的 MCP 工具，不在 MoldPilot 数据库复制 ERP 订单、BOM 或审批数据；每次返回都带 ERP 来源、时间和限制说明，并记录审计事件。
+实现上，通用入口在 [`backend/app/tool_gateway.py`](../backend/app/tool_gateway.py)，业务注册、严格参数模型、文件校验和 ERP 调用均归属于 [`backend/domain_packs/mold`](../backend/domain_packs/mold)。适配层只把请求转发到固定的 MCP 工具，不在 MoldPilot 数据库复制 ERP 订单、BOM 或审批数据；每次返回都带 ERP 来源、时间和限制说明，并记录审计事件。
 
 ## 设计工具逐项索引（52 个）
 

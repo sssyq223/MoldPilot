@@ -67,6 +67,13 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     }
     assert component("migrations").ALEMBIC_CONFIG == "alembic.ini"
     assert component("migrations").VERSION_TABLE == "alembic_version"
+    assert "erp_design_query_bom" in core_gateway.TOOLS
+    project_root = Path(__file__).resolve().parents[1]
+    assert not (project_root / "backend" / "app" / "erp_design_mcp.py").exists()
+    assert not (project_root / "backend" / "app" / "erp_design_upload.py").exists()
+    assert (project_root / "backend" / "domain_packs" / "mold" / "erp_design_mcp.py").is_file()
+    assert (project_root / "backend" / "domain_packs" / "mold" / "skills" /
+            "erp_design_workspace_review" / "SKILL.md").is_file()
     assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
     assert core_gateway.SKILLS is host_gateway.SKILLS

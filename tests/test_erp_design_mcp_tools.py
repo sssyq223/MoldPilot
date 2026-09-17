@@ -16,7 +16,7 @@ def test_erp_design_mcp_read_tool_is_registered_and_forwarded(monkeypatch):
         calls.append((name, arguments))
         return {"rows": [{"moldNo": "M250238-P4"}], "total": 1}
 
-    monkeypatch.setattr("app.erp_design_mcp.call_mcp", fake_call)
+    monkeypatch.setattr("domain_packs.mold.erp_design_mcp.call_mcp", fake_call)
     try:
         with Session.begin() as db:
             user = m.User(username="erp_design_admin", display_name="ERP 设计管理员", password_hash="test", super_admin=True)
@@ -54,7 +54,7 @@ def test_erp_design_control_tools_are_registered_and_forwarded(monkeypatch):
         calls.append((name, arguments))
         return {"accepted": True}
 
-    monkeypatch.setattr("app.erp_design_mcp.call_design_control_mcp", fake_call)
+    monkeypatch.setattr("domain_packs.mold.erp_design_mcp.call_design_control_mcp", fake_call)
     try:
         with Session.begin() as db:
             user = m.User(username="erp_design_control_admin", display_name="ERP 设计管理员", password_hash="test", super_admin=True)
@@ -101,7 +101,7 @@ def test_erp_design_missing_operations_are_registered_and_forwarded(monkeypatch)
         calls.append((name, arguments))
         return {"accepted": True}
 
-    monkeypatch.setattr("app.erp_design_mcp.call_design_control_mcp", fake_call)
+    monkeypatch.setattr("domain_packs.mold.erp_design_mcp.call_design_control_mcp", fake_call)
     try:
         with Session.begin() as db:
             user = m.User(username="erp_design_full_admin", display_name="ERP 设计管理员", password_hash="test", super_admin=True)

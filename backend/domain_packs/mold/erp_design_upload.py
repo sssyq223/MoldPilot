@@ -20,17 +20,17 @@ from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy import select
 
-from . import authorization as auth, files, models as m, object_storage
-from .db import get_db
-from .errors import DomainError
-from .events import record
-from .schemas import StrictModel
-from .security import current_user
+from app import authorization as auth, files, models as m, object_storage
+from app.db import get_db
+from app.errors import DomainError
+from app.events import record
+from app.schemas import StrictModel
+from app.security import current_user
 
 
 router = APIRouter(prefix="/api/erp-design-uploads", tags=["ERP new-mold design uploads"])
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _RUNTIME_ROOT = _PROJECT_ROOT / "mcp" / "erp-design-upload"
 _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"

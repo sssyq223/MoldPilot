@@ -1,3 +1,4 @@
+from domain_packs.mold.erp_design_mcp import TOOL_NAMES
 from app.tool_gateway import SKILLS, TOOLS, capability_descriptor
 
 
@@ -125,3 +126,9 @@ def test_contact_collaboration_skill_has_curated_activation_pack():
         "prepare_contact_close",
         "prepare_contact_respond",
     ]
+
+
+def test_erp_design_tools_expose_curated_chinese_titles():
+    assert set(TOOL_NAMES) == {key for key in TOOLS if key.startswith("erp_design_")}
+    for key, title in TOOL_NAMES.items():
+        assert capability_descriptor("TOOL", key, TOOLS[key])["name"] == title

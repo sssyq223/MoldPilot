@@ -54,6 +54,11 @@ the mixed historical chain is retired gradually; new migration commands go
 through `scripts/migrate.py` so another active pack cannot accidentally run
 the mold history.
 
+The ERP design-upload HTTP bridge, Agent tool adapter, and their nine Skill
+documents also live in this pack. The generic host reaches them only through
+the active-pack manifest and tool-gateway contracts; the ERP remains the
+system of record for design orders, drawings, BOM, changes, and approvals.
+
 The generic runtime loads it with:
 
 ```text

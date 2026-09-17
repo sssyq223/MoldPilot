@@ -90,6 +90,9 @@ TOOLS.update({
     'prepare_project_settlement_close':{'description':'准备终止结算关闭审批；不强制不适用的交付验收，但要求处置、结算、收付款和归档清单完成。','permission':'project_close.create'},
 })
 from app import contact_tools
+from . import erp_design_mcp
+
+TOOLS.update(erp_design_mcp.TOOL_SPECS)
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
 TOOLS['query_contact_context']={'description':'读取指定工程联络单的主信息、结构化影响与动作、实际执行/复验材料、事项标识，以及可用责任部门或候选处理人。','permission':'contact.read'}
 for action,(_,permission,title) in contact_tools.SPECS.items():
@@ -161,6 +164,90 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['prepare_project_closure_checklist','prepare_project_termination',
                    'prepare_project_closure_item','prepare_project_normal_close','prepare_project_settlement_close'],
                    'activation_queries':['项目终止','项目结项','项目关闭','终止结算','正常关闭']}})
+
+SKILLS.update({
+    'erp_new_mold_design_upload': {
+        'name': 'ERP 新模设计上传流程',
+        'tools': ['erp_design_parse_new_mold_upload', 'erp_design_get_drawing_status',
+                  'erp_design_get_upload_result', 'erp_design_validate_rows'],
+        'optional_tools': ['erp_design_reprice_rows', 'erp_design_get_approval_config',
+                           'erp_design_rematch_no_drawing', 'erp_design_import_new_mold',
+                           'erp_design_submit_upload_change'],
+        'activation_queries': ['上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入'],
+    },
+    'erp_design_workspace_review': {
+        'name': 'ERP 设计资料核对',
+        'tools': ['erp_design_query_orders'],
+        'optional_tools': ['erp_design_query_drawing_versions', 'erp_design_query_bom',
+                           'erp_design_query_bom_report', 'erp_design_query_changes',
+                           'erp_design_query_standard_hardware', 'erp_design_query_densities',
+                           'erp_design_query_group_rules', 'erp_design_query_group_keywords',
+                           'erp_design_get_record', 'erp_design_compare_drawing_versions',
+                           'erp_design_analyze_change', 'erp_design_get_mold_repair_approval',
+                           'erp_design_get_mold_repair_outsource_approval',
+                           'erp_design_get_mold_repair_processor_response'],
+        'activation_queries': ['ERP设计订单', 'ERP图纸版本', 'ERP BOM', 'ERP设变', 'ERP设计资料'],
+    },
+    'erp_design_order_adjustment': {
+        'name': 'ERP 设计订单明细调整',
+        'tools': ['erp_design_query_orders', 'erp_design_get_record'],
+        'optional_tools': ['erp_design_update_order_item', 'erp_design_save_scrap_decision',
+                           'erp_design_release_scrap_decision'],
+        'activation_queries': ['设计订单明细', '闲置料', '修改设计订单'],
+    },
+    'erp_design_master_data_maintenance': {
+        'name': 'ERP 设计基础资料维护',
+        'tools': ['erp_design_query_densities', 'erp_design_query_group_rules',
+                  'erp_design_query_group_keywords'],
+        'optional_tools': ['erp_design_get_record', 'erp_design_create_density',
+                           'erp_design_update_density', 'erp_design_delete_density',
+                           'erp_design_create_group_rule', 'erp_design_update_group_rule',
+                           'erp_design_toggle_group_rule', 'erp_design_delete_group_rule',
+                           'erp_design_create_group_keyword', 'erp_design_update_group_keyword',
+                           'erp_design_delete_group_keyword'],
+        'activation_queries': ['设计材质密度', '设计分组规则', '设计分组关键词'],
+    },
+    'erp_design_standard_hardware_maintenance': {
+        'name': 'ERP 厂内标准件图纸维护',
+        'tools': ['erp_design_query_standard_hardware'],
+        'optional_tools': ['erp_design_upload_standard_hardware',
+                           'erp_design_rename_standard_hardware',
+                           'erp_design_delete_standard_hardware'],
+        'activation_queries': ['厂内标准件图纸', '标准件目录', '标准件图纸维护'],
+    },
+    'erp_design_change_management': {
+        'name': 'ERP 设计变更办理',
+        'tools': ['erp_design_query_changes', 'erp_design_get_record',
+                  'erp_design_query_change_items'],
+        'optional_tools': ['erp_design_analyze_change', 'erp_design_manage_change',
+                           'erp_design_manage_change_items'],
+        'activation_queries': ['ERP设计变更', 'ERP设变申请', 'ERP设变明细'],
+    },
+    'erp_design_order_lifecycle': {
+        'name': 'ERP 设计订单生命周期办理',
+        'tools': ['erp_design_query_orders', 'erp_design_get_record'],
+        'optional_tools': ['erp_design_manage_order', 'erp_design_manage_order_draft_scrap',
+                           'erp_design_update_order_item', 'erp_design_save_scrap_decision',
+                           'erp_design_release_scrap_decision'],
+        'activation_queries': ['设计订单审批', '设计订单删除', '设计订单重提', '设计订单生命周期'],
+    },
+    'erp_design_mold_repair': {
+        'name': 'ERP 修模改模图纸异常办理',
+        'tools': ['erp_design_get_mold_repair_approval',
+                  'erp_design_get_mold_repair_outsource_approval',
+                  'erp_design_get_mold_repair_processor_response'],
+        'optional_tools': ['erp_design_upload_mold_repair_drawing',
+                           'erp_design_manage_mold_repair'],
+        'activation_queries': ['修模改模图纸', '修模审批', '改模审批', '加工商响应'],
+    },
+    'erp_design_bom_maintenance': {
+        'name': 'ERP BOM 维护与导入',
+        'tools': ['erp_design_query_bom', 'erp_design_query_bom_report',
+                  'erp_design_query_bom_shortage'],
+        'optional_tools': ['erp_design_manage_bom', 'erp_design_import_bom'],
+        'activation_queries': ['ERP BOM维护', 'ERP BOM导入', 'BOM缺料'],
+    },
+})
 
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
@@ -380,6 +467,8 @@ def available_tools(db, user):
 
 
 def tool_schema(key):
+    if key in erp_design_mcp.TOOL_SPECS:
+        return erp_design_mcp.tool_schema(key)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         schema=contact_tools.ContextInput.model_json_schema() if key=='query_contact_context' else contact_tools.schema(key.removeprefix('prepare_contact_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema}}
@@ -498,6 +587,8 @@ def skill_context(db, user):
 
 def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
+    if key in erp_design_mcp.TOOL_SPECS:
+        return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         return contact_tools.execute_tool(db,user,key,arguments,run=run)
     from app.project_closure_tools import ACTION_BY_TOOL

@@ -21,14 +21,14 @@ from uuid import UUID, uuid4
 from pydantic import Field, ValidationError
 from sqlalchemy import select
 
-from . import files, models as m, object_storage
-from .db import now
-from .errors import DomainError
-from .events import record
-from .schemas import StrictModel
+from app import files, models as m, object_storage
+from app.db import now
+from app.errors import DomainError
+from app.events import record
+from app.schemas import StrictModel
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _RUNTIME_ROOT = _PROJECT_ROOT / "mcp" / "erp-design-upload"
 _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"
