@@ -5,7 +5,7 @@ import json
 import httpx
 from cryptography.fernet import Fernet,InvalidToken
 from app.config import settings
-from app.errors import DomainError
+from agent_core.errors import DomainError
 
 CATEGORIES={'hardware':'hardware','hardware_standard':'hardware','wj':'hardware','五金':'hardware',
             'steel':'raw_material','steel_plate':'raw_material','steelplate':'raw_material','钢料':'raw_material',

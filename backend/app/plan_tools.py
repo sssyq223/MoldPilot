@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import date
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, and_
 from . import models as m, domains, domain_schemas as s, workflow_selection
@@ -10,22 +10,12 @@ from .db import get_db, now
 from .errors import DomainError
 from .security import current_user
 from .schemas import StrictModel
+from agent_core.domain_pack import component
 
 
-class ProjectPlanContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
-    identifier: str | None = Field(default=None, min_length=1, max_length=200,
-        description='项目编号/名称、计划单号、计划任务关键字、模具号或其他可见业务线索。')
-
-    @model_validator(mode='after')
-    def one_locator(self):
-        if bool(self.project_id)==bool(self.identifier):
-            raise ValueError('project_id 和 identifier 须且只能填写一项')
-        if self.identifier:
-            self.identifier=self.identifier.strip()
-            if not self.identifier:raise ValueError('线索不能为空')
-        return self
-
+_contracts = component("contracts")
+ProjectPlanContextInput = _contracts.ProjectPlanContextInput
+_strength = _contracts.match_strength
 
 class PlanChangeProposalInput(StrictModel):
     project_id: str = Field(min_length=1, max_length=36)
@@ -56,12 +46,6 @@ class PlanDepartmentConfirmationProposalInput(StrictModel):
         description='query_project_plan_context 返回的部门确认项 version。')
     note: str = Field(min_length=1, max_length=1000,
         description='本部门已核对计划变更影响的说明或依据。')
-
-
-def _strength(value,needle):
-    if value is None:return 0
-    value=str(value).casefold();needle=str(needle).casefold()
-    return 100 if value==needle else 50 if needle in value else 0
 
 
 def _project_card(db,user,project,matched_by=()):

@@ -2,11 +2,9 @@ from datetime import date, datetime
 from uuid import UUID
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from agent_core.schemas import StrictModel
 
 
 class LoginInput(StrictModel):

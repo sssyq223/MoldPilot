@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 from agent_core.domain_pack import active_pack_name, component, manifest
+from agent_core.host_ports import HostPorts, host_ports
 from agent_core import tool_gateway as core_gateway
 from app import tool_gateway as host_gateway
 
@@ -53,13 +54,32 @@ def test_delivery_logistics_implementation_lives_in_mold_pack_not_host():
 
     host_facade = (project_root / "backend" / "app" / "delivery_logistics_tools.py").read_text(encoding="utf-8")
     pack_source = (project_root / "backend" / "domain_packs" / "mold" / "delivery_logistics.py").read_text(encoding="utf-8")
+    legacy_ports_source = (project_root / "backend" / "domain_packs" / "mold" / "legacy_read_ports.py").read_text(encoding="utf-8")
     gateway_source = (project_root / "backend" / "domain_packs" / "mold" / "tool_gateway.py").read_text(encoding="utf-8")
+    plan_source = (project_root / "backend" / "app" / "plan_tools.py").read_text(encoding="utf-8")
 
     assert "class LogisticsRouteProposalInput" not in host_facade
     assert "domain_packs.mold.delivery_logistics" in host_facade
     assert "class LogisticsRouteProposalInput" in pack_source
+    assert "from app" not in pack_source
+    assert "from app.domains" in legacy_ports_source
     assert "app.delivery_logistics_tools" not in gateway_source
     assert "from .delivery_logistics" in gateway_source
+    assert "from app.plan_tools import ProjectPlanContextInput" not in gateway_source
+    assert "domain_packs.mold" not in plan_source
+
+
+def test_domain_pack_uses_validated_host_port_contract():
+    ports = host_ports()
+
+    assert isinstance(ports, HostPorts)
+    assert ports.models.__name__ == "app.models"
+    for name in (
+        "access", "fingerprint", "predicate", "require", "select_fields",
+        "content_hash", "proposal_confirmation_policy", "settings", "now",
+    ):
+        assert callable(getattr(ports, name))
+    assert component("contracts").ProjectPlanContextInput.__module__ == "domain_packs.mold.contracts"
 
 
 def test_template_pack_boots_host_without_registering_mold_http_surface():

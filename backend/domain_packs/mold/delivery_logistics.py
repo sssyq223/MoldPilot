@@ -6,15 +6,24 @@ from typing import Literal
 from pydantic import Field, ValidationError
 from sqlalchemy import or_, select
 
-from app import models as m
-from app.authorization import access, fingerprint, predicate, require, select_fields
-from app.bpm import content_hash
-from app.confirmation_policy import proposal_confirmation_policy
-from app.config import settings
-from app.db import now
-from app.errors import DomainError
-from app.plan_tools import ProjectPlanContextInput, _strength
-from app.schemas import StrictModel
+from agent_core.errors import DomainError
+from agent_core.host_ports import host_ports
+from agent_core.schemas import StrictModel
+from .contracts import ProjectPlanContextInput, match_strength as _strength
+from .legacy_read_ports import business_subject_data, contact_case_permitted, purchase_order_data
+
+
+_host = host_ports()
+m = _host.models
+access = _host.access
+fingerprint = _host.fingerprint
+predicate = _host.predicate
+require = _host.require
+select_fields = _host.select_fields
+content_hash = _host.content_hash
+proposal_confirmation_policy = _host.proposal_confirmation_policy
+settings = _host.settings
+now = _host.now
 
 
 DELIVERY_KEYWORDS = ("交付", "出库", "发货", "物流", "签收", "验收", "delivery", "shipment", "acceptance", "logistics")
@@ -190,8 +199,6 @@ def _visible_subjects(db, user, project_id, kind, allowed_tools):
     }
     if tool not in allowed_tools and not (context_tools.get(kind, set()) & allowed_tools):
         return []
-    from app.domains import data as subject_data
-
     result = []
     for subject in db.scalars(
         select(m.BusinessSubject)
@@ -200,7 +207,7 @@ def _visible_subjects(db, user, project_id, kind, allowed_tools):
         .limit(100)
     ):
         try:
-            result.append(subject_data(db, user, subject))
+            result.append(business_subject_data(db, user, subject))
         except DomainError:
             continue
     return result
@@ -249,13 +256,11 @@ def _plan_headers(records):
 def _order_rows(db, user, project_id, allowed_tools):
     if "query_purchase_orders" not in allowed_tools and "query_orders" not in allowed_tools:
         return []
-    from app.procurement import order_data
-
     result = []
     q = select(m.PurchaseOrder).where(m.PurchaseOrder.project_id == project_id).order_by(m.PurchaseOrder.created_at.desc()).limit(100)
     for order in db.scalars(q):
         try:
-            result.append(order_data(db, user, order))
+            result.append(purchase_order_data(db, user, order))
         except DomainError:
             continue
     return result
@@ -447,8 +452,6 @@ def _closure_items(db, user, project_id, allowed_tools):
 def _contact_issues(db, user, project_id, allowed_tools):
     if "query_contact_cases" not in allowed_tools:
         return []
-    from app.contacts import permitted
-
     issues = []
     q = (
         select(m.ContactCase)
@@ -457,7 +460,7 @@ def _contact_issues(db, user, project_id, allowed_tools):
         .limit(100)
     )
     for case in db.scalars(q):
-        if not permitted(db, user, "read", case):
+        if not contact_case_permitted(db, user, "read", case):
             continue
         text = (case.title or "") + (case.current_stage or "") + (case.problem_source or "")
         tasks = []

@@ -16,6 +16,13 @@ configuration, presentation metadata and several upstream mold services still
 need to move. New mold slices should follow this direction until `app` contains
 host ports and transport concerns rather than industry rules.
 
+The relocated service consumes generic infrastructure only through the
+validated `agent_core.host_ports` contract. Mold-wide project locator schemas
+and matching rules live in `contracts.py`. Remaining calls into the legacy
+plan/procurement/contact read services are deliberately isolated in
+`legacy_read_ports.py`; that adapter is migration debt and must shrink as those
+services move into the pack.
+
 The generic runtime loads it with:
 
 ```text

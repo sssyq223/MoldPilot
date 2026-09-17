@@ -4,9 +4,10 @@ from sqlalchemy import select, or_
 from app.authorization import grants_for, predicate, require, select_fields
 from app.models import Project, PurchaseRequest, Capability
 from app.business import visible_requests, request_data
-from app.errors import DomainError
+from agent_core.errors import DomainError
 from app.db import now
 from app.bpm import content_hash
+from .contracts import ProjectPlanContextInput
 
 
 def skill_agent_description(content: str) -> str:
@@ -416,7 +417,6 @@ def tool_schema(key):
         parameters=start_schema() if key=='prepare_internal_start' else StartReadinessInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_project_plan_context':
-        from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
         from app.plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema
@@ -427,10 +427,8 @@ def tool_schema(key):
         from app.design_tools import DesignRouteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DesignRouteContextInput.model_json_schema()}}
     if key=='query_manufacturing_quality_context':
-        from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_assembly_trial_context':
-        from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote'}:
         if key == 'prepare_logistics_route':
@@ -440,7 +438,6 @@ def tool_schema(key):
             from .delivery_logistics import logistics_quote_schema
             parameters = logistics_quote_schema()
         else:
-            from app.plan_tools import ProjectPlanContextInput
             parameters = ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
@@ -457,11 +454,9 @@ def tool_schema(key):
             from app.full_outsource_tools import supplier_progress_policy_schema
             parameters=supplier_progress_policy_schema()
         else:
-            from app.plan_tools import ProjectPlanContextInput
             parameters=ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_change_intake_context':
-        from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_finance_context':
         from app.project_dossier import ProjectDossierInput
@@ -579,7 +574,7 @@ def execute(db, user, key, arguments, run=None):
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_project_plan_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput,query
+        from app.plan_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目计划上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
@@ -591,35 +586,30 @@ def execute(db, user, key, arguments, run=None):
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_manufacturing_quality_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput
         from app.manufacturing_quality_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','制造与质检上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_assembly_trial_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput
         from app.assembly_trial_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','装配试模上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_delivery_logistics_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput
         from .delivery_logistics import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','交付物流上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_full_outsource_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput
         from app.full_outsource_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','整套委外上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_change_intake_context':
         from pydantic import ValidationError
-        from app.plan_tools import ProjectPlanContextInput
         from app.change_intake_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设变承接上下文参数无效：'+error.errors()[0]['msg']) from None
