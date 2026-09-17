@@ -144,10 +144,12 @@ def install(app):
         run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
         if run and run.status == "RUNNING" and run.lease_epoch == data["epoch"]:
             code = str(data.get("code", "EXECUTION_FAILED"))[:80]
-            message = {"TOOL_BUSINESS_REJECTED":"业务校验未通过，本次未执行。请核对联络单对象和必需资料后重新发起。", "MODEL_CONNECT_TIMEOUT": "模型连接超时，本次任务未完成，请稍后重新发起。",
-                       'MODEL_LOCAL_UNAVAILABLE':'本地模型服务未启动或地址不可达，请检查本地模型服务。',
-                       "MODEL_READ_TIMEOUT": "模型响应超时，本次任务未完成，请稍后重新发起。",
-                       "MODEL_AUTH_FAILED": "模型服务认证失败，请联系管理员核对模型配置。",
+            detail = " ".join(str(data.get("detail") or "").split())[:1000]
+            message = detail or {"TOOL_BUSINESS_REJECTED":"业务校验未通过，本次未执行。请核对当前业务对象和必需资料后重新发起。", "MODEL_CONNECT_TIMEOUT": "模型连接超时，本次任务未完成，请稍后重新发起。",
+                        'MODEL_LOCAL_UNAVAILABLE':'本地模型服务未启动或地址不可达，请检查本地模型服务。',
+                        "MODEL_READ_TIMEOUT": "模型响应超时，本次任务未完成，请稍后重新发起。",
+                        "MODEL_NETWORK_ERROR": "模型服务连接中断，本次任务未完成。系统已自动重试一次；请稍后重新发起或核对模型服务连接。",
+                        "MODEL_AUTH_FAILED": "模型服务认证失败，请联系管理员核对模型配置。",
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
                        "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。",
                        "CONTEXT_BUDGET_EXCEEDED": "模型上下文窗口不足，运行时压缩后仍无法安全提交本次请求，请缩小附件或问题范围后重试。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")

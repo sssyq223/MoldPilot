@@ -551,6 +551,23 @@ html[data-theme="light"] .evidence-detail-section{border-top-color:#e7edf3}
 html[data-theme="light"] .evidence-modal .fact-line span:last-child{color:#243244}
 html[data-theme="light"] .evidence-modal h4{color:#243244}
 html[data-theme="light"] .evidence-modal .surface{background:#f6f9fc;border-color:#dce6ef}
+.parsed-design-entry{display:flex;width:min(820px,100%);align-items:center;justify-content:flex-start;gap:9px;margin:14px 0 0;padding:10px 12px;border-color:color-mix(in srgb,var(--accent) 48%,var(--border));background:color-mix(in srgb,var(--accent) 13%,var(--surface));color:color-mix(in srgb,#fff 90%,var(--muted));text-align:left}
+.parsed-design-entry:hover{background:color-mix(in srgb,var(--accent) 21%,var(--surface));border-color:color-mix(in srgb,var(--accent) 70%,var(--border))}
+.parsed-design-entry small{margin-left:auto;color:var(--muted);font-size:12px}
+.erp-upload-result{display:flex;flex-direction:column;gap:14px}
+.erp-upload-overview{display:flex;flex-wrap:wrap;gap:8px}
+.erp-upload-overview span{padding:6px 9px;border:1px solid color-mix(in srgb,var(--border) 75%,transparent);border-radius:7px;background:color-mix(in srgb,var(--surface) 78%,transparent);color:var(--muted);font-size:12px}
+.erp-upload-table-wrap{border:1px solid color-mix(in srgb,var(--border) 74%,transparent);border-radius:10px}
+.erp-upload-table{min-width:690px}
+.erp-upload-table th,.erp-upload-table td{padding:10px 12px;vertical-align:top}
+.erp-upload-table td{font-size:12px;line-height:1.55}
+.erp-upload-table td strong,.erp-upload-table td small{display:block}
+.erp-upload-table td small{margin-top:3px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.warningText{color:#d9ad63}
+.erp-upload-warnings{margin:0;padding:11px 14px 11px 32px;border:1px solid color-mix(in srgb,#c99543 48%,var(--border));border-radius:10px;background:color-mix(in srgb,#7b5524 24%,var(--surface));color:color-mix(in srgb,#fff 84%,#d5b178);font-size:12px;line-height:1.7}
+html[data-theme="light"] .parsed-design-entry{background:#edf5ff;border-color:#aec8e6;color:#29435c}
+html[data-theme="light"] .erp-upload-overview span{background:#f6f9fc;border-color:#dce6ef;color:#627287}
+html[data-theme="light"] .erp-upload-warnings{background:#fff8e9;border-color:#e7cb92;color:#795315}
 .assistant-prose{max-width:780px;margin-top:8px;color:inherit;font-size:14px;line-height:1.95}
 .assistant-prose p{margin:0 0 12px}
 .assistant-prose ul{margin:10px 0 0;padding-left:22px}

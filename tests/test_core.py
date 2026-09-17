@@ -18,7 +18,18 @@ def test_health_timezone(client):
 def test_login_password_not_returned(client):
     user=sign_in(client)
     assert 'password_hash' not in user
-    assert client.get('/api/me').json()['user']['id']==user['id']
+    profile = client.get('/api/me').json()['user']
+    assert profile['id'] == user['id']
+    assert profile['avatar_url'] == ''
+
+
+def test_avatar_profile_is_persisted(client):
+    sign_in(client)
+    avatar = 'data:image/png;base64,iVBORw0KGgo='
+    updated = client.put('/api/me/avatar', json={'avatar_url': avatar})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['avatar_url'] == avatar
+    assert client.get('/api/me').json()['user']['avatar_url'] == avatar
 
 
 def test_invalid_login(client):

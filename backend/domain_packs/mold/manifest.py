@@ -83,7 +83,6 @@ def install(app, domain_router) -> None:
     app.include_router(domain_router)
 
     from app.contacts import router as contact_router
-    from app.erp_design_upload import router as erp_design_upload_router
     from app.domain_api import install as install_domain_api
     from app.contact_tools import router as contact_proposal_router
     from app.project_control_tools import router as project_control_proposal_router
@@ -96,7 +95,6 @@ def install(app, domain_router) -> None:
     from app.full_outsource_tools import router as full_outsource_proposal_router
 
     app.include_router(contact_router)
-    app.include_router(erp_design_upload_router)
     install_domain_api(app)
     for router in (
         contact_proposal_router,
