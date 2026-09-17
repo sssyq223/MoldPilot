@@ -692,8 +692,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 项目部跟踪供应商设计、采购、生产、质检、装配、试模、验收等适用节点；供应商上报，采购跟进并同步项目。具体节点、填报频率和证据模板后续适配；供应商是否登录系统另行确认，不默认必须具备供应商门户。
 
 - 最新口径：不开发供应商门户；保留授权人员录入/导入上报证据和采购、项目协同。
-- 实现证据：新增 supplier_progress_report PostgreSQL 模型与迁移，保存授权人员录入/导入的供应商阶段上报、状态、进度百分比、下次跟进日期、问题摘要、证据和采购跟进人；query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并新增 analysis.supplier_progress_reports，把供应商节点上报与订单/发货/收货事实分开展示；full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商生产质检装配试模验收节点、供应商进度上报、风险/阻塞、逾期跟进、供应商发货与我方收货聚合；供应商填报频率、证据模板、供应商侧接入和真实协同流程尚未适配验收
+- 实现证据：新增 supplier_progress_report PostgreSQL 模型与迁移，保存授权人员录入/导入的供应商阶段上报、状态、进度百分比、下次跟进日期、问题摘要、证据和采购跟进人；query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并新增 analysis.supplier_progress_reports，把供应商节点上报与订单/发货/收货事实分开展示；prepare_supplier_progress_report 使用真实项目版本、供应商、已生效整套委外合同和可选计划任务准备对话确认卡，风险/阻塞/返工强制保留问题摘要与下次跟进日期，本人确认后才写入节点上报证据；full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径
+- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商生产质检装配试模验收节点、供应商进度上报、风险/阻塞、逾期跟进、供应商发货与我方收货聚合，以及节点上报 proposal 不直接写库、本人确认后写入 SupplierProgressReport、计划任务一致性、重复来源与风险必填项阻断；tests/test_model_harness.py 覆盖“供应商节点上报”只激活查询前置和节点上报工具；供应商填报频率、证据模板、供应商侧接入和真实协同流程尚未适配验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-072

@@ -1146,10 +1146,11 @@
       "latest_decision": "不开发供应商门户；保留授权人员录入/导入上报证据和采购、项目协同。",
       "implementation_evidence": [
         "query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并把供应商执行跟踪与订单/发货/收货事实分开展示",
+        "prepare_supplier_progress_report 使用真实项目版本、供应商、已生效整套委外合同和可选计划任务准备对话确认卡，风险/阻塞/返工强制保留问题摘要与下次跟进日期，本人确认后才写入节点上报证据",
         "full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合；供应商填报频率、证据模板和真实协同流程尚未适配验收"
+        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合，以及节点上报 proposal 不直接写库、本人确认后写入 SupplierProgressReport、计划任务一致性、重复来源与风险必填项阻断；tests/test_model_harness.py 覆盖供应商节点上报场景只激活查询前置和节点上报工具；供应商填报频率、证据模板、供应商侧接入和真实协同流程尚未适配验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

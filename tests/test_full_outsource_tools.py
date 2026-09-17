@@ -471,6 +471,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert customer["acceptance_records"][0]["result"] == "CONDITIONALLY_PASSED"
         assert customer["acceptance_records"][0]["deduction_amount"] == "8000.00"
         assert customer["derived_status"]["schedule_impact_days_total"] == 2
+        assert analysis["outsource_plan_tasks"][0]["id"] == task.id
+        assert analysis["outsource_plan_tasks"][0]["plan_id"] != task.id
         assert analysis["supplier_progress_reports"][0]["stage_name"] == "供应商试模与整改"
         assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
         assert analysis["supplier_material_handoffs"][0]["document_title"] == "客户原始资料包"
@@ -581,6 +583,109 @@ def test_prepare_supplier_material_handoff_rejects_duplicate_and_missing_contrac
         missing_contract = {**args, "document_title": "客户原始资料包-新增", "source_ref": "HANDOFF-MISSING-CONTRACT", "contract_subject_id": None}
         with pytest.raises(Exception) as invalid:
             execute(db, admin, "prepare_supplier_material_handoff", missing_contract, run=run)
+        assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
+
+
+def test_prepare_supplier_progress_report_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-PREPARE", "供应商节点上报项目")
+        sup = supplier(db, "S-PROGRESS")
+        contract = outsource_contract(db, p, admin, sup)
+        _, task = plan(db, p, admin)
+        conversation = m.Conversation(user_id=admin.id, title="供应商节点上报")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商节点风险上报", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "plan_task_id": task.id,
+            "stage_key": task.key,
+            "stage_name": task.name,
+            "report_date": date.today().isoformat(),
+            "status": "AT_RISK",
+            "progress_percent": 65,
+            "next_due_date": (date.today() + timedelta(days=2)).isoformat(),
+            "issue_summary": "供应商试模件整改尚未完成",
+            "evidence": "采购收到供应商节点周报并完成电话核对",
+            "source_system": "IMPORT",
+            "source_ref": "SUPPLIER-WEEKLY-2026-09-16",
+            "followed_by": admin.id,
+        }
+    schema = tool_schema("prepare_supplier_progress_report")["function"]["parameters"]
+    assert {"project_id", "project_version", "supplier_id", "contract_subject_id", "stage_key", "report_date", "status", "evidence", "source_ref"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_supplier_progress_report", args, run=run)
+        assert evidence["proposal"]["kind"] == "supplier_progress_report"
+        assert evidence["proposal"]["requires_approval"] is False
+        assert evidence["proposal"]["display"]["节点状态"] == "AT_RISK"
+        assert evidence["proposal"]["display"]["进度"] == "65%"
+        assert db.scalar(select(m.SupplierProgressReport).where(m.SupplierProgressReport.source_ref == args["source_ref"])) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_progress_report", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id, payload)
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        assert receipt["status"] == "CONFIRMED"
+        row = db.get(m.SupplierProgressReport, receipt["supplier_progress_report_id"])
+        assert row.contract_subject_id == args["contract_subject_id"]
+        assert row.plan_task_id == args["plan_task_id"]
+        assert row.status == "AT_RISK"
+        assert row.progress_percent == 65
+        assert row.source_system == "IMPORT"
+        assert row.reported_by == admin.id
+        assert row.followed_by == admin.id
+
+
+def test_prepare_supplier_progress_report_rejects_inconsistent_risk_and_duplicate_source(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-BLOCK", "供应商节点阻断项目")
+        sup = supplier(db, "S-PROGRESS-BLOCK")
+        contract = outsource_contract(db, p, admin, sup)
+        supplier_progress(db, p, admin, sup)
+        conversation = m.Conversation(user_id=admin.id, title="供应商节点阻断")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商节点上报", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        base = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "stage_key": "supplier_trial",
+            "stage_name": "供应商试模与整改",
+            "report_date": date.today().isoformat(),
+            "status": "AT_RISK",
+            "progress_percent": 70,
+            "next_due_date": (date.today() + timedelta(days=1)).isoformat(),
+            "issue_summary": "整改延期",
+            "evidence": "供应商周报",
+            "source_system": "MANUAL",
+            "source_ref": "SPR-OUT-PROGRESS-BLOCK",
+        }
+        with pytest.raises(Exception) as duplicate:
+            execute(db, admin, "prepare_supplier_progress_report", base, run=run)
+        assert getattr(duplicate.value, "code", None) == "SUPPLIER_PROGRESS_REPORT_DUPLICATE"
+        inconsistent = {**base, "source_ref": "SPR-RISK-MISSING", "issue_summary": "", "next_due_date": None}
+        with pytest.raises(Exception) as invalid:
+            execute(db, admin, "prepare_supplier_progress_report", inconsistent, run=run)
         assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
 
 

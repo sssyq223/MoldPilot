@@ -1,6 +1,7 @@
 """A real bounded model/tool loop. This process has no database or human-session credential."""
 import hashlib
 import json
+import re
 import time
 from .context_budget import compact_messages_for_model, usage_snapshot
 
@@ -8,6 +9,11 @@ TOOL_SEARCH_NAME = "ToolSearch"
 MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES = 12
 MAX_TOOL_SEARCH_MATCHES = 4
 MAX_ACTIVATED_TOOLS_PER_SEARCH = 4
+ACTION_INTENT_TERMS = (
+    "办理", "登记", "创建", "建立", "新增", "准备", "提交", "发起", "录入", "导入", "确认", "更新",
+    "修改", "变更", "关闭", "恢复", "暂停", "签署", "交接", "上报", "反馈", "分派", "复验", "付款",
+    "回款", "扣款", "结算", "执行", "approve", "create", "prepare", "submit", "record", "update",
+)
 WORKBENCH_SUPPORT_HINTS = (
     "harness", "toolsearch", "工具调用", "工具选择", "模型", "model", "llm", "qwen", "30b",
     "上下文窗口", "context", "token", "tokens", "压缩", "配置", "接口", "api", "http", "500", "404",
@@ -23,7 +29,17 @@ BUSINESS_OBJECT_HINTS = (
 )
 BUSINESS_ACTION_HINTS = (
     "查询", "核对", "办理", "准备", "创建", "提交", "审批", "确认", "分析", "查看",
-    "看看", "生成", "调整", "变更", "关闭", "暂停", "恢复", "承接", "开工",
+    "看看", "看下", "查一下", "查下", "继续", "处理", "了解", "怎么样", "情况", "状态", "进度",
+    "风险", "是否", "生成", "调整", "变更", "关闭", "暂停", "恢复", "承接", "开工",
+)
+PURE_CONVERSATION_TERMS = (
+    "你好", "您好", "哈喽", "嗨", "hello", "hi", "谢谢", "感谢", "辛苦了", "好的", "好", "收到",
+    "明白", "明白了", "知道了", "可以", "行", "对", "是的", "嗯", "哦", "ok", "okay", "再见",
+)
+ELLIPTICAL_ACTION_TERMS = (
+    "帮我", "看看", "看下", "查看", "查一下", "查下", "查询", "核对", "继续", "再看", "再查", "处理",
+    "办理", "分析", "确认", "这个", "那个", "它", "该项", "该项目", "这个项目", "该单据", "这个单据",
+    "上一项", "上一条", "刚才", "呢", "怎么样",
 )
 
 
@@ -36,6 +52,7 @@ SYSTEM = """你是模具工作台的智能体，通过已登记工具帮助用�
 准备业务方案时保留用户提供的措施、时态和执行要求，不把“拟执行、需要核对”改写为“已执行、已核对”。历史反馈应作为独立事实描述，不可替代本次方案内容。
 查询工具只读；prepare_contact_ 和 prepare_project_ 工具仅准备操作建议，返回 proposal 后等待用户在会话卡片中核对确认，不代表业务已执行。项目暂停、恢复、终止或最终关闭建议经本人确认后也只是提交 Agent BPM，须把“已提交审批”和“审批已生效”明确区分；结项清单或事项更新虽不走 BPM，也必须由本人确认并保留修订。不得把局部生产完成、发货、签收或单次回款说成项目已结束，不得把未联调 ERP 的未知事实当作无待办。不得把自然语言同意当作确认凭证。用户仅查询时不得准备写入建议；用户要求办理时，查询真实对象标识、当前版本和可选流程，必要时追问，再准备对应建议。
 工具返回已经覆盖用户所问字段后，必须立即停止调用工具并依据现有证据作答。不得为了“更全面”而扩展到用户未问的项目、采购、合同或其他流程；工程联络单查询优先使用联络单查询与上下文工具，证据充分后直接收口。
+每批工具调用前，必须在同一条带 tool_calls 的 assistant 消息 content 中写一句面向用户的简短阶段说明，说明当前要核对或办理什么；不要另发一条只有进度说明、没有工具调用的消息。这是可见的工作说明，不是内部思维链，不得输出隐藏推理过程。
 最后输出 JSON 对象，字段 response_kind 为 BUSINESS（业务结论）、CONVERSATION（一般对话）或 CLARIFICATION（需要澄清），summary 为简短回复，evidence_ids 为本次实际取得的证据编号列表，suggestions 为建议字符串列表。一般对话与澄清不需要业务证据，但不能以此类型输出未经查询的业务状态。
 缺少工具或资料时明确说明；不得请求密钥或尝试运行代码。"""
 
@@ -46,7 +63,6 @@ DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证
 UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮再调用 ToolSearch 返回的真实工具。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
-MAX_TOOL_TURNS_BEFORE_FINALIZE = 8
 MAX_PROTOCOL_REPAIRS = 2
 
 
@@ -68,11 +84,49 @@ def _contains_any(text, hints):
     return any(hint in folded for hint in hints)
 
 
+def _compact_intent_text(text):
+    return re.sub(r"[\s\W_]+", "", (text or "").lower(), flags=re.UNICODE)
+
+
+def _is_pure_conversation(prompt):
+    compact = _compact_intent_text(prompt)
+    if not compact:
+        return True
+    remainder = compact
+    for term in sorted(PURE_CONVERSATION_TERMS, key=len, reverse=True):
+        remainder = remainder.replace(term, "")
+    remainder = remainder.strip("啊呀哦呢吧啦哈的了嗯")
+    return not remainder
+
+
+def _is_elliptical_business_action(prompt):
+    """True only when the current turn itself asks to continue/inspect a prior object."""
+    compact = _compact_intent_text(prompt)
+    if not compact:
+        return False
+    remainder = compact
+    for term in sorted((*PURE_CONVERSATION_TERMS, *ELLIPTICAL_ACTION_TERMS), key=len, reverse=True):
+        remainder = remainder.replace(term, "")
+    remainder = remainder.strip("请一下下吧啊呀哦呢啦的了")
+    return not remainder and _contains_any(compact, ELLIPTICAL_ACTION_TERMS)
+
+
 def _business_tool_activation_allowed(context):
-    prompt = (context.get("prompt") or "") + "\n" + "\n".join(context.get("recent_requests") or [])
-    has_workbench_support = _contains_any(prompt, WORKBENCH_SUPPORT_HINTS)
-    has_business_task = _contains_any(prompt, BUSINESS_OBJECT_HINTS) and _contains_any(prompt, BUSINESS_ACTION_HINTS)
-    return not has_workbench_support or has_business_task
+    current_prompt = context.get("prompt") or ""
+    if _is_pure_conversation(current_prompt):
+        return False
+    has_current_business_object = _contains_any(current_prompt, BUSINESS_OBJECT_HINTS)
+    has_current_action = _contains_any(current_prompt, BUSINESS_ACTION_HINTS)
+    has_workbench_support = _contains_any(current_prompt, WORKBENCH_SUPPORT_HINTS)
+    if has_current_business_object and has_current_action:
+        return True
+    if has_workbench_support:
+        return False
+    # Prior requests never activate tools by themselves. They may only supply
+    # the omitted object after this turn explicitly asks to inspect/continue it.
+    recent_text = "\n".join(context.get("recent_requests") or [])
+    return bool(_is_elliptical_business_action(current_prompt)
+                and _contains_any(recent_text, BUSINESS_OBJECT_HINTS))
 
 
 def _tool_search_schema():
@@ -170,6 +224,7 @@ def _rank_group_tools(query, group, deferred_tools):
     cjk_query = "".join(character for character in normalized if "\u4e00" <= character <= "\u9fff")
     terminal_term = cjk_query[-2:] if len(cjk_query) >= 2 else ""
     required = set(group.get("required", []))
+    has_action_intent = any(term in normalized for term in ACTION_INTENT_TERMS)
     scored = []
     for position, name in enumerate(group["tools"]):
         tool = deferred_tools.get(name)
@@ -184,7 +239,13 @@ def _rank_group_tools(query, group, deferred_tools):
         scored.append((score, position, name))
     if not scored:
         return []
-    best_relevance = max(score for score, _, _ in scored)
+    # Required read tools often describe the entire scene and therefore score
+    # much higher than a specific operation. They are inserted separately as
+    # evidence prerequisites, so they must not set the relevance floor that
+    # decides which optional operation to expose.
+    optional_scores = [score for score, _, name in scored
+                       if name not in required and (not name.startswith("prepare_") or has_action_intent)]
+    best_relevance = max(optional_scores or [score for score, _, _ in scored])
     relevance_floor = max(80, best_relevance // 2)
     selected = []
     # Read tools are the evidence-producing prerequisites for prepare tools.
@@ -194,7 +255,7 @@ def _rank_group_tools(query, group, deferred_tools):
             if len(selected) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
                 return selected
     for score, _, name in sorted(scored, key=lambda item: (-item[0], item[1])):
-        if score < relevance_floor or name in selected:
+        if score < relevance_floor or name in selected or (name.startswith("prepare_") and not has_action_intent):
             continue
         selected.append(name)
         if len(selected) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
@@ -202,18 +263,50 @@ def _rank_group_tools(query, group, deferred_tools):
     return selected
 
 
-def _optional_tools_prompt(deferred_tools, tool_groups):
+def _group_prompt_relevance(current_prompt, group, deferred_tools):
+    """Order the bounded catalog from this turn, never from recent requests."""
+    normalized = (current_prompt or "").strip().lower()
+    if not normalized:
+        return 0
+    aliases = [str(item).strip().lower() for item in group.get("activation_queries", []) if str(item).strip()]
+    alias_score = max((2000 + len(alias) * 100 for alias in aliases if alias in normalized), default=0)
+    searchable_tools = " ".join(group["tools"])
+    searchable_descriptions = " ".join(
+        _tool_description(deferred_tools[name]) for name in group["tools"] if name in deferred_tools
+    )
+    semantic_score = _score_search_candidate(
+        normalized,
+        _search_terms(normalized),
+        group["key"],
+        group["name"],
+        group["description"],
+        searchable_tools,
+        searchable_descriptions,
+    )
+    return alias_score + semantic_score
+
+
+def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt=""):
     grouped_tools = {name for group in tool_groups for name in group["tools"]}
     group_entries = [group for group in tool_groups if any(name in deferred_tools for name in group["tools"])]
     loose_entries = [(name, _tool_description(tool)) for name, tool in deferred_tools.items() if name not in grouped_tools]
     if not group_entries and not loose_entries:
         return ""
-    visible_groups = group_entries[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES]
+    ranked_groups = [
+        group for _, _, group in sorted(
+            [(-_group_prompt_relevance(current_prompt, group, deferred_tools), index, group)
+             for index, group in enumerate(group_entries)],
+            key=lambda item: (item[0], item[1]),
+        )
+    ]
+    visible_groups = ranked_groups[:MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES]
     lines = []
     for group in visible_groups:
         aliases = [str(item) for item in group.get("activation_queries", []) if str(item).strip()]
-        search_query = aliases[0] if aliases else group["name"]
-        alias_text = ("；其他搜索词 " + "、".join(aliases[1:5])) if len(aliases) > 1 else ""
+        matching_aliases = [alias for alias in aliases if alias.lower() in (current_prompt or "").lower()]
+        search_query = max(matching_aliases, key=len) if matching_aliases else aliases[0] if aliases else group["name"]
+        remaining_aliases = [alias for alias in aliases if alias != search_query]
+        alias_text = ("；其他搜索词 " + "、".join(remaining_aliases[:4])) if remaining_aliases else ""
         lines.append(f"- 调用 ToolSearch query={json.dumps(search_query, ensure_ascii=False)}：{group['name']}；{_compact_description(group['description'], 72)}{alias_text}")
     remaining = len(group_entries) - len(visible_groups)
     if loose_entries and len(lines) < MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES:
@@ -349,7 +442,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         active_tool_names.clear()
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
-    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups) if business_tools_allowed else ""
+    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups, context.get("prompt", "")) if business_tools_allowed else ""
 
     def active_tools():
         if not business_tools_allowed:
@@ -496,7 +589,6 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         should_finalize = bool(evidence_ids) and (
             finalizing
             or turn >= max_turns - 1
-            or count >= MAX_TOOL_TURNS_BEFORE_FINALIZE
             or context_size >= max(1, int((context_window - max_output_tokens) * 0.75))
         )
         if should_finalize and not finalizing:
@@ -526,11 +618,12 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
             request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
             continue
         calls = message.get("tool_calls") or []
-        if len(calls) > 5: raise RuntimeError("TOOL_BATCH_EXCEEDED")
         if calls:
             if finalizing:
                 request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
                 continue
+            if count + len(calls) > max_tools:
+                raise RuntimeError("BUDGET_EXCEEDED")
             allowed_names = {_tool_name(tool) for tool in active_tools()}
             invalid_names = {(call.get("function") or {}).get("name") for call in calls
                              if (call.get("function") or {}).get("name") not in allowed_names}

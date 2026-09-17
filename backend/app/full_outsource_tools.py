@@ -20,7 +20,7 @@ from .security import current_user
 
 OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "supplier")
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
-FULL_OUTSOURCE_PROPOSAL_TOOLS = {"prepare_supplier_material_handoff"}
+FULL_OUTSOURCE_PROPOSAL_TOOLS = {"prepare_supplier_material_handoff", "prepare_supplier_progress_report"}
 
 
 class SupplierMaterialHandoffProposalInput(StrictModel):
@@ -39,8 +39,31 @@ class SupplierMaterialHandoffProposalInput(StrictModel):
     source_ref: str | None = Field(default=None, max_length=120)
 
 
+class SupplierProgressReportProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    plan_task_id: str | None = Field(default=None, max_length=36)
+    stage_key: str = Field(min_length=1, max_length=80)
+    stage_name: str = Field(min_length=1, max_length=150)
+    report_date: date
+    status: Literal["ON_TRACK","AT_RISK","BLOCKED","DONE","REWORK"]
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    next_due_date: date | None = None
+    issue_summary: str = Field(default="", max_length=4000)
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_system: Literal["MANUAL","IMPORT"] = "MANUAL"
+    source_ref: str = Field(min_length=1, max_length=120)
+    followed_by: str | None = Field(default=None, max_length=36)
+
+
 def supplier_material_handoff_schema():
     return SupplierMaterialHandoffProposalInput.model_json_schema()
+
+
+def supplier_progress_report_schema():
+    return SupplierProgressReportProposalInput.model_json_schema()
 
 
 def parse_supplier_material_handoff(arguments):
@@ -51,6 +74,102 @@ def parse_supplier_material_handoff(arguments):
     if data.approval_status == "APPROVED" and not data.contract_subject_id:
         raise DomainError("INVALID_TOOL_INPUT", "正式获准资料交接必须关联已生效整套委外合同")
     return data
+
+
+def parse_supplier_progress_report(arguments):
+    try:
+        data = SupplierProgressReportProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.report_date > now().date():
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报日期不能晚于当前日期")
+    if data.next_due_date and data.next_due_date < data.report_date:
+        raise DomainError("INVALID_TOOL_INPUT", "下次跟进日期不能早于上报日期")
+    if data.status in {"AT_RISK", "BLOCKED", "REWORK"}:
+        if not data.issue_summary.strip():
+            raise DomainError("INVALID_TOOL_INPUT", "风险、阻塞或返工上报必须填写问题摘要")
+        if not data.next_due_date:
+            raise DomainError("INVALID_TOOL_INPUT", "风险、阻塞或返工上报必须填写下次跟进日期")
+    if data.status == "DONE" and data.progress_percent != 100:
+        raise DomainError("INVALID_TOOL_INPUT", "节点完成时进度必须为 100%")
+    if data.progress_percent == 100 and data.status != "DONE":
+        raise DomainError("INVALID_TOOL_INPUT", "进度为 100% 时节点状态必须为已完成")
+    return data
+
+
+def preview_supplier_progress_report(db, user, data: SupplierProgressReportProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "供应商节点上报必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与节点上报供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商节点上报必须关联已生效或已关闭整套委外合同", 409)
+    plan_task = None
+    if data.plan_task_id:
+        plan_task = db.get(m.PlanTask, data.plan_task_id)
+        plan = db.get(m.BusinessSubject, plan_task.plan_id) if plan_task else None
+        if not plan_task or not plan or plan.project_id != project.id or plan.kind not in {"project_plan", "plan_change"}:
+            raise DomainError("PLAN_TASK_NOT_FOUND", "计划节点不存在或不属于该项目", 404)
+        if data.stage_key != plan_task.key or data.stage_name != plan_task.name:
+            raise DomainError("PLAN_TASK_MISMATCH", "节点标识或名称与所选计划任务不一致，请重新查询后准备", 409)
+    follower = db.get(m.User, data.followed_by) if data.followed_by else user
+    if not follower or not follower.active:
+        raise DomainError("FOLLOWER_INVALID", "采购跟进人不存在或账号已停用", 409)
+    if db.scalar(select(m.SupplierProgressReport.id).where(
+        m.SupplierProgressReport.project_id == project.id,
+        m.SupplierProgressReport.supplier_id == supplier.id,
+        m.SupplierProgressReport.stage_key == data.stage_key,
+        m.SupplierProgressReport.report_date == data.report_date,
+        m.SupplierProgressReport.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_PROGRESS_REPORT_DUPLICATE", "该供应商节点上报来源已登记", 409)
+    display = {
+        "操作": "登记供应商节点上报证据",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "计划节点": (plan_task.key + " · " + plan_task.name) if plan_task else "未关联计划任务",
+        "上报阶段": data.stage_key + " · " + data.stage_name,
+        "上报日期": data.report_date.isoformat(),
+        "节点状态": data.status,
+        "进度": (str(data.progress_percent) + "%") if data.progress_percent is not None else "未填写",
+        "下次跟进日期": data.next_due_date.isoformat() if data.next_due_date else "不适用",
+        "问题摘要": data.issue_summary or "无",
+        "采购跟进人": follower.display_name,
+        "录入方式": data.source_system,
+        "来源引用": data.source_ref,
+        "依据": data.evidence,
+        "说明": "本人确认后仅登记供应商节点上报证据；不创建供应商门户，不代表我方收货、质检、客户验收或 ERP 生产节点已完成。",
+    }
+    return project, supplier, contract, plan_task, follower, display
+
+
+def create_supplier_progress_report(db, user, data: SupplierProgressReportProposalInput):
+    _, supplier, contract, plan_task, follower, _ = preview_supplier_progress_report(db, user, data)
+    row = m.SupplierProgressReport(project_id=data.project_id, supplier_id=supplier.id,
+        contract_subject_id=contract.id, plan_task_id=plan_task.id if plan_task else None,
+        stage_key=data.stage_key, stage_name=data.stage_name, report_date=data.report_date,
+        status=data.status, progress_percent=data.progress_percent, next_due_date=data.next_due_date,
+        issue_summary=data.issue_summary, evidence=data.evidence, source_system=data.source_system,
+        source_ref=data.source_ref, reported_by=user.id, followed_by=follower.id)
+    db.add(row)
+    db.flush()
+    return row
 
 
 def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput):
@@ -123,15 +242,25 @@ def create_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProp
 
 
 def execute_full_outsource_tool(db, user, key, arguments, run=None):
-    if key != "prepare_supplier_material_handoff":
+    if key == "prepare_supplier_material_handoff":
+        data = parse_supplier_material_handoff(arguments)
+        _, _, _, display = preview_supplier_material_handoff(db, user, data)
+        kind = "supplier_material_handoff"
+        action = "confirm_supplier_material_handoff"
+        limitation = "仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"
+    elif key == "prepare_supplier_progress_report":
+        data = parse_supplier_progress_report(arguments)
+        _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
+        kind = "supplier_progress_report"
+        action = "confirm_supplier_progress_report"
+        limitation = "仅准备供应商节点上报证据登记建议；本人确认后才写入，不代表收货、质检、客户验收或 ERP 节点完成。"
+    else:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
-    data = parse_supplier_material_handoff(arguments)
-    _, _, _, display = preview_supplier_material_handoff(db, user, data)
-    proposal = {"kind": "supplier_material_handoff", "action": "confirm_supplier_material_handoff",
+    proposal = {"kind": kind, "action": action,
         "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
         "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
     return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
-        "limitations": ["仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"]}
+        "limitations": [limitation]}
 
 
 def _project_card(db, user, project, matched_by=()):
@@ -384,6 +513,7 @@ def _plan_tasks(rows):
             if any(keyword in text for keyword in OUTSOURCE_KEYWORDS + ISSUE_KEYWORDS):
                 tasks.append(
                     {
+                        "id": task.get("id"),
                         "plan_id": row.get("id"),
                         "plan_number": row.get("number"),
                         "key": task.get("key"),
@@ -1033,20 +1163,29 @@ def validate_intent(db, user, payload):
     proposal = source(db, user, payload["step_id"])
     if content_hash(proposal) != payload["proposal_hash"]:
         raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
-    if proposal.get("kind") != "supplier_material_handoff":
+    kind = proposal.get("kind")
+    if kind == "supplier_material_handoff":
+        data = parse_supplier_material_handoff(proposal["input"])
+        _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    elif kind == "supplier_progress_report":
+        data = parse_supplier_progress_report(proposal["input"])
+        _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
+    else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
-    data = parse_supplier_material_handoff(proposal["input"])
-    _, _, _, display = preview_supplier_material_handoff(db, user, data)
     if content_hash(display) != content_hash(proposal["display"]):
         raise DomainError("VERSION_CONFLICT", "项目、合同、供应商或权限资料已变化，请重新准备", 409)
     return proposal, data
 
 
 def confirm(db, user, payload):
-    _, data = validate_intent(db, user, payload)
-    row = create_supplier_material_handoff(db, user, data)
+    proposal, data = validate_intent(db, user, payload)
+    if proposal["kind"] == "supplier_material_handoff":
+        row = create_supplier_material_handoff(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+    row = create_supplier_progress_report(db, user, data)
     return {"project_id": data.project_id, "supplier_id": data.supplier_id,
-        "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+        "supplier_progress_report_id": row.id, "action": "supplier_progress_report", "status": "CONFIRMED"}
 
 
 router = APIRouter()

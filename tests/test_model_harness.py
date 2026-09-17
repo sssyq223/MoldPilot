@@ -91,6 +91,8 @@ PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'functio
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
 CONTRACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract', 'type': 'function', 'function': {'name': 'query_contract_context', 'arguments': '{}'}}]}
+OUTSOURCE_PROGRESS_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-progress', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '供应商节点上报'})}}]}
+OUTSOURCE_QUERY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource', 'type': 'function', 'function': {'name': 'query_full_outsource_context', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -133,7 +135,7 @@ _DEFAULT_CORE = object()
 def context(core_tool_names=_DEFAULT_CORE, **kwargs):
     if core_tool_names is _DEFAULT_CORE:
         core_tool_names = ['query_projects']
-    return {'prompt': 'query', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
+    return {'prompt': '查询项目', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
 
 
 def test_business_tools_are_deferred_and_direct_calls_are_blocked():
@@ -294,6 +296,68 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
     assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
 
 
+def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operation():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、供应商节点上报、采购跟进和验收上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_contract_signing_record',
+                                          'description': '准备委外合同签署证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备供应商资料交接证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商设计采购生产质检装配试模验收节点上报证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_deduction_settlement',
+                                          'description': '准备供应商扣款责任或结算依据登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_PROGRESS_TOOL_SEARCH, OUTSOURCE_QUERY_PROPOSAL, FINAL])
+    run_loop(context(core_tool_names=[], tools=tools,
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_contract_signing_record',
+                                                 'prepare_supplier_material_handoff',
+                                                 'prepare_supplier_progress_report',
+                                                 'prepare_supplier_deduction_settlement'],
+                              'activation_queries': ['整套委外执行', '供应商节点', '供应商节点上报']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_report'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_report'],
+    ]
+    assert gateway.saved['active_tool_names'] == ['prepare_supplier_progress_report', 'query_full_outsource_context']
+
+
+def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():
+    risk_tool = {'type': 'function', 'function': {'name': 'analyze_delivery_risk',
+                                                  'description': '分析供应商发货延期和临期风险。'}}
+    outsource_tool = {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                                       'description': '读取整套委外合同和供应商节点上报上下文。'}}
+
+    class CatalogModel:
+        def generate(self, messages, tools):
+            prompt = messages[0]['content']
+            relevant = 'ToolSearch query="供应商节点上报"'
+            unrelated = 'ToolSearch query="供应商发货风险分析"'
+            assert relevant in prompt and unrelated in prompt
+            assert prompt.index(relevant) < prompt.index(unrelated)
+            return {'content': json.dumps({'response_kind': 'CONVERSATION',
+                                           'summary': '请提供项目编号。',
+                                           'evidence_ids': [], 'suggestions': []})}
+
+    run_loop(context(prompt='你好，帮我看看 BROWSER-OUT-001 的供应商节点上报上下文。',
+                     core_tool_names=[], tools=[risk_tool, outsource_tool],
+                     skills=[{'key': 'delivery_risk_analysis',
+                              'agent_description': '供应商发货风险分析',
+                              'tools': ['analyze_delivery_risk']},
+                             {'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'activation_queries': ['整套委外执行', '供应商节点上报', '供应商节点']}]),
+             CatalogModel(), Gateway())
+
+
 def test_business_query_mentioning_model_still_allows_tool_search():
     class InspectingModel(Model):
         def generate(self, messages, tools):
@@ -411,6 +475,44 @@ def test_mixed_greeting_and_business_request_can_call_tools():
     assert gateway.physical_calls==1 and gateway.final['evidence_ids']==['e1']
 
 
+@pytest.mark.parametrize('prompt', ['你好', '您好，谢谢', '好的', '收到', '对', '辛苦了'])
+def test_pure_conversation_turn_hides_business_tools_even_with_recent_business_context(prompt):
+    class InspectingConversationModel:
+        def generate(self, messages, tools):
+            assert tools == []
+            assert '按需工具' not in messages[0]['content']
+            return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '你好',
+                                           'evidence_ids': [], 'suggestions': []})}
+    result = run_loop(context(prompt=prompt, recent_requests=['查询 SMOKE-M001 的项目计划']),
+                      InspectingConversationModel(), Gateway())
+    assert result['response_kind'] == 'CONVERSATION'
+
+
+@pytest.mark.parametrize('prompt', ['你好，帮我看看 SMOKE-M001 的计划', '老弟，看下这个项目'])
+def test_current_turn_business_action_opens_tools_even_with_social_prefix(prompt):
+    gateway = Gateway()
+    run_loop(context(prompt=prompt), Model([PROPOSAL, FINAL]), gateway)
+    assert gateway.physical_calls == 1
+
+
+@pytest.mark.parametrize('prompt', ['帮我看看', '继续', '这个呢'])
+def test_elliptical_action_can_use_recent_request_only_to_supply_business_object(prompt):
+    gateway = Gateway()
+    run_loop(context(prompt=prompt, recent_requests=['查询 SMOKE-M001 的项目计划']),
+             Model([PROPOSAL, FINAL]), gateway)
+    assert gateway.physical_calls == 1
+
+
+def test_recent_business_request_does_not_open_tools_for_unrelated_current_lookup():
+    class InspectingConversationModel:
+        def generate(self, messages, tools):
+            assert tools == []
+            return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '这是一般问题。',
+                                           'evidence_ids': [], 'suggestions': []})}
+    run_loop(context(prompt='查一下天气', recent_requests=['查询 SMOKE-M001 的项目计划']),
+             InspectingConversationModel(), Gateway())
+
+
 def test_duplicate_tool_call_enters_finalization_without_reexecuting():
     duplicate = copy.deepcopy(PROPOSAL)
     duplicate["tool_calls"][0]["id"] = "call2"
@@ -444,7 +546,7 @@ def test_protocol_repair_is_bounded_and_fails_closed():
     assert gateway.final is None
 
 
-def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
+def test_evidence_loop_is_forced_to_finalize_at_model_turn_budget():
     gateway = Gateway()
 
     class LoopingModel:
@@ -465,9 +567,56 @@ def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
     result = run_loop(context(), model, gateway)
 
     assert result['summary'] == '根据已有证据回答'
-    assert gateway.physical_calls == 8
-    assert model.tool_catalog_sizes == [1] * 8 + [0]
+    assert gateway.physical_calls == 11
+    assert model.tool_catalog_sizes == [1] * 11 + [0]
     assert gateway.saved['finalizing'] is True
+
+
+def test_model_controls_tool_batch_size_and_visible_progress_is_persisted():
+    calls = []
+    for index in range(6):
+        calls.append({
+            'id': f'batch-{index}',
+            'type': 'function',
+            'function': {
+                'name': 'query_projects',
+                'arguments': json.dumps({'page': index + 1}),
+            },
+        })
+    progress = '我先核对六组项目记录，再汇总结论。'
+    gateway = Gateway()
+    result = run_loop(
+        context(),
+        Model([{'role': 'assistant', 'content': progress, 'tool_calls': calls}, FINAL]),
+        gateway,
+    )
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 6
+    assistant = next(message for message in gateway.saved['messages']
+                     if message.get('role') == 'assistant' and message.get('tool_calls'))
+    assert assistant['content'] == progress
+    assert len(assistant['tool_calls']) == 6
+
+
+def test_tool_results_feed_back_across_as_many_model_rounds_as_needed():
+    first = {'role': 'assistant', 'content': '先核对两个范围。', 'tool_calls': [
+        {'id': 'round-1-a', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 1})}},
+        {'id': 'round-1-b', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 2})}},
+    ]}
+    second = {'role': 'assistant', 'content': '还需要补查一个范围。', 'tool_calls': [
+        {'id': 'round-2-a', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 3})}},
+    ]}
+    gateway = Gateway()
+    result = run_loop(context(), Model([first, second, FINAL]), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 3
+    roles = [message['role'] for message in gateway.saved['messages']]
+    assert roles == ['system', 'user', 'assistant', 'tool', 'tool', 'assistant', 'tool']
 
 
 def test_failed_model_call_records_timing_and_does_not_fake_result():

@@ -27,7 +27,10 @@ def test_invalid_login(client):
 
 def test_new_user_without_grants(client,data):
     ids,_=data;sign_in(client)
-    r=client.post('/api/users',json={'username':'empty_user','display_name':'空权限用户','password':PASSWORD})
+    department=client.post('/api/organization/groups',json={
+        'kind':'DEPARTMENT','name':'空权限部门','members':[],'active':True,'reason':'验证新用户默认没有业务授权'})
+    assert department.status_code==200
+    r=client.post('/api/users',json={'username':'empty_user','display_name':'空权限用户','department':'空权限部门','password':PASSWORD})
     assert r.status_code==200
     sign_in(client,'empty_user')
     assert client.get('/api/projects').json()==[]
