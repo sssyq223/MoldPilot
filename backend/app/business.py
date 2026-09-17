@@ -13,6 +13,7 @@ from .errors import DomainError
 from .events import record
 from .security import digest
 from .proposal_registry import handler_for_action
+from agent_core.domain_pack import resource_contract
 
 
 def request_lines(db, req):
@@ -187,6 +188,8 @@ def process_agent_auto_approvals(db, instance_id, agent_permission_mode="ask", l
 
 
 def bind_material_snapshot(db, user, resource_type, resource_id, resource_revision, definition, material_review_id):
+    if resource_type not in resource_contract().APPROVAL_RESOURCE_TYPES:
+        raise DomainError("RESOURCE_TYPE_UNKNOWN", "当前业务包未登记该审批资源类型")
     from .workflow_selection import validate_material_review
     review = validate_material_review(db, user, definition, material_review_id)
     if not review:
@@ -225,7 +228,8 @@ def submit_request(db, user, req_id, revision, definition_id, material_review_id
     if material:
         snapshot['material_data']=material.pop('material_data')
         snapshot['material_binding']=material
-    instance = ApprovalInstance(request_id=req.id, definition_id=definition.id, revision=req.revision,
+    instance = ApprovalInstance(resource_type="purchase_request", resource_id=req.id,
+                                definition_id=definition.id, revision=req.revision,
                                 round_no=req.round_no, snapshot=snapshot, snapshot_hash=bpm.content_hash(snapshot),
                                 engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance); db.flush()
@@ -249,7 +253,8 @@ def approval_detail(db, user, instance):
             actions = ["REJECT"] if matched else ["REJECT", "RETURN"] if missing else ["APPROVE", "REJECT", "RETURN"]
         except DomainError: pass
     # Approval requires a complete, authorized material snapshot, not merely an assigned seat.
-    required = {"project_id", "material_id", "quantity", "due_date", "remark"} if instance.request_id else {'project_id','detail','remark'}
+    required = ({"project_id", "material_id", "quantity", "due_date", "remark"}
+                if instance.resource_type == "purchase_request" else {'project_id','detail','remark'})
     complete = "*" in fields or required <= fields
     material_notice=None
     if isinstance(req,BusinessSubject) and req.kind=='contact_resolution' and instance.status=='RUNNING':
@@ -271,7 +276,8 @@ def approval_detail(db, user, instance):
             if key not in fields:snapshot.pop(key,None)
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
-            "business_type": 'purchase_request' if instance.request_id else req.kind,"material_notice":material_notice,
+            "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
+            "material_notice":material_notice,
             "definition": {"name": definition.name, "version": definition.version},
             "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"]} for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
@@ -402,8 +408,11 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
 
 
 def load_subject(db,instance,lock=False):
-    model,identifier=(PurchaseRequest,instance.request_id) if instance.request_id else (BusinessSubject,instance.subject_id)
-    q=select(model).where(model.id==identifier)
+    models = {"purchase_request": PurchaseRequest, "business_subject": BusinessSubject}
+    model = models.get(instance.resource_type)
+    if model is None or instance.resource_type not in resource_contract().APPROVAL_RESOURCE_TYPES:
+        raise DomainError("RESOURCE_TYPE_UNKNOWN", "审批资源类型未在当前业务包登记")
+    q=select(model).where(model.id==instance.resource_id)
     return db.scalar(q.with_for_update() if lock else q)
 
 
@@ -427,7 +436,8 @@ def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=
     if material:
         snapshot['material_data']=material.pop('material_data')
         snapshot['material_binding']=material
-    instance=ApprovalInstance(subject_id=subject.id,definition_id=definition.id,revision=subject.revision,
+    instance=ApprovalInstance(resource_type="business_subject", resource_id=subject.id,
+                              definition_id=definition.id,revision=subject.revision,
                               round_no=subject.round_no,snapshot=snapshot,snapshot_hash=bpm.content_hash(snapshot),
                               engine_state=bpm.start_engine(definition.bpmn_xml))
     db.add(instance);db.flush();enter_stage(db,instance,definition,subject)

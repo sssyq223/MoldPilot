@@ -366,7 +366,10 @@ def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(clien
         assert change and change.status=='SUBMITTED'
         detail=db.get(m.PlanDetail,change.id)
         assert detail.previous_id==baseline_id
-        assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==change.id))
+        assert db.scalar(select(m.ApprovalInstance).where(
+            m.ApprovalInstance.resource_type=='business_subject',
+            m.ApprovalInstance.resource_id==change.id,
+        ))
 
 
 def test_plan_change_proposal_accepts_confirmed_material_review():
@@ -421,7 +424,10 @@ def test_plan_change_proposal_accepts_confirmed_material_review():
             receipt=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
             assert receipt['status']=='SUBMITTED'
             change=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change'))
-            instance=db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==change.id))
+            instance=db.scalar(select(m.ApprovalInstance).where(
+                m.ApprovalInstance.resource_type=='business_subject',
+                m.ApprovalInstance.resource_id==change.id,
+            ))
             binding=db.scalar(select(m.MaterialBinding).where(m.MaterialBinding.review_id==review.id))
             assert binding.resource_type=='business_subject' and binding.resource_id==change.id
             assert instance.snapshot['material_data']['fields']['signed_change'] is True
@@ -529,7 +535,10 @@ def test_plan_baseline_proposal_requires_human_confirmation_then_submits_bpm():
             assert baseline and baseline.status=='SUBMITTED'
             assert db.get(m.PlanDetail,baseline.id).previous_id is None
             assert len(list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==baseline.id))))==6
-            assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==baseline.id))
+            assert db.scalar(select(m.ApprovalInstance).where(
+                m.ApprovalInstance.resource_type=='business_subject',
+                m.ApprovalInstance.resource_id==baseline.id,
+            ))
     finally:
         engine.dispose()
 

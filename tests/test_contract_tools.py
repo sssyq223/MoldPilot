@@ -178,7 +178,10 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             assert detail.customer_id==args['customer_id']
             stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))
             assert stage.name=='预付款'
-            assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==subject.id))
+            assert db.scalar(select(m.ApprovalInstance).where(
+                m.ApprovalInstance.resource_type=='business_subject',
+                m.ApprovalInstance.resource_id==subject.id,
+            ))
     finally:
         engine.dispose()
 

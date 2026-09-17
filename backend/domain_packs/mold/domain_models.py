@@ -1,9 +1,9 @@
 """Typed local business facts. Shared approval envelopes do not replace domain tables."""
 from datetime import date, datetime
 from decimal import Decimal
-from sqlalchemy import String, Date, DateTime, Integer, Boolean, Text, Numeric, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy import String, Date, DateTime, Integer, Boolean, Text, Numeric, ForeignKey, UniqueConstraint, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
-from .models import IdentityMixin, Base, J
+from app.model_base import IdentityMixin, Base, J
 
 
 class BusinessSubject(IdentityMixin, Base):
@@ -608,6 +608,12 @@ class PauseRecord(IdentityMixin, Base):
     shifted_days: Mapped[int] = mapped_column(Integer, default=0)
     shift_applied: Mapped[bool] = mapped_column(Boolean, default=False)
     customer_due_date_snapshot: Mapped[date | None] = mapped_column(Date)
+    __table_args__ = (
+        Index(
+            'uq_pause_record_open_project', 'project_id', unique=True,
+            postgresql_where=text('end_date IS NULL'),
+        ),
+    )
 
 
 class ProjectPauseDetail(Base):
@@ -659,6 +665,10 @@ class ProjectClosureCase(IdentityMixin, Base):
     __table_args__ = (
         CheckConstraint("mode IN ('NORMAL','TERMINATION')", name='project_closure_mode'),
         CheckConstraint("status IN ('OPEN','CLOSED','CANCELLED')", name='project_closure_status'),
+        Index(
+            'uq_project_closure_open_project', 'project_id', unique=True,
+            postgresql_where=text("status = 'OPEN'"),
+        ),
     )
 
 

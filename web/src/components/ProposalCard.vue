@@ -2,20 +2,17 @@
 import {computed,onMounted,ref} from 'vue'
 import {ShieldCheck,X} from 'lucide-vue-next'
 import {api,post,shanghai} from '../api'
-import {valueText} from '../uiText'
-const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string;decision?:string}>(),{placement:'message',productName:'Agent',decision:''})
-const emit=defineEmits<{open:[id:string];status:[confirmed:boolean];confirmed:[];dismissed:[]}>()
+type ProposalDetailLink={target:string;receipt_field:string;label:string}
+type ProposalPresentation={action_prefixes?:string[];action_suffixes?:string[];value_names?:Record<string,string>;detail_links?:Record<string,ProposalDetailLink>}
+const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string;decision?:string;presentation?:ProposalPresentation}>(),{placement:'message',productName:'Agent',decision:'',presentation:()=>({})})
+const emit=defineEmits<{open:[link:{target:string;id:string}];status:[confirmed:boolean];confirmed:[];dismissed:[]}>()
 const intent=ref<any>(null),receipt=ref<any>(null),showDetails=ref(false),busy=ref(false),error=ref('')
 const policy=computed(()=>intent.value?.confirmation_policy||props.proposal.confirmation_policy)
 const actionTitle=computed(()=>{
-  const raw=String(props.proposal.display?.操作||props.proposal.action||'业务操作')
-  return raw
-    .replace(/^登记/,'')
-    .replace(/^确认/,'')
-    .replace(/^准备/,'')
-    .replace(/证据登记$/,'')
-    .replace(/证据$/,'')
-    .trim()||'业务操作'
+  let title=String(props.proposal.display?.操作||props.proposal.action||'业务操作')
+  for(const prefix of props.presentation.action_prefixes||[]){if(title.startsWith(prefix)){title=title.slice(prefix.length);break}}
+  for(const suffix of props.presentation.action_suffixes||[]){if(title.endsWith(suffix)){title=title.slice(0,-suffix.length);break}}
+  return title.trim()||'业务操作'
 })
 const resolved=computed(()=>Boolean(receipt.value||props.decision))
 const dismissed=computed(()=>props.decision==='dismissed')
@@ -23,35 +20,17 @@ const summaryTitle=computed(()=>resolved.value
   ? `${actionTitle.value}${dismissed.value?'已取消':(approval.value?'已提交审批':'已确认')}`
   : `${actionTitle.value}待本人确认`)
 const detailDisplay=computed(()=>intent.value?.display||props.proposal.display||{})
-const proposalValueNames:Record<string,string>={
-  supplier_design:'供应商设计',
-  supplier_purchase:'供应商采购',
-  supplier_production:'供应商生产',
-  supplier_quality:'供应商质检',
-  supplier_assembly:'供应商装配',
-  supplier_trial:'供应商试模',
-  supplier_acceptance:'供应商验收',
-  ON_TRACK:'正常推进',
-  AT_RISK:'存在风险',
-  BLOCKED:'已阻塞',
-  DONE:'已完成',
-  REWORK:'返工中',
-  MANUAL:'手工录入',
-  IMPORT:'导入',
-  ERP:'ERP 同步',
-  EMAIL:'邮件',
-  OTHER:'其他',
-}
+const proposalValueNames=computed(()=>props.presentation.value_names||{})
+const detailLink=computed(()=>props.presentation.detail_links?.[String(props.proposal.kind||'')])
+const detailLinkId=computed(()=>detailLink.value?String(receipt.value?.[detailLink.value.receipt_field]||''):'')
 function displayScalar(key:string,value:any){
   if(typeof value==='boolean')return value?'是':'否'
   if(key==='实际发生时间')return shanghai(value)
   const text=String(value)
-  if(proposalValueNames[text])return proposalValueNames[text]
-  const common=valueText(key,text)
-  if(common!==text)return common
+  if(proposalValueNames.value[text])return proposalValueNames.value[text]
   return text.split(/(\s*[·、，]\s*)/).map(part=>{
     const trimmed=part.trim()
-    return proposalValueNames[trimmed]?part.replace(trimmed,proposalValueNames[trimmed]):part
+    return proposalValueNames.value[trimmed]?part.replace(trimmed,proposalValueNames.value[trimmed]):part
   }).join('')
 }
 function displayValue(key:string,value:any){
@@ -70,7 +49,7 @@ async function confirm(){busy.value=true;error.value='';try{receipt.value=await 
 async function dismiss(){busy.value=true;error.value='';try{await post(base+props.stepId+'/dismiss');emit('status',true);emit('dismissed')}catch(e:any){error.value=e.message}finally{busy.value=false}}
 </script>
 <template>
-  <section v-if="placement==='composer'&&!receipt" class="contact-proposal composer-approval" aria-label="等待批准">
+  <section v-if="placement==='composer'&&!receipt" class="proposal-card composer-approval" aria-label="等待批准">
     <div class="composer-approval-label"><ShieldCheck :size="15"/><span>权限</span></div>
     <div class="composer-approval-copy">
       <strong>允许 {{productName}} 执行“{{actionTitle}}”吗？</strong>
@@ -82,13 +61,13 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
     </div>
     <p v-if="error" class="proposal-error" role="alert">{{error}}</p>
   </section>
-  <section v-else-if="placement==='message'" class="contact-proposal" aria-label="业务操作建议">
+  <section v-else-if="placement==='message'" class="proposal-card" aria-label="业务操作建议">
     <div class="proposal-brief">
       <span>
         <strong>{{summaryTitle}}</strong>
         <small>{{resolved?(dismissed?'本人已选择暂不执行，可随时查看原确认字段。':(approval?'已提交后续审批，请以最终生效回执为准。':'操作已按回执留痕，可随时查看确认字段。')):'点击详情核对字段后再确认，不会自动执行。'}}</small>
       </span>
-      <button v-if="proposal.kind==='contact'&&receipt&&receipt.case_id" @click="emit('open',receipt.case_id)">查看材料</button>
+      <button v-if="detailLink&&detailLinkId" @click="emit('open',{target:detailLink.target,id:detailLinkId})">{{detailLink.label}}</button>
       <button v-else :disabled="busy" @click="review">{{busy?'正在准备…':'查看详情'}}</button>
     </div>
     <p v-if="error" class="proposal-error" role="alert">{{error}}</p>
@@ -108,4 +87,4 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
     <div v-else class="actions"><button :disabled="busy" @click="intent=null">暂不执行</button><button class="primary" :disabled="busy" @click="confirm">确认执行</button></div>
   </section></div></Teleport>
 </template>
-<style scoped>.contact-proposal{display:flex;flex-direction:column;gap:6px}.composer-approval{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 18px;width:min(820px,calc(100% - 48px));margin:8px auto 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--border) 82%,transparent);border-radius:18px;background:var(--surface);box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent)}.composer-approval-label{grid-column:1/-1;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.composer-approval-copy{min-width:0;display:grid;gap:4px}.composer-approval-copy strong{font-size:14px;line-height:1.5;color:var(--text)}.composer-approval-copy small{font-size:12px;line-height:1.5;color:var(--muted)}.composer-approval-actions{display:flex;align-items:end;justify-content:flex-end;gap:8px}.composer-approval-actions button{height:34px;padding:0 13px;border-radius:9px;font-size:12px;white-space:nowrap}.composer-approval>.proposal-error{grid-column:1/-1}.proposal-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 38%,transparent)}.proposal-brief>span{min-width:0;display:grid;gap:2px}.proposal-brief strong{font-size:14px;font-weight:500;color:var(--text);line-height:1.45}.proposal-brief small{font-size:12px;color:var(--muted);line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.proposal-brief button{flex-shrink:0;height:30px;padding:0 11px;border-radius:8px;font-size:12px}.proposal-error{margin:0;color:var(--error,#b4534b);font-size:12px}.confirmation-policy{border:1px solid color-mix(in srgb,var(--border) 85%,var(--accent));border-radius:8px;background:color-mix(in srgb,var(--surface) 86%,var(--accent) 14%);padding:10px 12px;display:grid;gap:4px}.confirmation-policy strong{font-size:13px}.confirmation-policy small{color:var(--muted);line-height:1.5}.confirmation-policy.delegated{border-color:color-mix(in srgb,var(--success,#6fcf97) 45%,var(--border));background:color-mix(in srgb,var(--surface) 82%,var(--success,#6fcf97) 18%)}.modal-policy{margin:12px 0}.proposal-modal{width:500px;max-height:calc(100vh - 32px);overflow:auto;scrollbar-width:none;-ms-overflow-style:none}.proposal-modal::-webkit-scrollbar{display:none}.proposal-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}.proposal-modal-head h2{margin:0}.proposal-modal-head .icon-button{flex-shrink:0;margin:-4px -4px 0 0}dl{margin:0;display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px 16px}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:620px){.composer-approval{width:calc(100% - 20px);grid-template-columns:1fr}.composer-approval-actions{justify-content:flex-end}.proposal-brief{align-items:flex-start;flex-direction:column}.proposal-brief small{white-space:normal}.proposal-modal{width:calc(100vw - 24px)}dl{grid-template-columns:82px minmax(0,1fr)}}</style>
+<style scoped>.proposal-card{display:flex;flex-direction:column;gap:6px}.composer-approval{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 18px;width:min(820px,calc(100% - 48px));margin:8px auto 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--border) 82%,transparent);border-radius:18px;background:var(--surface);box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent)}.composer-approval-label{grid-column:1/-1;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.composer-approval-copy{min-width:0;display:grid;gap:4px}.composer-approval-copy strong{font-size:14px;line-height:1.5;color:var(--text)}.composer-approval-copy small{font-size:12px;line-height:1.5;color:var(--muted)}.composer-approval-actions{display:flex;align-items:end;justify-content:flex-end;gap:8px}.composer-approval-actions button{height:34px;padding:0 13px;border-radius:9px;font-size:12px;white-space:nowrap}.composer-approval>.proposal-error{grid-column:1/-1}.proposal-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 38%,transparent)}.proposal-brief>span{min-width:0;display:grid;gap:2px}.proposal-brief strong{font-size:14px;font-weight:500;color:var(--text);line-height:1.45}.proposal-brief small{font-size:12px;color:var(--muted);line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.proposal-brief button{flex-shrink:0;height:30px;padding:0 11px;border-radius:8px;font-size:12px}.proposal-error{margin:0;color:var(--error,#b4534b);font-size:12px}.confirmation-policy{border:1px solid color-mix(in srgb,var(--border) 85%,var(--accent));border-radius:8px;background:color-mix(in srgb,var(--surface) 86%,var(--accent) 14%);padding:10px 12px;display:grid;gap:4px}.confirmation-policy strong{font-size:13px}.confirmation-policy small{color:var(--muted);line-height:1.5}.confirmation-policy.delegated{border-color:color-mix(in srgb,var(--success,#6fcf97) 45%,var(--border));background:color-mix(in srgb,var(--surface) 82%,var(--success,#6fcf97) 18%)}.modal-policy{margin:12px 0}.proposal-modal{width:500px;max-height:calc(100vh - 32px);overflow:auto;scrollbar-width:none;-ms-overflow-style:none}.proposal-modal::-webkit-scrollbar{display:none}.proposal-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}.proposal-modal-head h2{margin:0}.proposal-modal-head .icon-button{flex-shrink:0;margin:-4px -4px 0 0}dl{margin:0;display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px 16px}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:620px){.composer-approval{width:calc(100% - 20px);grid-template-columns:1fr}.composer-approval-actions{justify-content:flex-end}.proposal-brief{align-items:flex-start;flex-direction:column}.proposal-brief small{white-space:normal}.proposal-modal{width:calc(100vw - 24px)}dl{grid-template-columns:82px minmax(0,1fr)}}</style>

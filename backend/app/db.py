@@ -1,23 +1,12 @@
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from .config import settings
-
-SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-def now():
-    return datetime.now(SHANGHAI)
+from .model_base import Base, SHANGHAI, now
 
 
 def aware(value):
     """Normalize datetimes returned by legacy synthetic tests."""
     return value.replace(tzinfo=SHANGHAI) if value.tzinfo is None else value
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 def make_engine(url: str):

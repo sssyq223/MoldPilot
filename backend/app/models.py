@@ -1,18 +1,7 @@
-from datetime import date, datetime
-from decimal import Decimal
-from uuid import uuid4
-from sqlalchemy import String, DateTime, Date, Integer, Boolean, Text, Numeric, ForeignKey, UniqueConstraint, CheckConstraint, JSON
-from sqlalchemy.dialects.postgresql import JSONB
+from datetime import datetime
+from sqlalchemy import String, DateTime, Integer, Boolean, Text, ForeignKey, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
-from .db import Base, now
-
-J = JSON().with_variant(JSONB, "postgresql")
-def uid(): return str(uuid4())
-
-
-class IdentityMixin:
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+from .model_base import Base, IdentityMixin, J
 
 
 class User(IdentityMixin, Base):
@@ -27,8 +16,11 @@ class User(IdentityMixin, Base):
 
 
 class UserProfile(Base):
+    """Optional host-level presentation data kept outside identity records."""
     __tablename__ = "app_user_profile"
-    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True
+    )
     avatar_url: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -70,43 +62,6 @@ class Grant(IdentityMixin, Base):
     reason: Mapped[str] = mapped_column(Text)
     granted_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
     __table_args__ = (CheckConstraint("effect IN ('ALLOW','DENY')"),)
-
-
-class Project(IdentityMixin, Base):
-    __tablename__ = "project"
-    code: Mapped[str] = mapped_column(String(80), unique=True)
-    name: Mapped[str] = mapped_column(String(150))
-    status: Mapped[str] = mapped_column(String(30), default="DRAFT")
-    row_version: Mapped[int] = mapped_column(Integer, default=1)
-
-
-class Material(IdentityMixin, Base):
-    __tablename__ = "material"
-    code: Mapped[str] = mapped_column(String(80), unique=True)
-    name: Mapped[str] = mapped_column(String(150))
-    category: Mapped[str] = mapped_column(String(60))
-    unit: Mapped[str] = mapped_column(String(20))
-
-
-class PurchaseRequest(IdentityMixin, Base):
-    __tablename__ = "purchase_request"
-    number: Mapped[str] = mapped_column(String(80), unique=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
-    created_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
-    remark: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(30), default="DRAFT")
-    revision: Mapped[int] = mapped_column(Integer, default=1)
-    round_no: Mapped[int] = mapped_column(Integer, default=0)
-    __table_args__ = (CheckConstraint("status IN ('DRAFT','SUBMITTED','APPROVED','REJECTED','RETURNED')"),)
-
-
-class PurchaseLine(IdentityMixin, Base):
-    __tablename__ = "purchase_request_line"
-    request_id: Mapped[str] = mapped_column(ForeignKey("purchase_request.id"), index=True)
-    material_id: Mapped[str] = mapped_column(ForeignKey("material.id"))
-    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    due_date: Mapped[date] = mapped_column(Date)
-    __table_args__ = (CheckConstraint("quantity > 0"),)
 
 
 class WorkflowCategory(IdentityMixin, Base):
@@ -167,7 +122,6 @@ class MaterialBinding(IdentityMixin, Base):
     material_hash: Mapped[str] = mapped_column(String(64))
     review_hash: Mapped[str] = mapped_column(String(64))
     bound_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'), index=True)
-    __table_args__ = (CheckConstraint("resource_type IN ('purchase_request','business_subject')"),)
 
 
 class WorkflowDefinition(IdentityMixin, Base):
@@ -186,8 +140,8 @@ class WorkflowDefinition(IdentityMixin, Base):
 
 class ApprovalInstance(IdentityMixin, Base):
     __tablename__ = "approval_instance"
-    request_id: Mapped[str | None] = mapped_column(ForeignKey("purchase_request.id"))
-    subject_id: Mapped[str | None] = mapped_column(ForeignKey("business_subject.id"))
+    resource_type: Mapped[str] = mapped_column(String(80), index=True)
+    resource_id: Mapped[str] = mapped_column(String(36), index=True)
     definition_id: Mapped[str] = mapped_column(ForeignKey("workflow_definition.id"))
     revision: Mapped[int] = mapped_column(Integer)
     round_no: Mapped[int] = mapped_column(Integer)
@@ -199,9 +153,11 @@ class ApprovalInstance(IdentityMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(String(64))
     engine_state: Mapped[dict] = mapped_column(J)
     assignment_snapshots: Mapped[dict] = mapped_column(J, default=dict)
-    __table_args__ = (UniqueConstraint("request_id", "revision", "round_no"),
-                     UniqueConstraint("subject_id", "revision", "round_no"),
-                     CheckConstraint("(request_id IS NULL) <> (subject_id IS NULL)", name="approval_one_subject"))
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", "revision", "round_no"),
+        CheckConstraint("resource_type <> ''", name="approval_resource_type_required"),
+        CheckConstraint("resource_id <> ''", name="approval_resource_id_required"),
+    )
 
 
 class ApprovalSeat(IdentityMixin, Base):
@@ -242,6 +198,7 @@ class AgentApprovalDelegation(IdentityMixin, Base):
     __table_args__ = (
         UniqueConstraint("user_id", "process_key", "node_key", "decision"),
         CheckConstraint("decision IN ('APPROVE')", name="agent_approval_delegation_decision"),
+        Index("ix_agent_approval_delegation_lookup", "process_key", "node_key", "active"),
     )
 
 
@@ -334,7 +291,12 @@ class Capability(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint("user_id", "kind", "key"),)
 
 
-# Register all local domain tables in the same Alembic metadata/version chain.
-from .domain_models import *  # noqa: E402,F403
-from .contact_models import *  # noqa: E402,F403
-from .file_models import *  # noqa: E402,F403
+# Generic file/conversation persistence belongs to the host.  Business models
+# are registered and re-exported by the selected pack for compatibility with
+# existing application services during the migration.
+from .file_models import FileObject, RunFile  # noqa: E402,F401
+from agent_core.domain_pack import component as _pack_component  # noqa: E402
+
+_domain_model_component = _pack_component("models")
+for _model_name in _domain_model_component.EXPORTED_MODELS:
+    globals()[_model_name] = getattr(_domain_model_component, _model_name)

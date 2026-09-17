@@ -12,6 +12,36 @@ PUBLIC_METADATA = {
         {"key": "approvals", "name": "审批材料", "hint": "查看待审批事项、节点和依据"},
         {"key": "contacts", "name": "联络单材料", "hint": "查看工程联络单、附件和协作进度"},
     ],
+    "proposal_presentation": {
+        "action_prefixes": ["登记", "确认", "准备"],
+        "action_suffixes": ["证据登记", "证据"],
+        "detail_links": {
+            "contact": {
+                "target": "contacts",
+                "receipt_field": "case_id",
+                "label": "查看材料",
+            },
+        },
+        "value_names": {
+            "supplier_design": "供应商设计",
+            "supplier_purchase": "供应商采购",
+            "supplier_production": "供应商生产",
+            "supplier_quality": "供应商质检",
+            "supplier_assembly": "供应商装配",
+            "supplier_trial": "供应商试模",
+            "supplier_acceptance": "供应商验收",
+            "ON_TRACK": "正常推进",
+            "AT_RISK": "存在风险",
+            "BLOCKED": "已阻塞",
+            "DONE": "已完成",
+            "REWORK": "返工中",
+            "MANUAL": "手工录入",
+            "IMPORT": "导入",
+            "ERP": "ERP 同步",
+            "EMAIL": "邮件",
+            "OTHER": "其他",
+        },
+    },
 }
 APP_TITLE = "模具工作台 · 独立 Agent"
 
