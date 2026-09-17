@@ -9,6 +9,7 @@ from .models import Run, User, Step
 from . import tool_gateway as tools
 from .bpm import content_hash
 from .authorization import fingerprint
+from .run_events import publish_run_update
 
 
 def worker_auth(request: Request):
@@ -43,10 +44,12 @@ def execute_step(db, run_id, data):
         if data["key"] not in tools.available_tools(db, user):
             raise DomainError("TOOL_FORBIDDEN", "工具授权已变化", 403)
         db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
         return {"evidence_id": prior.id, **prior.result}
     result = tools.execute(db, user, data["key"], data["arguments"], run=run)
     step = Step(run_id=run.id, sequence=sequence, tool=data["key"], request_hash=h, result=result)
     db.add(step); db.flush(); db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
     return {"evidence_id": step.id, **result}
 
 def recent_requests(db,user,run):
@@ -71,18 +74,24 @@ def install(app):
         if not run: return {"run": None}
         user = db.get(User, run.user_id)
         if not user or not user.active or user.security_version != run.security_version:
-            run.status = "FAILED"; run.result = {"message": "权限已变化，请重新发起"}; db.commit(); return {"run": None}
+            run.status = "FAILED"; run.result = {"message": "权限已变化，请重新发起"}; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
+            return {"run": None}
         authorization_hash = fingerprint(db, user)
         checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
         existing_authorization_hash = checkpoint.get("authorization_hash")
         if existing_authorization_hash and existing_authorization_hash != authorization_hash:
-            run.status = "FAILED"; run.result = {"message": "授权范围或有效期已变化，请重新发起"}; db.commit(); return {"run": None}
+            run.status = "FAILED"; run.result = {"message": "授权范围或有效期已变化，请重新发起"}; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
+            return {"run": None}
         run.checkpoint = {**checkpoint, "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"), "authorization_hash": authorization_hash}
         run.status, run.lease_epoch, run.lease_until = "RUNNING", run.lease_epoch+1, now()+timedelta(seconds=120)
         from .files import run_files
         context = {"recent_requests":recent_requests(db,user,run),"files":run_files(db,user,run),"id": run.id, "epoch": run.lease_epoch, "prompt": run.prompt,
                    "tools": [tools.tool_schema(k) for k in tools.available_tools(db, user)], "skills": tools.skill_context(db, user), **run.checkpoint}
-        db.commit(); return {"run": context}
+        db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"run": context}
 
     @app.post("/internal/runs/{run_id}/check", dependencies=[Depends(worker_auth)])
     def check(run_id: str, data: dict, db=Depends(get_db)):
@@ -96,10 +105,26 @@ def install(app):
     def checkpoint(run_id: str, data: dict, db=Depends(get_db)):
         run, _ = fence(db, run_id, data["epoch"])
         previous = run.checkpoint if isinstance(run.checkpoint, dict) else {}
-        run.checkpoint = {**data["checkpoint"],
-                          "agent_permission_mode": data["checkpoint"].get("agent_permission_mode", previous.get("agent_permission_mode", "ask")),
-                          "authorization_hash": previous["authorization_hash"]}
-        db.commit(); return {"ok": True}
+        # Proposal decisions and the preceding final answer are host-owned
+        # conversation state.  The generic harness replaces its own execution
+        # checkpoint on every streamed update and must not erase them while a
+        # confirmed proposal is resumed for the final receipt response.
+        host_state = {
+            key: previous[key]
+            for key in ("proposal_decisions", "proposal_resolution", "prior_finals")
+            if key in previous
+        }
+        run.checkpoint = {
+            **data["checkpoint"],
+            **host_state,
+            "agent_permission_mode": data["checkpoint"].get(
+                "agent_permission_mode", previous.get("agent_permission_mode", "ask")
+            ),
+            "authorization_hash": previous["authorization_hash"],
+        }
+        db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/finish", dependencies=[Depends(worker_auth)])
     def finish(run_id: str, data: dict, db=Depends(get_db)):
@@ -110,21 +135,26 @@ def install(app):
             raise DomainError("EVIDENCE_INVALID", "结果证据不属于本次任务")
         run.result = {**result, "evidence": [{"id": step.id, "tool": step.tool, **step.result} for step in steps]}
         run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
-        run.status = "SUCCEEDED"; run.lease_until = None; db.commit(); return {"ok": True}
+        run.status = "SUCCEEDED"; run.lease_until = None; db.commit()
+        publish_run_update(run.conversation_id, run.id, run.status)
+        return {"ok": True}
 
     @app.post("/internal/runs/{run_id}/fail", dependencies=[Depends(worker_auth)])
     def fail(run_id: str, data: dict, db=Depends(get_db)):
         run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
         if run and run.status == "RUNNING" and run.lease_epoch == data["epoch"]:
             code = str(data.get("code", "EXECUTION_FAILED"))[:80]
-            message = {"TOOL_BUSINESS_REJECTED":"业务校验未通过，本次未执行。请核对联络单对象和必需资料后重新发起。", "MODEL_CONNECT_TIMEOUT": "模型连接超时，本次任务未完成，请稍后重新发起。",
-                       'MODEL_LOCAL_UNAVAILABLE':'本地模型服务未启动或地址不可达，请检查本地模型服务。',
-                       "MODEL_READ_TIMEOUT": "模型响应超时，本次任务未完成，请稍后重新发起。",
-                       "MODEL_AUTH_FAILED": "模型服务认证失败，请联系管理员核对模型配置。",
+            detail = " ".join(str(data.get("detail") or "").split())[:1000]
+            message = detail or {"TOOL_BUSINESS_REJECTED":"业务校验未通过，本次未执行。请核对当前业务对象和必需资料后重新发起。", "MODEL_CONNECT_TIMEOUT": "模型连接超时，本次任务未完成，请稍后重新发起。",
+                        'MODEL_LOCAL_UNAVAILABLE':'本地模型服务未启动或地址不可达，请检查本地模型服务。',
+                        "MODEL_READ_TIMEOUT": "模型响应超时，本次任务未完成，请稍后重新发起。",
+                        "MODEL_NETWORK_ERROR": "模型服务连接中断，本次任务未完成。系统已自动重试一次；请稍后重新发起或核对模型服务连接。",
+                        "MODEL_AUTH_FAILED": "模型服务认证失败，请联系管理员核对模型配置。",
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
                        "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。",
                        "CONTEXT_BUDGET_EXCEEDED": "模型上下文窗口不足，运行时压缩后仍无法安全提交本次请求，请缩小附件或问题范围后重试。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
             run.status = "FAILED"; run.result = {"message": message, "error_code": code}
             run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()
+            publish_run_update(run.conversation_id, run.id, run.status)
         return {"ok": True}

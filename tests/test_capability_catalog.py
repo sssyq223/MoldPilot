@@ -1,3 +1,4 @@
+from app.erp_design_mcp import TOOL_NAMES
 from app.tool_gateway import SKILLS, TOOLS, capability_descriptor
 
 
@@ -66,6 +67,52 @@ def test_supplier_material_handoff_tool_is_in_full_outsource_pack():
     assert "prepare_supplier_material_handoff" in skill["optional_dependencies"]
 
 
+def test_supplier_material_verification_tool_is_human_confirmed_full_outsource_operation():
+    tool = capability_descriptor("TOOL", "prepare_supplier_material_verification", TOOLS["prepare_supplier_material_verification"])
+    assert tool["name"] == "准备供应商资料核验"
+    assert tool["department"] == "purchase"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "full_outsource_review", SKILLS["full_outsource_review"])
+    assert "prepare_supplier_material_verification" in skill["optional_dependencies"]
+
+
+def test_supplier_progress_report_tool_is_human_confirmed_full_outsource_operation():
+    tool = capability_descriptor("TOOL", "prepare_supplier_progress_report", TOOLS["prepare_supplier_progress_report"])
+    assert tool["name"] == "准备供应商节点上报"
+    assert tool["department"] == "purchase"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "full_outsource_review", SKILLS["full_outsource_review"])
+    assert "prepare_supplier_progress_report" in skill["optional_dependencies"]
+
+
+def test_supplier_progress_policy_tool_is_human_confirmed_full_outsource_operation():
+    tool = capability_descriptor("TOOL", "prepare_supplier_progress_policy", TOOLS["prepare_supplier_progress_policy"])
+    assert tool["name"] == "准备供应商上报规则"
+    assert tool["department"] == "purchase"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "full_outsource_review", SKILLS["full_outsource_review"])
+    assert "prepare_supplier_progress_policy" in skill["optional_dependencies"]
+
+
+def test_delivery_logistics_skill_exposes_separate_route_and_price_authorities():
+    route = capability_descriptor("TOOL", "prepare_logistics_route", TOOLS["prepare_logistics_route"])
+    assert route["name"] == "准备物流路线确认"
+    assert route["department"] == "warehouse"
+    assert route["type"] == "operation"
+    assert route["mode"] == "human_confirmed_proposal"
+    quote = capability_descriptor("TOOL", "prepare_logistics_quote", TOOLS["prepare_logistics_quote"])
+    assert quote["name"] == "准备物流报价/结算价确认"
+    assert quote["department"] == "purchase"
+    assert quote["type"] == "approval"
+    assert quote["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "delivery_logistics_review", SKILLS["delivery_logistics_review"])
+    assert skill["dependencies"] == ["query_delivery_logistics_context"]
+    assert skill["optional_dependencies"] == ["prepare_logistics_route", "prepare_logistics_quote"]
+
+
 def test_contact_collaboration_skill_has_curated_activation_pack():
     item = capability_descriptor("SKILL", "contact_collaboration_review", SKILLS["contact_collaboration_review"])
     assert item["dependencies"] == ["query_contact_cases"]
@@ -79,3 +126,9 @@ def test_contact_collaboration_skill_has_curated_activation_pack():
         "prepare_contact_close",
         "prepare_contact_respond",
     ]
+
+
+def test_erp_design_tools_expose_curated_chinese_titles():
+    assert set(TOOL_NAMES) == {key for key in TOOLS if key.startswith("erp_design_")}
+    for key, title in TOOL_NAMES.items():
+        assert capability_descriptor("TOOL", key, TOOLS[key])["name"] == title

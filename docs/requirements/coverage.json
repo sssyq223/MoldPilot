@@ -1055,11 +1055,13 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 在 gaps 中明确未见结构化固定物流路线、承运商车型、物流报价有效期或本次结算价格时不能编造路线或价格",
-        "交付物流 Skill 要求区分模具物流实际路线与固定路线，当前只读上下文不创建物流路线、不维护报价"
+        "LogisticsRoute 结构化保存全局固定路线或项目实际路线、地点、承运商、车型、重量、运输方式、计价单位、含税方式、有效期、确认人、确认时间、来源引用和历史记录",
+        "prepare_logistics_route 要求 project.read 与 warehouse.configure 精确范围权限，项目实际路线绑定当前项目版本；只生成对话确认卡，本人确认后才追加仓库已核对路线",
+        "query_delivery_logistics_context 同时返回路线历史与当前有效路线；只有路线存在但没有有效报价时明确返回价格缺口，不编造承运商、车型或价格"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖无结构化物流价格时返回缺口；固定路线维护、地点/重量/车型/历史价格结构化模型仍未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖确认前不写库、本人确认后保存项目实际路线、项目版本/重量/有效期/来源/确认人持久化，以及有路线无报价的只读回查",
+        "tests/test_capability_catalog.py 与 tests/test_model_harness.py 覆盖仓库路线确认能力、按需激活和只读请求不得开放 prepare 工具；真实仓库路线核对、ERP 发运关联和业务签字仍待验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1070,11 +1072,14 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 明确仓库收货、检验和物流结算依据缺口，不把供应商发货或仓库收货推断为已形成物流费用",
-        "工具 limitations 声明不维护物流报价、不生成本次结算价格，后续需单独适配固定路线或询比议价结果"
+        "prepare_logistics_quote 基于当前有效且已确认路线准备通用有效报价或项目本次结算价格，要求 warehouse.read、purchase_price.approve，并在项目结算场景重新核验 project.read 与项目版本",
+        "报价确认卡保存供应商、单价、币种、有效期、计价方式、比价数量/摘要、报价依据、对账依据、来源引用和明确替换的原报价；本人确认后才登记 EFFECTIVE 价格",
+        "同一路线及结算范围内有效期重叠的价格必须明确 supersedes_quote_id；确认后原报价标记 CANCELLED、新报价保留替代链，不能静默覆盖历史价格",
+        "query_delivery_logistics_context 只把当前有效路线上的 EFFECTIVE 报价列为有效价格，并单独标识项目结算价候选；不会把路线、发货、签收、付款或财务对账相互推断"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖物流报价/结算价格缺口提示；有效价格匹配、采购主管询比议价审批和对账依据尚未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖确认前不写库、采购价格权限确认后生成有效项目结算价、询比议价与对账依据持久化、有效报价匹配、显式价格替换和重叠报价阻断",
+        "实际物流费用单生成、真实采购主管签字、承运商对账单/发运单核验及 ERP/财务入账仍待正式业务验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1085,11 +1090,13 @@
       "agent_responsibility": "Agent 开发发货车辆、物流信息维护、物流报价审批及验收协同；既有出入库/发货执行经审查复用 ERP",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；同时标记 has_structured_logistics_price=false",
-        "交付物流 Skill 要求物流报价有效期、本次结算价格和对账依据缺失时只作为缺口说明，不编造承运商或价格"
+        "物流报价有效期由 MOLD_LOGISTICS_QUOTE_MAX_VALID_DAYS 配置，默认 183 天；倒置日期和超期报价在准备阶段即阻断",
+        "COMPETITIVE 多家比价必须至少登记两家并填写参与方/比较结论摘要；报价变化必须显式关联被替换价格，保留新旧来源和历史链",
+        "query_delivery_logistics_context 继续追溯供应商发货 reference、仓库收货 reference、库存移动 source_key、项目、路线、报价和本次结算价格，但不把这些线索冒充实际物流费用或财务对账完成"
       ],
       "verification_evidence": [
-        "tests/test_delivery_logistics_tools.py 覆盖发货、收货、出库移动追溯和物流报价缺口；半年有效期、多家比价和物流费用对账模型尚未实现"
+        "tests/test_delivery_logistics_tools.py 覆盖 183 天配置边界的超期阻断、多家比价数量/摘要必填、价格替换历史、来源追溯及路线/报价治理字段回查",
+        "真实报价附件、承运商物流单、实际费用对账、付款和 ERP/财务联调仍待正式业务验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1146,10 +1153,13 @@
       "latest_decision": "不开发供应商门户；保留授权人员录入/导入上报证据和采购、项目协同。",
       "implementation_evidence": [
         "query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并把供应商执行跟踪与订单/发货/收货事实分开展示",
+        "prepare_supplier_progress_report 使用真实项目版本、供应商、已生效整套委外合同和可选计划任务准备对话确认卡，风险/阻塞/返工强制保留问题摘要与下次跟进日期，本人确认后才写入节点上报证据",
+        "新增版本化 SupplierProgressPolicy PostgreSQL 模型与 prepare_supplier_progress_policy 对话办理工具，按项目、供应商、合同、阶段和可选计划节点保存填报频率、生效日期、首次应报日期、必需证据类型、依据与来源；替换时保留历史版本并重新校验当前生效规则",
+        "SupplierProgressReport 增加结构化 evidence_items；存在生效规则时 prepare_supplier_progress_report 强制核对必需证据类型，query_full_outsource_context 返回规则版本、最新上报、下次应报日期、逾期与缺证据状态",
         "full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合；供应商填报频率、证据模板和真实协同流程尚未适配验收"
+        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合、规则 proposal 不直接写库、本人确认后写入版本化规则、必需证据阻断、逾期派生、规则替换与旧版失效，以及节点上报 proposal 的计划任务一致性、重复来源和风险必填项；tests/test_model_harness.py 覆盖普通节点上报与上报频率/证据模板规则的按需工具收窄；供应商侧接入、ERP 联调和真实协同流程尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -1161,12 +1171,14 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "新增 supplier_material_handoff PostgreSQL 模型与迁移，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人",
+        "新增追加式 supplier_material_verification PostgreSQL 模型与对话办理工具，关联一条已批准资料交接，分别保存供应商已收到、已接受、待澄清或退回结果、回复人/渠道/日期、回复文件、原因、跟进日期和来源引用；核验结果不覆盖原交接记录",
         "query_full_outsource_context 返回已生效整套委外合同、供应商资料交接、供应商发货/收货/检验、工程联络质量延期问题、设变整改影响和客户验收/关闭清单上下文",
         "prepare_supplier_material_handoff 基于真实项目版本、有效供应商、已生效整套委外合同和交接依据准备对话内确认卡，本人确认后才写入资料交接证据，不创建供应商门户、不代表供应商已核验、不触发 ERP 执行",
-        "analysis.warnings 在未关闭委外质量、延期、验收、扣款或草稿/撤回资料交接事项存在时阻止认定异常闭环"
+        "prepare_supplier_material_verification 重新校验项目版本、合同、供应商和交接记录一致性，本人确认后才追加核验；query_full_outsource_context 区分 RECEIVED 与 ACCEPTED，并显式返回未核验、待澄清和退回资料",
+        "analysis.warnings 在未关闭委外质量、延期、验收、扣款、草稿/撤回资料交接或供应商资料核验未完成时阻止认定异常闭环"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商资料交接、供应商收货检验不合格、工程联络整改扣款线索、客户验收清单、资料交接 proposal 不直接写库、本人确认后写入 SupplierMaterialHandoff、重复来源和正式获准交接缺少合同阻断；真实客户资料上传、附件安全、采购向供应商提供资料正式审批/回执和供应商核验反馈尚未验收"
+        "tests/test_full_outsource_tools.py 覆盖资料交接 proposal、供应商核验 proposal 不直接写库、本人确认后追加 SupplierMaterialVerification、重复来源/日期倒置/退回缺少原因与跟进日期阻断，以及已收到不等于已接受；tests/test_capability_catalog.py 和 tests/test_model_harness.py 覆盖能力登记与按需工具选择；真实客户资料上传、附件安全、正式采购审批和供应商真实反馈仍待联调验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

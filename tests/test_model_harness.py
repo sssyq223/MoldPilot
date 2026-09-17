@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import text
 
+import agent_core.harness as harness_module
 from app.harness import run_loop
 from app.model_adapter import ModelAdapter, ModelError, tls_context
 
@@ -27,10 +28,121 @@ def test_model_request_shape_and_tool_call():
         assert request.headers['authorization'] == 'Bearer synthetic-key'
         assert body['model'] == 'test-model'
         assert 'tools' not in body
+        assert body['response_format'] == {'type': 'json_object'}
         return httpx.Response(200, json={'choices': [{'finish_reason': 'tool_calls', 'message': {
             'role': 'assistant', 'tool_calls': [{'id': 'c1', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}}]})
     model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model', transport=httpx.MockTransport(serve))
     assert model.generate([{'role': 'user', 'content': 'query'}], [])['tool_calls'][0]['id'] == 'c1'
+
+
+def test_tool_stage_does_not_force_terminal_json_mode():
+    def serve(request):
+        body = json.loads(request.content)
+        assert 'response_format' not in body
+        assert body['tools'] == [TOOL]
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'tool_calls', 'message': {
+            'role': 'assistant', 'tool_calls': [{'id': 'c1', 'function': {
+                'name': 'query_projects', 'arguments': '{}'}}]}}]})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    assert model.generate([{'role': 'user', 'content': 'query'}], [TOOL])['tool_calls'][0]['id'] == 'c1'
+
+
+def test_model_stream_coalesces_visible_text_and_tool_call_deltas():
+    chunks = [
+        {'choices': [{'delta': {'role': 'assistant', 'content': '我先查询'}, 'finish_reason': None}]},
+        {'choices': [{'delta': {'content': '项目计划。', 'tool_calls': [{
+            'index': 0, 'id': 'c1', 'type': 'function',
+            'function': {'name': 'query_project_', 'arguments': '{"project_'}
+        }]}, 'finish_reason': None}]},
+        {'choices': [{'delta': {'tool_calls': [{
+            'index': 0, 'function': {'name': 'plan_context', 'arguments': 'code":"SMOKE-M001"}'}
+        }]}, 'finish_reason': 'tool_calls'}],
+         'usage': {'prompt_tokens': 12, 'completion_tokens': 8, 'total_tokens': 20}},
+    ]
+    body = ''.join('data: '+json.dumps(chunk)+'\n\n' for chunk in chunks)+'data: [DONE]\n\n'
+
+    def serve(request):
+        payload = json.loads(request.content)
+        assert payload['stream'] is True
+        assert payload['stream_options'] == {'include_usage': True}
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    updates = []
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [TOOL],
+                                    lambda value: updates.append(copy.deepcopy(value)))
+
+    assert message['content'] == '我先查询项目计划。'
+    assert message['tool_calls'][0]['id'] == 'c1'
+    assert message['tool_calls'][0]['function'] == {
+        'name': 'query_project_plan_context',
+        'arguments': '{"project_code":"SMOKE-M001"}',
+    }
+    assert updates[0]['content'] == '我先查询'
+    assert updates[-1] == message
+    assert model.last_metrics['total_tokens'] == 20
+
+
+def test_model_stream_retries_one_upstream_5xx_before_any_sse_delta():
+    calls = []
+    body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '恢复成功'},
+                                                  'finish_reason': 'stop'}]})+'\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(504, text='private gateway detail')
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [], lambda _: None)
+
+    assert message['content'] == '恢复成功'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_count'] == 1
+
+
+def test_model_stream_retries_read_timeout_before_first_sse_delta():
+    calls = []
+    body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '重试成功'},
+                                                  'finish_reason': 'stop'}]})+'\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout('provider stayed silent', request=request)
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [], lambda _: None)
+
+    assert message['content'] == '重试成功'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_count'] == 1
+    assert model.last_metrics['retry_reason'] == 'read_timeout_before_first_chunk'
+    assert model.last_metrics['retry_wait_ms'] >= 0
+    assert model.last_metrics['http_status'] == 200
+
+
+def test_model_stream_does_not_retry_non_transient_http_error():
+    calls = []
+
+    def serve(request):
+        calls.append(request)
+        return httpx.Response(400, text='private validation detail')
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    with pytest.raises(ModelError, match='MODEL_HTTP_FAILED'):
+        model.generate_stream([], [], lambda _: None)
+
+    assert len(calls) == 1
+    assert model.last_metrics['http_status'] == 400
 
 
 @pytest.mark.parametrize('status,code', [(401,'MODEL_AUTH_FAILED'), (403,'MODEL_AUTH_FAILED'),
@@ -90,7 +202,16 @@ HALLUCINATED_SKILL_CALL = {'role': 'assistant', 'tool_calls': [{'id': 'bad-skill
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
+CONTACT_CLOSE_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact-close', 'type': 'function', 'function': {'name': 'prepare_contact_close', 'arguments': '{}'}}]}
 CONTRACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract', 'type': 'function', 'function': {'name': 'query_contract_context', 'arguments': '{}'}}]}
+CONTRACT_RECORD_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract-record', 'type': 'function', 'function': {'name': 'prepare_contract_record', 'arguments': '{}'}}]}
+OUTSOURCE_PROGRESS_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-progress', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '供应商节点上报'})}}]}
+OUTSOURCE_POLICY_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-policy', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '登记供应商上报频率和证据模板'})}}]}
+OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-material-verify', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '登记供应商资料核验接受结果'})}}]}
+OUTSOURCE_QUERY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource', 'type': 'function', 'function': {'name': 'query_full_outsource_context', 'arguments': '{}'}}]}
+OUTSOURCE_PROGRESS_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-progress', 'type': 'function', 'function': {'name': 'prepare_supplier_progress_report', 'arguments': '{}'}}]}
+OUTSOURCE_POLICY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-policy', 'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy', 'arguments': '{}'}}]}
+OUTSOURCE_MATERIAL_VERIFY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-material-verify', 'type': 'function', 'function': {'name': 'prepare_supplier_material_verification', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -107,6 +228,15 @@ class InspectingRepliesModel(Model):
         self.tool_names = []
     def generate(self, messages, tools):
         self.tool_names.append([(tool.get("function") or {}).get("name") for tool in tools])
+        return super().generate(messages, tools)
+
+
+class TranscriptModel(Model):
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.transcripts = []
+    def generate(self, messages, tools):
+        self.transcripts.append(copy.deepcopy(messages))
         return super().generate(messages, tools)
 
 
@@ -133,7 +263,7 @@ _DEFAULT_CORE = object()
 def context(core_tool_names=_DEFAULT_CORE, **kwargs):
     if core_tool_names is _DEFAULT_CORE:
         core_tool_names = ['query_projects']
-    return {'prompt': 'query', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
+    return {'prompt': '查询项目', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
 
 
 def test_business_tools_are_deferred_and_direct_calls_are_blocked():
@@ -153,6 +283,256 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_streaming_model_progress_is_checkpointed_then_cleared_after_completion():
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.checkpoints = []
+        def checkpoint(self, state):
+            super().checkpoint(state)
+            self.checkpoints.append(copy.deepcopy(state))
+
+    class StreamingModel:
+        def __init__(self):
+            self.replies = [
+                {**copy.deepcopy(PROPOSAL), 'content': '我先查询当前可见项目。'},
+                copy.deepcopy(FINAL),
+            ]
+            self.last_metrics = {}
+        def generate_stream(self, messages, tools, on_update):
+            reply = self.replies.pop(0)
+            on_update(reply)
+            return reply
+
+    gateway = RecordingGateway()
+    result = run_loop(context(), StreamingModel(), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert any((checkpoint.get('streaming_model_message') or {}).get('content') ==
+               '我先查询当前可见项目。' for checkpoint in gateway.checkpoints)
+    assert not any((checkpoint.get('streaming_model_message') or {}).get('content') ==
+                   FINAL['content'] for checkpoint in gateway.checkpoints)
+    assert gateway.saved['streaming_model_message'] is None
+    assert gateway.physical_calls == 1
+
+
+def test_terminal_fenced_json_after_visible_preamble_is_parsed_without_repair():
+    payload = json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '项目满足现有证据范围内的结项条件。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)
+    final_with_preamble = {
+        'role': 'assistant',
+        'content': f'已核对完毕，依据现有证据作答。\n```json\n{payload}\n```',
+    }
+    gateway = Gateway()
+
+    result = run_loop(context(), Model([PROPOSAL, final_with_preamble]), gateway)
+
+    assert result['summary'] == '项目满足现有证据范围内的结项条件。'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.saved['protocol_repairs'] == 0
+    assert gateway.final == result
+
+
+@pytest.mark.parametrize('closing_tag', ['', '\n</tool_call>'])
+def test_terminal_qwen_tool_call_envelope_is_parsed_without_natural_language_fallback(closing_tag):
+    payload = json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '项目仍有未完成计划任务，不具备正常结项条件。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)
+    final_with_qwen_envelope = {
+        'role': 'assistant',
+        'content': f'依据已经取得的证据汇总结论。\n<tool_call>\n{payload}{closing_tag}',
+    }
+    gateway = Gateway()
+
+    result = run_loop(context(), Model([PROPOSAL, final_with_qwen_envelope]), gateway)
+
+    assert result['summary'] == '项目仍有未完成计划任务，不具备正常结项条件。'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.saved['protocol_repairs'] == 0
+    assert gateway.final == result
+
+
+def test_recoverable_tool_error_is_reinjected_for_model_clarification_instead_of_failing_run():
+    class RejectingGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {'tool_error': {'code': 'WORKFLOW_MISMATCH',
+                                   'message': '审批模板不可用，请重新查询流程选项'}}
+
+    gateway = RejectingGateway()
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '当前没有可用审批流程，无法准备暂停申请，请先配置流程。',
+        'evidence_ids': [],
+        'suggestions': ['配置适用的暂停审批流程后重新发起'],
+    }, ensure_ascii=False)}
+    model = TranscriptModel([PROPOSAL, clarification])
+
+    result = run_loop(context(), model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert gateway.physical_calls == 1
+    assert gateway.final == result
+    tool_result = model.transcripts[1][-1]
+    assert tool_result['role'] == 'tool'
+    payload = json.loads(tool_result['content'])
+    assert payload['tool_error']['code'] == 'WORKFLOW_MISMATCH'
+    assert gateway.saved['executed_tool_signatures']
+
+
+def test_failed_formal_action_cannot_be_reported_as_a_successful_confirmation_card():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    action_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'action-1', 'type': 'function',
+        'function': {'name': 'prepare_demo_action', 'arguments': '{}'},
+    }]}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '操作建议已经准备，请在确认卡中提交。',
+        'evidence_ids': [],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '操作建议尚未准备成功，请先配置可用流程。',
+        'evidence_ids': [],
+        'suggestions': ['配置流程后重新发起'],
+    }, ensure_ascii=False)}
+
+    class RejectingGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {'tool_error': {'code': 'WORKFLOW_MISMATCH', 'message': '没有可用流程'}}
+
+    gateway = RejectingGateway()
+    model = TranscriptModel([action_call, false_success, clarification])
+    result = run_loop(context(prompt='准备项目正式操作', tools=[action_tool], core_tool_names=['prepare_demo_action'],
+                              tool_annotations={'prepare_demo_action': {'readOnlyHint': False}}),
+                      model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert result['summary'].startswith('操作建议尚未准备成功')
+    assert model.calls == 3
+    assert '正式操作结果协议' in model.transcripts[2][0]['content']
+    assert all(message['role'] != 'system' for message in model.transcripts[2][1:])
+    assert all(message['role'] != 'system' for message in gateway.saved['messages'][1:])
+    assert gateway.saved['action_outcomes']['prepare_demo_action']['status'] == 'error'
+
+
+def test_formal_action_request_cannot_use_read_only_evidence_to_claim_a_confirmation_card():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '确认卡已经准备完成。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '目前只有查询证据，确认卡尚未准备。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, false_success, clarification])
+
+    result = run_loop(context(prompt='请准备项目正式操作确认卡', tools=[TOOL, action_tool],
+                              tool_annotations={'query_projects': {'readOnlyHint': True},
+                                                'prepare_demo_action': {'readOnlyHint': False}}),
+                      model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert model.calls == 3
+    assert '没有任何成功的正式操作工具回执' in model.transcripts[2][0]['content']
+    assert all(message['role'] != 'system' for message in model.transcripts[2][1:])
+
+
+@pytest.mark.parametrize('prompt', [
+    '请查询项目资料；只查询分析，不准备或执行任何操作。',
+    '核对项目状态，不准备也不执行。',
+    '只读查询供应商节点上报规则和最近上报，不准备或执行任何操作。',
+    '查询项目；do not prepare or execute action.',
+])
+def test_explicitly_negated_formal_action_does_not_require_an_operation_receipt(prompt):
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, FINAL])
+
+    result = run_loop(context(prompt=prompt), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['evidence_ids'] == ['e1']
+    assert model.calls == 2
+    assert gateway.saved['protocol_repairs'] == 0
+
+
+def test_positive_action_after_a_negated_alternative_still_requires_a_receipt():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已经提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '尚未提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, false_success, clarification])
+
+    result = run_loop(context(
+        prompt='不要准备项目草稿，直接提交项目审批',
+        tools=[TOOL, action_tool],
+        tool_annotations={'query_projects': {'readOnlyHint': True},
+                          'prepare_demo_action': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert model.calls == 3
+
+
+def test_current_prompt_action_intent_survives_a_narrower_tool_search_query():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_project_closure_context',
+        'description': '读取项目终止与结项资料。',
+    }}
+    action_tools = [
+        {'type': 'function', 'function': {'name': 'prepare_project_closure_checklist',
+                                          'description': '准备正常结项核对清单。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_termination',
+                                          'description': '准备客户终止项目审批。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_closure_item',
+                                          'description': '准备更新一个结项事项。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_normal_close',
+                                          'description': '准备正常关闭项目审批。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_settlement_close',
+                                          'description': '准备终止结算关闭审批。'}},
+    ]
+    search = {'role': 'assistant', 'tool_calls': [{
+        'id': 'search-closure', 'type': 'function',
+        'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目终止'})},
+    }]}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '请继续提供结项资料。',
+        'evidence_ids': [], 'suggestions': [],
+    }, ensure_ascii=False)}
+    model = InspectingRepliesModel([search, clarification])
+
+    run_loop(context(prompt='请为 BROWSER-OUT-001 准备正常结项核对清单', core_tool_names=[],
+                     tools=[TOOL, query_tool, *action_tools],
+                     skills=[{'key': 'project_termination_closure',
+                              'agent_description': '项目终止与结项核对',
+                              'tools': ['query_projects', 'query_project_closure_context'],
+                              'optional_tools': [tool['function']['name'] for tool in action_tools],
+                              'activation_queries': ['项目终止与结项资料']}]),
+             model, Gateway())
+
+    assert {'query_projects', 'query_project_closure_context',
+            'prepare_project_closure_checklist'} <= set(model.tool_names[1])
+    assert 'prepare_project_termination' not in model.tool_names[1]
 
 
 def test_persisted_tool_signatures_are_postgresql_jsonb_safe(data):
@@ -227,12 +607,12 @@ def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
 def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools():
     gateway = Gateway()
     model = InspectingRepliesModel([CONTACT_TOOL_SEARCH, CONTACT_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=[
+    run_loop(context(prompt='请查询工程联络单详情和当前状态。', core_tool_names=[], tools=[
                          CONTACT_CASES_TOOL, CONTACT_CONTEXT_TOOL, CONTACT_RESOLUTION_TOOL,
                          CONTACT_REVIEW_TOOL, CONTACT_CLOSE_TOOL, CONTACT_RESPOND_TOOL,
                          CONTACT_ASSIGN_TOOL,
                      ],
-                     skills=[{'key': 'contact_collaboration_review',
+                         skills=[{'key': 'contact_collaboration_review',
                               'agent_description': '工程联络协作核对',
                               'tools': ['query_contact_cases'],
                               'optional_tools': ['query_contact_context','prepare_contact_resolution',
@@ -244,13 +624,11 @@ def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_close'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_close'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
     ]
     assert len(gateway.saved['active_tool_names']) <= 4
-    assert 'prepare_contact_close' in gateway.saved['active_tool_names']
+    assert 'prepare_contact_close' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_resolution' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
 
@@ -269,8 +647,9 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
     dossier = {'type': 'function', 'function': {'name': 'query_project_dossier',
                                                 'description': '按项目编号、模具号、工程联络、合同或订单编号反查项目业务档案。'}}
     gateway = Gateway()
-    model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=[contract_context, contract_prepare, contract_signing, quote_context, quote_prepare, dossier],
+    model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_RECORD_PROPOSAL, FINAL])
+    run_loop(context(prompt='请准备登记销售合同，先读取合同上下文。', core_tool_names=[], tools=[contract_context, contract_prepare, contract_signing, quote_context, quote_prepare, dossier],
+                     tool_annotations={'prepare_contract_record': {'readOnlyHint': False}},
                      skills=[{'key': 'contract_context_review',
                               'agent_description': '合同上下文核对',
                               'tools': ['query_contract_context'],
@@ -288,10 +667,251 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record',
+         'prepare_contract_signing_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record',
+         'prepare_contract_signing_record'],
     ]
-    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_contract_record', 'prepare_contract_signing_record', 'query_contract_context'
+    ]
+
+
+def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operation():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、供应商节点上报、采购跟进和验收上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_contract_signing_record',
+                                          'description': '准备委外合同签署证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备供应商资料交接证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商设计采购生产质检装配试模验收节点上报证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy',
+                                          'description': '准备供应商阶段填报的版本化频率与必需证据规则登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_deduction_settlement',
+                                          'description': '准备供应商扣款责任或结算依据登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_PROGRESS_TOOL_SEARCH, OUTSOURCE_PROGRESS_PROPOSAL, FINAL])
+    run_loop(context(prompt='请登记 BROWSER-OUT-001 的供应商节点上报。', core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_progress_report': {'readOnlyHint': False}},
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_contract_signing_record',
+                                                 'prepare_supplier_material_handoff',
+                                                 'prepare_supplier_progress_policy',
+                                                 'prepare_supplier_progress_report',
+                                                 'prepare_supplier_deduction_settlement'],
+                              'activation_queries': ['整套委外执行', '供应商节点', '供应商节点上报']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_report'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_report'],
+    ]
+    assert gateway.saved['active_tool_names'] == ['prepare_supplier_progress_report', 'query_full_outsource_context']
+
+
+def test_tool_search_selects_progress_policy_for_frequency_and_evidence_template():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、供应商节点上报规则、采购跟进和验收上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy',
+                                          'description': '准备供应商阶段填报的版本化频率与必需证据规则登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商阶段进度和节点上报证据登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_POLICY_TOOL_SEARCH, OUTSOURCE_POLICY_PROPOSAL, FINAL])
+    run_loop(context(prompt='请为 BROWSER-OUT-001 准备供应商上报频率和证据模板规则。',
+                     core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_progress_policy': {'readOnlyHint': False}},
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_progress_policy',
+                                                 'prepare_supplier_progress_report'],
+                              'activation_queries': ['供应商上报规则', '上报频率', '证据模板']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_policy', 'prepare_supplier_progress_report'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_policy', 'prepare_supplier_progress_report'],
+    ]
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_supplier_progress_policy', 'prepare_supplier_progress_report', 'query_full_outsource_context'
+    ]
+
+
+def test_tool_search_selects_supplier_material_verification_without_loading_unrelated_outsource_actions():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、资料交接和供应商核验上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备向供应商交接资料的证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_verification',
+                                          'description': '准备供应商对已交接资料的收到、接受、待澄清或退回核验结果。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商节点进度上报。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([
+        OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH,
+        OUTSOURCE_MATERIAL_VERIFY_PROPOSAL,
+        FINAL,
+    ])
+    run_loop(context(prompt='请为 BROWSER-OUT-001 登记供应商资料核验接受结果。',
+                     core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_material_verification': {'readOnlyHint': False}},
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_material_handoff',
+                                                 'prepare_supplier_material_verification',
+                                                 'prepare_supplier_progress_report'],
+                              'activation_queries': ['资料交接', '资料核验', '资料接受']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
+    ]
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_supplier_material_verification', 'query_full_outsource_context'
+    ]
+
+
+def test_read_only_prompt_cannot_open_prepare_tool_from_action_worded_group_search():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、资料交接和供应商核验上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备向供应商交接资料的证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_verification',
+                                          'description': '准备供应商资料核验结果登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH, OUTSOURCE_QUERY_PROPOSAL, FINAL])
+    run_loop(context(prompt='只读查询 BROWSER-OUT-001 的资料交接与供应商核验情况，不要准备或执行任何操作。',
+                     core_tool_names=[], tools=tools,
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_material_handoff',
+                                                 'prepare_supplier_material_verification'],
+                              'activation_queries': ['资料交接', '资料核验']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context'],
+        ['ToolSearch', 'query_full_outsource_context'],
+    ]
+    assert gateway.saved['active_tool_names'] == ['query_full_outsource_context']
+
+
+def test_read_only_prompt_cannot_open_exact_prepare_tool_name():
+    prepare_tool = {'type': 'function', 'function': {
+        'name': 'prepare_supplier_material_verification',
+        'description': '准备供应商资料核验结果登记建议。',
+    }}
+    assert harness_module._find_deferred_tools(
+        'prepare_supplier_material_verification',
+        {'prepare_supplier_material_verification': prepare_tool},
+        action_intent=False,
+        current_prompt='只读查询资料核验情况，不要准备或执行任何操作。',
+    ) == ([], [], [])
+
+
+def test_logistics_tool_search_opens_only_the_requested_route_or_quote_action():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_delivery_logistics_context',
+        'description': '读取交付、物流路线、报价和结算价上下文。',
+    }}
+    route_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_route',
+        'description': '准备仓库确认固定物流路线或模具项目实际路线。',
+    }}
+    quote_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_quote',
+        'description': '准备采购主管确认物流报价或项目本次结算价格。',
+    }}
+    deferred = {tool['function']['name']: tool for tool in (query_tool, route_tool, quote_tool)}
+    groups = [{'key': 'delivery_logistics_review',
+               'name': '交付物流路线与价格协同',
+               'description': '查询并准备物流路线、报价和项目结算价格。',
+               'tools': ['query_delivery_logistics_context', 'prepare_logistics_route', 'prepare_logistics_quote'],
+               'required': ['query_delivery_logistics_context'],
+               'optional_tools': ['prepare_logistics_route', 'prepare_logistics_quote'],
+               'activation_queries': ['物流路线', '物流报价', '本次物流结算价格', '本次结算价格']}]
+
+    _, route_candidates, _ = harness_module._find_deferred_tools(
+        '登记模具项目实际物流路线', deferred, groups,
+        action_intent=True, current_prompt='请登记模具项目实际物流路线并准备确认卡。')
+    assert route_candidates == ['query_delivery_logistics_context', 'prepare_logistics_route']
+
+    _, quote_candidates, _ = harness_module._find_deferred_tools(
+        '确认本次物流结算价格', deferred, groups,
+        action_intent=True, current_prompt='请确认本次物流结算价格并准备确认卡。')
+    assert quote_candidates == ['query_delivery_logistics_context', 'prepare_logistics_quote']
+
+
+def test_read_only_logistics_query_never_activates_route_or_quote_prepare_tools():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_delivery_logistics_context',
+        'description': '读取交付物流上下文。',
+    }}
+    route_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_route',
+        'description': '准备物流路线确认。',
+    }}
+    quote_tool = {'type': 'function', 'function': {
+        'name': 'prepare_logistics_quote',
+        'description': '准备物流报价确认。',
+    }}
+    deferred = {tool['function']['name']: tool for tool in (query_tool, route_tool, quote_tool)}
+    groups = [{'key': 'delivery_logistics_review',
+               'name': '交付物流路线与价格协同',
+               'description': '查询并准备物流路线和报价。',
+               'tools': ['query_delivery_logistics_context', 'prepare_logistics_route', 'prepare_logistics_quote'],
+               'required': ['query_delivery_logistics_context'],
+               'optional_tools': ['prepare_logistics_route', 'prepare_logistics_quote'],
+               'activation_queries': ['物流路线', '物流报价']}]
+    _, candidates, _ = harness_module._find_deferred_tools(
+        '查询物流路线和报价', deferred, groups,
+        action_intent=False,
+        current_prompt='只读查询 BROWSER-OUT-001 的物流路线和报价，不要准备或执行任何操作。')
+    assert candidates == ['query_delivery_logistics_context']
+
+
+def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():
+    risk_tool = {'type': 'function', 'function': {'name': 'analyze_delivery_risk',
+                                                  'description': '分析供应商发货延期和临期风险。'}}
+    outsource_tool = {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                                       'description': '读取整套委外合同和供应商节点上报上下文。'}}
+
+    class CatalogModel:
+        def generate(self, messages, tools):
+            prompt = messages[0]['content']
+            relevant = 'ToolSearch query="供应商节点上报"'
+            unrelated = 'ToolSearch query="供应商发货风险分析"'
+            assert relevant in prompt and unrelated in prompt
+            assert prompt.index(relevant) < prompt.index(unrelated)
+            return {'content': json.dumps({'response_kind': 'CONVERSATION',
+                                           'summary': '请提供项目编号。',
+                                           'evidence_ids': [], 'suggestions': []})}
+
+    run_loop(context(prompt='你好，帮我看看 BROWSER-OUT-001 的供应商节点上报上下文。',
+                     core_tool_names=[], tools=[risk_tool, outsource_tool],
+                     skills=[{'key': 'delivery_risk_analysis',
+                              'agent_description': '供应商发货风险分析',
+                              'tools': ['analyze_delivery_risk']},
+                             {'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'activation_queries': ['整套委外执行', '供应商节点上报', '供应商节点']}]),
+             CatalogModel(), Gateway())
 
 
 def test_business_query_mentioning_model_still_allows_tool_search():
@@ -357,6 +977,19 @@ def test_recovery_does_not_reset_deadline():
     assert model.calls == 0 and gateway.physical_calls == 0
 
 
+def test_default_main_run_has_no_arbitrary_wall_clock_deadline():
+    gateway = Gateway()
+    reply = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CONVERSATION', 'summary': 'completed normally',
+        'evidence_ids': [], 'suggestions': [],
+    })}
+
+    result = run_loop(context(), Model([reply]), gateway)
+
+    assert result['summary'] == 'completed normally'
+    assert gateway.saved['deadline'] is None
+
+
 def test_cancel_after_model_return_blocks_tool_execution():
     gateway = Gateway()
     class CancellingModel:
@@ -411,6 +1044,44 @@ def test_mixed_greeting_and_business_request_can_call_tools():
     assert gateway.physical_calls==1 and gateway.final['evidence_ids']==['e1']
 
 
+@pytest.mark.parametrize('prompt', ['你好', '您好，谢谢', '好的', '收到', '对', '辛苦了'])
+def test_pure_conversation_turn_hides_business_tools_even_with_recent_business_context(prompt):
+    class InspectingConversationModel:
+        def generate(self, messages, tools):
+            assert tools == []
+            assert '按需工具' not in messages[0]['content']
+            return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '你好',
+                                           'evidence_ids': [], 'suggestions': []})}
+    result = run_loop(context(prompt=prompt, recent_requests=['查询 SMOKE-M001 的项目计划']),
+                      InspectingConversationModel(), Gateway())
+    assert result['response_kind'] == 'CONVERSATION'
+
+
+@pytest.mark.parametrize('prompt', ['你好，帮我看看 SMOKE-M001 的计划', '老弟，看下这个项目'])
+def test_current_turn_business_action_opens_tools_even_with_social_prefix(prompt):
+    gateway = Gateway()
+    run_loop(context(prompt=prompt), Model([PROPOSAL, FINAL]), gateway)
+    assert gateway.physical_calls == 1
+
+
+@pytest.mark.parametrize('prompt', ['帮我看看', '继续', '这个呢'])
+def test_elliptical_action_can_use_recent_request_only_to_supply_business_object(prompt):
+    gateway = Gateway()
+    run_loop(context(prompt=prompt, recent_requests=['查询 SMOKE-M001 的项目计划']),
+             Model([PROPOSAL, FINAL]), gateway)
+    assert gateway.physical_calls == 1
+
+
+def test_recent_business_request_does_not_open_tools_for_unrelated_current_lookup():
+    class InspectingConversationModel:
+        def generate(self, messages, tools):
+            assert tools == []
+            return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '这是一般问题。',
+                                           'evidence_ids': [], 'suggestions': []})}
+    run_loop(context(prompt='查一下天气', recent_requests=['查询 SMOKE-M001 的项目计划']),
+             InspectingConversationModel(), Gateway())
+
+
 def test_duplicate_tool_call_enters_finalization_without_reexecuting():
     duplicate = copy.deepcopy(PROPOSAL)
     duplicate["tool_calls"][0]["id"] = "call2"
@@ -421,6 +1092,87 @@ def test_duplicate_tool_call_enters_finalization_without_reexecuting():
     assert gateway.physical_calls == 1
     assert gateway.saved["finalizing"] is True
     assert gateway.saved["protocol_repairs"] == 1
+
+
+def test_duplicate_repair_is_transient_and_provider_receives_one_leading_system_message():
+    duplicate = copy.deepcopy(PROPOSAL)
+    duplicate["tool_calls"][0]["id"] = "call2"
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, duplicate, FINAL])
+
+    run_loop(context(), model, gateway)
+
+    repaired_request = model.transcripts[2]
+    assert repaired_request[0]['role'] == 'system'
+    assert '已经用相同参数返回过证据' in repaired_request[0]['content']
+    assert all(message['role'] != 'system' for message in repaired_request[1:])
+    assert all(message['role'] != 'system' for message in gateway.saved['messages'][1:])
+
+
+def test_confirmed_proposal_resume_cannot_return_to_awaiting_approval():
+    waiting_again = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '确认卡已经准备好，请再次确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    receipt_reply = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'proposal_decision': 'approved',
+        'summary': '已收到本人确认，权威回执表明本次登记已经完成。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    messages = [
+        {'role': 'system', 'content': '通用智能体协议'},
+        {'role': 'user', 'content': '请准备正式业务操作'},
+        {'role': 'assistant', 'content': '确认卡已经准备，请本人确认。'},
+        {'role': 'user', 'content': '我已在可信确认界面完成本人确认，请根据执行回执继续回复。'},
+        {'role': 'system', 'content': '可信人工决定：{"decision":"approved"}'},
+    ]
+    gateway = Gateway()
+    model = TranscriptModel([waiting_again, receipt_reply])
+
+    result = run_loop(context(
+        prompt='请准备项目正式操作确认卡',
+        messages=messages,
+        evidence_ids=['e1'],
+        finalizing=True,
+        action_outcomes={'prepare_demo_action': {'status': 'success', 'evidence_id': 'e1'}},
+        proposal_resolution={'decision': 'approved', 'authoritative_receipt': {'status': 'executed'}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['proposal_decision'] == 'approved'
+    assert result['summary'].startswith('已收到本人确认')
+    assert model.calls == 2
+    assert '不得再次输出 AWAITING_APPROVAL' in model.transcripts[1][0]['content']
+    assert gateway.saved['protocol_repairs'] == 1
+    assert gateway.saved['next_model_instructions'] == []
+
+
+def test_legacy_mid_history_system_messages_are_consolidated_at_provider_boundary():
+    class StrictProviderModel:
+        def generate(self, messages, tools):
+            assert messages[0]['role'] == 'system'
+            assert '原始系统提示' in messages[0]['content']
+            assert '旧检查点纠偏提示' in messages[0]['content']
+            assert all(message['role'] != 'system' for message in messages[1:])
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': '已兼容旧检查点。',
+                'evidence_ids': [], 'suggestions': [],
+            }, ensure_ascii=False)}
+
+    saved_messages = [
+        {'role': 'system', 'content': '原始系统提示'},
+        {'role': 'user', 'content': '继续'},
+        {'role': 'system', 'content': '旧检查点纠偏提示'},
+    ]
+    gateway = Gateway()
+    result = run_loop(context(prompt='继续', messages=saved_messages), StrictProviderModel(), gateway)
+
+    assert result['response_kind'] == 'CONVERSATION'
+    assert gateway.saved['messages'] == saved_messages
 
 
 def test_natural_language_final_after_evidence_gets_protocol_repair_not_wrapped():
@@ -444,7 +1196,7 @@ def test_protocol_repair_is_bounded_and_fails_closed():
     assert gateway.final is None
 
 
-def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
+def test_evidence_loop_is_forced_to_finalize_at_model_turn_budget():
     gateway = Gateway()
 
     class LoopingModel:
@@ -457,7 +1209,8 @@ def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
                 proposal['tool_calls'][0]['id'] = f'call{index}'
                 proposal['tool_calls'][0]['function']['arguments'] = json.dumps({'page': index})
                 return proposal
-            assert '工具调用阶段现在结束' in messages[-1]['content']
+                assert '工具调用阶段现在结束' in messages[0]['content']
+                assert all(message['role'] != 'system' for message in messages[1:])
             return {'content': json.dumps({'response_kind': 'BUSINESS', 'summary': '根据已有证据回答',
                                            'evidence_ids': ['e1'], 'suggestions': []})}
 
@@ -465,9 +1218,56 @@ def test_evidence_loop_is_forced_to_finalize_before_budget_exhaustion():
     result = run_loop(context(), model, gateway)
 
     assert result['summary'] == '根据已有证据回答'
-    assert gateway.physical_calls == 8
-    assert model.tool_catalog_sizes == [1] * 8 + [0]
+    assert gateway.physical_calls == 11
+    assert model.tool_catalog_sizes == [1] * 11 + [0]
     assert gateway.saved['finalizing'] is True
+
+
+def test_model_controls_tool_batch_size_and_visible_progress_is_persisted():
+    calls = []
+    for index in range(6):
+        calls.append({
+            'id': f'batch-{index}',
+            'type': 'function',
+            'function': {
+                'name': 'query_projects',
+                'arguments': json.dumps({'page': index + 1}),
+            },
+        })
+    progress = '我先核对六组项目记录，再汇总结论。'
+    gateway = Gateway()
+    result = run_loop(
+        context(),
+        Model([{'role': 'assistant', 'content': progress, 'tool_calls': calls}, FINAL]),
+        gateway,
+    )
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 6
+    assistant = next(message for message in gateway.saved['messages']
+                     if message.get('role') == 'assistant' and message.get('tool_calls'))
+    assert assistant['content'] == progress
+    assert len(assistant['tool_calls']) == 6
+
+
+def test_tool_results_feed_back_across_as_many_model_rounds_as_needed():
+    first = {'role': 'assistant', 'content': '先核对两个范围。', 'tool_calls': [
+        {'id': 'round-1-a', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 1})}},
+        {'id': 'round-1-b', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 2})}},
+    ]}
+    second = {'role': 'assistant', 'content': '还需要补查一个范围。', 'tool_calls': [
+        {'id': 'round-2-a', 'type': 'function',
+         'function': {'name': 'query_projects', 'arguments': json.dumps({'page': 3})}},
+    ]}
+    gateway = Gateway()
+    result = run_loop(context(), Model([first, second, FINAL]), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 3
+    roles = [message['role'] for message in gateway.saved['messages']]
+    assert roles == ['system', 'user', 'assistant', 'tool', 'tool', 'assistant', 'tool']
 
 
 def test_failed_model_call_records_timing_and_does_not_fake_result():
@@ -479,6 +1279,51 @@ def test_failed_model_call_records_timing_and_does_not_fake_result():
     assert gateway.saved['phase']=='MODEL_FAILED'
     assert gateway.saved['model_metrics']['total_ms']==60000
     assert gateway.final is None
+
+
+def test_silent_model_wait_renews_run_lease(monkeypatch):
+    monkeypatch.setattr(harness_module, 'LEASE_HEARTBEAT_SECONDS', 0.01)
+
+    class SlowModel:
+        def generate(self, messages, tools):
+            time.sleep(0.045)
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': 'heartbeat ok',
+                'evidence_ids': [], 'suggestions': [],
+            })}
+
+    class LeaseGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.lease_checks = 0
+        def check(self):
+            self.lease_checks += 1
+            super().check()
+
+    gateway = LeaseGateway()
+    result = run_loop(context(), SlowModel(), gateway)
+
+    assert result['summary'] == 'heartbeat ok'
+    assert gateway.lease_checks >= 3
+
+
+def test_safe_pre_delta_retry_wait_does_not_consume_business_deadline():
+    class RetriedModel:
+        last_metrics = {}
+
+        def generate(self, messages, tools):
+            time.sleep(0.15)
+            self.last_metrics = {'retry_count': 1, 'retry_wait_ms': 200}
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': 'retry budget preserved',
+                'evidence_ids': [], 'suggestions': [],
+            })}
+
+    gateway = Gateway()
+    result = run_loop(context(deadline=time.time() + 0.1), RetriedModel(), gateway, max_seconds=1)
+
+    assert result['summary'] == 'retry budget preserved'
+    assert gateway.saved['deadline'] > time.time()
 
 
 def test_context_budget_compacts_model_visible_tool_history_before_next_model_call():

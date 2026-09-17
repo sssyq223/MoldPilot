@@ -18,7 +18,18 @@ def test_health_timezone(client):
 def test_login_password_not_returned(client):
     user=sign_in(client)
     assert 'password_hash' not in user
-    assert client.get('/api/me').json()['user']['id']==user['id']
+    profile = client.get('/api/me').json()['user']
+    assert profile['id'] == user['id']
+    assert profile['avatar_url'] == ''
+
+
+def test_avatar_profile_is_persisted(client):
+    sign_in(client)
+    avatar = 'data:image/png;base64,iVBORw0KGgo='
+    updated = client.put('/api/me/avatar', json={'avatar_url': avatar})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['avatar_url'] == avatar
+    assert client.get('/api/me').json()['user']['avatar_url'] == avatar
 
 
 def test_invalid_login(client):
@@ -27,7 +38,10 @@ def test_invalid_login(client):
 
 def test_new_user_without_grants(client,data):
     ids,_=data;sign_in(client)
-    r=client.post('/api/users',json={'username':'empty_user','display_name':'空权限用户','password':PASSWORD})
+    department=client.post('/api/organization/groups',json={
+        'kind':'DEPARTMENT','name':'空权限部门','members':[],'active':True,'reason':'验证新用户默认没有业务授权'})
+    assert department.status_code==200
+    r=client.post('/api/users',json={'username':'empty_user','display_name':'空权限用户','department':'空权限部门','password':PASSWORD})
     assert r.status_code==200
     sign_in(client,'empty_user')
     assert client.get('/api/projects').json()==[]

@@ -1,0 +1,82 @@
+"""Mold product assembly: host metadata, routes and presentation policy."""
+import re
+
+
+PUBLIC_METADATA = {
+    "id": "mold",
+    "product_name": "MoldPilot",
+    "display_name": "模具项目智能工作台",
+    "tagline": "从一个任务开始，让业务能力协同工作。",
+    "workspace_tabs": [
+        {"key": "materials", "name": "材料总览", "hint": "说明工作区会展示哪些业务材料"},
+        {"key": "approvals", "name": "审批材料", "hint": "查看待审批事项、节点和依据"},
+        {"key": "contacts", "name": "联络单材料", "hint": "查看工程联络单、附件和协作进度"},
+    ],
+}
+APP_TITLE = "模具工作台 · 独立 Agent"
+
+
+def conversation_title(prompt: str) -> str:
+    text = re.sub(r"\s+", " ", (prompt or "").strip())
+    code = next((match.group(0) for match in re.finditer(
+        r"\b[A-Z][A-Z0-9]+-[A-Z0-9-]+\b", text
+    )), "")
+    topic_rules = [
+        (("权限", "审计", "通知", "附件", "来源治理"), "权限治理核对"),
+        (("财务", "收付款", "回款", "付款", "开票", "发票"), "财务节点核对"),
+        (("客户验收", "出厂", "出库", "物流", "签收", "交付"), "交付物流核对"),
+        (("中标", "客户分类", "承接", "拒单"), "中标接收核对"),
+        (("报价", "成本", "工艺", "采购价格"), "报价评估核对"),
+        (("合同", "销售合同", "整套委外合同"), "合同上下文核对"),
+        (("正式开工", "开工"), "开工条件核对"),
+        (("项目计划", "节点", "逾期"), "项目计划核对"),
+        (("设计", "BOM", "路线", "图纸"), "设计BOM核对"),
+        (("制造", "质检", "检验", "报工"), "制造质检核对"),
+        (("装配", "试模"), "装配试模核对"),
+        (("采购订单", "采购价格", "采购"), "采购上下文核对"),
+        (("项目业务档案", "业务档案"), "项目档案核对"),
+        (("暂停", "恢复"), "暂停恢复核对"),
+        (("终止", "关闭", "结项"), "项目关闭核对"),
+    ]
+    topic = next((name for keys, name in topic_rules if any(key in text for key in keys)), "")
+    if code and topic:
+        return f"{code} {topic}"[:80]
+    if code:
+        return f"{code} 查询"[:80]
+    cleaned = re.sub(r"^(请|帮我|查询|核对|查看|分析)\s*", "", text)
+    cleaned = re.sub(r"(请调用|调用).*$", "", cleaned).strip(" ，。；;")
+    return (cleaned[:28] + "…") if len(cleaned) > 28 else (cleaned or "新对话")
+
+
+def install(app, domain_router) -> None:
+    """Install only the mold product's HTTP surface into the generic host."""
+    app.include_router(domain_router)
+
+    from app.contacts import router as contact_router
+    from app.erp_design_upload import router as erp_design_upload_router
+    from app.domain_api import install as install_domain_api
+    from app.contact_tools import router as contact_proposal_router
+    from app.project_control_tools import router as project_control_proposal_router
+    from app.project_closure_tools import router as project_closure_proposal_router
+    from app.plan_tools import router as project_plan_proposal_router
+    from app.start_tools import router as internal_start_proposal_router
+    from app.quote_tools import router as quote_acceptance_proposal_router
+    from app.contract_tools import router as contract_proposal_router
+    from app.finance_context_tools import router as finance_proposal_router
+    from app.full_outsource_tools import router as full_outsource_proposal_router
+
+    app.include_router(contact_router)
+    app.include_router(erp_design_upload_router)
+    install_domain_api(app)
+    for router in (
+        contact_proposal_router,
+        project_control_proposal_router,
+        project_closure_proposal_router,
+        project_plan_proposal_router,
+        internal_start_proposal_router,
+        quote_acceptance_proposal_router,
+        contract_proposal_router,
+        finance_proposal_router,
+        full_outsource_proposal_router,
+    ):
+        app.include_router(router)

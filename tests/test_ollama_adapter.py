@@ -27,6 +27,20 @@ def test_ollama_model_decides_actions_with_full_catalog_and_no_secret():
     assert model.last_metrics['load_duration_ms']==1
 
 
+def test_ollama_model_can_supply_arguments_declared_by_tool_schema():
+    tool={'type':'function','function':{'name':'query_project','parameters':{
+        'type':'object','properties':{'project_code':{'type':'string'}},
+        'required':['project_code'],'additionalProperties':False}}}
+    body=reply('CALL_TOOL','query_project',{'project_code':'BROWSER-OUT-001'})
+    model=OllamaAdapter('http://127.0.0.1:49876','qwen3:8b',
+        transport=httpx.MockTransport(lambda r:httpx.Response(200,json=body)))
+
+    result=model.generate([{'role':'user','content':'查询项目'}],[tool])
+
+    assert json.loads(result['tool_calls'][0]['function']['arguments']) == {
+        'project_code':'BROWSER-OUT-001'}
+
+
 @pytest.mark.parametrize('url',['http://example.com','https://example.com','http://127.0.0.1@evil.example','http://127.0.0.1/?key=secret'])
 def test_local_model_http_exception_cannot_target_remote_server(url):
     with pytest.raises(ValueError):OllamaAdapter(url,'model')

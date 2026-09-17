@@ -236,6 +236,29 @@ def material_handoff(db, project, creator, sup, contract=None, status="APPROVED"
     return row
 
 
+def material_verification(db, project, creator, sup, contract, handoff, result="ACCEPTED", source_ref=None):
+    row = m.SupplierMaterialVerification(
+        project_id=project.id,
+        supplier_id=sup.id,
+        contract_subject_id=contract.id,
+        handoff_id=handoff.id,
+        response_file_id=None,
+        response_date=date.today(),
+        result=result,
+        supplier_contact="供应商项目经理",
+        response_channel="EMAIL",
+        response_summary="资料版本已核对，可按此执行" if result == "ACCEPTED" else "已收到，待技术人员核对",
+        follow_up_due_date=None,
+        evidence="供应商邮件回复",
+        source_system="MANUAL",
+        source_ref=source_ref or "VERIFY-" + project.code,
+        recorded_by=creator.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def contract_signing(db, contract, creator, status="SIGNED"):
     row = m.ContractSigningRecord(
         contract_subject_id=contract.id,
@@ -420,7 +443,8 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         acceptance(db, p, admin)
         contract = outsource_contract(db, p, admin, sup)
         contract_signing(db, contract, admin)
-        material_handoff(db, p, admin, sup, contract)
+        handoff = material_handoff(db, p, admin, sup, contract)
+        material_verification(db, p, admin, sup, contract, handoff)
         _, task = plan(db, p, admin)
         supplier_progress(db, p, admin, sup, task)
         order_flow(db, p, admin, material(db), sup, wh)
@@ -448,6 +472,10 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert status["has_overdue_supplier_progress_followup"] is True
         assert status["has_approved_supplier_material_handoff"] is True
         assert status["has_draft_or_revoked_supplier_material_handoff"] is False
+        assert status["has_supplier_material_acceptance"] is True
+        assert status["has_unverified_supplier_material_handoff"] is False
+        assert status["has_supplier_material_received_only"] is False
+        assert status["has_open_supplier_material_clarification"] is False
         assert status["has_confirmed_supplier_deduction"] is True
         assert status["has_settled_supplier_deduction"] is True
         assert status["has_pending_supplier_deduction"] is False
@@ -471,10 +499,14 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert customer["acceptance_records"][0]["result"] == "CONDITIONALLY_PASSED"
         assert customer["acceptance_records"][0]["deduction_amount"] == "8000.00"
         assert customer["derived_status"]["schedule_impact_days_total"] == 2
+        assert analysis["outsource_plan_tasks"][0]["id"] == task.id
+        assert analysis["outsource_plan_tasks"][0]["plan_id"] != task.id
         assert analysis["supplier_progress_reports"][0]["stage_name"] == "供应商试模与整改"
         assert analysis["supplier_progress_reports"][0]["overdue_followup"] is True
         assert analysis["supplier_material_handoffs"][0]["document_title"] == "客户原始资料包"
         assert analysis["supplier_material_handoffs"][0]["approval_status"] == "APPROVED"
+        assert analysis["supplier_material_verifications"][0]["result"] == "ACCEPTED"
+        assert analysis["supplier_material_verifications"][0]["is_latest_for_handoff"] is True
         assert analysis["contract_signing_records"][0]["signed_file_title"] == "整套委外合同签署扫描件.pdf"
         assert analysis["contract_signing_records"][0]["status"] == "SIGNED"
         assert analysis["supplier_deduction_settlements"][0]["deduction_amount"] == "8000.00"
@@ -582,6 +614,368 @@ def test_prepare_supplier_material_handoff_rejects_duplicate_and_missing_contrac
         with pytest.raises(Exception) as invalid:
             execute(db, admin, "prepare_supplier_material_handoff", missing_contract, run=run)
         assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
+
+
+def test_prepare_supplier_material_verification_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-MATERIAL-VERIFY", "供应商资料核验项目")
+        full_outsource_profile(db, p, admin)
+        acceptance(db, p, admin)
+        sup = supplier(db, "S-MATERIAL-VERIFY")
+        contract = outsource_contract(db, p, admin, sup)
+        handoff = material_handoff(db, p, admin, sup, contract)
+        conversation = m.Conversation(user_id=admin.id, title="供应商资料核验")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商已核验接受资料", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "handoff_id": handoff.id,
+            "response_date": date.today().isoformat(),
+            "result": "ACCEPTED",
+            "supplier_contact": "供应商项目经理",
+            "response_channel": "EMAIL",
+            "response_summary": "已核对客户资料包版本，可按此版本执行",
+            "evidence": "供应商邮件明确回复版本已核对",
+            "source_system": "IMPORT",
+            "source_ref": "VERIFY-OUT-MATERIAL-001",
+        }
+    schema = tool_schema("prepare_supplier_material_verification")["function"]["parameters"]
+    assert {"project_id", "project_version", "supplier_id", "contract_subject_id", "handoff_id",
+            "response_date", "result", "supplier_contact", "evidence", "source_ref"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_supplier_material_verification", args, run=run)
+        assert evidence["proposal"]["kind"] == "supplier_material_verification"
+        assert evidence["proposal"]["display"]["核验结果"] == "ACCEPTED"
+        assert db.scalar(select(m.SupplierMaterialVerification).where(
+            m.SupplierMaterialVerification.source_ref == args["source_ref"])) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_material_verification",
+            request_hash="verify-hash", result=evidence)
+        db.add(step)
+        db.flush()
+        payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id, payload)
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        assert receipt["status"] == "CONFIRMED"
+        row = db.get(m.SupplierMaterialVerification, receipt["supplier_material_verification_id"])
+        assert row.handoff_id == args["handoff_id"]
+        assert row.result == "ACCEPTED"
+        assert row.source_system == "IMPORT"
+        assert row.recorded_by == admin.id
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-MATERIAL-VERIFY"})
+        analysis = result["data"][0]["analysis"]
+        assert analysis["derived_status"]["has_supplier_material_acceptance"] is True
+        assert analysis["derived_status"]["has_unverified_supplier_material_handoff"] is False
+        assert analysis["supplier_material_verifications"][0]["source_ref"] == args["source_ref"]
+
+
+def test_supplier_material_received_is_not_accepted_and_invalid_verification_is_blocked(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-MATERIAL-RECEIVED", "供应商资料待核验项目")
+        full_outsource_profile(db, p, admin)
+        acceptance(db, p, admin)
+        sup = supplier(db, "S-MATERIAL-RECEIVED")
+        contract = outsource_contract(db, p, admin, sup)
+        handoff = material_handoff(db, p, admin, sup, contract)
+        material_verification(db, p, admin, sup, contract, handoff, result="RECEIVED")
+        conversation = m.Conversation(user_id=admin.id, title="供应商资料核验阻断")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商资料退回", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        base = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "handoff_id": handoff.id,
+            "response_date": date.today().isoformat(),
+            "result": "REJECTED",
+            "supplier_contact": "供应商项目经理",
+            "response_channel": "EMAIL",
+            "response_summary": "",
+            "evidence": "供应商回复",
+            "source_system": "MANUAL",
+            "source_ref": "VERIFY-BLOCK-001",
+        }
+        with pytest.raises(Exception) as incomplete:
+            execute(db, admin, "prepare_supplier_material_verification", base, run=run)
+        assert getattr(incomplete.value, "code", None) == "INVALID_TOOL_INPUT"
+        before_handoff = {**base, "result": "ACCEPTED", "response_summary": "已接受",
+            "response_date": (date.today() - timedelta(days=1)).isoformat(), "source_ref": "VERIFY-BLOCK-002"}
+        with pytest.raises(Exception) as early:
+            execute(db, admin, "prepare_supplier_material_verification", before_handoff, run=run)
+        assert getattr(early.value, "code", None) == "INVALID_TOOL_INPUT"
+        duplicate = {**base, "result": "RECEIVED", "response_summary": "已收到",
+            "source_ref": "VERIFY-" + p.code}
+        with pytest.raises(Exception) as repeated:
+            execute(db, admin, "prepare_supplier_material_verification", duplicate, run=run)
+        assert getattr(repeated.value, "code", None) == "SUPPLIER_MATERIAL_VERIFICATION_DUPLICATE"
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-MATERIAL-RECEIVED"})
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        assert status["has_supplier_material_acceptance"] is False
+        assert status["has_unverified_supplier_material_handoff"] is True
+        assert status["has_supplier_material_received_only"] is True
+        assert "已收到不能替代已接受" in "".join(analysis["gaps"])
+
+
+def test_prepare_supplier_progress_report_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-PREPARE", "供应商节点上报项目")
+        sup = supplier(db, "S-PROGRESS")
+        contract = outsource_contract(db, p, admin, sup)
+        _, task = plan(db, p, admin)
+        conversation = m.Conversation(user_id=admin.id, title="供应商节点上报")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商节点风险上报", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "plan_task_id": task.id,
+            "stage_key": task.key,
+            "stage_name": task.name,
+            "report_date": date.today().isoformat(),
+            "status": "AT_RISK",
+            "progress_percent": 65,
+            "next_due_date": (date.today() + timedelta(days=2)).isoformat(),
+            "issue_summary": "供应商试模件整改尚未完成",
+            "evidence": "采购收到供应商节点周报并完成电话核对",
+            "source_system": "IMPORT",
+            "source_ref": "SUPPLIER-WEEKLY-2026-09-16",
+            "followed_by": admin.id,
+        }
+    schema = tool_schema("prepare_supplier_progress_report")["function"]["parameters"]
+    assert {"project_id", "project_version", "supplier_id", "contract_subject_id", "stage_key", "report_date", "status", "evidence", "source_ref"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_supplier_progress_report", args, run=run)
+        assert evidence["proposal"]["kind"] == "supplier_progress_report"
+        assert evidence["proposal"]["requires_approval"] is False
+        assert evidence["proposal"]["display"]["节点状态"] == "AT_RISK"
+        assert evidence["proposal"]["display"]["进度"] == "65%"
+        assert db.scalar(select(m.SupplierProgressReport).where(m.SupplierProgressReport.source_ref == args["source_ref"])) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_progress_report", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id, payload)
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        assert receipt["status"] == "CONFIRMED"
+        row = db.get(m.SupplierProgressReport, receipt["supplier_progress_report_id"])
+        assert row.contract_subject_id == args["contract_subject_id"]
+        assert row.plan_task_id == args["plan_task_id"]
+        assert row.status == "AT_RISK"
+        assert row.progress_percent == 65
+        assert row.source_system == "IMPORT"
+        assert row.reported_by == admin.id
+        assert row.followed_by == admin.id
+
+
+def test_prepare_supplier_progress_report_rejects_inconsistent_risk_and_duplicate_source(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-BLOCK", "供应商节点阻断项目")
+        sup = supplier(db, "S-PROGRESS-BLOCK")
+        contract = outsource_contract(db, p, admin, sup)
+        supplier_progress(db, p, admin, sup)
+        conversation = m.Conversation(user_id=admin.id, title="供应商节点阻断")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记供应商节点上报", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        base = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "stage_key": "supplier_trial",
+            "stage_name": "供应商试模与整改",
+            "report_date": date.today().isoformat(),
+            "status": "AT_RISK",
+            "progress_percent": 70,
+            "next_due_date": (date.today() + timedelta(days=1)).isoformat(),
+            "issue_summary": "整改延期",
+            "evidence": "供应商周报",
+            "source_system": "MANUAL",
+            "source_ref": "SPR-OUT-PROGRESS-BLOCK",
+        }
+        with pytest.raises(Exception) as duplicate:
+            execute(db, admin, "prepare_supplier_progress_report", base, run=run)
+        assert getattr(duplicate.value, "code", None) == "SUPPLIER_PROGRESS_REPORT_DUPLICATE"
+        inconsistent = {**base, "source_ref": "SPR-RISK-MISSING", "issue_summary": "", "next_due_date": None}
+        with pytest.raises(Exception) as invalid:
+            execute(db, admin, "prepare_supplier_progress_report", inconsistent, run=run)
+        assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
+
+
+def test_supplier_progress_policy_requires_confirmation_and_enforces_evidence(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-POLICY", "供应商上报规则项目")
+        sup = supplier(db, "S-PROGRESS-POLICY")
+        contract = outsource_contract(db, p, admin, sup)
+        _, task = plan(db, p, admin)
+        conversation = m.Conversation(user_id=admin.id, title="供应商上报规则")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="配置供应商每周上报规则", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        policy_args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "plan_task_id": task.id,
+            "stage_key": task.key,
+            "stage_name": task.name,
+            "frequency_days": 7,
+            "effective_from": date.today().isoformat(),
+            "first_due_date": (date.today() + timedelta(days=1)).isoformat(),
+            "evidence_requirements": ["PHOTO", "QUALITY_REPORT"],
+            "basis": "采购、项目与供应商确认每周上报，并附现场照片和质量报告",
+            "source_ref": "POLICY-OUT-PROGRESS-1",
+        }
+    schema = tool_schema("prepare_supplier_progress_policy")["function"]["parameters"]
+    assert {"frequency_days", "first_due_date", "evidence_requirements", "source_ref"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_supplier_progress_policy", policy_args, run=run)
+        assert evidence["proposal"]["kind"] == "supplier_progress_policy"
+        assert evidence["proposal"]["display"]["规则版本"] == 1
+        assert db.scalar(select(m.SupplierProgressPolicy)) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_progress_policy", request_hash="policy-hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])})
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        policy = db.get(m.SupplierProgressPolicy, receipt["supplier_progress_policy_id"])
+        assert policy.active is True
+        assert policy.version == 1
+        assert policy.evidence_requirements == ["PHOTO", "QUALITY_REPORT"]
+        report_args = {
+            "project_id": policy_args["project_id"],
+            "project_version": policy_args["project_version"],
+            "supplier_id": policy_args["supplier_id"],
+            "contract_subject_id": policy_args["contract_subject_id"],
+            "plan_task_id": policy_args["plan_task_id"],
+            "stage_key": policy_args["stage_key"],
+            "stage_name": policy_args["stage_name"],
+            "report_date": date.today().isoformat(),
+            "status": "ON_TRACK",
+            "progress_percent": 40,
+            "evidence": "供应商周报与现场照片",
+            "evidence_items": ["PHOTO"],
+            "source_system": "MANUAL",
+            "source_ref": "REPORT-MISSING-QUALITY",
+        }
+        with pytest.raises(Exception) as missing:
+            execute(db, admin, "prepare_supplier_progress_report", report_args, run=run)
+        assert getattr(missing.value, "code", None) == "SUPPLIER_PROGRESS_EVIDENCE_MISSING"
+        accepted = execute(db, admin, "prepare_supplier_progress_report",
+            {**report_args, "evidence_items": ["PHOTO", "QUALITY_REPORT"], "source_ref": "REPORT-COMPLETE"}, run=run)
+        assert accepted["proposal"]["display"]["适用上报规则"].startswith("第 1 版")
+
+
+def test_supplier_progress_policy_is_versioned_and_query_reports_overdue(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-PROGRESS-OVERDUE", "供应商上报逾期项目")
+        full_outsource_profile(db, p, admin)
+        acceptance(db, p, admin)
+        sup = supplier(db, "S-PROGRESS-OVERDUE")
+        contract = outsource_contract(db, p, admin, sup)
+        _, task = plan(db, p, admin)
+        first = m.SupplierProgressPolicy(
+            project_id=p.id, supplier_id=sup.id, contract_subject_id=contract.id, plan_task_id=task.id,
+            stage_key=task.key, stage_name=task.name, frequency_days=7,
+            effective_from=date.today() - timedelta(days=14), first_due_date=date.today() - timedelta(days=7),
+            evidence_requirements=["PHOTO"], basis="首版周报规则", source_ref="POLICY-OVERDUE-1",
+            version=1, active=True, supersedes_id=None, created_by=admin.id,
+        )
+        db.add(first)
+        db.flush()
+        conversation = m.Conversation(user_id=admin.id, title="调整供应商上报规则")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="把供应商上报频率调整为三天", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        replacement = {
+            "project_id": p.id, "project_version": p.row_version, "supplier_id": sup.id,
+            "contract_subject_id": contract.id, "plan_task_id": task.id,
+            "stage_key": task.key, "stage_name": task.name, "frequency_days": 3,
+            "effective_from": date.today().isoformat(), "first_due_date": (date.today() + timedelta(days=3)).isoformat(),
+            "evidence_requirements": ["PHOTO", "SCHEDULE"], "basis": "项目要求改为每三天更新",
+            "source_ref": "POLICY-OVERDUE-2", "replaces_policy_id": first.id,
+        }
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        before = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-PROGRESS-OVERDUE"})
+        before_analysis = before["data"][0]["analysis"]
+        assert before_analysis["supplier_progress_policies"][0]["overdue"] is True
+        assert before_analysis["derived_status"]["has_overdue_supplier_progress_report"] is True
+        proposal = execute(db, admin, "prepare_supplier_progress_policy", replacement, run=run)
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_supplier_progress_policy", request_hash="replace-hash", result=proposal)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(proposal["proposal"])})
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        current = db.get(m.SupplierProgressPolicy, receipt["supplier_progress_policy_id"])
+        prior = db.get(m.SupplierProgressPolicy, replacement["replaces_policy_id"])
+        assert current.version == 2
+        assert current.supersedes_id == prior.id
+        assert current.active is True
+        assert prior.active is False
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-PROGRESS-OVERDUE"})
+        analysis = result["data"][0]["analysis"]
+        assert analysis["supplier_progress_policies"][0]["version"] == 2
+        assert analysis["supplier_progress_policies"][0]["overdue"] is False
+        assert analysis["derived_status"]["has_supplier_progress_policy"] is True
+        assert analysis["derived_status"]["has_overdue_supplier_progress_report"] is False
 
 
 def test_full_outsource_does_not_leak_orders_without_order_tool(pg_session_factory):

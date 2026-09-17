@@ -2,6 +2,12 @@
 
 独立的 Vue3 + FastAPI Agent 项目。核心是 Agent、Harness、LLM、受控 Tool 和独立编写的 Skills；统一会话在左中区，人工业务操作在右侧可收展工作区。完整范围依据需求 V1.1、技术 V3.6 和用户最新约定。开发前检查 ERP 已有能力：现有业务复用 ERP 接口，正式操作必须人工确认；Agent 新增辅材、办公用品和试模料采购，不重复原材、五金或委外采购。对照见 [ERP_SCOPE_AUDIT.md](docs/ERP_SCOPE_AUDIT.md)，实现进度见 [DEVELOPMENT_STATUS.md](docs/DEVELOPMENT_STATUS.md)。
 
+## 通用框架与可替换业务包
+
+代码按两层装配：`backend/agent_core` 是可复用的 LLM、Harness、多轮工具协议、上下文治理和 Skill/工具加载运行时；`backend/domain_packs/mold` 是 MoldPilot 的可替换业务包，保存模具业务策略、Skill 文件、工具注册与分发、确认卡处理器和 ERP 适配器。通用核心不登记模具业务规则。
+
+产品默认由 `backend/domain_packs/active.py` 选择 `mold`，部署时也可用进程环境变量 `AGENT_BUSINESS_PACK` 选择另一个已安装业务包。车辆、工装等项目应各自建立同级业务包，实现相同的 `manifest.py`、`harness_policy.py`、`tool_gateway.py`、`proposal_handlers.py` 和 `erp_adapter.py` 契约；不应向 `agent_core` 增加行业分支。`manifest.py` 负责公开品牌/工作区元数据、对话标题规则与领域 HTTP 路由装配。`backend/domain_packs/template` 是可直接启动的最小模板包，切换到它时不会注册模具业务路由。旧 `app.*` 导入仅保留兼容门面，新增业务实现必须进入业务包边界。
+
 ## 当前本地运行
 
 完整范围按 [V1.1 逐条覆盖表](docs/REQUIREMENTS_TRACEABILITY.md) 跟踪，包含报价、中标、合同上传、项目大节点维护等全部需求。下方列举的模块不是穷尽清单；ERP 有基础接口不等于完成 Agent 的业务流程。

@@ -24,7 +24,8 @@ from .events import record
 router=APIRouter()
 TYPES={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg',
        '.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-       '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+       '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.dxf':'application/dxf',
+       '.zip':'application/zip'}
 
 
 def validate_file(filename,data):
@@ -35,8 +36,8 @@ def validate_file(filename,data):
     if ext not in TYPES:raise DomainError('FILE_TYPE_UNSUPPORTED','当前支持 PDF、PNG、JPG、DOCX 和 XLSX 原件')
     if not data:raise DomainError('FILE_EMPTY','不能上传空文件')
     valid=(ext=='.pdf' and data.startswith(b'%PDF-') or ext=='.png' and data.startswith(b'\x89PNG\r\n\x1a\n')
-           or ext in {'.jpg','.jpeg'} and data.startswith(b'\xff\xd8\xff'))
-    if ext in {'.docx','.xlsx'}:
+           or ext in {'.jpg','.jpeg'} and data.startswith(b'\xff\xd8\xff') or ext=='.dxf' and len(data)<=20*1024*1024)
+    if ext in {'.docx','.xlsx','.zip'}:
         try:
             with ZipFile(BytesIO(data)) as archive:
                 info=archive.infolist();names={item.filename for item in info}
@@ -45,7 +46,7 @@ def validate_file(filename,data):
                     raise DomainError('FILE_ARCHIVE_LIMIT','文件解压体积或压缩结构不符合限制')
                 if any('vbaproject' in name.lower() or name.startswith('/') or '..' in name.split('/') for name in names):
                     raise DomainError('FILE_ARCHIVE_INVALID','不能上传含宏或非法路径的文档包')
-                valid='[Content_Types].xml' in names and ('word/document.xml' if ext=='.docx' else 'xl/workbook.xml') in names
+                valid=(ext=='.zip' or '[Content_Types].xml' in names and ('word/document.xml' if ext=='.docx' else 'xl/workbook.xml'))
         except BadZipFile:valid=False
     if not valid:raise DomainError('FILE_TYPE_MISMATCH','文件内容与扩展名不一致')
     return filename,TYPES[ext]

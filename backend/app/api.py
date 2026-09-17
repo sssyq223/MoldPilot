@@ -3,61 +3,43 @@ from datetime import timedelta, datetime
 import json
 import re
 import secrets
-from fastapi import FastAPI, Depends, Request, Response, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, func, text, delete, literal
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
-from .config import settings, model_settings, public_model_config, save_model_config
+from .config import (settings, model_settings, public_model_config, save_model_config,
+                     create_model_profile, update_model_profile, activate_model_profile,
+                     delete_model_profile)
 from . import models as m, schemas as s, authorization as auth, business, bpm
 from .security import current_user, login, public_user, hasher, normalize_username, digest
 from .errors import DomainError
 from .events import record
+from .run_events import publish_run_update, subscribe_run_updates
+from .domain_pack import manifest as load_domain_manifest
 
-app = FastAPI(title="模具工作台 · 独立 Agent", version="0.1.0")
+active_manifest = load_domain_manifest()
+app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
+domain_router = APIRouter()
 from .organization_api import router as organization_router
 app.include_router(organization_router)
 from .workflow_categories import router as category_router, require_category
 app.include_router(category_router)
 from .material_templates import router as material_template_router,bind_contract
 app.include_router(material_template_router)
-from .contacts import router as contact_router
-app.include_router(contact_router)
 from .files import router as file_router
 app.include_router(file_router)
+from .proposal_api import router as proposal_router
+app.include_router(proposal_router)
 
 _conversation_flags_checked = False
 _user_profiles_checked = False
 
 
 def compact_conversation_title(prompt: str) -> str:
-    text = re.sub(r"\s+", " ", (prompt or "").strip())
-    code = next((m.group(0) for m in re.finditer(r"\b[A-Z][A-Z0-9]+-[A-Z0-9-]+\b", text)), "")
-    topic_rules = [
-        (("权限", "审计", "通知", "附件", "来源治理"), "权限治理核对"),
-        (("财务", "收付款", "回款", "付款", "开票", "发票"), "财务节点核对"),
-        (("客户验收", "出厂", "出库", "物流", "签收", "交付"), "交付物流核对"),
-        (("中标", "客户分类", "承接", "拒单"), "中标接收核对"),
-        (("报价", "成本", "工艺", "采购价格"), "报价评估核对"),
-        (("合同", "销售合同", "整套委外合同"), "合同上下文核对"),
-        (("正式开工", "开工"), "开工条件核对"),
-        (("项目计划", "节点", "逾期"), "项目计划核对"),
-        (("设计", "BOM", "路线", "图纸"), "设计BOM核对"),
-        (("制造", "质检", "检验", "报工"), "制造质检核对"),
-        (("装配", "试模"), "装配试模核对"),
-        (("采购订单", "采购价格", "采购"), "采购上下文核对"),
-        (("项目业务档案", "业务档案"), "项目档案核对"),
-        (("暂停", "恢复"), "暂停恢复核对"),
-        (("终止", "关闭", "结项"), "项目关闭核对"),
-    ]
-    topic = next((name for keys, name in topic_rules if any(key in text for key in keys)), "")
-    if code and topic:
-        return f"{code} {topic}"[:80]
-    if code:
-        return f"{code} 查询"[:80]
-    cleaned = re.sub(r"^(请|帮我|查询|核对|查看|分析)\s*", "", text)
-    cleaned = re.sub(r"(请调用|调用).*$", "", cleaned).strip(" ，。；;")
-    return (cleaned[:28] + "…") if len(cleaned) > 28 else (cleaned or "新对话")
+    return active_manifest.conversation_title(prompt)
 
 
 def ensure_conversation_flags(db):
@@ -100,24 +82,60 @@ def public_user_with_profile(db, user):
     return {**public_user(user), "avatar_url": avatar_url_for(db, user.id)}
 
 
-def run_trace(run, steps):
+def proposal_decisions(db, user_id, run, steps):
+    decisions = dict((run.checkpoint or {}).get("proposal_decisions") or {})
+    proposal_ids = [step.id for step in steps if isinstance(step.result, dict) and step.result.get("proposal")]
+    if proposal_ids:
+        confirmed = db.scalars(select(m.HumanIntent.resource_id).where(
+            m.HumanIntent.user_id == user_id,
+            m.HumanIntent.resource_id.in_(proposal_ids),
+            m.HumanIntent.receipt.is_not(None),
+        ))
+        for step_id in confirmed:
+            decisions.setdefault(step_id, "approved")
+    return decisions
+
+
+def run_trace(run, steps, decisions=None):
     """Project the model checkpoint into a visible ReAct-style transcript.
 
     The chain is derived from persisted model messages and tool observations;
     it intentionally does not invent hidden reasoning.
     """
     step_by_id = {step.id: step for step in steps}
+    decisions = decisions or {}
     messages = run.checkpoint.get("messages", []) if isinstance(run.checkpoint, dict) else []
+    prior_finals = (run.checkpoint or {}).get("prior_finals", [])
+
+    def prior_text(prior):
+        text = prior.get("summary") or prior.get("message") or ""
+        suggestions = prior.get("suggestions") or []
+        if suggestions:
+            text += "\n" + "\n".join(f"- {item}" for item in suggestions)
+        return text.strip()
+
+    prior_texts = {
+        text for prior in prior_finals if isinstance(prior, dict)
+        if (text := prior_text(prior))
+    }
     tool_result_call_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")}
+    tool_names_by_call = {}
     trace = []
+    assistant_turn = 0
+    assistant_texts = set()
     for msg in messages:
         role = msg.get("role")
         if role == "assistant":
+            message_key = f"assistant:{assistant_turn}"
+            assistant_turn += 1
             text = (msg.get("content") or "").strip()
             if text:
-                trace.append({"type": "message", "text": text})
+                assistant_texts.add(text)
+                trace.append({"type": "message", "text": text, "message_key": message_key,
+                              **({"historical": True} if text in prior_texts else {})})
             for call in msg.get("tool_calls") or []:
                 call_id = call.get("id")
+                tool_names_by_call[call_id] = (call.get("function") or {}).get("name") or "业务工具"
                 if call_id in tool_result_call_ids:
                     continue
                 name = (call.get("function") or {}).get("name") or "业务工具"
@@ -130,13 +148,55 @@ def run_trace(run, steps):
                 payload = {}
             step = step_by_id.get(payload.get("evidence_id"))
             if step:
-                trace.append({"type": "tool", "id": step.id, "tool": step.tool, **step.result})
+                trace.append({"type": "tool", "id": step.id, "tool": step.tool, **step.result,
+                              "proposal_decision": decisions.get(step.id)})
+            elif isinstance(payload.get("tool_error"), dict):
+                error = payload["tool_error"]
+                trace.append({"type": "tool_error",
+                              "tool": tool_names_by_call.get(msg.get("tool_call_id"), "业务工具"),
+                              "code": error.get("code") or "TOOL_REJECTED",
+                              "message": error.get("message") or "工具未接受本次请求"})
             elif payload.get("source") == "harness" and isinstance(payload.get("activated"), list):
                 trace.append({"type": "tool_search", "tool": "ToolSearch", "query": payload.get("query", ""),
                               "activated": payload.get("activated", []), "matches": payload.get("matches", []),
                               "message": payload.get("message", ""), "as_of": payload.get("as_of")})
+            elif payload.get("source") == "trusted_host" and payload.get("event") == "proposal_resolved":
+                trace.append({
+                    "type": "proposal_resolution",
+                    "decision": payload.get("decision"),
+                    "proposal_step_id": payload.get("proposal_step_id"),
+                    "receipt": payload.get("authoritative_receipt"),
+                })
             else:
                 trace.append({"type": "tool", "tool": "业务工具", "data": [], "as_of": payload.get("as_of")})
+    streaming = (run.checkpoint or {}).get("streaming_model_message")
+    if run.status in {"QUEUED", "RUNNING"} and isinstance(streaming, dict):
+        text = (streaming.get("content") or "").strip()
+        if text:
+            # This snapshot becomes the next persisted assistant message.  Its
+            # identity must not depend on the trace array position because tool
+            # observations are inserted ahead of it while a ReAct run advances.
+            trace.append({"type": "message", "text": text, "streaming": True,
+                          "message_key": f"assistant:{assistant_turn}"})
+        for call in streaming.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") or {}
+            name = function.get("name") or "业务工具"
+            trace.append({"type": "tool_pending", "tool": name,
+                          "call_id": call.get("id"), "run_status": run.status,
+                          "streaming": True})
+    for prior in prior_finals:
+        if isinstance(prior, dict):
+            text = prior_text(prior)
+            if text.strip() and text.strip() not in assistant_texts:
+                trace.append({
+                    "type": "message",
+                    "text": text.strip(),
+                    "historical": True,
+                    "message_key": f"assistant:{assistant_turn}",
+                })
+                assistant_turn += 1
     result = run.result if isinstance(run.result, dict) else {}
     if result:
         trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),
@@ -165,6 +225,53 @@ def run_duration_seconds(run, steps):
     return max(0, int((end - aware(run.created_at)).total_seconds()))
 
 
+def conversation_runs_payload(db, user, conversation_id: str):
+    """Build the only client-visible run projection for HTTP and live events."""
+    from .files import run_files
+    current_hash = auth.fingerprint(db, user)
+    result = []
+    for r in db.scalars(select(m.Run).where(
+            m.Run.conversation_id == conversation_id,
+            m.Run.user_id == user.id,
+    ).order_by(m.Run.created_at)):
+        checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
+        authorization_hash = checkpoint.get("authorization_hash")
+        visible = r.security_version == user.security_version and (
+            not authorization_hash or authorization_hash == current_hash
+        )
+        steps = list(db.scalars(select(m.Step).where(
+            m.Step.run_id == r.id
+        ).order_by(m.Step.sequence))) if visible else []
+        decisions = proposal_decisions(db, user.id, r, steps) if visible else {}
+        result.append({
+            "id": r.id,
+            "prompt": r.prompt,
+            "status": r.status,
+            "created_at": r.created_at,
+            "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
+            "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
+            "files": run_files(db, user, r) if visible else [],
+            "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
+            "trace": run_trace(r, steps, decisions) if visible else [],
+            "context_usage": checkpoint.get("context_usage") if visible else None,
+            "progress": {
+                "turn": checkpoint.get("turn", 0),
+                "phase": checkpoint.get("phase"),
+                "model_elapsed_ms": checkpoint.get("model_elapsed_ms", 0),
+                "context_usage": checkpoint.get("context_usage"),
+                "elapsed_seconds": max(0, int((now() - aware(r.created_at)).total_seconds()))
+                    if r.status in {"QUEUED", "RUNNING"} else None,
+                "tools": [{"id": step.id, "name": step.tool} for step in steps],
+            } if visible else None,
+        })
+    return result
+
+
+def _sse_event(name: str, data) -> str:
+    payload = json.dumps(jsonable_encoder(data), ensure_ascii=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {payload}\n\n"
+
+
 @app.exception_handler(DomainError)
 async def domain_error(request, error):
     return JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=error.status)
@@ -188,6 +295,11 @@ async def headers(request, call_next):
 def health(db=Depends(get_db)):
     zone = db.scalar(text("SHOW TIME ZONE")) if db.bind.dialect.name=='postgresql' else 'Asia/Shanghai'
     return {"status": "ok" if zone == "Asia/Shanghai" else "degraded", "timezone": zone, "version": "0.1.0"}
+
+
+@app.get("/api/product")
+def product_metadata():
+    return active_manifest.PUBLIC_METADATA
 
 
 @app.post("/api/auth/login")
@@ -252,7 +364,52 @@ def update_model_config(data: s.ModelConfigInput, user=Depends(current_user)):
         raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
 
 
-@app.get("/api/catalog")
+@app.post("/api/model-profiles")
+def create_model_profile_api(data: s.ModelProfileInput, user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    try:
+        return create_model_profile(data.model_dump())
+    except ValueError as exc:
+        raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
+
+
+@app.put("/api/model-profiles/{profile_id}")
+def update_model_profile_api(profile_id: str, data: s.ModelProfileInput,
+                             user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    try:
+        return update_model_profile(profile_id, data.model_dump())
+    except KeyError:
+        raise DomainError("MODEL_PROFILE_NOT_FOUND", "模型配置不存在", 404)
+    except ValueError as exc:
+        raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
+
+
+@app.post("/api/model-profiles/{profile_id}/activate")
+def activate_model_profile_api(profile_id: str, user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    try:
+        return activate_model_profile(profile_id)
+    except KeyError:
+        raise DomainError("MODEL_PROFILE_NOT_FOUND", "模型配置不存在", 404)
+
+
+@app.delete("/api/model-profiles/{profile_id}")
+def delete_model_profile_api(profile_id: str, user=Depends(current_user)):
+    if not user.super_admin:
+        raise DomainError("FORBIDDEN", "需要超级管理员", 403)
+    try:
+        return delete_model_profile(profile_id)
+    except KeyError:
+        raise DomainError("MODEL_PROFILE_NOT_FOUND", "模型配置不存在", 404)
+    except ValueError as exc:
+        raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
+
+
+@domain_router.get("/api/catalog")
 def catalog(user=Depends(current_user)):
     return {"permissions": auth.PERMISSIONS, "categories": [{"id": "hardware", "name": "五金"}, {"id": "raw_material", "name": "原材"}, {"id": "outsource", "name": "委外"}]}
 
@@ -319,7 +476,7 @@ def revoke(user_id: str, grant_id: str, expected_security_version: int, user=Dep
     return {"security_version": target.security_version}
 
 
-@app.get("/api/projects")
+@domain_router.get("/api/projects")
 def projects(user=Depends(current_user), db=Depends(get_db)):
     p = auth.predicate(db, user, "project.read", {"project_id": m.Project.id})
     return [auth.select_fields({"id": row.id, "code": row.code, "name": row.name, "status": row.status},
@@ -327,25 +484,25 @@ def projects(user=Depends(current_user), db=Depends(get_db)):
             for row in db.scalars(select(m.Project).where(p).limit(100))]
 
 
-@app.get("/api/materials")
+@domain_router.get("/api/materials")
 def materials(project_id: str, user=Depends(current_user), db=Depends(get_db)):
     p = auth.predicate(db, user, "purchase.create", {"project_id": literal(project_id), "category": m.Material.category})
     return [{"id": m.id, "code": m.code, "name": m.name, "category": m.category, "unit": m.unit}
             for m in db.scalars(select(m.Material).where(p).limit(100))]
 
 
-@app.get("/api/purchases")
+@domain_router.get("/api/purchases")
 def purchases(user=Depends(current_user), db=Depends(get_db)):
     return [business.request_data(db, user, req) for req in db.scalars(business.visible_requests(db, user).order_by(m.PurchaseRequest.created_at.desc()).limit(100))]
 
 
-@app.post("/api/purchases")
+@domain_router.post("/api/purchases")
 def create_purchase(data: s.PurchaseInput, user=Depends(current_user), db=Depends(get_db)):
     req = business.create_request(db, user, data); db.commit()
     return {"id": req.id, "number": req.number, "status": req.status}
 
 
-@app.post("/api/purchases/{request_id}/submit-intent")
+@domain_router.post("/api/purchases/{request_id}/submit-intent")
 def submit_intent(request_id: str, data: s.SubmitInput, user=Depends(current_user), db=Depends(get_db)):
     result = business.create_intent(db, user, "purchase.submit", request_id, data.model_dump())
     db.commit(); return result
@@ -568,18 +725,31 @@ def revoke_approval_delegation(delegation_id: str, data: s.AgentApprovalDelegati
 
 @app.post("/api/human-actions/{intent_id}/confirm")
 def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user), db=Depends(get_db)):
+    intent = db.scalar(select(m.HumanIntent).where(
+        m.HumanIntent.id == intent_id, m.HumanIntent.user_id == user.id))
     result = business.confirm_intent(db, user, intent_id, data.challenge)
-    db.commit(); return result
+    resumed_run = None
+    if intent:
+        from .agent_resume import queue_after_proposal_decision
+        step = db.get(m.Step, intent.resource_id)
+        if step:
+            candidate = db.get(m.Run, step.run_id)
+            if queue_after_proposal_decision(db, user, step.id, "approved", result):
+                resumed_run = candidate
+    db.commit()
+    if resumed_run:
+        publish_run_update(resumed_run.conversation_id, resumed_run.id, resumed_run.status)
+    return result
 
 
-@app.post("/api/business/command-intents")
+@domain_router.post("/api/business/command-intents")
 def command_intent(data: s.CommandIntentInput, user=Depends(current_user), db=Depends(get_db)):
     result = business.create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
     db.commit()
     return result
 
 
-@app.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
+@domain_router.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
 def confirm_plan_department(confirmation_id: str, data: s.PlanDepartmentConfirmationInput,
                             user=Depends(current_user), db=Depends(get_db)):
     from . import plan_confirmations
@@ -633,9 +803,23 @@ def audit(offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50), user
 @app.get("/api/conversations")
 def conversations(archived: bool = Query(False), user=Depends(current_user), db=Depends(get_db)):
     ensure_conversation_flags(db)
-    rows = db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id, m.Conversation.archived == archived)
-                      .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).limit(100))
-    return [{"id": c.id, "title": c.title, "pinned": c.pinned, "archived": c.archived, "created_at": c.created_at.isoformat()} for c in rows]
+    rows = list(db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id, m.Conversation.archived == archived)
+                           .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).limit(100)))
+    result = []
+    for c in rows:
+        waiting = False
+        conversation_runs = db.scalars(select(m.Run).where(
+            m.Run.conversation_id == c.id, m.Run.user_id == user.id).order_by(m.Run.created_at.desc()))
+        for run in conversation_runs:
+            steps = list(db.scalars(select(m.Step).where(m.Step.run_id == run.id).order_by(m.Step.sequence)))
+            decisions = proposal_decisions(db, user.id, run, steps)
+            if run.status not in {"QUEUED", "RUNNING"} and any(isinstance(step.result, dict) and step.result.get("proposal") and step.id not in decisions for step in steps):
+                waiting = True
+                break
+        result.append({"id": c.id, "title": c.title, "pinned": c.pinned, "archived": c.archived,
+                       "status": "WAITING_APPROVAL" if waiting else None,
+                       "created_at": c.created_at.isoformat()})
+    return result
 
 
 @app.post("/api/conversations/{conversation_id}/pin")
@@ -690,34 +874,66 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
     record(db, user, "agent.run.created", run.id, {"agent_permission_mode": permission_mode}); db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
     return {"id": run.id, "conversation_id": conversation.id, "status": run.status, "agent_permission_mode": permission_mode}
 
 
 @app.get("/api/conversations/{conversation_id}/runs")
 def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    from .files import run_files
-    current_hash = auth.fingerprint(db, user)
-    result = []
-    for r in db.scalars(select(m.Run).where(m.Run.conversation_id == conversation_id, m.Run.user_id == user.id).order_by(m.Run.created_at)):
-        checkpoint = r.checkpoint if isinstance(r.checkpoint, dict) else {}
-        authorization_hash = checkpoint.get("authorization_hash")
-        visible = r.security_version == user.security_version and (not authorization_hash or authorization_hash == current_hash)
-        steps = list(db.scalars(select(m.Step).where(m.Step.run_id == r.id).order_by(m.Step.sequence))) if visible else []
-        result.append({"id": r.id, "prompt": r.prompt, "status": r.status,
-                       "created_at": r.created_at,
-                       "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
-                       "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
-                       "files": run_files(db,user,r) if visible else [],
-                       "result": r.result if visible else {"message": "权限已变化，请重新发起查询"},
-                       "trace": run_trace(r, steps) if visible else [],
-                       "context_usage": checkpoint.get("context_usage") if visible else None,
-                       "progress": {"turn": checkpoint.get("turn", 0),
-                                    "phase": checkpoint.get('phase'),
-                                    "model_elapsed_ms": checkpoint.get('model_elapsed_ms', 0),
-                                    "context_usage": checkpoint.get("context_usage"),
-                                    "elapsed_seconds": max(0, int((now()-aware(r.created_at)).total_seconds())) if r.status in {'QUEUED','RUNNING'} else None,
-                                    "tools": [{"id": step.id, "name": step.tool} for step in steps]} if visible else None})
-    return result
+    return conversation_runs_payload(db, user, conversation_id)
+
+
+@app.get("/api/conversations/{conversation_id}/runs/events")
+def run_events(conversation_id: str, request: Request, user=Depends(current_user), db=Depends(get_db)):
+    conversation = db.scalar(select(m.Conversation).where(
+        m.Conversation.id == conversation_id,
+        m.Conversation.user_id == user.id,
+    ))
+    if not conversation:
+        raise DomainError("NOT_FOUND", "会话不存在", 404)
+
+    user_id = user.id
+    session_expires_at = request.state.session.expires_at
+    stream_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+
+    async def stream():
+        initial_sent = False
+        async for signal in subscribe_run_updates(conversation_id):
+            if await request.is_disconnected():
+                return
+            if aware(session_expires_at) <= now():
+                yield _sse_event("authorization", {"status": "expired"})
+                return
+            kind = signal.get("type")
+            if kind == "heartbeat":
+                yield ": keep-alive\n\n"
+                continue
+            if kind in {"ready", "update", "unavailable"}:
+                with stream_factory() as stream_db:
+                    live_user = stream_db.get(m.User, user_id)
+                    live_conversation = stream_db.scalar(select(m.Conversation.id).where(
+                        m.Conversation.id == conversation_id,
+                        m.Conversation.user_id == user_id,
+                    ))
+                    if not live_user or not live_user.active or not live_conversation:
+                        yield _sse_event("authorization", {"status": "revoked"})
+                        return
+                    payload = conversation_runs_payload(stream_db, live_user, conversation_id)
+                if not initial_sent or kind == "update":
+                    initial_sent = True
+                    yield _sse_event("runs", payload)
+                if kind == "unavailable":
+                    yield _sse_event("transport", {"status": "redis_unavailable"})
+                    return
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/runs/{run_id}/cancel")
@@ -727,7 +943,9 @@ def cancel(run_id: str, user=Depends(current_user), db=Depends(get_db)):
     if run.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
         run.status = "CANCELLED"; run.lease_epoch += 1
         run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
-    db.commit(); return {"status": run.status}
+    db.commit()
+    publish_run_update(run.conversation_id, run.id, run.status)
+    return {"status": run.status}
 
 
 @app.get("/api/capabilities")
@@ -777,24 +995,4 @@ def set_capability(user_id: str, data: s.CapabilityInput, user=Depends(current_u
 
 from .internal import install
 install(app)
-from .domain_api import install as install_domains
-install_domains(app)
-
-from .contact_tools import router as contact_proposal_router
-app.include_router(contact_proposal_router)
-from .project_control_tools import router as project_control_proposal_router
-app.include_router(project_control_proposal_router)
-from .project_closure_tools import router as project_closure_proposal_router
-app.include_router(project_closure_proposal_router)
-from .plan_tools import router as project_plan_proposal_router
-app.include_router(project_plan_proposal_router)
-from .start_tools import router as internal_start_proposal_router
-app.include_router(internal_start_proposal_router)
-from .quote_tools import router as quote_acceptance_proposal_router
-app.include_router(quote_acceptance_proposal_router)
-from .contract_tools import router as contract_proposal_router
-app.include_router(contract_proposal_router)
-from .finance_context_tools import router as finance_proposal_router
-app.include_router(finance_proposal_router)
-from .full_outsource_tools import router as full_outsource_proposal_router
-app.include_router(full_outsource_proposal_router)
+active_manifest.install(app, domain_router)

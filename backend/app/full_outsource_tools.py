@@ -1,5 +1,5 @@
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -20,7 +20,15 @@ from .security import current_user
 
 OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "supplier")
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
-FULL_OUTSOURCE_PROPOSAL_TOOLS = {"prepare_supplier_material_handoff"}
+FULL_OUTSOURCE_PROPOSAL_TOOLS = {
+    "prepare_supplier_material_handoff",
+    "prepare_supplier_material_verification",
+    "prepare_supplier_progress_policy",
+    "prepare_supplier_progress_report",
+}
+PROGRESS_EVIDENCE_KINDS = Literal[
+    "PHOTO", "DOCUMENT", "QUALITY_REPORT", "SCHEDULE", "ISSUE_LIST", "DELIVERY_PROOF", "OTHER"
+]
 
 
 class SupplierMaterialHandoffProposalInput(StrictModel):
@@ -39,8 +47,75 @@ class SupplierMaterialHandoffProposalInput(StrictModel):
     source_ref: str | None = Field(default=None, max_length=120)
 
 
+class SupplierMaterialVerificationProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    handoff_id: str = Field(min_length=1, max_length=36)
+    response_file_id: str | None = Field(default=None, max_length=36)
+    response_date: date
+    result: Literal["RECEIVED","ACCEPTED","NEEDS_CLARIFICATION","REJECTED"]
+    supplier_contact: str = Field(min_length=1, max_length=150)
+    response_channel: Literal["MANUAL","EMAIL","IMPORT","OTHER"] = "MANUAL"
+    response_summary: str = Field(default="", max_length=4000)
+    follow_up_due_date: date | None = None
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_system: Literal["MANUAL","IMPORT"] = "MANUAL"
+    source_ref: str = Field(min_length=1, max_length=120)
+
+
+class SupplierProgressReportProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    plan_task_id: str | None = Field(default=None, max_length=36)
+    stage_key: str = Field(min_length=1, max_length=80)
+    stage_name: str = Field(min_length=1, max_length=150)
+    report_date: date
+    status: Literal["ON_TRACK","AT_RISK","BLOCKED","DONE","REWORK"]
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    next_due_date: date | None = None
+    issue_summary: str = Field(default="", max_length=4000)
+    evidence: str = Field(min_length=1, max_length=4000)
+    evidence_items: list[PROGRESS_EVIDENCE_KINDS] = Field(default_factory=list, max_length=7)
+    source_system: Literal["MANUAL","IMPORT"] = "MANUAL"
+    source_ref: str = Field(min_length=1, max_length=120)
+    followed_by: str | None = Field(default=None, max_length=36)
+
+
+class SupplierProgressPolicyProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    plan_task_id: str | None = Field(default=None, max_length=36)
+    stage_key: str = Field(min_length=1, max_length=80)
+    stage_name: str = Field(min_length=1, max_length=150)
+    frequency_days: int = Field(ge=1, le=90)
+    effective_from: date
+    first_due_date: date
+    evidence_requirements: list[PROGRESS_EVIDENCE_KINDS] = Field(min_length=1, max_length=7)
+    basis: str = Field(min_length=1, max_length=4000)
+    source_ref: str = Field(min_length=1, max_length=120)
+    replaces_policy_id: str | None = Field(default=None, max_length=36)
+
+
 def supplier_material_handoff_schema():
     return SupplierMaterialHandoffProposalInput.model_json_schema()
+
+
+def supplier_material_verification_schema():
+    return SupplierMaterialVerificationProposalInput.model_json_schema()
+
+
+def supplier_progress_report_schema():
+    return SupplierProgressReportProposalInput.model_json_schema()
+
+
+def supplier_progress_policy_schema():
+    return SupplierProgressPolicyProposalInput.model_json_schema()
 
 
 def parse_supplier_material_handoff(arguments):
@@ -51,6 +126,243 @@ def parse_supplier_material_handoff(arguments):
     if data.approval_status == "APPROVED" and not data.contract_subject_id:
         raise DomainError("INVALID_TOOL_INPUT", "正式获准资料交接必须关联已生效整套委外合同")
     return data
+
+
+def parse_supplier_material_verification(arguments):
+    try:
+        data = SupplierMaterialVerificationProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商资料核验参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    today = now().date()
+    if data.response_date > today:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商资料核验日期不能晚于当前日期")
+    if data.follow_up_due_date and data.follow_up_due_date < data.response_date:
+        raise DomainError("INVALID_TOOL_INPUT", "资料核验跟进日期不能早于供应商回复日期")
+    if data.result in {"NEEDS_CLARIFICATION", "REJECTED"}:
+        if not data.response_summary.strip():
+            raise DomainError("INVALID_TOOL_INPUT", "供应商要求澄清或退回资料时必须填写回复说明")
+        if not data.follow_up_due_date:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商要求澄清或退回资料时必须填写跟进日期")
+    return data
+
+
+def parse_supplier_progress_report(arguments):
+    try:
+        data = SupplierProgressReportProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.report_date > now().date():
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报日期不能晚于当前日期")
+    if data.next_due_date and data.next_due_date < data.report_date:
+        raise DomainError("INVALID_TOOL_INPUT", "下次跟进日期不能早于上报日期")
+    if data.status in {"AT_RISK", "BLOCKED", "REWORK"}:
+        if not data.issue_summary.strip():
+            raise DomainError("INVALID_TOOL_INPUT", "风险、阻塞或返工上报必须填写问题摘要")
+        if not data.next_due_date:
+            raise DomainError("INVALID_TOOL_INPUT", "风险、阻塞或返工上报必须填写下次跟进日期")
+    if data.status == "DONE" and data.progress_percent != 100:
+        raise DomainError("INVALID_TOOL_INPUT", "节点完成时进度必须为 100%")
+    if data.progress_percent == 100 and data.status != "DONE":
+        raise DomainError("INVALID_TOOL_INPUT", "进度为 100% 时节点状态必须为已完成")
+    if len(set(data.evidence_items)) != len(data.evidence_items):
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报证据类型不能重复")
+    return data
+
+
+def parse_supplier_progress_policy(arguments):
+    try:
+        data = SupplierProgressPolicyProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商上报规则参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.first_due_date < data.effective_from:
+        raise DomainError("INVALID_TOOL_INPUT", "首次上报日期不能早于规则生效日期")
+    if len(set(data.evidence_requirements)) != len(data.evidence_requirements):
+        raise DomainError("INVALID_TOOL_INPUT", "供应商上报规则的证据类型不能重复")
+    return data
+
+
+def _active_progress_policy(db, project_id, supplier_id, contract_subject_id, stage_key):
+    return db.scalar(
+        select(m.SupplierProgressPolicy).where(
+            m.SupplierProgressPolicy.project_id == project_id,
+            m.SupplierProgressPolicy.supplier_id == supplier_id,
+            m.SupplierProgressPolicy.contract_subject_id == contract_subject_id,
+            m.SupplierProgressPolicy.stage_key == stage_key,
+            m.SupplierProgressPolicy.active.is_(True),
+        ).order_by(m.SupplierProgressPolicy.version.desc(), m.SupplierProgressPolicy.created_at.desc())
+    )
+
+
+def preview_supplier_progress_policy(db, user, data: SupplierProgressPolicyProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "供应商上报规则必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与上报规则供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商上报规则必须关联已生效或已关闭整套委外合同", 409)
+    plan_task = None
+    if data.plan_task_id:
+        plan_task = db.get(m.PlanTask, data.plan_task_id)
+        plan = db.get(m.BusinessSubject, plan_task.plan_id) if plan_task else None
+        if not plan_task or not plan or plan.project_id != project.id or plan.kind not in {"project_plan", "plan_change"}:
+            raise DomainError("PLAN_TASK_NOT_FOUND", "计划节点不存在或不属于该项目", 404)
+        if data.stage_key != plan_task.key or data.stage_name != plan_task.name:
+            raise DomainError("PLAN_TASK_MISMATCH", "节点标识或名称与所选计划任务不一致，请重新查询后准备", 409)
+    current = _active_progress_policy(db, project.id, supplier.id, contract.id, data.stage_key)
+    if current and data.replaces_policy_id != current.id:
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_CHANGED", "当前供应商上报规则已变化，请重新查询后替换", 409)
+    if not current and data.replaces_policy_id:
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_CHANGED", "待替换的供应商上报规则已失效，请重新查询", 409)
+    if db.scalar(select(m.SupplierProgressPolicy.id).where(
+        m.SupplierProgressPolicy.project_id == project.id,
+        m.SupplierProgressPolicy.supplier_id == supplier.id,
+        m.SupplierProgressPolicy.contract_subject_id == contract.id,
+        m.SupplierProgressPolicy.stage_key == data.stage_key,
+        m.SupplierProgressPolicy.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_DUPLICATE", "该供应商上报规则来源已登记", 409)
+    version = (current.version + 1) if current else 1
+    display = {
+        "操作": "配置供应商节点上报规则",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "计划节点": (plan_task.key + " · " + plan_task.name) if plan_task else "未关联计划任务",
+        "上报阶段": data.stage_key + " · " + data.stage_name,
+        "填报频率": f"每 {data.frequency_days} 天",
+        "生效日期": data.effective_from.isoformat(),
+        "首次应报日期": data.first_due_date.isoformat(),
+        "必需证据类型": list(data.evidence_requirements),
+        "规则版本": version,
+        "替换规则": current.id if current else "首次配置",
+        "来源引用": data.source_ref,
+        "制定依据": data.basis,
+        "说明": "本人确认后建立版本化上报规则；不会代替供应商上报、ERP 执行事实、收货质检或客户验收。",
+    }
+    return project, supplier, contract, plan_task, current, version, display
+
+
+def create_supplier_progress_policy(db, user, data: SupplierProgressPolicyProposalInput):
+    project, supplier, contract, plan_task, current, version, _ = preview_supplier_progress_policy(db, user, data)
+    if current:
+        current.active = False
+    row = m.SupplierProgressPolicy(
+        project_id=project.id,
+        supplier_id=supplier.id,
+        contract_subject_id=contract.id,
+        plan_task_id=plan_task.id if plan_task else None,
+        stage_key=data.stage_key,
+        stage_name=data.stage_name,
+        frequency_days=data.frequency_days,
+        effective_from=data.effective_from,
+        first_due_date=data.first_due_date,
+        evidence_requirements=list(data.evidence_requirements),
+        basis=data.basis,
+        source_ref=data.source_ref,
+        version=version,
+        active=True,
+        supersedes_id=current.id if current else None,
+        created_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def preview_supplier_progress_report(db, user, data: SupplierProgressReportProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "供应商节点上报必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与节点上报供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商节点上报必须关联已生效或已关闭整套委外合同", 409)
+    plan_task = None
+    if data.plan_task_id:
+        plan_task = db.get(m.PlanTask, data.plan_task_id)
+        plan = db.get(m.BusinessSubject, plan_task.plan_id) if plan_task else None
+        if not plan_task or not plan or plan.project_id != project.id or plan.kind not in {"project_plan", "plan_change"}:
+            raise DomainError("PLAN_TASK_NOT_FOUND", "计划节点不存在或不属于该项目", 404)
+        if data.stage_key != plan_task.key or data.stage_name != plan_task.name:
+            raise DomainError("PLAN_TASK_MISMATCH", "节点标识或名称与所选计划任务不一致，请重新查询后准备", 409)
+    follower = db.get(m.User, data.followed_by) if data.followed_by else user
+    if not follower or not follower.active:
+        raise DomainError("FOLLOWER_INVALID", "采购跟进人不存在或账号已停用", 409)
+    if db.scalar(select(m.SupplierProgressReport.id).where(
+        m.SupplierProgressReport.project_id == project.id,
+        m.SupplierProgressReport.supplier_id == supplier.id,
+        m.SupplierProgressReport.stage_key == data.stage_key,
+        m.SupplierProgressReport.report_date == data.report_date,
+        m.SupplierProgressReport.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_PROGRESS_REPORT_DUPLICATE", "该供应商节点上报来源已登记", 409)
+    policy = _active_progress_policy(db, project.id, supplier.id, contract.id, data.stage_key)
+    missing_evidence = sorted(set(policy.evidence_requirements or []) - set(data.evidence_items)) if policy else []
+    if missing_evidence:
+        raise DomainError("SUPPLIER_PROGRESS_EVIDENCE_MISSING", "供应商节点上报缺少规则要求的证据类型：" + "、".join(missing_evidence), 409)
+    display = {
+        "操作": "登记供应商节点上报证据",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "计划节点": (plan_task.key + " · " + plan_task.name) if plan_task else "未关联计划任务",
+        "上报阶段": data.stage_key + " · " + data.stage_name,
+        "上报日期": data.report_date.isoformat(),
+        "节点状态": data.status,
+        "进度": (str(data.progress_percent) + "%") if data.progress_percent is not None else "未填写",
+        "下次跟进日期": data.next_due_date.isoformat() if data.next_due_date else "不适用",
+        "问题摘要": data.issue_summary or "无",
+        "结构化证据类型": list(data.evidence_items) if data.evidence_items else "未配置规则或未分类",
+        "适用上报规则": (f"第 {policy.version} 版 · 每 {policy.frequency_days} 天") if policy else "当前未配置结构化规则",
+        "采购跟进人": follower.display_name,
+        "录入方式": data.source_system,
+        "来源引用": data.source_ref,
+        "依据": data.evidence,
+        "说明": "本人确认后仅登记供应商节点上报证据；不创建供应商门户，不代表我方收货、质检、客户验收或 ERP 生产节点已完成。",
+    }
+    return project, supplier, contract, plan_task, follower, display
+
+
+def create_supplier_progress_report(db, user, data: SupplierProgressReportProposalInput):
+    _, supplier, contract, plan_task, follower, _ = preview_supplier_progress_report(db, user, data)
+    row = m.SupplierProgressReport(project_id=data.project_id, supplier_id=supplier.id,
+        contract_subject_id=contract.id, plan_task_id=plan_task.id if plan_task else None,
+        stage_key=data.stage_key, stage_name=data.stage_name, report_date=data.report_date,
+        status=data.status, progress_percent=data.progress_percent, next_due_date=data.next_due_date,
+        issue_summary=data.issue_summary, evidence=data.evidence, evidence_items=list(data.evidence_items), source_system=data.source_system,
+        source_ref=data.source_ref, reported_by=user.id, followed_by=follower.id)
+    db.add(row)
+    db.flush()
+    return row
 
 
 def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput):
@@ -122,16 +434,124 @@ def create_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProp
     return row
 
 
+def preview_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "资料核验必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与资料核验供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商资料核验必须关联已生效或已关闭整套委外合同", 409)
+    handoff = db.get(m.SupplierMaterialHandoff, data.handoff_id)
+    if (not handoff or handoff.project_id != project.id or handoff.supplier_id != supplier.id
+            or handoff.contract_subject_id != contract.id):
+        raise DomainError("SUPPLIER_MATERIAL_HANDOFF_NOT_FOUND", "资料交接记录不存在或与项目、供应商、合同不一致", 404)
+    if handoff.approval_status != "APPROVED":
+        raise DomainError("SUPPLIER_MATERIAL_HANDOFF_NOT_APPROVED", "只有已批准并实际交接的资料才能登记供应商核验结果", 409)
+    if data.response_date < handoff.provided_date:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商回复日期不能早于资料交接日期")
+    if data.response_file_id:
+        from .files import uploaded_file
+        uploaded_file(db, user, data.response_file_id)
+    if db.scalar(select(m.SupplierMaterialVerification.id).where(
+        m.SupplierMaterialVerification.handoff_id == handoff.id,
+        m.SupplierMaterialVerification.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_MATERIAL_VERIFICATION_DUPLICATE", "该供应商资料核验来源已登记", 409)
+    display = {
+        "操作": "登记供应商资料核验结果",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "资料交接记录": handoff.id,
+        "资料标题": handoff.document_title,
+        "资料类型": handoff.document_type,
+        "交接日期": handoff.provided_date.isoformat(),
+        "供应商回复日期": data.response_date.isoformat(),
+        "核验结果": data.result,
+        "供应商联系人": data.supplier_contact,
+        "回复渠道": data.response_channel,
+        "回复说明": data.response_summary or "未填写",
+        "跟进日期": data.follow_up_due_date.isoformat() if data.follow_up_due_date else "无需跟进",
+        "回复文件": data.response_file_id or "未关联文件",
+        "来源系统": data.source_system,
+        "来源引用": data.source_ref,
+        "依据": data.evidence,
+        "说明": "本人确认后仅追加供应商对本次资料交接的核验结果；已收到不等于已接受，退回或待澄清不会修改或覆盖原资料交接记录。",
+    }
+    return project, supplier, contract, handoff, display
+
+
+def create_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput):
+    _, supplier, contract, handoff, _ = preview_supplier_material_verification(db, user, data)
+    row = m.SupplierMaterialVerification(
+        project_id=data.project_id,
+        supplier_id=supplier.id,
+        contract_subject_id=contract.id,
+        handoff_id=handoff.id,
+        response_file_id=data.response_file_id,
+        response_date=data.response_date,
+        result=data.result,
+        supplier_contact=data.supplier_contact,
+        response_channel=data.response_channel,
+        response_summary=data.response_summary,
+        follow_up_due_date=data.follow_up_due_date,
+        evidence=data.evidence,
+        source_system=data.source_system,
+        source_ref=data.source_ref,
+        recorded_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def execute_full_outsource_tool(db, user, key, arguments, run=None):
-    if key != "prepare_supplier_material_handoff":
+    if key == "prepare_supplier_material_handoff":
+        data = parse_supplier_material_handoff(arguments)
+        _, _, _, display = preview_supplier_material_handoff(db, user, data)
+        kind = "supplier_material_handoff"
+        action = "confirm_supplier_material_handoff"
+        limitation = "仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"
+    elif key == "prepare_supplier_material_verification":
+        data = parse_supplier_material_verification(arguments)
+        _, _, _, _, display = preview_supplier_material_verification(db, user, data)
+        kind = "supplier_material_verification"
+        action = "confirm_supplier_material_verification"
+        limitation = "仅准备供应商对一条已批准资料交接的核验结果；本人确认后才追加记录，已收到不等于已接受，不覆盖原交接事实。"
+    elif key == "prepare_supplier_progress_policy":
+        data = parse_supplier_progress_policy(arguments)
+        _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
+        kind = "supplier_progress_policy"
+        action = "confirm_supplier_progress_policy"
+        limitation = "仅准备版本化供应商上报频率与证据规则；本人确认后才生效，不代表供应商已上报或 ERP 节点已完成。"
+    elif key == "prepare_supplier_progress_report":
+        data = parse_supplier_progress_report(arguments)
+        _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
+        kind = "supplier_progress_report"
+        action = "confirm_supplier_progress_report"
+        limitation = "仅准备供应商节点上报证据登记建议；本人确认后才写入，不代表收货、质检、客户验收或 ERP 节点完成。"
+    else:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
-    data = parse_supplier_material_handoff(arguments)
-    _, _, _, display = preview_supplier_material_handoff(db, user, data)
-    proposal = {"kind": "supplier_material_handoff", "action": "confirm_supplier_material_handoff",
+    proposal = {"kind": kind, "action": action,
         "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
         "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
     return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(), "proposal": proposal,
-        "limitations": ["仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"]}
+        "limitations": [limitation]}
 
 
 def _project_card(db, user, project, matched_by=()):
@@ -384,6 +804,7 @@ def _plan_tasks(rows):
             if any(keyword in text for keyword in OUTSOURCE_KEYWORDS + ISSUE_KEYWORDS):
                 tasks.append(
                     {
+                        "id": task.get("id"),
                         "plan_id": row.get("id"),
                         "plan_number": row.get("number"),
                         "key": task.get("key"),
@@ -410,12 +831,76 @@ def _order_tracking(db, user, project_id, allowed_tools):
     return {"orders": _order_headers(orders), **tracking}
 
 
+def _supplier_progress_policies(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    today = now().date()
+    rows = []
+    policies = db.execute(
+        select(m.SupplierProgressPolicy, m.Supplier)
+        .join(m.Supplier, m.SupplierProgressPolicy.supplier_id == m.Supplier.id)
+        .where(m.SupplierProgressPolicy.project_id == project_id, m.SupplierProgressPolicy.active.is_(True))
+        .order_by(m.SupplierProgressPolicy.stage_key, m.SupplierProgressPolicy.version.desc())
+        .limit(100)
+    )
+    for policy, supplier in policies:
+        latest = db.scalar(
+            select(m.SupplierProgressReport).where(
+                m.SupplierProgressReport.project_id == project_id,
+                m.SupplierProgressReport.supplier_id == policy.supplier_id,
+                m.SupplierProgressReport.contract_subject_id == policy.contract_subject_id,
+                m.SupplierProgressReport.stage_key == policy.stage_key,
+                m.SupplierProgressReport.report_date >= policy.effective_from,
+            ).order_by(m.SupplierProgressReport.report_date.desc(), m.SupplierProgressReport.created_at.desc())
+        )
+        completed = bool(latest and latest.status == "DONE")
+        next_due = None if completed else (
+            latest.report_date + timedelta(days=policy.frequency_days) if latest else policy.first_due_date
+        )
+        evidence_requirements = list(policy.evidence_requirements or [])
+        latest_evidence = list(latest.evidence_items or []) if latest else []
+        missing_evidence = sorted(set(evidence_requirements) - set(latest_evidence)) if latest else evidence_requirements
+        rows.append({
+            "id": policy.id,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "contract_subject_id": policy.contract_subject_id,
+            "plan_task_id": policy.plan_task_id,
+            "stage_key": policy.stage_key,
+            "stage_name": policy.stage_name,
+            "frequency_days": policy.frequency_days,
+            "effective_from": policy.effective_from.isoformat(),
+            "first_due_date": policy.first_due_date.isoformat(),
+            "next_due_date": next_due.isoformat() if next_due else None,
+            "overdue": bool(next_due and next_due < today),
+            "completed": completed,
+            "evidence_requirements": evidence_requirements,
+            "latest_report_id": latest.id if latest else None,
+            "latest_report_date": latest.report_date.isoformat() if latest else None,
+            "latest_missing_evidence": missing_evidence,
+            "basis": policy.basis,
+            "source_ref": policy.source_ref,
+            "version": policy.version,
+            "supersedes_id": policy.supersedes_id,
+        })
+    return rows
+
+
 def _supplier_progress_reports(db, user, project_id, allowed_tools):
     if not _can_read_kind("full_outsource_contract", allowed_tools):
         return []
     if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
         return []
     rows = []
+    active_policies = {
+        (row.supplier_id, row.contract_subject_id, row.stage_key): row
+        for row in db.scalars(select(m.SupplierProgressPolicy).where(
+            m.SupplierProgressPolicy.project_id == project_id,
+            m.SupplierProgressPolicy.active.is_(True),
+        ))
+    }
     q = (
         select(m.SupplierProgressReport, m.Supplier)
         .join(m.Supplier, m.SupplierProgressReport.supplier_id == m.Supplier.id)
@@ -426,6 +911,9 @@ def _supplier_progress_reports(db, user, project_id, allowed_tools):
     today = now().date()
     for report, supplier in db.execute(q):
         overdue_followup = report.status in {"AT_RISK", "BLOCKED", "REWORK"} and report.next_due_date is not None and report.next_due_date < today
+        policy = active_policies.get((report.supplier_id, report.contract_subject_id, report.stage_key))
+        evidence_items = list(report.evidence_items or [])
+        missing_evidence = sorted(set(policy.evidence_requirements or []) - set(evidence_items)) if policy else []
         rows.append(
             {
                 "id": report.id,
@@ -442,6 +930,10 @@ def _supplier_progress_reports(db, user, project_id, allowed_tools):
                 "overdue_followup": overdue_followup,
                 "issue_summary": report.issue_summary,
                 "evidence": report.evidence,
+                "evidence_items": evidence_items,
+                "policy_id": policy.id if policy else None,
+                "policy_version": policy.version if policy else None,
+                "missing_policy_evidence": missing_evidence,
                 "source_system": report.source_system,
                 "source_ref": report.source_ref,
                 "reported_by": report.reported_by,
@@ -483,6 +975,56 @@ def _material_handoffs(db, user, project_id, allowed_tools):
                 "source_ref": handoff.source_ref,
                 "provided_by": handoff.provided_by,
                 "verified_by": handoff.verified_by,
+            }
+        )
+    return rows
+
+
+def _material_verifications(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    seen_handoffs = set()
+    q = (
+        select(m.SupplierMaterialVerification, m.SupplierMaterialHandoff, m.Supplier)
+        .join(m.SupplierMaterialHandoff, m.SupplierMaterialVerification.handoff_id == m.SupplierMaterialHandoff.id)
+        .join(m.Supplier, m.SupplierMaterialVerification.supplier_id == m.Supplier.id)
+        .where(m.SupplierMaterialVerification.project_id == project_id)
+        .order_by(
+            m.SupplierMaterialVerification.handoff_id,
+            m.SupplierMaterialVerification.response_date.desc(),
+            m.SupplierMaterialVerification.created_at.desc(),
+            m.SupplierMaterialVerification.id,
+        )
+        .limit(100)
+    )
+    for verification, handoff, supplier in db.execute(q):
+        is_latest = handoff.id not in seen_handoffs
+        seen_handoffs.add(handoff.id)
+        rows.append(
+            {
+                "id": verification.id,
+                "project_id": verification.project_id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": verification.contract_subject_id,
+                "handoff_id": handoff.id,
+                "document_title": handoff.document_title,
+                "document_type": handoff.document_type,
+                "response_file_id": verification.response_file_id,
+                "response_date": verification.response_date.isoformat(),
+                "result": verification.result,
+                "supplier_contact": verification.supplier_contact,
+                "response_channel": verification.response_channel,
+                "response_summary": verification.response_summary,
+                "follow_up_due_date": verification.follow_up_due_date.isoformat() if verification.follow_up_due_date else None,
+                "evidence": verification.evidence,
+                "source_system": verification.source_system,
+                "source_ref": verification.source_ref,
+                "recorded_by": verification.recorded_by,
+                "is_latest_for_handoff": is_latest,
             }
         )
     return rows
@@ -765,7 +1307,7 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
     }
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, material_verifications, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -774,8 +1316,16 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     open_change_impacts = [impact for row in engineering_changes for impact in row.get("unimplemented_impacts") or []]
     risky_reports = [row for row in supplier_progress_reports if row.get("status") in {"AT_RISK", "BLOCKED", "REWORK"}]
     overdue_reports = [row for row in supplier_progress_reports if row.get("overdue_followup")]
+    overdue_policies = [row for row in supplier_progress_policies if row.get("overdue")]
+    evidence_noncompliant = [row for row in supplier_progress_policies if row.get("latest_report_id") and row.get("latest_missing_evidence")]
     approved_handoffs = [row for row in material_handoffs if row.get("approval_status") == "APPROVED"]
     draft_or_revoked_handoffs = [row for row in material_handoffs if row.get("approval_status") != "APPROVED"]
+    latest_material_verifications = [row for row in material_verifications if row.get("is_latest_for_handoff")]
+    accepted_material_verifications = [row for row in latest_material_verifications if row.get("result") == "ACCEPTED"]
+    received_only_material_verifications = [row for row in latest_material_verifications if row.get("result") == "RECEIVED"]
+    open_material_verifications = [row for row in latest_material_verifications if row.get("result") in {"NEEDS_CLARIFICATION", "REJECTED"}]
+    accepted_handoff_ids = {row["handoff_id"] for row in accepted_material_verifications}
+    unverified_handoffs = [row for row in approved_handoffs if row.get("id") not in accepted_handoff_ids]
     confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
     settled_deductions = [row for row in deduction_settlements if row.get("status") == "SETTLED"]
     pending_deductions = [row for row in deduction_settlements if row.get("status") == "PROPOSED" or row.get("responsibility") == "UNKNOWN"]
@@ -812,16 +1362,28 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         gaps.append("未见按合同或业务需要向供应商提供获准客户资料/设计资料的交接依据。")
     if draft_or_revoked_handoffs:
         warnings.append("存在草稿或已撤回的供应商资料交接记录，不能作为正式获准交接依据。")
+    if approved_handoffs and unverified_handoffs:
+        gaps.append("存在已批准并交接的供应商资料，但未见供应商对全部资料完成接受核验；已收到不能替代已接受。")
+    if received_only_material_verifications:
+        warnings.append("存在供应商仅确认收到、尚未确认接受的资料交接，需继续核验版本和适用性。")
+    if open_material_verifications:
+        warnings.append("存在供应商要求澄清或退回的资料，需按最新回复补充或更正后重新交接并核验。")
     if not active_plan:
         warnings.append("当前可见范围未见有效项目计划，无法核对供应商节点上报与项目同步节奏。")
     if not plan_tasks:
         gaps.append("未见供应商设计、采购、生产、质检、装配、试模、验收或交付等委外协同计划节点。")
+    if plan_tasks and not supplier_progress_policies:
+        gaps.append("未见版本化供应商节点上报频率与必需证据规则；无法判断各阶段应报日期和证据完整性。")
     if not supplier_progress_reports:
         gaps.append("未见结构化供应商节点上报/导入记录；无法核对供应商设计、采购、生产、质检、装配、试模、验收等阶段的最近进度与证据。")
     if risky_reports:
         warnings.append("存在供应商节点风险、阻塞或返工上报，需采购跟进并同步项目。")
     if overdue_reports:
         warnings.append("存在供应商风险/阻塞节点已超过下次跟进日期，需更新整改或复验进度。")
+    if overdue_policies:
+        warnings.append("存在供应商节点超过规则计算的应报日期，需按当前有效频率规则补充上报。")
+    if evidence_noncompliant:
+        warnings.append("存在历史供应商节点上报未满足当前规则的必需证据类型，需补充证据或登记新上报。")
     if not totals.get("supplier_shipments") and not totals.get("goods_receipts"):
         gaps.append("未见供应商发货、仓库收货或交付节点执行事实；不能据此认定委外交付完成。")
     if totals.get("supplier_shipments") and not totals.get("goods_receipts"):
@@ -864,7 +1426,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("客户验收记录存在交期影响天数，需与计划变更或客户交期确认联动。")
     if has_customer_acceptance and payments["requests"] and not close_done:
         warnings.append("已有客户验收或供应商付款申请，但未见关闭/结算清单完成；不能把付款申请等同于项目关闭。")
-    gaps.append("当前未接入供应商门户、供应商在线签署、供应商节点填报频率和证据模板；只能读取已授权本地/ERP适配事实。")
+    gaps.append("当前未接入供应商门户和供应商在线签署；规则与上报仅代表已授权本地/导入事实，不代表 ERP 执行节点完成。")
 
     return {
         "latest_full_outsource_acceptance": quote_acceptance,
@@ -875,8 +1437,10 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             else None
         ),
         "outsource_plan_tasks": plan_tasks,
+        "supplier_progress_policies": supplier_progress_policies,
         "supplier_progress_reports": supplier_progress_reports,
         "supplier_material_handoffs": material_handoffs,
+        "supplier_material_verifications": material_verifications,
         "supplier_deduction_settlements": deduction_settlements,
         "outsource_change_negotiations": change_negotiations,
         "supplier_execution_tracking": order_tracking,
@@ -895,11 +1459,18 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_signed_full_outsource_contract_file": bool(signed_contracts),
             "has_unsigned_contract_signing_record": bool(non_signed_contracts),
             "has_outsource_plan_node": bool(plan_tasks),
+            "has_supplier_progress_policy": bool(supplier_progress_policies),
+            "has_overdue_supplier_progress_report": bool(overdue_policies),
+            "has_supplier_progress_evidence_gap": bool(evidence_noncompliant),
             "has_supplier_progress_report": bool(supplier_progress_reports),
             "has_supplier_progress_risk": bool(risky_reports),
             "has_overdue_supplier_progress_followup": bool(overdue_reports),
             "has_approved_supplier_material_handoff": bool(approved_handoffs),
             "has_draft_or_revoked_supplier_material_handoff": bool(draft_or_revoked_handoffs),
+            "has_supplier_material_acceptance": bool(accepted_material_verifications),
+            "has_unverified_supplier_material_handoff": bool(unverified_handoffs),
+            "has_supplier_material_received_only": bool(received_only_material_verifications),
+            "has_open_supplier_material_clarification": bool(open_material_verifications),
             "has_confirmed_supplier_deduction": bool(confirmed_deductions),
             "has_settled_supplier_deduction": bool(settled_deductions),
             "has_pending_supplier_deduction": bool(pending_deductions),
@@ -938,8 +1509,10 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         signing_records = _contract_signing_records(db, user, contract_rows, allowed_tools)
         plan_rows = _subject_rows(db, user, project.id, "project_plan", allowed_tools) + _subject_rows(db, user, project.id, "plan_change", allowed_tools)
         active_plan, plan_tasks = _plan_tasks(plan_rows)
+        supplier_progress_policies = _supplier_progress_policies(db, user, project.id, allowed_tools)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
+        material_verifications = _material_verifications(db, user, project.id, allowed_tools)
         deduction_settlements = _deduction_settlements(db, user, project.id, allowed_tools)
         change_negotiations = _change_negotiations(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
@@ -983,8 +1556,10 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         signing_records,
                         active_plan,
                         plan_tasks,
+                        supplier_progress_policies,
                         supplier_progress_reports,
                         material_handoffs,
+                        material_verifications,
                         deduction_settlements,
                         change_negotiations,
                         order_tracking,
@@ -1033,20 +1608,45 @@ def validate_intent(db, user, payload):
     proposal = source(db, user, payload["step_id"])
     if content_hash(proposal) != payload["proposal_hash"]:
         raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
-    if proposal.get("kind") != "supplier_material_handoff":
+    kind = proposal.get("kind")
+    if kind == "supplier_material_handoff":
+        data = parse_supplier_material_handoff(proposal["input"])
+        _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    elif kind == "supplier_material_verification":
+        data = parse_supplier_material_verification(proposal["input"])
+        _, _, _, _, display = preview_supplier_material_verification(db, user, data)
+    elif kind == "supplier_progress_policy":
+        data = parse_supplier_progress_policy(proposal["input"])
+        _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
+    elif kind == "supplier_progress_report":
+        data = parse_supplier_progress_report(proposal["input"])
+        _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
+    else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
-    data = parse_supplier_material_handoff(proposal["input"])
-    _, _, _, display = preview_supplier_material_handoff(db, user, data)
     if content_hash(display) != content_hash(proposal["display"]):
         raise DomainError("VERSION_CONFLICT", "项目、合同、供应商或权限资料已变化，请重新准备", 409)
     return proposal, data
 
 
 def confirm(db, user, payload):
-    _, data = validate_intent(db, user, payload)
-    row = create_supplier_material_handoff(db, user, data)
+    proposal, data = validate_intent(db, user, payload)
+    if proposal["kind"] == "supplier_material_handoff":
+        row = create_supplier_material_handoff(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+    if proposal["kind"] == "supplier_material_verification":
+        row = create_supplier_material_verification(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_material_verification_id": row.id, "supplier_material_handoff_id": row.handoff_id,
+            "action": "supplier_material_verification", "status": "CONFIRMED"}
+    if proposal["kind"] == "supplier_progress_policy":
+        row = create_supplier_progress_policy(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_progress_policy_id": row.id, "version": row.version,
+            "action": "supplier_progress_policy", "status": "CONFIRMED"}
+    row = create_supplier_progress_report(db, user, data)
     return {"project_id": data.project_id, "supplier_id": data.supplier_id,
-        "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+        "supplier_progress_report_id": row.id, "action": "supplier_progress_report", "status": "CONFIRMED"}
 
 
 router = APIRouter()

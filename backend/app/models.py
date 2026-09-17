@@ -26,6 +26,13 @@ class User(IdentityMixin, Base):
     security_version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class UserProfile(Base):
+    __tablename__ = "app_user_profile"
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    avatar_url: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class LoginSession(IdentityMixin, Base):
     __tablename__ = "login_session"
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)

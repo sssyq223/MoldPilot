@@ -1,4 +1,5 @@
 # V1.1 全量需求开发覆盖表
+
 本表保留 FR-001～118、AT-01～18、AD-01～13 原文。报价、中标、合同上传及项目大节点维护明确属于 Agent 开发；ERP 具体业务动作复用不代表整项需求已满足。
 
 状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。
@@ -72,8 +73,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 总经理根据项目资料、客户类型和负荷判断是否报价及承接。不承接时记录拒单原因并结束对应流程；可承接时组织成本、技术及项目人员评估。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 汇总有效承接与有效拒单记录，并明确拒单、承接、正式开工互不等同；prepare_quote_acceptance_decision 可基于真实项目、项目版本和审批流程生成承接或拒单 proposal，本人确认后创建 quote_acceptance 材料并提交 Agent BPM；审批生效前不正式承接、不拒单、不正式开工
-- 验证证据：tests/test_quote_tools.py 覆盖承接/拒单上下文读取、多候选不自动决定、承接 proposal 不直接建单、人工确认后提交 BPM、拒单参数校验和重复有效决定阻断；总经理真实判断、评估组织、岗位通知矩阵和业务验收尚未完成
+- 实现证据：query_quote_acceptance_context 汇总有效承接与有效拒单记录，并明确拒单、承接、正式开工互不等同；工具只读展示决定事实，不代替总经理判断、评估组织或拒单结束流程
+- 验证证据：tests/test_quote_tools.py 覆盖承接/拒单上下文读取及多候选不自动决定；承接/拒单审批链尚未完成验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-008
@@ -99,8 +100,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 内部加工或委外评估完成后，汇总价格、交期和相关条件提交客户；保存提交版本及客户反馈。报价结果、后续修改和对应承接结果应可查询。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 将报价承接决定、后续承接结果和开放中的报价决定按项目上下文返回，供会话查询核对；prepare_quote_acceptance_decision 可把客户反馈后的承接/拒单结果提交 BPM，但不生成报价版本、不提交客户反馈、不覆盖原报价依据；query_quote_evaluation_context 进一步汇总报价金额、加工方式、可见合同和客户反馈/下游事实信号，并保留 gaps 说明正式提交版本与客户反馈仍需专门材料
-- 验证证据：tests/test_quote_tools.py 覆盖有效承接、开放决定集合、项目线索定位和承接/拒单提案确认链；tests/test_quote_evaluation_tools.py 覆盖客户反馈或下游合同信号；报价提交版本、客户反馈材料和完整报价版本流转尚未验收
+- 实现证据：query_quote_acceptance_context 将报价承接决定、后续承接结果和开放中的报价决定按项目上下文返回，供会话查询核对；当前只查询已登记业务单据事实，不生成报价版本、不提交客户反馈、不覆盖原报价依据；query_quote_evaluation_context 进一步汇总报价金额、加工方式、可见合同和客户反馈/下游事实信号，并保留 gaps 说明正式提交版本与客户反馈仍需专门材料
+- 验证证据：tests/test_quote_tools.py 覆盖有效承接、开放决定集合和项目线索定位；tests/test_quote_evaluation_tools.py 覆盖客户反馈或下游合同信号；报价提交版本与客户反馈全流程尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-011
@@ -148,8 +149,8 @@ Agent 开发客户分类、中标接收、匹配、人工承接/拒单及同一�
 海尔中标后由项目参与人员评估内部生产、整套委外或拒单。承接决定和拒单原因留存；按实际收到的客户开工通知维护订单编号、开工时间及交期。海尔平台对接方式单独适配，不能将客户平台自动下发理解为本系统已具备自动接口。
 
 - 最新口径：客户平台自动连接已由用户取消；保留人工接收、维护、确认及依据。
-- 实现证据：query_bid_intake_context 的 limitations 明确海尔等客户平台自动对接不作为已具备能力；当前只核对人工接收、维护、确认和依据；工具返回承接/拒单决定、最终加工方式和项目状态；prepare_quote_acceptance_decision 可在人为评估后提交承接或拒单 BPM，但不自动从客户平台下发或维护外部开工通知
-- 验证证据：tests/test_bid_intake_tools.py 覆盖承接/拒单上下文读取和权限边界；tests/test_quote_tools.py 覆盖承接/拒单 proposal 确认链；海尔人工中标接收、项目参与人员评估材料及客户开工通知维护尚未验收
+- 实现证据：query_bid_intake_context 的 limitations 明确海尔等客户平台自动对接不作为已具备能力；当前只核对人工接收、维护、确认和依据；工具返回承接/拒单决定、最终加工方式和项目状态，但不自动从客户平台下发或维护外部开工通知
+- 验证证据：tests/test_bid_intake_tools.py 覆盖承接/拒单上下文读取和权限边界；海尔人工中标接收、项目参与人员评估及客户开工通知维护尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-016
@@ -175,8 +176,8 @@ Agent 开发客户分类、中标接收、匹配、人工承接/拒单及同一�
 历史模具关系区分备份模具与参考模具，历史模号由相关人员确认。项目负责人会同设计、部门主管等评估利润、负荷和工艺后，确认内部承接、整套委外或拒单。涉及厂内量产或整套委外时通知对应冲压、采购等岗位，具体审批人员按适配矩阵执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_bid_intake_context 仅在具备项目业务档案读取权限时返回内部模具或历史模具关联，并把承接决定、执行方式和拒单记录作为独立事实展示；prepare_quote_acceptance_decision 对承接要求明确最终加工方式，拒单保留依据并提交 BPM；涉及整套委外或厂内生产通知仍须后续审批矩阵和业务流程
-- 验证证据：tests/test_bid_intake_tools.py 覆盖模具关系权限隔离、承接/拒单上下文和多候选边界；tests/test_quote_tools.py 覆盖承接最终加工方式校验与拒单提案；备份模具/参考模具区分、历史模号人工确认和岗位通知矩阵尚未验收
+- 实现证据：query_bid_intake_context 仅在具备项目业务档案读取权限时返回内部模具或历史模具关联，并把承接决定、执行方式和拒单记录作为独立事实展示；工具提示未见模具关系或客户来源材料时不能编造历史模具；涉及整套委外或厂内生产通知仍须后续审批矩阵和业务流程
+- 验证证据：tests/test_bid_intake_tools.py 覆盖模具关系权限隔离、承接/拒单上下文和多候选边界；备份模具/参考模具区分、历史模号人工确认和岗位通知矩阵尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-019
@@ -184,8 +185,8 @@ Agent 开发客户分类、中标接收、匹配、人工承接/拒单及同一�
 开工通知单草稿可在承接确认前建立，承接审批后继续完善同一条记录；不得因状态变化重复建单。拒单记录保留原因和审批依据，不进入任务执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 同时返回有效承接、有效拒单、开放报价决定和正式开工摘要，帮助核对承接后是否已有开工事实；prepare_quote_acceptance_decision 阻止已有有效承接/拒单和待处理承接/拒单重复准备，拒单依据会随 quote_acceptance 材料提交 BPM；开工通知草稿由正式开工链路独立处理
-- 验证证据：tests/test_quote_tools.py 覆盖有效承接/正式开工摘要、权限边界、承接/拒单提案、重复决定阻断和拒单参数校验；同一开工通知草稿延续、客户订单字段维护和真实业务验收尚未完成
+- 实现证据：query_quote_acceptance_context 同时返回有效承接、有效拒单、开放报价决定和正式开工摘要，帮助核对承接后是否已有开工事实；工具只读且不新建开工通知单；拒单原因、审批依据和同一草稿延续仍需后续业务流程实现
+- 验证证据：tests/test_quote_tools.py 覆盖有效承接/正式开工摘要和权限边界；开工草稿延续及拒单审批依据尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 内部开工
@@ -197,8 +198,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 客户工艺方案确认并收到客户开工通知后，满足正式启动条件。项目负责人正式下达内部开工通知，通知设计、采购、生产、装配、财务等相关部门。承接确认、客户开工条件和内部正式下达分别留存依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；query_internal_start_readiness 汇总项目状态、有效承接、正式开工通知、合同和计划上下文，区分承接确认、合同和内部正式下达；prepare_internal_start 基于查询返回的真实项目、项目版本、已生效承接记录和审批流程准备正式开工通知 proposal，本人确认后才创建 internal_start 材料并提交 Agent BPM，审批生效前不改变项目状态或发送 ERP 执行任务
-- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态；tests/test_start_tools.py 覆盖具备承接依据时可准备开工、已有正式开工时不重复准备、正式开工 proposal 不直接建单、人工确认后提交 BPM、项目审批前仍为 DRAFT、项目版本变化拒绝旧 proposal；客户工艺方案正式业务验收和完整部门通知矩阵尚未验收
+- 实现证据：query_quote_acceptance_context 把承接确认、内部正式开工和销售合同作为独立上下文返回，避免把承接或合同误判为正式下达；正式下达、部门通知和客户开工条件校验仍需独立流程，不由本工具执行；query_internal_start_readiness 汇总项目状态、有效承接、正式开工通知、合同和计划上下文，区分承接确认、合同和内部正式下达；readiness.known_blockers/warnings/hints 只表达当前可见事实，不创建开工通知或发送部门任务
+- 验证证据：tests/test_quote_tools.py 覆盖 has_effective_acceptance、has_formal_start、has_sales_contract 的独立派生状态；tests/test_start_tools.py 覆盖具备承接依据时可准备开工、已有正式开工时不重复准备；客户工艺方案确认和部门通知矩阵尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-021
@@ -206,8 +207,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 正式下达前允许匹配数据、准备草稿和项目计划草案，并按业务需要开展开工前的工艺评估及客户确认；不得下达或执行生产、采购、装配、试模任务。正式下达后，部门任务仍应按项目计划审批结果执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；prepare_internal_start 只生成待本人确认的开工通知提案并提交 BPM，审批生效前项目仍为 DRAFT，正式开工后仍须按项目计划审批结果执行
-- 验证证据：tests/test_start_tools.py 验证工具只读核对、can_prepare_start_from_known_facts、开工 proposal 人工确认链和审批前不改变项目状态；真实开工前工艺评估、客户确认资料和正式任务门禁全流程尚未业务验收
+- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行
+- 验证证据：tests/test_start_tools.py 验证工具只读核对与 can_prepare_start_from_known_facts；开工前草稿准备和正式任务门禁全流程尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-022
@@ -215,8 +216,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部开工业务状态为：待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中。中标接收、匹配等处理动作另留记录；拒单记录原因后结束，暂停和终止按第12章管理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；prepare_internal_start 将“待正式下达”推进为受控 BPM 提案，暂停、终止和拒单场景通过 blocker/warning 或领域校验阻断，不自动推进状态
-- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工、多候选、人工确认提交 BPM 和版本冲突；完整内部开工业务状态机、审批生效后全链路通知和真实 ERP 执行门禁仍未验收
+- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态
+- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-023
@@ -242,8 +243,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 财务按确认方式取得BPM等来源的开工通知，核对订单和合同信息；客户付款节点单独维护，不仅保存备注。移模时间按客户签收时间记录，由财务人工维护；签收不等于质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认；prepare_internal_start 通过 Agent BPM 形成财务可追溯的开工通知来源，但不维护移模时间、不确认客户付款节点、不替代财务核对
-- 验证证据：tests/test_start_tools.py 覆盖开工通知独立于承接、正式开工通知提交 BPM；tests/test_contract_tools.py 覆盖付款节点只读展示，财务实际取得并核对 BPM 开工通知、移模维护和客户付款节点业务验收尚未完成
+- 实现证据：正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认；工具只读，不维护移模时间、不确认客户付款节点、不替代财务核对
+- 验证证据：tests/test_start_tools.py 覆盖开工通知独立于承接；tests/test_contract_tools.py 覆盖付款节点只读展示，财务取得 BPM 开工通知和移模维护尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 合同上传与管理
@@ -255,8 +256,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 合同应与中标、开工通知、项目、模具和客户订单建立关联，记录合同编号、签订日期、金额、交期、付款方式、付款节点和相关凭证。财务以确认后的合同数据作为对账及收付款条件依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_contract_context 按项目或合同线索汇总销售合同、付款节点、金额币种和合同上下文，供财务/业务核对；合同明细必须同时具备对应合同查询工具和业务权限；有 prepare_contract_record 能力时上下文返回销售合同/整套委外合同可选 BPM 流程；prepare_contract_record 使用真实项目版本、有效客户或委外供应商、合同金额、付款节点和流程 ID 准备会话 proposal，本人确认后才创建 sales_contract/full_outsource_contract 业务材料并提交 Agent BPM；审批生效前不视为正式合同，不确认收付款，不触发 ERP 合同执行
-- 验证证据：tests/test_contract_tools.py 覆盖合同号定位、付款节点汇总、合同金额合计、合同 workflow_options、proposal 不直接建单、本人确认后创建合同材料并提交 BPM、付款节点入库、重复合同号阻断和无效客户阻断；凭证上传、签订日期、OCR/电子合同文件正文识别和正式财务对账尚未验收
+- 实现证据：query_contract_context 按项目或合同线索汇总销售合同、付款节点、金额币种和合同上下文，供财务/业务核对；合同明细必须同时具备对应合同查询工具和业务权限；上下文工具不上传凭证、不确认收付款
+- 验证证据：tests/test_contract_tools.py 覆盖合同号定位、付款节点汇总和合同金额合计；凭证上传、签订日期和正式财务对账尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-027
@@ -273,8 +274,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 电子合同与纸质合同最终均需形成可追溯电子资料，记录上传人、上传时间、审批记录和版本。正式流程由业务人员上传并提交业务主管审核；现有设计文员或项目负责人上传路径如需保留，应在适配清单明确。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：合同查询请求仍只读取已登记合同事实和付款节点，明确不 OCR、不确认收付款；prepare_contract_record 可准备合同登记/补录审批建议并通过本人确认提交 BPM，形成合同业务材料与审批记录；prepare_contract_signing_record 可准备整套委外合同线下签署文件/签署状态证据登记 proposal，本人确认后才写入 ContractSigningRecord；Skill 指令要求查询先只读，办理必须先查上下文再准备 proposal，合同文件正文识别、电子签、附件版本和实际收付款继续走人工确认及专门流程
-- 验证证据：tests/test_contract_tools.py 覆盖只读上下文、合同登记 proposal、本人确认后提交 BPM、签署证据 proposal 不直接写库、本人确认后写入签署记录，以及重复/无效资料阻断；电子/纸质合同文件上传人、上传时间、附件版本、OCR/电子签和真实审核记录尚未验收
+- 实现证据：当前合同上下文只读取已登记合同事实和付款节点，明确不上传合同、不 OCR、不生成审批版本；Skill 指令要求合同上传、审核和版本仍走人工确认及审批流程
+- 验证证据：tests/test_contract_tools.py 覆盖只读上下文；电子/纸质合同资料上传人、上传时间、附件版本和审核记录尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-029
@@ -322,8 +323,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备基线计划 prepare 能力且权限满足时，query_project_plan_context 返回 baseline_workflow_options；prepare_project_plan_baseline 要求使用查询返回的真实项目、项目版本、完整任务清单和流程 ID 生成会话提案，本人确认后才创建 project_plan 并提交 Agent BPM，且会阻断未正式开工、已有有效计划或待处理计划申请的项目；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；基线计划和计划变更均走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、基线计划 proposal 不写业务、本人确认后提交 project_plan BPM、重复计划阻断、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-034
@@ -340,8 +341,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 现有业务以55天作为一套模具项目周期的参考，由项目负责人结合线下评估填写，不作为全部模具固定承诺，也不等同于人员计费工时。自然日或工作日、节假日和各类模具周期模板在适配阶段确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 的 limitations 明确 55 天周期、自然日/工作日、节假日和周期模板仍须适配确认，不能作为固定承诺；大节点覆盖仅按当前计划任务事实辅助核对；prepare_project_plan_baseline 接受项目负责人填写的完整任务清单并按日期/依赖规则校验，但不内置固定 55 天承诺
-- 验证证据：tests/test_plan_tools.py 覆盖计划任务事实分析，以及基线计划 proposal 的任务清单和审批提交链路；周期模板和日历适配尚未验收
+- 实现证据：query_project_plan_context 的 limitations 明确 55 天周期、自然日/工作日、节假日和周期模板仍须适配确认，不能作为固定承诺；大节点覆盖仅按当前计划任务事实辅助核对
+- 验证证据：tests/test_plan_tools.py 覆盖计划任务事实分析；周期模板和日历适配尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-036
@@ -349,8 +350,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 大节点至少覆盖设计工艺分析、结构设计及出图，原材料、五金和委外采购，工序加工，装配，试模及最终交付。开工、试模完成及出库等客户节点应形成提醒或待办，由项目负责人核对维护。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口；prepare_project_plan_baseline 的预览展示基线计划任务数、计划节点和大节点覆盖情况；对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖
-- 验证证据：tests/test_plan_tools.py 覆盖大节点缺口识别和基线计划完整大节点覆盖；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表
+- 实现证据：analysis.milestone_coverage 按任务名称/标识辅助核对设计、采购、加工、装配、试模、交付等大节点覆盖和缺口；对话依据展示新增“项目大节点 / 计划任务表”，列出节点、状态、计划日期和前置依赖；analysis.visualization.timeline 按当前有效计划输出可渲染节点时间线，供对话和右侧材料展示大节点顺序
+- 验证证据：tests/test_plan_tools.py 覆盖大节点缺口识别和时间线顺序；web/src/components/BusinessFacts.vue 对 analysis.tasks 渲染计划任务表
 - 验收状态：NOT_VERIFIED
 
 ### FR-037
@@ -358,8 +359,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 部门任务关联项目、模具和对应成果或工单，保存负责人、计划时间、实际时间、状态和完成依据。人员设备排班方式及细分任务粒度在适配阶段确定，任务完成记录应支持进度和实际工时追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目计划上下文返回任务负责人、计划时间、实际时间、状态和依赖，供进度与实际执行核对；工具不登记实际执行、不计算人员设备排班或工时
-- 验证证据：tests/test_plan_tools.py 覆盖运行中、已完成和计划中任务分析；实际工时追溯和 ERP 工单成果关联尚未验收
+- 实现证据：项目计划上下文返回任务负责人、计划时间、实际时间、状态和依赖，供进度与实际执行核对；analysis.visualization.kanban.columns 将计划任务按未开始、进行中和已完成三类输出，避免模型按自然语言自行归类；工具不登记实际执行、不计算人员设备排班或工时
+- 验证证据：tests/test_plan_tools.py 覆盖运行中、已完成和计划中任务分析及看板列；实际工时追溯和 ERP 工单成果关联尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-038
@@ -367,8 +368,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 装配可在零件齐套达到设定条件时启动，现有参考阈值为70%至80%，允许配置。比例口径、关键件条件及统计范围须确认；不得仅凭总体百分比认定所有装配前置条件满足。试模必须在对应装配任务完成后正式开展。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成；prepare_project_plan_baseline 会校验任务依赖和日期顺序，可阻止试模等节点早于前置节点的基线计划；limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定
-- 验证证据：tests/test_plan_tools.py 覆盖依赖阻塞任务和基线计划依赖校验链路；装配齐套率和关键件口径尚未验收
+- 实现证据：项目计划上下文能展示装配和试模节点及其前置依赖，辅助核对试模是否等待装配完成；analysis.visualization.kanban.risk_lanes.blocked 输出依赖阻塞节点及等待前置任务，供看板直接展示而非模型猜测；limitations 明确齐套率、关键件条件和统计范围不能由本工具默认认定
+- 验证证据：tests/test_plan_tools.py 覆盖依赖阻塞任务及风险泳道；装配齐套率和关键件口径尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-039
@@ -376,8 +377,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 异常先评估影响。不改变已批准计划的普通异常只记录问题、处理结果和实际耗时，不强制重排；影响节点、交期或跨部门协同的，由项目负责人组织调整并按审批结果执行。是否合并多项异常统一处理由项目负责人确定。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对；prepare_project_plan_change 可把影响节点的调整方案封装为本人确认后的 plan_change BPM 提案；普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理
-- 验证证据：tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析和计划变更 proposal 确认链路；异常来源到计划变更的完整部门协同仍未验收
+- 实现证据：query_project_plan_context 区分有效计划、开放计划变更和逾期/依赖阻塞节点，供异常是否需要调整计划时核对；analysis.visualization.kanban.risk_lanes.overdue 将逾期节点输出为结构化风险泳道，便于后续异常协同入口引用；query_change_intake_context 新增 plan_adjustment_candidates，把影响计划节点、WIP任务、返工/重发/暂停/取消或登记交期影响天数的工程联络事项结构化为计划调整候选，并输出匹配计划任务、证据缺口和 plan_change_prepare_seed；seed 只冻结项目、当前计划 previous_id、来源和变更意图，仍要求先查 query_project_plan_context 获取完整任务清单；change_intake_review Skill 明确 plan_adjustment_candidates 只是候选证据；只有证据齐全、可选计划工具可用且用户要求办理时，才回查项目计划上下文并进入项目计划变更 Skill；prepare_project_plan_change 可把影响节点的调整方案封装为本人确认后的 plan_change BPM 提案；普通异常记录、处理结果、实际耗时和是否合并异常仍由工程联络/异常流程处理
+- 验证证据：tests/test_plan_tools.py 覆盖 open_plan_changes、逾期节点分析、逾期风险泳道和计划变更 proposal 确认链路；tests/test_change_intake_tools.py 覆盖工程联络事项到计划调整候选的结构化桥接、准备种子、权限隔离和证据缺口；tests/test_capability_catalog.py 覆盖设变 Skill 的计划变更桥接为可选依赖；真实部门协同验收仍未完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-040
@@ -385,8 +386,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 节点调整记录原计划、新计划、原因、影响范围及审批附件。内部部门提出调整后通知项目负责人，由其协调并通知受影响部门；客户变更由项目负责人组织传达。不得只留延期说明而不更新相应计划及任务。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_baseline 与 prepare_project_plan_change 分别处理初始计划和节点调整，已有有效计划或待处理计划时会阻断基线计划并要求走计划变更；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；部门确认矩阵和更完整的受影响部门通知规则仍待补齐
-- 验证证据：tests/test_plan_tools.py 覆盖基线计划重复阻断、计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人；完整部门通知尚未验收
+- 实现证据：计划上下文返回计划变更记录和原计划 previous_id 明细，帮助查询调整记录和影响范围；prepare_project_plan_change 的预览显示原计划、新计划、原因、新增/删除/变更节点，并在本人确认后提交 plan_change BPM；计划变更 proposal 支持 material_review_id；资料模板流程会把已确认核对包、file_sha256、review_hash 和 material_data 冻结进审批快照，作为节点调整审批附件依据；审批生效前不更新相应计划及任务；审批生效后 plan.change.effective 事件按受影响任务通知新旧节点负责人；计划变更影响范围输出 affected_departments 矩阵，按部门、责任人、任务标识和新增/删除/调整/责任人变更类型冻结到提案预览、审批生效事件和审计详情；审批生效后按 affected_departments 生成 plan_department_confirmation 部门确认项，优先派给组织目录部门负责人，没有部门负责人时派给受影响任务责任人；确认接口执行权限、确认人身份和版本校验后记录审计与通知；plan_adjustment_candidates 将工程联络事项、处理方案状态、交期影响和精确匹配的计划任务作为计划变更提案前置依据；plan_change_prepare_seed 标明 previous_id、项目版本和完整任务列表约束；证据不足时仅列缺口，不创建 plan_change；能力目录通过 optional_dependencies 表达设变核对到项目计划变更的可选桥接，不把计划变更权限作为只读设变核对的硬前提
+- 验证证据：tests/test_plan_tools.py 覆盖计划变更权限隔离、确认后提交 BPM、资料核对包冻结为审批附件依据，以及生效后 Outbox 通知受影响任务负责人、生成部门确认项、派发部门确认通知、负责人确认并在 query_project_plan_context 返回确认状态；tests/test_change_intake_tools.py 覆盖工程联络影响计划任务时的候选生成、准备种子和缺口阻断；tests/test_capability_catalog.py 覆盖可选桥接依赖；ERP 执行进度和完整看板尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-041
@@ -394,8 +395,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 内部计划顺延不直接修改客户承诺交期。涉及客户交期变化时记录客户确认依据，未确认的标记交期风险；跨部门节点按依赖和影响调整，不能无依据地将全部任务等量顺延。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：客户承诺日期与内部计划节点分开返回，并用 customer_due_risk_tasks 标识晚于客户承诺日期的未完成节点；工具不无依据等量顺延全部任务，也不修改客户承诺交期
-- 验证证据：tests/test_plan_tools.py 覆盖客户交期风险任务识别；客户确认依据和跨部门调整执行尚未验收
+- 实现证据：客户承诺日期与内部计划节点分开返回，并用 customer_due_risk_tasks 标识晚于客户承诺日期的未完成节点；analysis.visualization.kanban.risk_lanes.customer_due_risk 将客户交期风险节点结构化输出，供看板高亮但不改客户承诺日期；工具不无依据等量顺延全部任务，也不修改客户承诺交期
+- 验证证据：tests/test_plan_tools.py 覆盖客户交期风险任务识别及客户交期风险泳道；客户确认依据和跨部门调整执行尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-042
@@ -403,8 +404,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 计划应支持查看原计划、调整记录和实际进度，二维表、甘特图及进度看板的具体样式和计算规则后续适配。暂停恢复按第12章的整体暂停规则执行，不与普通节点调整混用。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 支持查看有效计划、计划变更、实际进度和依赖阻塞；暂停恢复仍由 project_pause_resume 独立工具处理；对话中新增计划任务表格依据展示，但甘特图和完整进度看板样式仍待适配
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划与计划变更查询；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证
+- 实现证据：query_project_plan_context 支持查看有效计划、计划变更、实际进度和依赖阻塞；暂停恢复仍由 project_pause_resume 独立工具处理；query_project_plan_context 新增 erp_execution_progress，只读引用 ERP /system/projectNode/list 与 /system/productionSchedule/list 的节点、工单、状态、计划/实际时间、进度和原生引用；未配置、未登录、无模具引用或 ERP 异常会明确返回状态，不把未知进度当作无待办；analysis.visualization 输出 project_plan_visualization_v1：包含任务时间线、未开始/进行中/已完成看板列、逾期/依赖阻塞/客户交期风险泳道，以及 ERP 外部进度可用状态；该结构只供渲染，不直接修改批准计划；对话中新增计划任务表格依据展示；完整交互式甘特图样式、工作日/节假日、资源负荷和拖拽改期规则仍待适配
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划与计划变更查询、计划时间线/看板数据契约、ERP 未配置状态、Mock ERP 进度只读引用和非契约字段过滤；web/src/components/BusinessFacts.vue 表格渲染通过前端构建验证
 - 验收状态：NOT_VERIFIED
 
 ## 设计与成果协同
@@ -634,8 +635,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 固定物流路线维护出发地、接收地、承运商、车型或运输方式、计价单位、含税方式和有效期。现有固定路线主要用于冲压业务；模具物流按实际路线处理，两类业务均保存地点、重量、车型及历史价格。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：新增 logistics_route / logistics_quote PostgreSQL 模型与迁移，保存项目/全局路线、出发地、接收地、承运商、车型/运输方式、计价单位、含税方式、报价有效期和审批证据；query_delivery_logistics_context 返回 analysis.logistics_pricing，区分有效路线报价、过期报价、待审批报价和缺口，没有结构化路线或有效报价时不编造路线、承运商、车型或价格
-- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖无结构化物流路线时返回缺口，以及有效路线报价返回承运商、车型、计价单位、含税方式和有效期；路线/报价正式维护入口、地点/重量/历史价格完整维护和真实业务验收仍未完成
+- 实现证据：LogisticsRoute 结构化保存全局固定路线或项目实际路线、地点、承运商、车型、重量、运输方式、计价单位、含税方式、有效期、确认人、确认时间、来源引用和历史记录；prepare_logistics_route 要求 project.read 与 warehouse.configure 精确范围权限，项目实际路线绑定当前项目版本；只生成对话确认卡，本人确认后才追加仓库已核对路线；query_delivery_logistics_context 同时返回路线历史与当前有效路线；只有路线存在但没有有效报价时明确返回价格缺口，不编造承运商、车型或价格
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖确认前不写库、本人确认后保存项目实际路线、项目版本/重量/有效期/来源/确认人持久化，以及有路线无报价的只读回查；tests/test_capability_catalog.py 与 tests/test_model_harness.py 覆盖仓库路线确认能力、按需激活和只读请求不得开放 prepare 工具；真实仓库路线核对、ERP 发运关联和业务签字仍待验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-066
@@ -643,8 +644,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 仓库确认路线后匹配审批有效价格并形成物流费用。无固定路线或未匹配有效价格时，由采购主管询比议价并审批，生成本次结算价格及对账依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：logistics_quote 可绑定 settlement_for_project_id 作为项目本次结算价候选；query_delivery_logistics_context 在 analysis.logistics_pricing.settlement_price_candidates 返回匹配项目的有效结算价，并用 has_project_logistics_settlement_price 区分“已有有效报价”和“已有本项目结算价”；仓库收货、检验和供应商发货不会被推断为已形成物流费用
-- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖有效路线报价和项目结算价候选；仓库确认路线、采购主管询比议价审批、费用对账依据和财务结算联动尚未正式实现/验收
+- 实现证据：prepare_logistics_quote 基于当前有效且已确认路线准备通用有效报价或项目本次结算价格，要求 warehouse.read、purchase_price.approve，并在项目结算场景重新核验 project.read 与项目版本；报价确认卡保存供应商、单价、币种、有效期、计价方式、比价数量/摘要、报价依据、对账依据、来源引用和明确替换的原报价；本人确认后才登记 EFFECTIVE 价格；同一路线及结算范围内有效期重叠的价格必须明确 supersedes_quote_id；确认后原报价标记 CANCELLED、新报价保留替代链，不能静默覆盖历史价格；query_delivery_logistics_context 只把当前有效路线上的 EFFECTIVE 报价列为有效价格，并单独标识项目结算价候选；不会把路线、发货、签收、付款或财务对账相互推断
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖确认前不写库、采购价格权限确认后生成有效项目结算价、询比议价与对账依据持久化、有效报价匹配、显式价格替换和重叠报价阻断；实际物流费用单生成、真实采购主管签字、承运商对账单/发运单核验及 ERP/财务入账仍待正式业务验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-067
@@ -652,8 +653,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 物流报价保存有效期，现有业务约定最长半年，期满或价格变化后重新维护并按需要多家比价。具体期限作为适配参数确认。发货时间、物流单、费用及对应项目模具应可追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 结果包含供应商发货 reference、仓库收货 reference、库存移动 source_key 和对应项目上下文；新增 logistics_quote.valid_from / valid_to 并在 analysis.logistics_pricing 中返回有效、过期和待审批报价，保留本次结算价候选与项目模具追溯关系
-- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖发货、收货、出库移动追溯、有效报价期和项目结算价候选；半年上限参数、多家比价、物流费用对账、客户签收和 ERP/财务联调尚未正式实现/验收
+- 实现证据：物流报价有效期由 MOLD_LOGISTICS_QUOTE_MAX_VALID_DAYS 配置，默认 183 天；倒置日期和超期报价在准备阶段即阻断；COMPETITIVE 多家比价必须至少登记两家并填写参与方/比较结论摘要；报价变化必须显式关联被替换价格，保留新旧来源和历史链；query_delivery_logistics_context 继续追溯供应商发货 reference、仓库收货 reference、库存移动 source_key、项目、路线、报价和本次结算价格，但不把这些线索冒充实际物流费用或财务对账完成
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖 183 天配置边界的超期阻断、多家比价数量/摘要必填、价格替换历史、来源追溯及路线/报价治理字段回查；真实报价附件、承运商物流单、实际费用对账、付款和 ERP/财务联调仍待正式业务验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-068
@@ -661,8 +662,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 发货后记录客户签收和客户验收结果，两者分别确认。验收结果作为适用的回款及归档依据；签收日期按移模业务规则维护，不自动认定质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：新增 customer_delivery_signature / customer_acceptance_record PostgreSQL 模型与迁移，分别保存客户签收/移模签收、客户质量验收、复验、责任判断、整改期限和证据；query_delivery_logistics_context 返回 analysis.customer_delivery_acceptance，并将 has_customer_signature 与 has_customer_acceptance 分开，签收不会自动推断为客户验收通过；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仍仅作为客户验收依据之一展示
-- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖客户签收与客户验收分离、签收后未验收仍返回缺口，以及普通仓库视角不泄露客户验收失败原因和扣款金额；真实签收日期、移模业务规则和回款归档联动尚未验收
+- 实现证据：query_delivery_logistics_context 将客户签收 has_customer_signature 与客户验收 has_customer_acceptance 分开；当前无签收结构化模型时不自动认定签收；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仅作为客户验收依据之一展示，不把供应商发货、仓库收货或试模通过等同于客户验收
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖客户验收清单 DONE 可被识别，同时 has_customer_signature 仍为 false；真实签收日期、移模业务规则和回款归档联动尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-069
@@ -670,8 +671,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 客户验收不通过时记录问题、证据、责任判断和处理期限，关联工程联络单或供应商整改任务。整改后安排复验并记录最终结果，涉及费用、扣款、交期和合同变化时同步对应记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：customer_acceptance_record 保存客户验收不通过的问题描述、责任判断、整改期限、关联工程联络单、供应商、扣款金额、交期影响天数和合同变化要求；query_delivery_logistics_context 在验收失败且无复验通过时提示不能认定闭环完成，扣款、合同变化和交期影响分别写入 warnings，并继续汇总质量、交付、物流或验收相关工程联络事项
-- 验证证据：tests/test_delivery_logistics_tools.py 通过 PostgreSQL moldpilot_test 覆盖客户验收失败、扣款金额、合同变化、交期影响和未复验通过警示；真实供应商整改任务、财务扣款、计划/合同变化同步和 ERP/财务联调尚未正式验收
+- 实现证据：query_delivery_logistics_context 汇总质量、交付、物流或验收相关工程联络事项，存在未关闭事项时 warnings 提醒不能认定整改闭环完成；收货检验不合格数量、试模未通过和客户验收/质量联络分别触发警示，要求关联退换货、扣款、整改或工程联络处理
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖收货检验不合格、客户验收质量联络和开放整改事项提示；客户验收不通过后的复验、费用扣款、交期与合同变化同步尚未完整联调
 - 验收状态：NOT_VERIFIED
 
 ## 整套委外协同
@@ -692,8 +693,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 项目部跟踪供应商设计、采购、生产、质检、装配、试模、验收等适用节点；供应商上报，采购跟进并同步项目。具体节点、填报频率和证据模板后续适配；供应商是否登录系统另行确认，不默认必须具备供应商门户。
 
 - 最新口径：不开发供应商门户；保留授权人员录入/导入上报证据和采购、项目协同。
-- 实现证据：新增 supplier_progress_report PostgreSQL 模型与迁移，保存授权人员录入/导入的供应商阶段上报、状态、进度百分比、下次跟进日期、问题摘要、证据和采购跟进人；query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并新增 analysis.supplier_progress_reports，把供应商节点上报与订单/发货/收货事实分开展示；full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商生产质检装配试模验收节点、供应商进度上报、风险/阻塞、逾期跟进、供应商发货与我方收货聚合；供应商填报频率、证据模板、供应商侧接入和真实协同流程尚未适配验收
+- 实现证据：query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并把供应商执行跟踪与订单/发货/收货事实分开展示；prepare_supplier_progress_report 使用真实项目版本、供应商、已生效整套委外合同和可选计划任务准备对话确认卡，风险/阻塞/返工强制保留问题摘要与下次跟进日期，本人确认后才写入节点上报证据；新增版本化 SupplierProgressPolicy PostgreSQL 模型与 prepare_supplier_progress_policy 对话办理工具，按项目、供应商、合同、阶段和可选计划节点保存填报频率、生效日期、首次应报日期、必需证据类型、依据与来源；替换时保留历史版本并重新校验当前生效规则；SupplierProgressReport 增加结构化 evidence_items；存在生效规则时 prepare_supplier_progress_report 强制核对必需证据类型，query_full_outsource_context 返回规则版本、最新上报、下次应报日期、逾期与缺证据状态；full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径
+- 验证证据：tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合、规则 proposal 不直接写库、本人确认后写入版本化规则、必需证据阻断、逾期派生、规则替换与旧版失效，以及节点上报 proposal 的计划任务一致性、重复来源和风险必填项；tests/test_model_harness.py 覆盖普通节点上报与上报频率/证据模板规则的按需工具收窄；供应商侧接入、ERP 联调和真实协同流程尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-072
@@ -701,8 +702,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 供应商负责合同约定的生产与整改，我方负责相应的合同、节点、交付及验收结果核验和异常跟进。设计或项目人员上传客户资料，采购按合同和业务需要向供应商提供获准资料，并保留交接依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：新增 supplier_material_handoff PostgreSQL 模型与迁移，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人；query_full_outsource_context 返回已生效整套委外合同、供应商资料交接、供应商节点上报、供应商发货/收货/检验、工程联络质量延期问题、设变整改影响和客户验收/关闭清单上下文；prepare_supplier_material_handoff 基于真实项目版本、有效供应商、已生效整套委外合同和交接依据准备对话内确认卡，本人确认后才写入资料交接证据，不创建供应商门户、不代表供应商已核验、不触发 ERP 执行；analysis.warnings 在未关闭委外质量、延期、验收、扣款或草稿/撤回资料交接事项存在时阻止认定异常闭环
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商资料交接、供应商收货检验不合格、工程联络整改扣款线索、客户验收清单、资料交接 proposal 不直接写库、本人确认后写入 SupplierMaterialHandoff、重复来源和正式获准交接缺少合同阻断；真实客户资料上传、附件安全、采购向供应商提供资料正式审批/回执和供应商核验反馈尚未验收
+- 实现证据：新增 supplier_material_handoff PostgreSQL 模型与迁移，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人；新增追加式 supplier_material_verification PostgreSQL 模型与对话办理工具，关联一条已批准资料交接，分别保存供应商已收到、已接受、待澄清或退回结果、回复人/渠道/日期、回复文件、原因、跟进日期和来源引用；核验结果不覆盖原交接记录；query_full_outsource_context 返回已生效整套委外合同、供应商资料交接、供应商发货/收货/检验、工程联络质量延期问题、设变整改影响和客户验收/关闭清单上下文；prepare_supplier_material_handoff 基于真实项目版本、有效供应商、已生效整套委外合同和交接依据准备对话内确认卡，本人确认后才写入资料交接证据，不创建供应商门户、不代表供应商已核验、不触发 ERP 执行；prepare_supplier_material_verification 重新校验项目版本、合同、供应商和交接记录一致性，本人确认后才追加核验；query_full_outsource_context 区分 RECEIVED 与 ACCEPTED，并显式返回未核验、待澄清和退回资料；analysis.warnings 在未关闭委外质量、延期、验收、扣款、草稿/撤回资料交接或供应商资料核验未完成时阻止认定异常闭环
+- 验证证据：tests/test_full_outsource_tools.py 覆盖资料交接 proposal、供应商核验 proposal 不直接写库、本人确认后追加 SupplierMaterialVerification、重复来源/日期倒置/退回缺少原因与跟进日期阻断，以及已收到不等于已接受；tests/test_capability_catalog.py 和 tests/test_model_harness.py 覆盖能力登记与按需工具选择；真实客户资料上传、附件安全、正式采购审批和供应商真实反馈仍待联调验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-073
@@ -710,8 +711,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 采购合同按模板、审批和签订流程办理，供应商在线签署属于原需求中的目标能力，其具体服务及签署方式须确认。未确定电子签署接入前，不将草稿自动生成等同于合同已签署。
 
 - 最新口径：在线电子签署已由用户取消；保留模板、人工审核签订及签署文件上传。
-- 实现证据：新增 contract_signing_record PostgreSQL 模型与迁移，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人和证据；query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数、生效状态和 analysis.contract_signing_records，合同草稿、模板生成、审批上下文或非已签署记录不会被认定为已签署合同；prepare_contract_signing_record 基于真实项目版本、已生效整套委外合同和签署依据准备对话内确认卡，本人确认后才写入签署记录，不发起电子签署、不修改合同审批状态；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖已生效委外合同上下文、已签署合同文件证据和合同权限下签署依据可见；tests/test_contract_tools.py 覆盖签署证据 proposal 不直接写库、本人确认后写入 ContractSigningRecord、重复来源和已签署缺少签署日期阻断；合同模板生成、采购主管提交、总经理审批、正式合同附件安全和文件存储联调尚未完整验收
+- 实现证据：新增 contract_signing_record PostgreSQL 模型与迁移，保存合同业务单、模板名称、签署方式、签署状态、签署日期、签署文件标题/文件引用、供应商签署人、采购核对人、批准人和证据；query_full_outsource_context 读取 full_outsource_contract 的状态、合同号、金额、供应商、阶段数、生效状态和 analysis.contract_signing_records；合同草稿、模板生成或报价依据不会被认定为已签署合同；prepare_contract_signing_record 基于真实项目版本、已生效整套委外合同和签署依据准备对话内确认卡，本人确认后才写入签署记录，不发起电子签署、不修改合同审批状态；full_outsource_review Skill 记录用户已取消在线电子签署，保留模板、人工审核签订及签署文件上传口径
+- 验证证据：tests/test_full_outsource_tools.py 覆盖已生效委外合同上下文、已签署合同文件证据和合同权限下签署依据可见；tests/test_contract_tools.py 覆盖签署证据 proposal 不直接写库、本人确认后写入 ContractSigningRecord、重复来源和已签署缺少签署日期阻断；合同模板生成、采购主管提交、总经理审批、正式合同附件安全和文件存储联调尚未完整验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-074
@@ -719,8 +720,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 客户设变关联原供应商、采购合同、当前进度及任务。小范围变化记录客户、我方和供应商沟通结果；需追加或变更合同的，保留原版本并完成相应确认审批。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 汇总 engineering_change 记录中的委外、质量、延期、合同、整改和复验影响，并标记未实施或未复验的影响项；新增 outsource_change_negotiation PostgreSQL 模型与迁移，保存客户报价、供应商报价、议定金额、交期影响、任务影响摘要、是否需要合同变化和审批状态；工程联络/设变、整套委外合同、当前计划节点、订单执行跟踪和设变议价记录在同一上下文中展示，便于核对客户设变对供应商、采购合同和进度的影响
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖工程联络质量延期扣款事项、客户报价、供应商报价、议定金额、交期影响和合同变化要求进入委外上下文；客户设变追加合同、原版本保留和完整审批链尚未验收
+- 实现证据：query_full_outsource_context 汇总 engineering_change 记录中的委外、质量、延期、合同、整改和复验影响，并标记未实施或未复验的影响项；工程联络/设变和整套委外合同、当前计划节点、订单执行跟踪在同一上下文中展示，便于核对客户设变对供应商、采购合同和进度的影响
+- 验证证据：tests/test_full_outsource_tools.py 覆盖工程联络质量延期扣款事项进入委外上下文；客户设变追加合同、原版本保留和完整审批链尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-075
@@ -728,8 +729,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 设变后的委外进度沿用供应商上报、采购跟进、项目同步的机制；根据客户报价及供应商当前执行情况评估并议价，明确新增费用、交期及任务影响。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 将设变/整改影响项、供应商执行跟踪、委外计划节点、设变议价和费用/扣款线索分开返回，避免把方案批准当作新增费用或交期影响已落实；analysis.warnings 对未执行/未复验影响项提示不能把方案批准等同于整改完成，对草稿、议价中或仅达成未审批的委外设变议价记录提示不能作为已落实费用或交期变更
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖质量延期与扣款线索、客户报价、供应商报价、议定金额、交期影响、任务影响和需合同变化提示；设变后的正式交期重排、客户报价审批、供应商当前执行评估和 ERP/财务联调尚未完整验收
+- 实现证据：query_full_outsource_context 将设变/整改影响项、供应商执行跟踪、委外计划节点和费用/扣款线索分开返回，避免把方案批准当作新增费用或交期影响已落实；analysis.warnings 对未执行/未复验影响项提示不能把方案批准等同于整改完成
+- 验证证据：tests/test_full_outsource_tools.py 覆盖质量延期与扣款线索提示；设变后的委外议价、交期重排、客户报价和供应商当前执行评估尚未完整联调验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-076
@@ -737,8 +738,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 质量或延期问题记录事实、责任确认、整改和复验。按适用合同及经确认的责任处理客户对我方、我方对供应商的扣款，不能在责任未确定时仅凭延期自动认定全部由供应商承担。扣款结果关联结算数据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：新增 supplier_deduction_settlement PostgreSQL 模型与迁移，保存项目、供应商、委外合同、工程联络单/任务、扣款原因、责任归属、扣款金额、币种、结算状态、责任依据、结算依据、确认人和来源；query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，并新增 analysis.supplier_deduction_settlements；derived_status.has_deduction_or_cost_impact_signal、has_confirmed_supplier_deduction、has_settled_supplier_deduction、has_pending_supplier_deduction 分别标记扣款线索、责任已确认、已结算和待确认状态；prepare_supplier_deduction_settlement 可基于真实项目版本、供应商、委外合同或工程联络线索准备责任/结算依据确认卡片，本人确认后才写入，不执行收付款或自动抵扣；工具要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖供应商质量延期扣款线索、合同依据、责任确认、已结算扣款和未关闭问题提示；tests/test_finance_context_tools.py 覆盖供应商扣款结算 proposal 不直接写库、本人确认后写入、重复来源阻断和已结算缺少依据阻断；真实复验关闭、客户对我方扣款与我方对供应商扣款联动及 ERP/财务结算写入尚未验收
+- 实现证据：query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索；prepare_supplier_deduction_settlement 基于真实项目版本、供应商、委外合同或工程联络线索准备供应商扣款责任/结算依据确认卡片，本人确认后才写入 SupplierDeductionSettlement，不执行收付款或自动抵扣；full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担
+- 验证证据：tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；tests/test_finance_context_tools.py 覆盖供应商扣款结算 proposal 不直接写库、本人确认后写入、重复来源阻断和已结算缺少依据阻断；真实复验关闭、客户对我方/我方对供应商扣款联动及 ERP/财务结算写入尚未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-077
@@ -746,8 +747,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 委外项目交付、客户验收、回款及关闭按相应通用规则执行，财务记录整套交期、合同号、委外金额、付款和扣款。采购合同、节点上报、交付及结算记录均可查询追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 关联整套委外合同、供应商付款申请与已付款、供应商发货/收货、客户签收、客户验收/复验/扣款、供应商扣款结算、客户验收/关闭清单和结算事项，用于追溯委外交付、验收、回款/付款与关闭上下文；新增 analysis.customer_delivery_acceptance，复用 customer_delivery_signature 与 customer_acceptance_record，不重复建立交付验收表；derived_status.has_supplier_payment_request、has_customer_signature、has_customer_acceptance_record、has_failed_customer_acceptance、has_customer_acceptance_deduction、has_customer_acceptance_contract_change 和 has_customer_acceptance_or_close_evidence 分别标记供应商付款、客户签收、客户验收、验收失败、验收扣款、合同变化和客户验收/关闭依据，避免把交付、签收、验收、付款、扣款、关闭混为同一事实；客户验收/复验/扣款记录受 project_close.read 与 query_project_closure_context 约束，有限权限下不泄露失败原因和扣款金额
-- 验证证据：tests/test_full_outsource_tools.py 通过 PostgreSQL moldpilot_test 覆盖委外合同、供应商付款申请/确认、客户签收、有条件通过验收、验收扣款、合同变化、交期影响、供应商已结算扣款、交付验收清单聚合，以及订单权限/验收权限隔离；真实财务回款、发票、正式付款/扣款入账、整套交期、合同号与 ERP 结算记录联调尚未验收
+- 实现证据：query_full_outsource_context 关联整套委外合同、供应商付款申请与已付款、供应商发货/收货、客户验收/关闭清单和结算事项，用于追溯委外交付、验收、回款/付款与关闭上下文；derived_status.has_supplier_payment_request 和 has_customer_acceptance_or_close_evidence 分别标记供应商付款与客户验收/关闭依据，避免把交付、验收、付款、关闭混为同一事实
+- 验证证据：tests/test_full_outsource_tools.py 覆盖委外合同、供应商付款申请/确认、交付验收清单聚合；真实财务回款、扣款、整套交期、合同号与 ERP 结算记录联调尚未验收
 - 验收状态：NOT_VERIFIED
 
 ## 设变承接
@@ -871,8 +872,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 异常处理须记录方案批准、执行结果及复检或复验结论，由适用责任角色确认关闭。工程联络单获批不表示整改完成；涉及节点、费用及合同事项未落实时应能识别未完成事项。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；当项目存在有效暂停或待审批暂停/恢复申请时，设变承接上下文同时返回 project_control、has_active_project_pause、has_pending_pause_request 和暂停门禁提示，避免在暂停状态下误把计划调整候选当作可直接执行；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警，并覆盖暂停项目下计划调整候选转为 NEEDS_CONTEXT；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
+- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
 - 验收状态：NOT_VERIFIED
 
 ## 暂停与恢复
@@ -884,8 +885,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 收到客户邮件或线下暂停通知时，由项目负责人核实并上传依据，记录原因、暂停开始时间、影响对象及预计情况。暂停状态应通知相关部门，明确受影响任务的执行限制，不能只改变显示颜色而继续无条件下单或报工。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_control_context 支持按项目号、项目名、模具号、工程联络和暂停恢复单号定位项目，返回项目版本、有效计划、未完成任务、当前暂停区间、待处理暂停/恢复申请和可选 Agent BPM；prepare_project_pause 仅准备暂停建议，冻结有效计划和未完成任务范围；本人确认后才创建暂停单并提交 BPM，审批生效后项目状态转为 PAUSED；domains.before_submit/apply 在暂停状态下阻断普通计划、下单、报工、发料等执行业务，同时保留工程联络、合同、结算和恢复等专用流程；query_change_intake_context 在有 pause_resume.read 权限时把 active_pause、pending_pause_requests、allowed_during_pause 与 blocked_during_pause 聚合到设变/联络上下文，权限不足时不泄露暂停原因和依据
-- 验证证据：tests/test_project_pause.py 覆盖暂停冻结未完成任务、计划范围变化阻断生效、按 identifier 查询上下文和暂停期限制/允许事项输出；tests/test_change_intake_tools.py 覆盖已暂停项目的设变上下文门禁提示，以及无 pause_resume.read 权限时不返回 SECRET 暂停原因/依据
+- 实现证据：query_project_control_context 支持按项目号、项目名、模具号、工程联络和暂停恢复单号定位项目，返回项目版本、有效计划、未完成任务、当前暂停区间、待处理暂停/恢复申请和可选 Agent BPM；prepare_project_pause 仅准备暂停建议，冻结有效计划和未完成任务范围；本人确认后才创建暂停单并提交 BPM，审批生效后项目状态转为 PAUSED；domains.before_submit/apply 在暂停状态下阻断普通计划、下单、报工、发料等执行业务，同时保留工程联络、合同、结算和恢复等专用流程
+- 验证证据：tests/test_project_pause.py 覆盖暂停冻结未完成任务、计划范围变化阻断生效、按 identifier 查询上下文和暂停期限制/允许事项输出
 - 验收状态：NOT_VERIFIED
 
 ### FR-092
@@ -893,8 +894,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 恢复时上传恢复通知和恢复时间。项目整体暂停恢复后，未完成节点按实际暂停时长统一顺延，经项目负责人确认生效；已完成节点保留实际日期，同一次暂停不得重复顺延。局部任务调整按第7章影响评估处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：prepare_project_resume 要求关联当前有效暂停记录、恢复依据和恢复日期；恢复生效时按实际暂停天数顺延暂停时冻结的未完成节点；PauseRecord.shift_applied、shifted_days 与 PauseTaskShift 保存每个任务前后计划日期；已完成节点不顺延，同一暂停区间恢复记录唯一防止重复顺延；query_change_intake_context 返回 has_resume_shift_evidence，供设变/异常复盘时识别计划日期是否已经由恢复流程调整
-- 验证证据：tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点保留原日期、同一恢复不能重复应用和查询返回顺延证据；tests/test_change_intake_tools.py 覆盖设变上下文内的暂停/恢复派生状态
+- 实现证据：prepare_project_resume 要求关联当前有效暂停记录、恢复依据和恢复日期；恢复生效时按实际暂停天数顺延暂停时冻结的未完成节点；PauseRecord.shift_applied、shifted_days 与 PauseTaskShift 保存每个任务前后计划日期；已完成节点不顺延，同一暂停区间恢复记录唯一防止重复顺延
+- 验证证据：tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点保留原日期、同一恢复不能重复应用和查询返回顺延证据
 - 验收状态：NOT_VERIFIED
 
 ### FR-093
@@ -902,8 +903,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 顺延保留前后计划、暂停依据和确认记录，客户承诺交期按客户确认单独处理。必要的资料补录、沟通、保管和结算等操作按权限保留，不因暂停一概禁止。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；query_change_intake_context 在设变/工程联络上下文同步返回 customer_due_date_is_independent，提醒 Agent 不得把内部顺延等同为客户承诺交期变更；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认
-- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单；tests/test_change_intake_tools.py 覆盖暂停门禁与客户交期独立状态在设变上下文中的返回
+- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认
+- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单
 - 验收状态：NOT_VERIFIED
 
 ## 终止结算与正常关闭
@@ -982,8 +983,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 按合同适用节点、触发事件、账期和到期日提醒。T0试模、DFM认证、移模签收或验收仅在合同采用时触发；试模后15、30、40天等为合同示例，不作为所有项目统一账期。未到期、到期未收和逾期未收分别记录，特殊标记由财务核实。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_finance_context 按合同实际 PaymentStage 条件返回节点，不把 T0、DFM、试模、签收、验收或账期示例套用为统一规则；新增 CustomerReceiptConfirmation 实际回款确认表，工具 warnings 区分未确认条件、合同收款节点、关闭清单和实际回款确认，不把节点到期或清单核对当成实际回款
-- 验证证据：tests/test_finance_context_tools.py 覆盖合同节点条件未确认时的派生告警、存在收款节点但无实际回款确认时不声称已回款；到期提醒算法和真实财务录入联调待完成
+- 实现证据：query_finance_context 按合同实际 PaymentStage 条件返回节点，不把 T0、DFM、试模、签收、验收或账期示例套用为统一规则；工具 warnings 标识未确认条件和未接入客户实际回款台账，区分节点条件、提醒和实际收款
+- 验证证据：tests/test_finance_context_tools.py 覆盖合同节点条件未确认时的派生告警；到期提醒算法和真实回款状态联调待完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-102
@@ -991,8 +992,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 客户实际回款由财务人工确认，保存日期、金额、合同节点、凭证和对应项目关系。系统提醒或识别结果不替代实际回款确认；分次回款均留独立记录，并按确认关系汇总。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：CustomerReceiptConfirmation 保存客户实际回款的项目、销售合同、合同节点、金额、币种、回款日期、凭证、确认人、来源系统和来源引用；query_finance_context 将客户收款节点 customer_receivable_nodes 与实际回款 customer_receipt_summary 明确分离，按合同节点汇总 confirmed_totals/by_stage，并以 derived_status.has_customer_actual_receipt_ledger 标识真实回款台账是否存在；prepare_customer_receipt_confirmation 会话工具可基于真实项目版本、已生效销售合同和收款节点准备回款确认 proposal，本人核对确认后才写入客户回款确认台账，不执行收款、不开票、不计算收入利润
-- 验证证据：tests/test_finance_context_tools.py 覆盖客户实际回款确认进入上下文和按 DFM 认证节点汇总；同时覆盖有合同收款节点但无实际回款确认时 has_customer_actual_receipt_ledger 为 false 且输出告警；权限不足时不泄露回款引用或金额；新增覆盖回款确认 proposal 不直接写库、本人确认后写入 CustomerReceiptConfirmation、重复流水号阻断和节点累计超额阻断
+- 实现证据：query_finance_context 将客户付款节点与客户实际回款台账明确分离，derived_status.has_customer_actual_receipt_ledger 当前为 false；finance_context_review Skill 要求未接入客户实际回款台账时不得声称客户已回款
+- 验证证据：tests/test_finance_context_tools.py 验证客户合同节点存在但 has_customer_actual_receipt_ledger 为 false，并输出未接入实际回款台账限制
 - 验收状态：NOT_VERIFIED
 
 ### FR-103
@@ -1000,8 +1001,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 付款流程为：申请→适用条件核验→审批→待支付及支付执行→实际付款确认。不符合适用条件时补充资料或特殊审批；审批通过仅代表允许支付，不计入已付款金额。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清；prepare_supplier_payment_confirmation 基于已审批付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation
-- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用、审批/实付区分告警，以及供应商实付确认卡片本人确认后才写库
+- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清；prepare_supplier_payment_confirmation 基于已审批供应商付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation
+- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警，并覆盖供应商实付确认卡片本人确认后才写库
 - 验收状态：NOT_VERIFIED
 
 ### FR-104
@@ -1036,8 +1037,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 汇总客户已回款、供应商已付款、剩余应收应付及项目收入、成本、利润和占用资金，由财务核对。收入确认、含税口径、工时计价、分摊和占用资金公式须经适配确认，不直接以回款金额替代收入或以报价成本替代实际成本。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_finance_context 汇总客户合同收款节点、客户实际回款确认、供应商已付款、未释放付款占用、财务冲正、费用/扣款线索和关闭清单财务事项；工具 gaps 明确收入确认、含税口径、工时计价、费用分摊和占用资金公式尚未适配，不能以回款金额替代收入或报价成本替代实际成本
-- 验证证据：tests/test_finance_context_tools.py 覆盖客户已回款汇总、供应商净实付、付款占用、费用线索和收入成本利润口径限制
+- 实现证据：query_finance_context 汇总客户合同收款节点、供应商已付款、未释放付款占用、财务冲正、费用/扣款线索和关闭清单财务事项；工具 gaps 明确收入确认、含税口径、工时计价、费用分摊和占用资金公式尚未适配，不能以回款金额替代收入或报价成本替代实际成本
+- 验证证据：tests/test_finance_context_tools.py 覆盖供应商净实付、付款占用、费用线索和收入成本利润口径限制
 - 验收状态：NOT_VERIFIED
 
 ### FR-108
@@ -1098,8 +1099,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 按角色及项目授权控制查看、录入、修改、审批和导出；价格、成本、利润和项目资料采用适用数据权限。问答、页面、附件下载及导出应执行一致权限，不通过汇总或链接绕过限制。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文；tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总；后端 capability_descriptor 为工具/Skill 统一输出名称、业务类别、部门、类型、人工确认模式和依赖工具；/api/capabilities 与管理员能力分配接口共用同一目录，前端优先使用后端元数据，能力启用仍不扩大数据权限；skill_context 向 harness 提供 Skill 必需工具、可选工具和精选激活工具元数据；harness 每轮只给模型 ToolSearch 与当前激活小工具集，ToolSearch 按准确工具名激活单工具、按业务场景激活对应 Skill 的 activation_tools 精选工具包，并限制按需目录摘要数量；工程联络协作保留完整 optional_tools 供授权与能力说明，但场景激活只暴露查询列表、查询详情、方案、复验、关闭和反馈六个高频闭环工具；ToolSearch 对无空格中文业务短语补充业务词拆分，避免“工程联络关闭”等请求因匹配不到场景包而误入自然语言兜底；当本轮属于前端、模型、harness、接口、数据库、部署、日志或上下文窗口等工作台技术排障且不是明确业务查询/办理时，harness 在模型调用前隐藏 ToolSearch 和全部业务工具，避免用“看得见的大工具清单”诱导模型越域调用；AgentApprovalDelegation 与 /api/agent-approval-delegations 支持用户把指定 process_key/node_key 的 APPROVE 动作显式委托给 Agent；process_agent_auto_approvals 仅在本轮 agent_permission_mode 为 delegated_auto、流程节点声明 agent_auto_approval、可选 agent_auto_policy.condition 安全条件明确满足、当前待审批席位属于授权用户、授权仍有效且原审批规则允许 APPROVE 时执行，默认 ask 模式即使存在委托也不自动审批；授权变更同步提升 security_version 并进入 authorization fingerprint；前端输入框工具栏提供 Agent 权限模式下拉，选择停留在输入框内并按当前用户本机持久化；/api/runs 将 agent_permission_mode 写入本轮 Run checkpoint，运行历史、worker claim 和中间 checkpoint 均保留该模式；Harness 将本轮权限模式写入模型系统上下文；设置页提供个人自动审批授权/撤销，审批流程配置节点提供 agent_auto_approval 开关和自动审批安全条件；授权选项只由后端返回已发布且显式允许自动审批的节点；confirmation_policy 由后端按来源 Run 和动作类型生成，会话 proposal 卡片与确认弹窗显示必须本人确认、确认后提交审批或确认后授权节点可自动审批；工程联络方案、项目暂停/恢复、项目终止/关闭等 proposal 本人确认后提交 BPM 时继续传递 agent_permission_mode
-- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离；tests/test_capability_catalog.py 覆盖后端能力目录元数据和工程联络 activation_dependencies；tests/test_agent_api.py 增加 /api/capabilities 元数据断言与输入框 Agent 权限模式进入 Run 历史和 worker 上下文；tests/test_model_harness.py 覆盖通用技术问题不调用业务工具、技术排障隐藏 ToolSearch、ToolSearch 准确工具名只激活单工具、业务场景只激活对应 Skill 小工具包、工程联络 activation_tools 不暴露全部可选工具、中文业务短语匹配场景包、按需目录不枚举全部工具，以及带“模型”字样的明确业务查询仍可激活业务工具；tests/test_agent_approval_delegation.py 覆盖默认 ask 模式不自动审批、显式 delegated_auto 模式下授权节点可自动审批、未声明自动审批节点不被绕过、自动审批安全条件阻断、撤销授权会改变授权指纹，以及 API 只暴露/接受显式自动审批节点；tests/test_contact_proposals.py 和 tests/test_contact_lifecycle.py 覆盖操作建议的 confirmation_policy 与 delegated_auto 传递到 BPM 提交
+- 实现证据：authorization.access/predicate/select_fields/fingerprint 统一约束页面、问答工具、运行上下文与字段输出；query_governance_context 返回目标用户有效授权、字段范围、工具/Skill 能力、运行时 security_version 与 authorization_hash；files.readable 在附件关联业务对象后必须重新校验 contact.read，query_governance_context 只返回当前可见附件元数据，不下载、不导出、不解析原文；tool_gateway 将 query_governance_context 绑定 audit.read，Skill 明确禁止自然语言兜底和绕过权限汇总；后端 capability_descriptor 为工具/Skill 统一输出名称、业务类别、部门、类型、人工确认模式和依赖工具；/api/capabilities 与管理员能力分配接口共用同一目录，前端优先使用后端元数据，能力启用仍不扩大数据权限；AgentApprovalDelegation 与 /api/agent-approval-delegations 支持用户把指定 process_key/node_key 的 APPROVE 动作显式委托给 Agent；process_agent_auto_approvals 仅在本轮 agent_permission_mode 为 delegated_auto、流程节点声明 agent_auto_approval、可选 agent_auto_policy.condition 安全条件明确满足、当前待审批席位属于授权用户、授权仍有效且原审批规则允许 APPROVE 时执行，默认 ask 模式即使存在委托也不自动审批；授权变更同步提升 security_version 并进入 authorization fingerprint；前端输入框工具栏提供 Agent 权限模式下拉，选择停留在输入框内并按当前用户本机持久化；/api/runs 将 agent_permission_mode 写入本轮 Run checkpoint，运行历史、worker claim 和中间 checkpoint 均保留该模式；Harness 将本轮权限模式写入模型系统上下文；设置页提供个人自动审批授权/撤销，审批流程配置节点提供 agent_auto_approval 开关和自动审批安全条件；授权选项只由后端返回已发布且显式允许自动审批的节点；confirmation_policy 由后端按来源 Run 和动作类型生成，会话 proposal 卡片与确认弹窗显示必须本人确认、确认后提交审批或确认后授权节点可自动审批；工程联络方案、项目暂停/恢复、项目终止/关闭等 proposal 本人确认后提交 BPM 时继续传递 agent_permission_mode
+- 验证证据：tests/test_governance_context_tools.py 覆盖权限矩阵、统一边界说明、无 contact.read 时不泄露联络附件文件名；tests/test_files.py 覆盖上传私有性、附件业务撤权后下载/会话查询不可见、运行附件绑定当前会话；tests/test_agent_api.py 覆盖权限变更后的 security_version/authorization_hash 隔离；tests/test_capability_catalog.py 覆盖后端能力目录元数据，tests/test_agent_api.py 增加 /api/capabilities 元数据断言与输入框 Agent 权限模式进入 Run 历史和 worker 上下文；tests/test_agent_approval_delegation.py 覆盖默认 ask 模式不自动审批、显式 delegated_auto 模式下授权节点可自动审批、未声明自动审批节点不被绕过、自动审批安全条件阻断、撤销授权会改变授权指纹，以及 API 只暴露/接受显式自动审批节点；tests/test_contact_proposals.py 和 tests/test_contact_lifecycle.py 覆盖操作建议的 confirmation_policy 与 delegated_auto 传递到 BPM 提交
 - 验收状态：NOT_VERIFIED
 
 ### FR-114
@@ -1151,8 +1152,8 @@ Agent 开发明确来源的受控调用、失败核对、Docker 部署、备份�
 部署、用户规模、响应时间、可用性、备份频率、恢复目标及日志保留期限在实施方案中确认并纳入测试。未确认前不设定无依据的性能或准确率承诺。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：新增 query_operations_readiness_context 只读工具和 operations_readiness_review Skill，核对部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界的当前事实与验收缺口；`readiness_summary` 将机器可验证阻断项和仍需人工/实施验收的门槛分开汇总；部署核对只读返回 Python、Node/npm、Docker CLI/daemon/compose、前端构建产物和后端入口文件状态；数据库核对明确返回 PostgreSQL/moldpilot/Navicat 交付基线、实际 SQLAlchemy 方言、PostgreSQL 当前库名和 Alembic 迁移版本一致性，未满足时提示不得用 SQLite 作为交付依据；Redis 核对只读执行 PING/INFO/XINFO，返回消息 stream 和通知消费组是否就绪；备份恢复核对返回受控备份脚本、受控隔离恢复脚本、pg_dump/pg_restore 可用性、Docker PostgreSQL client 可用性、显式客户端路径或常见安装目录发现结果和本机演练前提；日志保留核对返回审计、应用、访问、模型调用日志保留天数配置状态和审计表时间范围；新增 `MOLD_ACCEPTANCE_EVIDENCE_FILE` 和 scripts/acceptance_gates.py，用本地 `.local/acceptance-gates.json` 登记正式验收确认人、确认时间和证据引用，格式不完整不通过；工具只返回脱敏配置形态、健康检查和运行计数，不泄露数据库密码、Redis 密码、API Key、S3 密钥或 Worker 密钥；未确认前显式禁止承诺 SLA、性能、准确率、RTO 或 RPO
-- 验证证据：tests/test_operations_readiness_tools.py 覆盖工具/Skill 注册、超级管理员可用性、FR-118 七项门槛未验收状态、备份恢复 native/docker client 模式、日志保留脚本元数据和敏感信息脱敏；scripts/verify_postgres_baseline.py 与运行时工具调用已在本机实际 PostgreSQL `moldpilot` 库通过，返回 `dialect=postgresql`、`current_database=moldpilot`、`alembic_version=d2f0a9b1c3e4` 且仓库 head 相同；scripts/dev_redis.py status/init-stream 已在本机 D:\Redis（Redis 5.0.14.1，redis://127.0.0.1:6379/0）上验证 `redis_reachable=True`、`stream_exists=True`、`group_ready=True`；历史曾通过 Docker PostgreSQL 客户端完成一次备份/隔离恢复演练；当前 Docker 镜像已按用户要求删除，且本机 PATH 未检测到 native `pg_dump` / `pg_restore`，后续需安装 PostgreSQL 客户端或显式配置路径后重新演练；scripts/log_retention.py dry-run 已验证审计 365 天、应用 180 天、访问 90 天、模型 180 天的本机保留策略；当前 PostgreSQL 与 Redis 本机基线可读，但备份恢复工具链因 native pg_dump/pg_restore 未就绪仍需补齐；`acceptance_status=NOT_VERIFIED`、`overall_status=BLOCKED`，防止把局部机器前提当作整体验收完成
+- 实现证据：新增 query_operations_readiness_context 只读工具和 operations_readiness_review Skill，核对部署拓扑、用户规模、响应时间、可用性、备份频率、恢复目标、日志保留、生产存储和模型运行边界的当前事实与验收缺口；readiness_summary 将机器可验证阻断项和仍需人工/实施验收的门槛分开汇总；部署核对只读返回 Python、Node/npm、Docker CLI/daemon/compose、前端构建产物和后端入口文件状态；数据库核对明确返回 PostgreSQL/moldpilot/Navicat 交付基线、实际 SQLAlchemy 方言、PostgreSQL 当前库名和 Alembic 迁移版本一致性，未满足时提示不得用 SQLite 作为交付依据；Redis 核对只读执行 PING/INFO/XINFO，返回消息 stream 和通知消费组是否就绪；备份恢复核对返回受控备份脚本、受控隔离恢复脚本、pg_dump/pg_restore 可用性、显式客户端路径或常见安装目录发现结果和本机演练前提；日志保留核对返回审计、应用、访问、模型调用日志保留天数配置状态和审计表时间范围；工具只返回脱敏配置形态、健康检查和运行计数，不泄露数据库密码、Redis 密码、API Key、S3 密钥或 Worker 密钥；未确认前显式禁止承诺 SLA、性能、准确率、RTO 或 RPO
+- 验证证据：tests/test_operations_readiness_tools.py 覆盖工具/Skill 注册、超级管理员可用性、FR-118 七项门槛未验收状态和敏感信息脱敏；scripts/verify_postgres_baseline.py 与运行时工具调用已在本机实际 PostgreSQL moldpilot 库通过，返回 dialect=postgresql、current_database=moldpilot、alembic_version=d2f0a9b1c3e4 且仓库 head 相同；scripts/backup_postgres.py --dry-run 已核对 PostgreSQL 配置并如实报告当前缺少 pg_dump；scripts/restore_postgres.py dry-run 已核对恢复目标配置和 pg_restore 可用性缺口，不会修改数据库；scripts/dev_redis.py status/start/init-stream 已验证本机 Redis 端口仍未开放，初始化脚本在 Redis 不可达时返回错误类型而非异常堆栈；运行就绪工具已返回 log_retention.status=LOG_RETENTION_POLICY_INCOMPLETE；Redis 运行探测返回明确状态并保持未就绪警告直到 stream/group 验证通过；部署运行前提探测返回明确状态并保持未就绪警告直到 Docker/Node/构建产物全部验证通过；readiness_summary.overall_status 仍为 BLOCKED，防止把局部就绪当作整体验收完成
 - 验收状态：NOT_VERIFIED
 
 ## 原文验收场景
@@ -1286,4 +1287,3 @@ Agent 开发明确来源的受控调用、失败核对、Docker 部署、备份�
 ### AD-13 软件交付清单、培训、试运行、验收样本、通过标准和缺陷处理机制
 
 测试与上线安排确认前
-

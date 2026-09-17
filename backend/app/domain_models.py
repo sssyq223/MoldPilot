@@ -141,14 +141,23 @@ class LogisticsRoute(IdentityMixin, Base):
     destination: Mapped[str] = mapped_column(String(200))
     carrier_name: Mapped[str] = mapped_column(String(150))
     vehicle_type: Mapped[str] = mapped_column(String(80))
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
     transport_mode: Mapped[str] = mapped_column(String(40), default='TRUCK')
     price_unit: Mapped[str] = mapped_column(String(40))
     tax_mode: Mapped[str] = mapped_column(String(30), default='TAX_INCLUDED')
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     evidence: Mapped[str] = mapped_column(Text, default='')
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         CheckConstraint("transport_mode IN ('TRUCK','EXPRESS','SEA','AIR','RAIL','OTHER')", name='logistics_route_transport_mode'),
         CheckConstraint("tax_mode IN ('TAX_INCLUDED','TAX_EXCLUDED','UNKNOWN')", name='logistics_route_tax_mode'),
+        CheckConstraint('weight_kg IS NULL OR weight_kg > 0', name='logistics_route_positive_weight'),
+        CheckConstraint('valid_from IS NULL OR valid_to IS NULL OR valid_to >= valid_from', name='logistics_route_valid_range'),
+        UniqueConstraint('source_ref', name='logistics_route_unique_source'),
     )
 
 
@@ -166,10 +175,20 @@ class LogisticsQuote(IdentityMixin, Base):
     quote_evidence: Mapped[str] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pricing_method: Mapped[str] = mapped_column(String(30), default='LEGACY')
+    comparison_count: Mapped[int] = mapped_column(Integer, default=0)
+    comparison_summary: Mapped[str | None] = mapped_column(Text)
+    reconciliation_basis: Mapped[str | None] = mapped_column(Text)
+    source_ref: Mapped[str | None] = mapped_column(String(120))
+    created_by: Mapped[str | None] = mapped_column(ForeignKey('app_user.id'))
+    supersedes_quote_id: Mapped[str | None] = mapped_column(ForeignKey('logistics_quote.id'))
     __table_args__ = (
         CheckConstraint('unit_price >= 0', name='logistics_quote_nonnegative_price'),
         CheckConstraint('valid_to >= valid_from', name='logistics_quote_valid_range'),
         CheckConstraint("status IN ('DRAFT','SUBMITTED','EFFECTIVE','EXPIRED','CANCELLED')", name='logistics_quote_status'),
+        CheckConstraint("pricing_method IN ('LEGACY','FIXED_ROUTE','COMPETITIVE','NEGOTIATED','SINGLE_SOURCE')", name='logistics_quote_pricing_method'),
+        CheckConstraint('comparison_count >= 0', name='logistics_quote_comparison_count_nonnegative'),
+        UniqueConstraint('route_id','source_ref', name='logistics_quote_unique_source'),
     )
 
 
@@ -235,6 +254,7 @@ class SupplierProgressReport(IdentityMixin, Base):
     next_due_date: Mapped[date | None] = mapped_column(Date)
     issue_summary: Mapped[str] = mapped_column(Text, default='')
     evidence: Mapped[str] = mapped_column(Text)
+    evidence_items: Mapped[list] = mapped_column(J, default=list)
     source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
     source_ref: Mapped[str | None] = mapped_column(String(120))
     reported_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
@@ -244,6 +264,33 @@ class SupplierProgressReport(IdentityMixin, Base):
         CheckConstraint("status IN ('ON_TRACK','AT_RISK','BLOCKED','DONE','REWORK')", name='supplier_progress_report_status'),
         CheckConstraint('progress_percent IS NULL OR progress_percent BETWEEN 0 AND 100', name='supplier_progress_report_progress_range'),
         CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_progress_report_source_system'),
+    )
+
+
+class SupplierProgressPolicy(IdentityMixin, Base):
+    """Versioned reporting cadence and evidence contract for one supplier stage."""
+    __tablename__ = 'supplier_progress_policy'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    plan_task_id: Mapped[str | None] = mapped_column(ForeignKey('plan_task.id'), index=True)
+    stage_key: Mapped[str] = mapped_column(String(80))
+    stage_name: Mapped[str] = mapped_column(String(150))
+    frequency_days: Mapped[int] = mapped_column(Integer)
+    effective_from: Mapped[date] = mapped_column(Date)
+    first_due_date: Mapped[date] = mapped_column(Date)
+    evidence_requirements: Mapped[list] = mapped_column(J, default=list)
+    basis: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str] = mapped_column(String(120))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey('supplier_progress_policy.id'))
+    created_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('project_id','supplier_id','contract_subject_id','stage_key','version', name='supplier_progress_policy_version'),
+        UniqueConstraint('project_id','supplier_id','contract_subject_id','stage_key','source_ref', name='supplier_progress_policy_unique_source'),
+        CheckConstraint('frequency_days BETWEEN 1 AND 90', name='supplier_progress_policy_frequency'),
+        CheckConstraint('version >= 1', name='supplier_progress_policy_version_positive'),
     )
 
 
@@ -271,6 +318,32 @@ class SupplierMaterialHandoff(IdentityMixin, Base):
         CheckConstraint("approval_status IN ('DRAFT','APPROVED','REVOKED')", name='supplier_material_handoff_approval_status'),
         CheckConstraint("handoff_channel IN ('MANUAL','EMAIL','IMPORT','ERP','OTHER')", name='supplier_material_handoff_channel'),
         CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_material_handoff_source_system'),
+    )
+
+
+class SupplierMaterialVerification(IdentityMixin, Base):
+    """Append-only supplier response to one approved material handoff."""
+    __tablename__ = 'supplier_material_verification'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    handoff_id: Mapped[str] = mapped_column(ForeignKey('supplier_material_handoff.id'), index=True)
+    response_file_id: Mapped[str | None] = mapped_column(ForeignKey('file_object.id'), index=True)
+    response_date: Mapped[date] = mapped_column(Date)
+    result: Mapped[str] = mapped_column(String(30))
+    supplier_contact: Mapped[str] = mapped_column(String(150))
+    response_channel: Mapped[str] = mapped_column(String(40), default='MANUAL')
+    response_summary: Mapped[str] = mapped_column(Text, default='')
+    follow_up_due_date: Mapped[date | None] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str] = mapped_column(String(120))
+    recorded_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('handoff_id','source_ref', name='supplier_material_verification_unique_source'),
+        CheckConstraint("result IN ('RECEIVED','ACCEPTED','NEEDS_CLARIFICATION','REJECTED')", name='supplier_material_verification_result'),
+        CheckConstraint("response_channel IN ('MANUAL','EMAIL','IMPORT','ERP','OTHER')", name='supplier_material_verification_channel'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_material_verification_source_system'),
     )
 
 

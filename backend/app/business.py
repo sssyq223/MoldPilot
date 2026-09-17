@@ -12,6 +12,7 @@ from .authorization import require, predicate, select_fields, access
 from .errors import DomainError
 from .events import record
 from .security import digest
+from .proposal_registry import handler_for_action
 
 
 def request_lines(db, req):
@@ -366,33 +367,8 @@ def create_intent(db, user, action, resource_id, payload):
         authorize(db,user,subject,'submit')
         from .workflow_selection import require_template
         require_template(db, user, subject, payload['definition_id'], payload.get('material_review_id'))
-    elif action == 'contact.execute':
-        from .contact_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'project_control.execute':
-        from .project_control_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'project_closure.execute':
-        from .project_closure_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'project_plan.execute':
-        from .plan_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'internal_start.execute':
-        from .start_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'quote_acceptance.execute':
-        from .quote_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'contract.execute':
-        from .contract_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'full_outsource.execute':
-        from .full_outsource_tools import validate_intent
-        validate_intent(db,user,payload)
-    elif action == 'finance.execute':
-        from .finance_context_tools import validate_intent
-        validate_intent(db,user,payload)
+    elif (handler := handler_for_action(action)) is not None:
+        handler.implementation().validate_intent(db,user,payload)
     elif action.startswith('domain.'):
         from .domain_commands import validate_command
         validate_command(db,user,action[7:],resource_id,payload)
@@ -414,33 +390,8 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     if intent.action == "approval.decide": result = decide(db, user, intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
-    elif intent.action=='contact.execute':
-        from .contact_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='project_control.execute':
-        from .project_control_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='project_closure.execute':
-        from .project_closure_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='project_plan.execute':
-        from .plan_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='internal_start.execute':
-        from .start_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='quote_acceptance.execute':
-        from .quote_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='contract.execute':
-        from .contract_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='full_outsource.execute':
-        from .full_outsource_tools import confirm
-        result=confirm(db,user,intent.payload)
-    elif intent.action=='finance.execute':
-        from .finance_context_tools import confirm
-        result=confirm(db,user,intent.payload)
+    elif (handler := handler_for_action(intent.action)) is not None:
+        result=handler.implementation().confirm(db,user,intent.payload)
     elif intent.action.startswith('domain.'):
         from .domain_commands import execute_command
         result=execute_command(db,user,intent.action[7:],intent.resource_id,intent.payload)

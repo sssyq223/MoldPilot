@@ -2,11 +2,9 @@ from datetime import date, datetime
 from uuid import UUID
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from agent_core.schemas import StrictModel
 
 
 class LoginInput(StrictModel):
@@ -165,3 +163,7 @@ class ModelConfigInput(StrictModel):
     max_turns: int = Field(default=12, ge=1, le=30)
     connect_timeout: float = Field(default=10, gt=0, le=20)
     read_timeout: float = Field(default=60, gt=0, le=120)
+
+
+class ModelProfileInput(ModelConfigInput):
+    name: str = Field(min_length=1, max_length=80)
