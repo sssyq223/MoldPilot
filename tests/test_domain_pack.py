@@ -1,4 +1,10 @@
-from agent_core.domain_pack import active_pack_name, component
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from agent_core.domain_pack import active_pack_name, component, manifest
 from agent_core import tool_gateway as core_gateway
 from app import tool_gateway as host_gateway
 
@@ -7,7 +13,11 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert active_pack_name() == "mold"
     policy = component("harness_policy")
     handlers = component("proposal_handlers")
+    product = manifest()
     assert policy.SYSTEM_PROMPT
+    assert product.PUBLIC_METADATA["id"] == "mold"
+    assert product.PUBLIC_METADATA["product_name"] == "MoldPilot"
+    assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
     assert core_gateway.SKILLS is host_gateway.SKILLS
     prepared = {name for name in core_gateway.TOOLS if name.startswith("prepare_")}
@@ -30,3 +40,45 @@ def test_agent_core_source_does_not_embed_mold_business_policy():
     )
     for business_term in ("工程联络", "模具工作台", "prepare_project_pause"):
         assert business_term not in runtime_source
+
+
+def test_template_pack_boots_host_without_registering_mold_http_surface():
+    project_root = Path(__file__).resolve().parents[1]
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(project_root / "backend"),
+        "AGENT_BUSINESS_PACK": "template",
+    }
+    script = """
+import json
+from app.api import app
+from app.erp_adapter import ERPClient
+paths = {route.path for route in app.routes if hasattr(route, 'path')}
+print(json.dumps({
+    'title': app.title,
+    'paths': sorted(paths),
+    'erp_module': ERPClient.__module__,
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    paths = set(payload["paths"])
+
+    assert payload["title"] == "Agent Workbench"
+    assert payload["erp_module"] == "domain_packs.template.erp_adapter"
+    assert {"/api/product", "/api/auth/login", "/api/runs"} <= paths
+    assert "/api/projects" not in paths
+    assert "/api/purchases" not in paths
+    assert "/api/contacts" not in paths
+    assert "/api/business/subjects" not in paths
+    assert "/api/erp-design-uploads/parse" not in paths
+    assert "/api/contact-proposals/{step_id}" not in paths

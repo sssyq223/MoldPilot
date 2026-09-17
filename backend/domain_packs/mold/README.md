@@ -3,7 +3,9 @@
 This directory is the replaceable mold ERP/business layer for MoldPilot. It
 contains the mold system policy, all installed Skill documents, the registered
 tool catalog/dispatch gateway, proposal-handler mappings, and the existing ERP
-HTTP adapter.
+HTTP adapter. `manifest.py` owns MoldPilot's product metadata, conversation
+title rules and mold-only HTTP route registration; the generic host no longer
+imports those routers directly.
 
 The generic runtime loads it with:
 

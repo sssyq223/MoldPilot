@@ -12,6 +12,11 @@ import BusinessFacts from './components/BusinessFacts.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
+const product=ref<any>({id:'mold',product_name:'MoldPilot',display_name:'模具项目智能工作台',tagline:'从一个任务开始，让业务能力协同工作。',workspace_tabs:[
+ {key:'materials',name:'材料总览',hint:'说明工作区会展示哪些业务材料'},
+ {key:'approvals',name:'审批材料',hint:'查看待审批事项、节点和依据'},
+ {key:'contacts',name:'联络单材料',hint:'查看工程联络单、附件和协作进度'},
+]})
 const modelName=ref('未配置模型')
 const modelLimits=ref<any>({context_window:8192,max_output_tokens:2048})
 const modelProfiles=ref<any[]>([]),activeModelProfileId=ref(''),modelSwitchingId=ref('')
@@ -27,20 +32,19 @@ const approvals=ref<any[]>([]),detail=ref<any>(null),capabilities=ref<any>({tool
 const runEventsReady=ref(false)
 let runEvents:EventSource|null=null
 const runProcessOpen=ref<Record<string,boolean>>({})
+const streamedText=ref<Record<string,string>>({})
+const streamedTextTargets=new Map<string,string>()
+const streamedTextTimers=new Map<string,number>()
 const confirmedProposalSteps=ref<Record<string,boolean>>({})
 const sidebarCollapsed=ref(false)
 const copiedMessage=ref('')
-const labels:Record<string,string>={materials:'材料总览',approvals:'审批材料',contacts:'联络单材料'}
-const workspaceTabs=[
- {key:'materials',name:'材料总览',hint:'说明工作区会展示哪些业务材料'},
- {key:'approvals',name:'审批材料',hint:'查看待审批事项、节点和依据'},
- {key:'contacts',name:'联络单材料',hint:'查看工程联络单、附件和协作进度'},
-]
+const workspaceTabs=computed(()=>Array.isArray(product.value?.workspace_tabs)?product.value.workspace_tabs:[])
 const settingsOpen=ref(false),settingsInitialPage=ref('account'),showProfile=ref(false),noticeLoading=ref(false),showSidebarSearch=ref(false)
 const contextPopoverOpen=ref(false),modelPopoverOpen=ref(false),approvalModePopoverOpen=ref(false)
 const approvalPermissionMode=ref<'ask'|'delegated_auto'>('ask')
 const approvalPermissionLabel=computed(()=>approvalPermissionMode.value==='delegated_auto'?'按授权自动审批':'每次询问')
-function approvalModeStorageKey(){return 'mold.agentPermissionMode.'+(me.value?.id||'anonymous')}
+function productStoragePrefix(){return String(product.value?.id||'agent')}
+function approvalModeStorageKey(){return productStoragePrefix()+'.agentPermissionMode.'+(me.value?.id||'anonymous')}
 function setApprovalPermissionMode(mode:'ask'|'delegated_auto'){approvalPermissionMode.value=mode;if(me.value)localStorage.setItem(approvalModeStorageKey(),mode);approvalModePopoverOpen.value=false}
 const profileButton=ref<HTMLButtonElement|null>(null),noticeButton=ref<HTMLButtonElement|null>(null),sidebarSearchInput=ref<HTMLInputElement|null>(null)
 const notificationPopoverStyle=ref<Record<string,string>>({left:'96px',top:'44px'})
@@ -84,7 +88,7 @@ function closeFloatingPanels(e:MouseEvent){
  if(approvalModePopoverOpen.value&&!target?.closest('.approval-mode-wrap'))approvalModePopoverOpen.value=false
 }
 onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',updateNotificationPosition)})
-onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition)})
+onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);for(const timer of streamedTextTimers.values())window.clearInterval(timer);streamedTextTimers.clear()})
 async function openNotices(){showProfile.value=false;showNotices.value=true;await nextTick();updateNotificationPosition();noticeLoading.value=true;try{[notices.value,approvals.value]=await Promise.all([api('/notifications'),api('/approvals')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
 const currentTitle=computed(()=>conversations.value.find(c=>c.id===conversation.value)?.title || activeConversationTitle.value || '新对话')
 const filteredConversations=computed(()=>conversations.value.filter(c=>c.title.includes(search.value)))
@@ -202,6 +206,54 @@ function runTrace(run:any){
  return items
 }
 function runProcessTrace(run:any){return runTrace(run).filter((item:any)=>item.type!=='final')}
+function streamedTextKey(run:any,index:number){return `${run.id}:${index}`}
+function stopStreamedTextTimer(key:string){
+ const timer=streamedTextTimers.get(key)
+ if(timer!==undefined)window.clearInterval(timer)
+ streamedTextTimers.delete(key)
+}
+function animateStreamedText(key:string){
+ if(streamedTextTimers.has(key)||typeof window==='undefined')return
+ const timer=window.setInterval(()=>{
+  const target=streamedTextTargets.get(key)??''
+  const current=streamedText.value[key]??''
+  if(current===target){stopStreamedTextTimer(key);return}
+  if(!target.startsWith(current)){
+   streamedText.value={...streamedText.value,[key]:target}
+   stopStreamedTextTimer(key)
+   return
+  }
+  const next=Array.from(target.slice(current.length))[0]??''
+  streamedText.value={...streamedText.value,[key]:current+next}
+ },22)
+ streamedTextTimers.set(key,timer)
+}
+function processMessageText(run:any,item:any,index:number){
+ if(!item.streaming)return item.text??''
+ return streamedText.value[streamedTextKey(run,index)]??''
+}
+watch(runs,(currentRuns)=>{
+ const activeKeys=new Set<string>()
+ for(const run of currentRuns){
+  runProcessTrace(run).forEach((item:any,index:number)=>{
+   if(item.type!=='message')return
+   const key=streamedTextKey(run,index)
+   activeKeys.add(key)
+   const target=String(item.text??'')
+   if(!item.streaming){
+    streamedTextTargets.set(key,target)
+    if(streamedText.value[key]!==target)streamedText.value={...streamedText.value,[key]:target}
+    stopStreamedTextTimer(key)
+    return
+   }
+   const shown=streamedText.value[key]??''
+   if(!target.startsWith(shown))streamedText.value={...streamedText.value,[key]:''}
+   streamedTextTargets.set(key,target)
+   animateStreamedText(key)
+  })
+ }
+ for(const key of streamedTextTargets.keys())if(!activeKeys.has(key)){streamedTextTargets.delete(key);stopStreamedTextTimer(key)}
+},{deep:true})
 function runFinalTrace(run:any){
  const trace=runTrace(run)
  for(let i=trace.length-1;i>=0;i--)if(trace[i]?.type==='final')return trace[i]
@@ -282,6 +334,7 @@ async function copyMessage(text:string,key:string){
 function evidenceTitle(item:any){return item?.proposal?'操作建议':capabilityName(item?.tool||'')}
 function fail(message:string){error.value=message}
 async function refresh(){ [conversations.value,notices.value,approvals.value,capabilities.value]=await Promise.all([api('/conversations'),api('/notifications'),api('/approvals'),api('/capabilities')]) }
+async function loadProduct(){product.value=await api('/product');document.title=`${product.value.product_name} · ${product.value.display_name}`}
 async function loadModelProfiles(){
  if(!me.value?.super_admin){modelProfiles.value=[];activeModelProfileId.value='';return}
  const config=await api('/model-config')
@@ -316,16 +369,16 @@ async function handleCurrentProposalDecision(dismissed=false){
  if(dismissed)await handleProposalDismissed(context.item.id,context.run.id)
  else await handleProposalConfirmed(context.item.id,context.run.id)
 }
-async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const savedMode=localStorage.getItem(approvalModeStorageKey());approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const layout=JSON.parse(localStorage.getItem('mold.layout.'+me.value.id)??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
-onMounted(async()=>{try{await restore()}catch{}finally{loading.value=false}})
+async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const savedMode=localStorage.getItem(approvalModeStorageKey())??localStorage.getItem('mold.agentPermissionMode.'+me.value.id);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??localStorage.getItem('mold.layout.'+me.value.id);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
+onMounted(async()=>{try{await loadProduct();await restore()}catch{}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
 function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
-function saveLayout(){if(me.value)localStorage.setItem('mold.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
-async function openPanel(key:string){if(!['materials','contacts','approvals'].includes(key))return;panel.value=key;expanded.value=true;saveLayout()}
+function saveLayout(){if(me.value)localStorage.setItem(productStoragePrefix()+'.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
+async function openPanel(key:string){if(!workspaceTabs.value.some((tab:any)=>tab.key===key))return;panel.value=key;expanded.value=true;saveLayout()}
 function workspaceEmptyTitle(){return panel.value==='approvals'?'暂无审批材料':panel.value==='contacts'?'暂无联络单材料':'材料总览'}
 function workspaceEmptyText(){return panel.value==='approvals'?'从消息通知或会话中的审批建议打开具体审批，节点、依据和操作记录会显示在这里。':panel.value==='contacts'?'从会话结果中选择联络单，附件、处理方案和协作进度会显示在这里。':'工作区用于承载会话中打开的业务材料，目前包含审批材料和联络单材料；从会话结果或消息通知选择具体事项后会自动切换。'}
-function toggleWorkspace(){if(expanded.value)collapse();else{if(!panel.value)panel.value='materials';expanded.value=true}}
+function toggleWorkspace(){if(!workspaceTabs.value.length)return;if(expanded.value)collapse();else{if(!panel.value)panel.value=String(workspaceTabs.value[0].key);expanded.value=true}}
 function collapse(){expanded.value=false;full.value=false;saveLayout()}
 async function openApproval(id:string){try{showNotices.value=false;detail.value=await api('/approvals/'+id);await openPanel('approvals')}catch(e:any){fail(e.message)}}
 async function changed(){try{await refresh();if(detail.value)detail.value=await api('/approvals/'+detail.value.id)}catch(e:any){fail(e.message)}}
@@ -361,14 +414,14 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 </script>
 <template>
 <div v-if="loading" class="loading-screen">正在连接工作台…</div>
-<main v-else-if="!me" class="login-screen"><form class="login-box" @submit.prevent="login"><div class="brand-symbol"><Bot :size="30"/></div><h1>MoldPilot</h1><p>模具项目智能工作台 · 从一个任务开始，让业务能力协同工作。</p><label>用户名<input v-model="username" autocomplete="username" required autofocus/></label><label>密码<input v-model="password" type="password" autocomplete="current-password" required/></label><p v-if="error" class="error" role="alert">{{error}}</p><button class="primary" :disabled="busy">{{busy?'正在登录…':'登录工作台'}}<ArrowRight :size="16"/></button><small>统一智能体入口 · 你的权限决定可用能力</small></form></main>
+<main v-else-if="!me" class="login-screen"><form class="login-box" @submit.prevent="login"><div class="brand-symbol"><Bot :size="30"/></div><h1>{{product.product_name}}</h1><p>{{product.display_name}} · {{product.tagline}}</p><label>用户名<input v-model="username" autocomplete="username" required autofocus/></label><label>密码<input v-model="password" type="password" autocomplete="current-password" required/></label><p v-if="error" class="error" role="alert">{{error}}</p><button class="primary" :disabled="busy">{{busy?'正在登录…':'登录工作台'}}<ArrowRight :size="16"/></button><small>统一智能体入口 · 你的权限决定可用能力</small></form></main>
 <SettingsPage v-else-if="settingsOpen" :me="me" :permissions="permissions" :capabilities="capabilities" :model-name="modelName" :color-theme="colorTheme" :initial-page="settingsInitialPage" @theme-change="changeTheme" @model-updated="modelName=$event" @open-conversation="openArchivedConversation" @close="settingsOpen=false;restore().catch(e=>fail(e.message))" @error="fail"/>
 <main v-else class="workbench" :class="{'panel-full':full&&workspaceOpen,'sidebar-collapsed':sidebarCollapsed,'workspace-open':workspaceOpen&&!full}" :style="{'--sidebar-width':sidebarWidth+'px'}">
-  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>MoldPilot</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button ref="noticeButton" class="brand-action" title="待处理" aria-label="待处理" :aria-expanded="showNotices" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><span v-if="c.status==='WAITING_APPROVAL'" class="conversation-status">等待批准</span><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
+  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>{{product.product_name}}</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button ref="noticeButton" class="brand-action" title="待处理" aria-label="待处理" :aria-expanded="showNotices" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" @click="selectConversation(c.id)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><span v-if="c.status==='WAITING_APPROVAL'" class="conversation-status">等待批准</span><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
 <div v-if="showProfile" class="profile-dismiss" @click="closeProfile"/>
 <div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
   <div v-if="!sidebarCollapsed" class="sidebar-resize-handle" role="separator" tabindex="0" aria-label="调整左侧边栏宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginSidebarResize" @dblclick="resetSidebarWidth" @keydown.left.prevent="resizeSidebarBy(-10)" @keydown.right.prevent="resizeSidebarBy(10)"/>
-  <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><button v-if="!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
+  <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><button v-if="workspaceTabs.length&&!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
     <div v-if="!runs.length" class="welcome"><div class="agent-mark"><Bot :size="28"/></div><h1>今天，我们一起完成什么？</h1><p>描述你的目标，我会在你的权限范围内调用工具、<br/>核对资料，并把需要你决定的事项交给你。</p><div class="suggestions"><button v-if="capabilities.tools.some((t:any)=>t.key==='query_projects')" @click="prompt='查询我有权限查看的项目及当前状态'"><Folder :size="17"/>查看我的项目<ArrowRight :size="14"/></button><button v-if="capabilities.tools.some((t:any)=>t.key==='query_purchase_requests')" @click="prompt='查询我负责范围内的采购申请，核对明细和审批进度'"><ShoppingCart :size="17"/>核对采购申请<ArrowRight :size="14"/></button></div><small>从会话开始办理，待审批事项在消息通知中查看。</small></div>
     <article v-for="run in runs" :key="run.id" class="conversation-turn">
       <div class="message-block user-message-block">
@@ -392,7 +445,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               <div class="run-process-inner">
                 <template v-for="(item,index) in runProcessTrace(run)" :key="item.id||item.call_id||index">
                   <div v-if="item.type==='message'" class="assistant-prose process-text">
-                    <p class="preserve">{{item.text}}</p>
+                    <p class="preserve">{{processMessageText(run,item,Number(index))}}</p>
                   </div>
                   <div v-else-if="item.type==='tool_search'" class="agent-tool-row tool-search-row">
                     <span class="agent-tool-icon"><Wrench :size="13"/></span>
@@ -459,7 +512,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
     </article>
   </div>
-  <ContactProposal v-if="pendingApprovalContext" placement="composer" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="id=>{contactTarget=id;openPanel('contacts')}"/>
+  <ContactProposal v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="id=>{contactTarget=id;openPanel('contacts')}"/>
   <form v-else class="composer" @submit.prevent="send">
     <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
@@ -571,7 +624,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
           </section>
         </article>
-        <ContactProposal v-if="selectedEvidence.proposal" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="id=>{selectedEvidence=null;contactTarget=id;openPanel('contacts')}"/>
+        <ContactProposal v-if="selectedEvidence.proposal" :product-name="product.product_name" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="id=>{selectedEvidence=null;contactTarget=id;openPanel('contacts')}"/>
       </div>
     </section>
   </div>

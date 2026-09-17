@@ -26,6 +26,23 @@ def component(name: str):
     return import_module(f"domain_packs.{active_pack_name()}.{name}")
 
 
+@lru_cache
+def manifest():
+    """Return the selected pack's validated host-integration contract."""
+    value = component("manifest")
+    metadata = getattr(value, "PUBLIC_METADATA", None)
+    if not isinstance(metadata, dict) or metadata.get("id") != active_pack_name():
+        raise RuntimeError("Domain-pack manifest PUBLIC_METADATA.id must match the active pack")
+    if not isinstance(metadata.get("product_name"), str) or not metadata["product_name"].strip():
+        raise RuntimeError("Domain-pack manifest requires a product_name")
+    if not callable(getattr(value, "install", None)):
+        raise RuntimeError("Domain-pack manifest requires install(app, domain_router)")
+    if not callable(getattr(value, "conversation_title", None)):
+        raise RuntimeError("Domain-pack manifest requires conversation_title(prompt)")
+    return value
+
+
 def reset_domain_pack_cache():
     """Test helper for applications that switch pack configuration before startup."""
+    manifest.cache_clear()
     component.cache_clear()

@@ -3,7 +3,7 @@ import {computed,onMounted,ref} from 'vue'
 import {ShieldCheck} from 'lucide-vue-next'
 import {api,post,shanghai} from '../api'
 import {valueText} from '../uiText'
-const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer'}>(),{placement:'message'})
+const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string}>(),{placement:'message',productName:'Agent'})
 const emit=defineEmits<{open:[id:string];status:[confirmed:boolean];confirmed:[];dismissed:[]}>()
 const intent=ref<any>(null),receipt=ref<any>(null),busy=ref(false),error=ref('')
 const policy=computed(()=>intent.value?.confirmation_policy||props.proposal.confirmation_policy)
@@ -67,7 +67,7 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
   <section v-if="placement==='composer'&&!receipt" class="contact-proposal composer-approval" aria-label="等待批准">
     <div class="composer-approval-label"><ShieldCheck :size="15"/><span>权限</span></div>
     <div class="composer-approval-copy">
-      <strong>允许 MoldPilot 执行“{{actionTitle}}”吗？</strong>
+      <strong>允许 {{productName}} 执行“{{actionTitle}}”吗？</strong>
       <small>操作前会展示完整字段供你核对，批准后才会生成正式回执。</small>
     </div>
     <div class="composer-approval-actions">

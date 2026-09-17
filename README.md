@@ -6,7 +6,7 @@
 
 代码按两层装配：`backend/agent_core` 是可复用的 LLM、Harness、多轮工具协议、上下文治理和 Skill/工具加载运行时；`backend/domain_packs/mold` 是 MoldPilot 的可替换业务包，保存模具业务策略、Skill 文件、工具注册与分发、确认卡处理器和 ERP 适配器。通用核心不登记模具业务规则。
 
-产品默认由 `backend/domain_packs/active.py` 选择 `mold`，部署时也可用进程环境变量 `AGENT_BUSINESS_PACK` 选择另一个已安装业务包。车辆、工装等项目应各自建立同级业务包，实现相同的 `harness_policy.py`、`tool_gateway.py` 和 `proposal_handlers.py` 契约；不应向 `agent_core` 增加行业分支。旧 `app.*` 导入仅保留兼容门面，新增业务实现必须进入业务包边界。
+产品默认由 `backend/domain_packs/active.py` 选择 `mold`，部署时也可用进程环境变量 `AGENT_BUSINESS_PACK` 选择另一个已安装业务包。车辆、工装等项目应各自建立同级业务包，实现相同的 `manifest.py`、`harness_policy.py`、`tool_gateway.py`、`proposal_handlers.py` 和 `erp_adapter.py` 契约；不应向 `agent_core` 增加行业分支。`manifest.py` 负责公开品牌/工作区元数据、对话标题规则与领域 HTTP 路由装配。`backend/domain_packs/template` 是可直接启动的最小模板包，切换到它时不会注册模具业务路由。旧 `app.*` 导入仅保留兼容门面，新增业务实现必须进入业务包边界。
 
 ## 当前本地运行
 

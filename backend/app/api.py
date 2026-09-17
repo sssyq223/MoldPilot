@@ -3,7 +3,7 @@ from datetime import timedelta, datetime
 import json
 import re
 import secrets
-from fastapi import FastAPI, Depends, Request, Response, Query
+from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, func, text, delete, literal
@@ -18,20 +18,19 @@ from .security import current_user, login, public_user, hasher, normalize_userna
 from .errors import DomainError
 from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
+from .domain_pack import manifest as load_domain_manifest
 
-app = FastAPI(title="模具工作台 · 独立 Agent", version="0.1.0")
+active_manifest = load_domain_manifest()
+app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
+domain_router = APIRouter()
 from .organization_api import router as organization_router
 app.include_router(organization_router)
 from .workflow_categories import router as category_router, require_category
 app.include_router(category_router)
 from .material_templates import router as material_template_router,bind_contract
 app.include_router(material_template_router)
-from .contacts import router as contact_router
-app.include_router(contact_router)
 from .files import router as file_router
 app.include_router(file_router)
-from .erp_design_upload import router as erp_design_upload_router
-app.include_router(erp_design_upload_router)
 from .proposal_api import router as proposal_router
 app.include_router(proposal_router)
 
@@ -40,33 +39,7 @@ _user_profiles_checked = False
 
 
 def compact_conversation_title(prompt: str) -> str:
-    text = re.sub(r"\s+", " ", (prompt or "").strip())
-    code = next((m.group(0) for m in re.finditer(r"\b[A-Z][A-Z0-9]+-[A-Z0-9-]+\b", text)), "")
-    topic_rules = [
-        (("权限", "审计", "通知", "附件", "来源治理"), "权限治理核对"),
-        (("财务", "收付款", "回款", "付款", "开票", "发票"), "财务节点核对"),
-        (("客户验收", "出厂", "出库", "物流", "签收", "交付"), "交付物流核对"),
-        (("中标", "客户分类", "承接", "拒单"), "中标接收核对"),
-        (("报价", "成本", "工艺", "采购价格"), "报价评估核对"),
-        (("合同", "销售合同", "整套委外合同"), "合同上下文核对"),
-        (("正式开工", "开工"), "开工条件核对"),
-        (("项目计划", "节点", "逾期"), "项目计划核对"),
-        (("设计", "BOM", "路线", "图纸"), "设计BOM核对"),
-        (("制造", "质检", "检验", "报工"), "制造质检核对"),
-        (("装配", "试模"), "装配试模核对"),
-        (("采购订单", "采购价格", "采购"), "采购上下文核对"),
-        (("项目业务档案", "业务档案"), "项目档案核对"),
-        (("暂停", "恢复"), "暂停恢复核对"),
-        (("终止", "关闭", "结项"), "项目关闭核对"),
-    ]
-    topic = next((name for keys, name in topic_rules if any(key in text for key in keys)), "")
-    if code and topic:
-        return f"{code} {topic}"[:80]
-    if code:
-        return f"{code} 查询"[:80]
-    cleaned = re.sub(r"^(请|帮我|查询|核对|查看|分析)\s*", "", text)
-    cleaned = re.sub(r"(请调用|调用).*$", "", cleaned).strip(" ，。；;")
-    return (cleaned[:28] + "…") if len(cleaned) > 28 else (cleaned or "新对话")
+    return active_manifest.conversation_title(prompt)
 
 
 def ensure_conversation_flags(db):
@@ -286,6 +259,11 @@ def health(db=Depends(get_db)):
     return {"status": "ok" if zone == "Asia/Shanghai" else "degraded", "timezone": zone, "version": "0.1.0"}
 
 
+@app.get("/api/product")
+def product_metadata():
+    return active_manifest.PUBLIC_METADATA
+
+
 @app.post("/api/auth/login")
 def sign_in(data: s.LoginInput, request: Request, response: Response, db=Depends(get_db)):
     if request.headers.get("origin") not in {None, settings().origin}:
@@ -393,7 +371,7 @@ def delete_model_profile_api(profile_id: str, user=Depends(current_user)):
         raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
 
 
-@app.get("/api/catalog")
+@domain_router.get("/api/catalog")
 def catalog(user=Depends(current_user)):
     return {"permissions": auth.PERMISSIONS, "categories": [{"id": "hardware", "name": "五金"}, {"id": "raw_material", "name": "原材"}, {"id": "outsource", "name": "委外"}]}
 
@@ -460,7 +438,7 @@ def revoke(user_id: str, grant_id: str, expected_security_version: int, user=Dep
     return {"security_version": target.security_version}
 
 
-@app.get("/api/projects")
+@domain_router.get("/api/projects")
 def projects(user=Depends(current_user), db=Depends(get_db)):
     p = auth.predicate(db, user, "project.read", {"project_id": m.Project.id})
     return [auth.select_fields({"id": row.id, "code": row.code, "name": row.name, "status": row.status},
@@ -468,25 +446,25 @@ def projects(user=Depends(current_user), db=Depends(get_db)):
             for row in db.scalars(select(m.Project).where(p).limit(100))]
 
 
-@app.get("/api/materials")
+@domain_router.get("/api/materials")
 def materials(project_id: str, user=Depends(current_user), db=Depends(get_db)):
     p = auth.predicate(db, user, "purchase.create", {"project_id": literal(project_id), "category": m.Material.category})
     return [{"id": m.id, "code": m.code, "name": m.name, "category": m.category, "unit": m.unit}
             for m in db.scalars(select(m.Material).where(p).limit(100))]
 
 
-@app.get("/api/purchases")
+@domain_router.get("/api/purchases")
 def purchases(user=Depends(current_user), db=Depends(get_db)):
     return [business.request_data(db, user, req) for req in db.scalars(business.visible_requests(db, user).order_by(m.PurchaseRequest.created_at.desc()).limit(100))]
 
 
-@app.post("/api/purchases")
+@domain_router.post("/api/purchases")
 def create_purchase(data: s.PurchaseInput, user=Depends(current_user), db=Depends(get_db)):
     req = business.create_request(db, user, data); db.commit()
     return {"id": req.id, "number": req.number, "status": req.status}
 
 
-@app.post("/api/purchases/{request_id}/submit-intent")
+@domain_router.post("/api/purchases/{request_id}/submit-intent")
 def submit_intent(request_id: str, data: s.SubmitInput, user=Depends(current_user), db=Depends(get_db)):
     result = business.create_intent(db, user, "purchase.submit", request_id, data.model_dump())
     db.commit(); return result
@@ -726,14 +704,14 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     return result
 
 
-@app.post("/api/business/command-intents")
+@domain_router.post("/api/business/command-intents")
 def command_intent(data: s.CommandIntentInput, user=Depends(current_user), db=Depends(get_db)):
     result = business.create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
     db.commit()
     return result
 
 
-@app.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
+@domain_router.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
 def confirm_plan_department(confirmation_id: str, data: s.PlanDepartmentConfirmationInput,
                             user=Depends(current_user), db=Depends(get_db)):
     from . import plan_confirmations
@@ -979,24 +957,4 @@ def set_capability(user_id: str, data: s.CapabilityInput, user=Depends(current_u
 
 from .internal import install
 install(app)
-from .domain_api import install as install_domains
-install_domains(app)
-
-from .contact_tools import router as contact_proposal_router
-app.include_router(contact_proposal_router)
-from .project_control_tools import router as project_control_proposal_router
-app.include_router(project_control_proposal_router)
-from .project_closure_tools import router as project_closure_proposal_router
-app.include_router(project_closure_proposal_router)
-from .plan_tools import router as project_plan_proposal_router
-app.include_router(project_plan_proposal_router)
-from .start_tools import router as internal_start_proposal_router
-app.include_router(internal_start_proposal_router)
-from .quote_tools import router as quote_acceptance_proposal_router
-app.include_router(quote_acceptance_proposal_router)
-from .contract_tools import router as contract_proposal_router
-app.include_router(contract_proposal_router)
-from .finance_context_tools import router as finance_proposal_router
-app.include_router(finance_proposal_router)
-from .full_outsource_tools import router as full_outsource_proposal_router
-app.include_router(full_outsource_proposal_router)
+active_manifest.install(app, domain_router)
