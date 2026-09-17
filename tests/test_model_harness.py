@@ -204,7 +204,9 @@ PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type':
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
 CONTRACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract', 'type': 'function', 'function': {'name': 'query_contract_context', 'arguments': '{}'}}]}
 OUTSOURCE_PROGRESS_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-progress', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '供应商节点上报'})}}]}
+OUTSOURCE_POLICY_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-policy', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '登记供应商上报频率和证据模板'})}}]}
 OUTSOURCE_QUERY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource', 'type': 'function', 'function': {'name': 'query_full_outsource_context', 'arguments': '{}'}}]}
+OUTSOURCE_POLICY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-policy', 'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -448,6 +450,7 @@ def test_formal_action_request_cannot_use_read_only_evidence_to_claim_a_confirma
 @pytest.mark.parametrize('prompt', [
     '请查询项目资料；只查询分析，不准备或执行任何操作。',
     '核对项目状态，不准备也不执行。',
+    '只读查询供应商节点上报规则和最近上报，不准备或执行任何操作。',
     '查询项目；do not prepare or execute action.',
 ])
 def test_explicitly_negated_formal_action_does_not_require_an_operation_receipt(prompt):
@@ -676,6 +679,8 @@ def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operati
                                           'description': '准备供应商资料交接证据登记建议。'}},
         {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
                                           'description': '准备供应商设计采购生产质检装配试模验收节点上报证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy',
+                                          'description': '准备供应商阶段填报的版本化频率与必需证据规则登记建议。'}},
         {'type': 'function', 'function': {'name': 'prepare_supplier_deduction_settlement',
                                           'description': '准备供应商扣款责任或结算依据登记建议。'}},
     ]
@@ -687,6 +692,7 @@ def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operati
                               'tools': ['query_full_outsource_context'],
                               'optional_tools': ['prepare_contract_signing_record',
                                                  'prepare_supplier_material_handoff',
+                                                 'prepare_supplier_progress_policy',
                                                  'prepare_supplier_progress_report',
                                                  'prepare_supplier_deduction_settlement'],
                               'activation_queries': ['整套委外执行', '供应商节点', '供应商节点上报']}]),
@@ -697,6 +703,37 @@ def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operati
         ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_report'],
     ]
     assert gateway.saved['active_tool_names'] == ['prepare_supplier_progress_report', 'query_full_outsource_context']
+
+
+def test_tool_search_selects_progress_policy_for_frequency_and_evidence_template():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、供应商节点上报规则、采购跟进和验收上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy',
+                                          'description': '准备供应商阶段填报的版本化频率与必需证据规则登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商阶段进度和节点上报证据登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_POLICY_TOOL_SEARCH, OUTSOURCE_POLICY_PROPOSAL, FINAL])
+    run_loop(context(prompt='请为 BROWSER-OUT-001 准备供应商上报频率和证据模板规则。',
+                     core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_progress_policy': {'readOnlyHint': False}},
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_progress_policy',
+                                                 'prepare_supplier_progress_report'],
+                              'activation_queries': ['供应商上报规则', '上报频率', '证据模板']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_policy', 'prepare_supplier_progress_report'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_progress_policy', 'prepare_supplier_progress_report'],
+    ]
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_supplier_progress_policy', 'prepare_supplier_progress_report', 'query_full_outsource_context'
+    ]
 
 
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():

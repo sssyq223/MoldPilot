@@ -1147,10 +1147,12 @@
       "implementation_evidence": [
         "query_full_outsource_context 汇总项目计划/计划变更中供应商、委外、质检、装配、试模、验收、交付等节点，并把供应商执行跟踪与订单/发货/收货事实分开展示",
         "prepare_supplier_progress_report 使用真实项目版本、供应商、已生效整套委外合同和可选计划任务准备对话确认卡，风险/阻塞/返工强制保留问题摘要与下次跟进日期，本人确认后才写入节点上报证据",
+        "新增版本化 SupplierProgressPolicy PostgreSQL 模型与 prepare_supplier_progress_policy 对话办理工具，按项目、供应商、合同、阶段和可选计划节点保存填报频率、生效日期、首次应报日期、必需证据类型、依据与来源；替换时保留历史版本并重新校验当前生效规则",
+        "SupplierProgressReport 增加结构化 evidence_items；存在生效规则时 prepare_supplier_progress_report 强制核对必需证据类型，query_full_outsource_context 返回规则版本、最新上报、下次应报日期、逾期与缺证据状态",
         "full_outsource_review Skill 明确不默认供应商门户，当前支持授权人员录入/导入上报证据和采购、项目协同口径"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合，以及节点上报 proposal 不直接写库、本人确认后写入 SupplierProgressReport、计划任务一致性、重复来源与风险必填项阻断；tests/test_model_harness.py 覆盖供应商节点上报场景只激活查询前置和节点上报工具；供应商填报频率、证据模板、供应商侧接入和真实协同流程尚未适配验收"
+        "tests/test_full_outsource_tools.py 覆盖供应商生产质检装配试模验收节点、供应商发货与我方收货聚合、规则 proposal 不直接写库、本人确认后写入版本化规则、必需证据阻断、逾期派生、规则替换与旧版失效，以及节点上报 proposal 的计划任务一致性、重复来源和风险必填项；tests/test_model_harness.py 覆盖普通节点上报与上报频率/证据模板规则的按需工具收窄；供应商侧接入、ERP 联调和真实协同流程尚未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

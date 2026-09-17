@@ -1,5 +1,5 @@
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -20,7 +20,14 @@ from .security import current_user
 
 OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "supplier")
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
-FULL_OUTSOURCE_PROPOSAL_TOOLS = {"prepare_supplier_material_handoff", "prepare_supplier_progress_report"}
+FULL_OUTSOURCE_PROPOSAL_TOOLS = {
+    "prepare_supplier_material_handoff",
+    "prepare_supplier_progress_policy",
+    "prepare_supplier_progress_report",
+}
+PROGRESS_EVIDENCE_KINDS = Literal[
+    "PHOTO", "DOCUMENT", "QUALITY_REPORT", "SCHEDULE", "ISSUE_LIST", "DELIVERY_PROOF", "OTHER"
+]
 
 
 class SupplierMaterialHandoffProposalInput(StrictModel):
@@ -53,9 +60,27 @@ class SupplierProgressReportProposalInput(StrictModel):
     next_due_date: date | None = None
     issue_summary: str = Field(default="", max_length=4000)
     evidence: str = Field(min_length=1, max_length=4000)
+    evidence_items: list[PROGRESS_EVIDENCE_KINDS] = Field(default_factory=list, max_length=7)
     source_system: Literal["MANUAL","IMPORT"] = "MANUAL"
     source_ref: str = Field(min_length=1, max_length=120)
     followed_by: str | None = Field(default=None, max_length=36)
+
+
+class SupplierProgressPolicyProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    plan_task_id: str | None = Field(default=None, max_length=36)
+    stage_key: str = Field(min_length=1, max_length=80)
+    stage_name: str = Field(min_length=1, max_length=150)
+    frequency_days: int = Field(ge=1, le=90)
+    effective_from: date
+    first_due_date: date
+    evidence_requirements: list[PROGRESS_EVIDENCE_KINDS] = Field(min_length=1, max_length=7)
+    basis: str = Field(min_length=1, max_length=4000)
+    source_ref: str = Field(min_length=1, max_length=120)
+    replaces_policy_id: str | None = Field(default=None, max_length=36)
 
 
 def supplier_material_handoff_schema():
@@ -64,6 +89,10 @@ def supplier_material_handoff_schema():
 
 def supplier_progress_report_schema():
     return SupplierProgressReportProposalInput.model_json_schema()
+
+
+def supplier_progress_policy_schema():
+    return SupplierProgressPolicyProposalInput.model_json_schema()
 
 
 def parse_supplier_material_handoff(arguments):
@@ -94,7 +123,124 @@ def parse_supplier_progress_report(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "节点完成时进度必须为 100%")
     if data.progress_percent == 100 and data.status != "DONE":
         raise DomainError("INVALID_TOOL_INPUT", "进度为 100% 时节点状态必须为已完成")
+    if len(set(data.evidence_items)) != len(data.evidence_items):
+        raise DomainError("INVALID_TOOL_INPUT", "供应商节点上报证据类型不能重复")
     return data
+
+
+def parse_supplier_progress_policy(arguments):
+    try:
+        data = SupplierProgressPolicyProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商上报规则参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.first_due_date < data.effective_from:
+        raise DomainError("INVALID_TOOL_INPUT", "首次上报日期不能早于规则生效日期")
+    if len(set(data.evidence_requirements)) != len(data.evidence_requirements):
+        raise DomainError("INVALID_TOOL_INPUT", "供应商上报规则的证据类型不能重复")
+    return data
+
+
+def _active_progress_policy(db, project_id, supplier_id, contract_subject_id, stage_key):
+    return db.scalar(
+        select(m.SupplierProgressPolicy).where(
+            m.SupplierProgressPolicy.project_id == project_id,
+            m.SupplierProgressPolicy.supplier_id == supplier_id,
+            m.SupplierProgressPolicy.contract_subject_id == contract_subject_id,
+            m.SupplierProgressPolicy.stage_key == stage_key,
+            m.SupplierProgressPolicy.active.is_(True),
+        ).order_by(m.SupplierProgressPolicy.version.desc(), m.SupplierProgressPolicy.created_at.desc())
+    )
+
+
+def preview_supplier_progress_policy(db, user, data: SupplierProgressPolicyProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "供应商上报规则必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与上报规则供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商上报规则必须关联已生效或已关闭整套委外合同", 409)
+    plan_task = None
+    if data.plan_task_id:
+        plan_task = db.get(m.PlanTask, data.plan_task_id)
+        plan = db.get(m.BusinessSubject, plan_task.plan_id) if plan_task else None
+        if not plan_task or not plan or plan.project_id != project.id or plan.kind not in {"project_plan", "plan_change"}:
+            raise DomainError("PLAN_TASK_NOT_FOUND", "计划节点不存在或不属于该项目", 404)
+        if data.stage_key != plan_task.key or data.stage_name != plan_task.name:
+            raise DomainError("PLAN_TASK_MISMATCH", "节点标识或名称与所选计划任务不一致，请重新查询后准备", 409)
+    current = _active_progress_policy(db, project.id, supplier.id, contract.id, data.stage_key)
+    if current and data.replaces_policy_id != current.id:
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_CHANGED", "当前供应商上报规则已变化，请重新查询后替换", 409)
+    if not current and data.replaces_policy_id:
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_CHANGED", "待替换的供应商上报规则已失效，请重新查询", 409)
+    if db.scalar(select(m.SupplierProgressPolicy.id).where(
+        m.SupplierProgressPolicy.project_id == project.id,
+        m.SupplierProgressPolicy.supplier_id == supplier.id,
+        m.SupplierProgressPolicy.contract_subject_id == contract.id,
+        m.SupplierProgressPolicy.stage_key == data.stage_key,
+        m.SupplierProgressPolicy.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_PROGRESS_POLICY_DUPLICATE", "该供应商上报规则来源已登记", 409)
+    version = (current.version + 1) if current else 1
+    display = {
+        "操作": "配置供应商节点上报规则",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "计划节点": (plan_task.key + " · " + plan_task.name) if plan_task else "未关联计划任务",
+        "上报阶段": data.stage_key + " · " + data.stage_name,
+        "填报频率": f"每 {data.frequency_days} 天",
+        "生效日期": data.effective_from.isoformat(),
+        "首次应报日期": data.first_due_date.isoformat(),
+        "必需证据类型": list(data.evidence_requirements),
+        "规则版本": version,
+        "替换规则": current.id if current else "首次配置",
+        "来源引用": data.source_ref,
+        "制定依据": data.basis,
+        "说明": "本人确认后建立版本化上报规则；不会代替供应商上报、ERP 执行事实、收货质检或客户验收。",
+    }
+    return project, supplier, contract, plan_task, current, version, display
+
+
+def create_supplier_progress_policy(db, user, data: SupplierProgressPolicyProposalInput):
+    project, supplier, contract, plan_task, current, version, _ = preview_supplier_progress_policy(db, user, data)
+    if current:
+        current.active = False
+    row = m.SupplierProgressPolicy(
+        project_id=project.id,
+        supplier_id=supplier.id,
+        contract_subject_id=contract.id,
+        plan_task_id=plan_task.id if plan_task else None,
+        stage_key=data.stage_key,
+        stage_name=data.stage_name,
+        frequency_days=data.frequency_days,
+        effective_from=data.effective_from,
+        first_due_date=data.first_due_date,
+        evidence_requirements=list(data.evidence_requirements),
+        basis=data.basis,
+        source_ref=data.source_ref,
+        version=version,
+        active=True,
+        supersedes_id=current.id if current else None,
+        created_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def preview_supplier_progress_report(db, user, data: SupplierProgressReportProposalInput):
@@ -137,6 +283,10 @@ def preview_supplier_progress_report(db, user, data: SupplierProgressReportPropo
         m.SupplierProgressReport.source_ref == data.source_ref,
     )):
         raise DomainError("SUPPLIER_PROGRESS_REPORT_DUPLICATE", "该供应商节点上报来源已登记", 409)
+    policy = _active_progress_policy(db, project.id, supplier.id, contract.id, data.stage_key)
+    missing_evidence = sorted(set(policy.evidence_requirements or []) - set(data.evidence_items)) if policy else []
+    if missing_evidence:
+        raise DomainError("SUPPLIER_PROGRESS_EVIDENCE_MISSING", "供应商节点上报缺少规则要求的证据类型：" + "、".join(missing_evidence), 409)
     display = {
         "操作": "登记供应商节点上报证据",
         "项目": project.code + " · " + project.name,
@@ -150,6 +300,8 @@ def preview_supplier_progress_report(db, user, data: SupplierProgressReportPropo
         "进度": (str(data.progress_percent) + "%") if data.progress_percent is not None else "未填写",
         "下次跟进日期": data.next_due_date.isoformat() if data.next_due_date else "不适用",
         "问题摘要": data.issue_summary or "无",
+        "结构化证据类型": list(data.evidence_items) if data.evidence_items else "未配置规则或未分类",
+        "适用上报规则": (f"第 {policy.version} 版 · 每 {policy.frequency_days} 天") if policy else "当前未配置结构化规则",
         "采购跟进人": follower.display_name,
         "录入方式": data.source_system,
         "来源引用": data.source_ref,
@@ -165,7 +317,7 @@ def create_supplier_progress_report(db, user, data: SupplierProgressReportPropos
         contract_subject_id=contract.id, plan_task_id=plan_task.id if plan_task else None,
         stage_key=data.stage_key, stage_name=data.stage_name, report_date=data.report_date,
         status=data.status, progress_percent=data.progress_percent, next_due_date=data.next_due_date,
-        issue_summary=data.issue_summary, evidence=data.evidence, source_system=data.source_system,
+        issue_summary=data.issue_summary, evidence=data.evidence, evidence_items=list(data.evidence_items), source_system=data.source_system,
         source_ref=data.source_ref, reported_by=user.id, followed_by=follower.id)
     db.add(row)
     db.flush()
@@ -248,6 +400,12 @@ def execute_full_outsource_tool(db, user, key, arguments, run=None):
         kind = "supplier_material_handoff"
         action = "confirm_supplier_material_handoff"
         limitation = "仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"
+    elif key == "prepare_supplier_progress_policy":
+        data = parse_supplier_progress_policy(arguments)
+        _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
+        kind = "supplier_progress_policy"
+        action = "confirm_supplier_progress_policy"
+        limitation = "仅准备版本化供应商上报频率与证据规则；本人确认后才生效，不代表供应商已上报或 ERP 节点已完成。"
     elif key == "prepare_supplier_progress_report":
         data = parse_supplier_progress_report(arguments)
         _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
@@ -540,12 +698,76 @@ def _order_tracking(db, user, project_id, allowed_tools):
     return {"orders": _order_headers(orders), **tracking}
 
 
+def _supplier_progress_policies(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    today = now().date()
+    rows = []
+    policies = db.execute(
+        select(m.SupplierProgressPolicy, m.Supplier)
+        .join(m.Supplier, m.SupplierProgressPolicy.supplier_id == m.Supplier.id)
+        .where(m.SupplierProgressPolicy.project_id == project_id, m.SupplierProgressPolicy.active.is_(True))
+        .order_by(m.SupplierProgressPolicy.stage_key, m.SupplierProgressPolicy.version.desc())
+        .limit(100)
+    )
+    for policy, supplier in policies:
+        latest = db.scalar(
+            select(m.SupplierProgressReport).where(
+                m.SupplierProgressReport.project_id == project_id,
+                m.SupplierProgressReport.supplier_id == policy.supplier_id,
+                m.SupplierProgressReport.contract_subject_id == policy.contract_subject_id,
+                m.SupplierProgressReport.stage_key == policy.stage_key,
+                m.SupplierProgressReport.report_date >= policy.effective_from,
+            ).order_by(m.SupplierProgressReport.report_date.desc(), m.SupplierProgressReport.created_at.desc())
+        )
+        completed = bool(latest and latest.status == "DONE")
+        next_due = None if completed else (
+            latest.report_date + timedelta(days=policy.frequency_days) if latest else policy.first_due_date
+        )
+        evidence_requirements = list(policy.evidence_requirements or [])
+        latest_evidence = list(latest.evidence_items or []) if latest else []
+        missing_evidence = sorted(set(evidence_requirements) - set(latest_evidence)) if latest else evidence_requirements
+        rows.append({
+            "id": policy.id,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "contract_subject_id": policy.contract_subject_id,
+            "plan_task_id": policy.plan_task_id,
+            "stage_key": policy.stage_key,
+            "stage_name": policy.stage_name,
+            "frequency_days": policy.frequency_days,
+            "effective_from": policy.effective_from.isoformat(),
+            "first_due_date": policy.first_due_date.isoformat(),
+            "next_due_date": next_due.isoformat() if next_due else None,
+            "overdue": bool(next_due and next_due < today),
+            "completed": completed,
+            "evidence_requirements": evidence_requirements,
+            "latest_report_id": latest.id if latest else None,
+            "latest_report_date": latest.report_date.isoformat() if latest else None,
+            "latest_missing_evidence": missing_evidence,
+            "basis": policy.basis,
+            "source_ref": policy.source_ref,
+            "version": policy.version,
+            "supersedes_id": policy.supersedes_id,
+        })
+    return rows
+
+
 def _supplier_progress_reports(db, user, project_id, allowed_tools):
     if not _can_read_kind("full_outsource_contract", allowed_tools):
         return []
     if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
         return []
     rows = []
+    active_policies = {
+        (row.supplier_id, row.contract_subject_id, row.stage_key): row
+        for row in db.scalars(select(m.SupplierProgressPolicy).where(
+            m.SupplierProgressPolicy.project_id == project_id,
+            m.SupplierProgressPolicy.active.is_(True),
+        ))
+    }
     q = (
         select(m.SupplierProgressReport, m.Supplier)
         .join(m.Supplier, m.SupplierProgressReport.supplier_id == m.Supplier.id)
@@ -556,6 +778,9 @@ def _supplier_progress_reports(db, user, project_id, allowed_tools):
     today = now().date()
     for report, supplier in db.execute(q):
         overdue_followup = report.status in {"AT_RISK", "BLOCKED", "REWORK"} and report.next_due_date is not None and report.next_due_date < today
+        policy = active_policies.get((report.supplier_id, report.contract_subject_id, report.stage_key))
+        evidence_items = list(report.evidence_items or [])
+        missing_evidence = sorted(set(policy.evidence_requirements or []) - set(evidence_items)) if policy else []
         rows.append(
             {
                 "id": report.id,
@@ -572,6 +797,10 @@ def _supplier_progress_reports(db, user, project_id, allowed_tools):
                 "overdue_followup": overdue_followup,
                 "issue_summary": report.issue_summary,
                 "evidence": report.evidence,
+                "evidence_items": evidence_items,
+                "policy_id": policy.id if policy else None,
+                "policy_version": policy.version if policy else None,
+                "missing_policy_evidence": missing_evidence,
                 "source_system": report.source_system,
                 "source_ref": report.source_ref,
                 "reported_by": report.reported_by,
@@ -895,7 +1124,7 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
     }
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_reports, material_handoffs, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -904,6 +1133,8 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     open_change_impacts = [impact for row in engineering_changes for impact in row.get("unimplemented_impacts") or []]
     risky_reports = [row for row in supplier_progress_reports if row.get("status") in {"AT_RISK", "BLOCKED", "REWORK"}]
     overdue_reports = [row for row in supplier_progress_reports if row.get("overdue_followup")]
+    overdue_policies = [row for row in supplier_progress_policies if row.get("overdue")]
+    evidence_noncompliant = [row for row in supplier_progress_policies if row.get("latest_report_id") and row.get("latest_missing_evidence")]
     approved_handoffs = [row for row in material_handoffs if row.get("approval_status") == "APPROVED"]
     draft_or_revoked_handoffs = [row for row in material_handoffs if row.get("approval_status") != "APPROVED"]
     confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
@@ -946,12 +1177,18 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("当前可见范围未见有效项目计划，无法核对供应商节点上报与项目同步节奏。")
     if not plan_tasks:
         gaps.append("未见供应商设计、采购、生产、质检、装配、试模、验收或交付等委外协同计划节点。")
+    if plan_tasks and not supplier_progress_policies:
+        gaps.append("未见版本化供应商节点上报频率与必需证据规则；无法判断各阶段应报日期和证据完整性。")
     if not supplier_progress_reports:
         gaps.append("未见结构化供应商节点上报/导入记录；无法核对供应商设计、采购、生产、质检、装配、试模、验收等阶段的最近进度与证据。")
     if risky_reports:
         warnings.append("存在供应商节点风险、阻塞或返工上报，需采购跟进并同步项目。")
     if overdue_reports:
         warnings.append("存在供应商风险/阻塞节点已超过下次跟进日期，需更新整改或复验进度。")
+    if overdue_policies:
+        warnings.append("存在供应商节点超过规则计算的应报日期，需按当前有效频率规则补充上报。")
+    if evidence_noncompliant:
+        warnings.append("存在历史供应商节点上报未满足当前规则的必需证据类型，需补充证据或登记新上报。")
     if not totals.get("supplier_shipments") and not totals.get("goods_receipts"):
         gaps.append("未见供应商发货、仓库收货或交付节点执行事实；不能据此认定委外交付完成。")
     if totals.get("supplier_shipments") and not totals.get("goods_receipts"):
@@ -994,7 +1231,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("客户验收记录存在交期影响天数，需与计划变更或客户交期确认联动。")
     if has_customer_acceptance and payments["requests"] and not close_done:
         warnings.append("已有客户验收或供应商付款申请，但未见关闭/结算清单完成；不能把付款申请等同于项目关闭。")
-    gaps.append("当前未接入供应商门户、供应商在线签署、供应商节点填报频率和证据模板；只能读取已授权本地/ERP适配事实。")
+    gaps.append("当前未接入供应商门户和供应商在线签署；规则与上报仅代表已授权本地/导入事实，不代表 ERP 执行节点完成。")
 
     return {
         "latest_full_outsource_acceptance": quote_acceptance,
@@ -1005,6 +1242,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             else None
         ),
         "outsource_plan_tasks": plan_tasks,
+        "supplier_progress_policies": supplier_progress_policies,
         "supplier_progress_reports": supplier_progress_reports,
         "supplier_material_handoffs": material_handoffs,
         "supplier_deduction_settlements": deduction_settlements,
@@ -1025,6 +1263,9 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_signed_full_outsource_contract_file": bool(signed_contracts),
             "has_unsigned_contract_signing_record": bool(non_signed_contracts),
             "has_outsource_plan_node": bool(plan_tasks),
+            "has_supplier_progress_policy": bool(supplier_progress_policies),
+            "has_overdue_supplier_progress_report": bool(overdue_policies),
+            "has_supplier_progress_evidence_gap": bool(evidence_noncompliant),
             "has_supplier_progress_report": bool(supplier_progress_reports),
             "has_supplier_progress_risk": bool(risky_reports),
             "has_overdue_supplier_progress_followup": bool(overdue_reports),
@@ -1068,6 +1309,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         signing_records = _contract_signing_records(db, user, contract_rows, allowed_tools)
         plan_rows = _subject_rows(db, user, project.id, "project_plan", allowed_tools) + _subject_rows(db, user, project.id, "plan_change", allowed_tools)
         active_plan, plan_tasks = _plan_tasks(plan_rows)
+        supplier_progress_policies = _supplier_progress_policies(db, user, project.id, allowed_tools)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
         deduction_settlements = _deduction_settlements(db, user, project.id, allowed_tools)
@@ -1113,6 +1355,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         signing_records,
                         active_plan,
                         plan_tasks,
+                        supplier_progress_policies,
                         supplier_progress_reports,
                         material_handoffs,
                         deduction_settlements,
@@ -1167,6 +1410,9 @@ def validate_intent(db, user, payload):
     if kind == "supplier_material_handoff":
         data = parse_supplier_material_handoff(proposal["input"])
         _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    elif kind == "supplier_progress_policy":
+        data = parse_supplier_progress_policy(proposal["input"])
+        _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
     elif kind == "supplier_progress_report":
         data = parse_supplier_progress_report(proposal["input"])
         _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
@@ -1183,6 +1429,11 @@ def confirm(db, user, payload):
         row = create_supplier_material_handoff(db, user, data)
         return {"project_id": data.project_id, "supplier_id": data.supplier_id,
             "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+    if proposal["kind"] == "supplier_progress_policy":
+        row = create_supplier_progress_policy(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_progress_policy_id": row.id, "version": row.version,
+            "action": "supplier_progress_policy", "status": "CONFIRMED"}
     row = create_supplier_progress_report(db, user, data)
     return {"project_id": data.project_id, "supplier_id": data.supplier_id,
         "supplier_progress_report_id": row.id, "action": "supplier_progress_report", "status": "CONFIRMED"}

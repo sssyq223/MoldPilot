@@ -3,6 +3,8 @@
 ACTION_INTENT_TERMS = ()
 FORMAL_ACTION_TERMS = ()
 FORMAL_ACTION_NEGATED_PHRASES = ()
+READ_ONLY_INTENT_TERMS = ()
+UNAMBIGUOUS_FORMAL_ACTION_TERMS = ()
 WORKBENCH_SUPPORT_HINTS = (
     "harness", "tool", "skill", "模型", "model", "配置", "接口", "api", "错误", "调试",
 )

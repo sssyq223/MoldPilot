@@ -34,7 +34,10 @@ let runEvents:EventSource|null=null
 const runProcessOpen=ref<Record<string,boolean>>({})
 const streamedText=ref<Record<string,string>>({})
 const streamedTextTargets=new Map<string,string>()
-const streamedTextTimers=new Map<string,number>()
+const streamedTextFrames=new Map<string,number>()
+const streamedTextNextRevealAt=new Map<string,number>()
+const streamedTextLiveKeys=new Set<string>()
+const streamedTextCompletedKeys=new Set<string>()
 const confirmedProposalSteps=ref<Record<string,boolean>>({})
 const sidebarCollapsed=ref(false)
 const copiedMessage=ref('')
@@ -88,7 +91,7 @@ function closeFloatingPanels(e:MouseEvent){
  if(approvalModePopoverOpen.value&&!target?.closest('.approval-mode-wrap'))approvalModePopoverOpen.value=false
 }
 onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',updateNotificationPosition)})
-onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);for(const timer of streamedTextTimers.values())window.clearInterval(timer);streamedTextTimers.clear()})
+onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);for(const frame of streamedTextFrames.values())window.cancelAnimationFrame(frame);streamedTextFrames.clear()})
 async function openNotices(){showProfile.value=false;showNotices.value=true;await nextTick();updateNotificationPosition();noticeLoading.value=true;try{[notices.value,approvals.value]=await Promise.all([api('/notifications'),api('/approvals')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
 const currentTitle=computed(()=>conversations.value.find(c=>c.id===conversation.value)?.title || activeConversationTitle.value || '新对话')
 const filteredConversations=computed(()=>conversations.value.filter(c=>c.title.includes(search.value)))
@@ -206,53 +209,83 @@ function runTrace(run:any){
  return items
 }
 function runProcessTrace(run:any){return runTrace(run).filter((item:any)=>item.type!=='final')}
-function streamedTextKey(run:any,index:number){return `${run.id}:${index}`}
-function stopStreamedTextTimer(key:string){
- const timer=streamedTextTimers.get(key)
- if(timer!==undefined)window.clearInterval(timer)
- streamedTextTimers.delete(key)
+function streamedTextKey(run:any,item:any,index:number){return `${run.id}:${item?.message_key||`index:${index}`}`}
+function stopStreamedTextAnimation(key:string){
+ const frame=streamedTextFrames.get(key)
+ if(frame!==undefined)window.cancelAnimationFrame(frame)
+ streamedTextFrames.delete(key)
+ streamedTextNextRevealAt.delete(key)
+}
+const graphemeSegmenter=typeof Intl!=='undefined'&&(Intl as any).Segmenter?new (Intl as any).Segmenter('zh-CN',{granularity:'grapheme'}):null
+function firstGrapheme(value:string){
+ if(!value)return ''
+ if(graphemeSegmenter){
+  const part=graphemeSegmenter.segment(value)[Symbol.iterator]().next().value
+  if(part?.segment)return String(part.segment)
+ }
+ return Array.from(value)[0]??''
 }
 function animateStreamedText(key:string){
- if(streamedTextTimers.has(key)||typeof window==='undefined')return
- const timer=window.setInterval(()=>{
+ if(streamedTextFrames.has(key)||typeof window==='undefined')return
+ const reveal=(timestamp:number)=>{
+  streamedTextFrames.delete(key)
   const target=streamedTextTargets.get(key)??''
   const current=streamedText.value[key]??''
-  if(current===target){stopStreamedTextTimer(key);return}
-  if(!target.startsWith(current)){
-   streamedText.value={...streamedText.value,[key]:target}
-   stopStreamedTextTimer(key)
+  if(current===target){
+   streamedTextNextRevealAt.delete(key)
+   if(streamedTextCompletedKeys.has(key)){streamedTextCompletedKeys.delete(key);streamedTextLiveKeys.delete(key)}
    return
   }
-  const next=Array.from(target.slice(current.length))[0]??''
+  if(!target.startsWith(current)){
+   streamedText.value={...streamedText.value,[key]:''}
+   streamedTextNextRevealAt.set(key,timestamp)
+   streamedTextFrames.set(key,window.requestAnimationFrame(reveal))
+   return
+  }
+  const due=streamedTextNextRevealAt.get(key)??timestamp
+  if(timestamp+.5<due){streamedTextFrames.set(key,window.requestAnimationFrame(reveal));return}
+  const next=firstGrapheme(target.slice(current.length))
   streamedText.value={...streamedText.value,[key]:current+next}
- },22)
- streamedTextTimers.set(key,timer)
+  streamedTextNextRevealAt.set(key,timestamp+16)
+  streamedTextFrames.set(key,window.requestAnimationFrame(reveal))
+ }
+ streamedTextFrames.set(key,window.requestAnimationFrame(reveal))
 }
 function processMessageText(run:any,item:any,index:number){
- if(!item.streaming)return item.text??''
- return streamedText.value[streamedTextKey(run,index)]??''
+ const key=streamedTextKey(run,item,index)
+ if(!item.streaming&&!streamedTextLiveKeys.has(key)&&!streamedTextCompletedKeys.has(key))return item.text??''
+ return streamedText.value[key]??''
 }
 watch(runs,(currentRuns)=>{
  const activeKeys=new Set<string>()
  for(const run of currentRuns){
   runProcessTrace(run).forEach((item:any,index:number)=>{
    if(item.type!=='message')return
-   const key=streamedTextKey(run,index)
+   const key=streamedTextKey(run,item,index)
    activeKeys.add(key)
    const target=String(item.text??'')
    if(!item.streaming){
     streamedTextTargets.set(key,target)
-    if(streamedText.value[key]!==target)streamedText.value={...streamedText.value,[key]:target}
-    stopStreamedTextTimer(key)
+    if(streamedTextLiveKeys.has(key)){
+     streamedTextCompletedKeys.add(key)
+     animateStreamedText(key)
+    }else{
+     if(streamedText.value[key]!==target)streamedText.value={...streamedText.value,[key]:target}
+     stopStreamedTextAnimation(key)
+    }
     return
    }
+   streamedTextLiveKeys.add(key)
+   streamedTextCompletedKeys.delete(key)
    const shown=streamedText.value[key]??''
    if(!target.startsWith(shown))streamedText.value={...streamedText.value,[key]:''}
    streamedTextTargets.set(key,target)
    animateStreamedText(key)
   })
  }
- for(const key of streamedTextTargets.keys())if(!activeKeys.has(key)){streamedTextTargets.delete(key);stopStreamedTextTimer(key)}
+ for(const key of streamedTextTargets.keys())if(!activeKeys.has(key)){
+  streamedTextTargets.delete(key);streamedTextLiveKeys.delete(key);streamedTextCompletedKeys.delete(key);stopStreamedTextAnimation(key)
+ }
 },{deep:true})
 function runFinalTrace(run:any){
  const trace=runTrace(run)
@@ -443,7 +476,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </button>
             <div v-if="runProcessTrace(run).length" class="run-process" :class="{open:runProcessExpanded(run)}" :aria-hidden="!runProcessExpanded(run)">
               <div class="run-process-inner">
-                <template v-for="(item,index) in runProcessTrace(run)" :key="item.id||item.call_id||index">
+                <template v-for="(item,index) in runProcessTrace(run)" :key="item.id||item.call_id||item.message_key||index">
                   <div v-if="item.type==='message'" class="assistant-prose process-text">
                     <p class="preserve">{{processMessageText(run,item,Number(index))}}</p>
                   </div>

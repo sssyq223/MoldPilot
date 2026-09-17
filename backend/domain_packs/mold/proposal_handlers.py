@@ -45,7 +45,8 @@ HANDLERS = (
         "prepare_contract_record", "prepare_contract_signing_record",
     })),
     ProposalHandler("full_outsource.execute", "app.full_outsource_tools", frozenset({
-        "prepare_supplier_material_handoff", "prepare_supplier_progress_report",
+        "prepare_supplier_material_handoff", "prepare_supplier_progress_policy",
+        "prepare_supplier_progress_report",
     })),
     ProposalHandler("finance.execute", "app.finance_context_tools", frozenset({
         "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",

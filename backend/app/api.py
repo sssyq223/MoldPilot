@@ -108,12 +108,15 @@ def run_trace(run, steps, decisions=None):
     tool_result_call_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")}
     tool_names_by_call = {}
     trace = []
+    assistant_turn = 0
     for msg in messages:
         role = msg.get("role")
         if role == "assistant":
+            message_key = f"assistant:{assistant_turn}"
+            assistant_turn += 1
             text = (msg.get("content") or "").strip()
             if text:
-                trace.append({"type": "message", "text": text})
+                trace.append({"type": "message", "text": text, "message_key": message_key})
             for call in msg.get("tool_calls") or []:
                 call_id = call.get("id")
                 tool_names_by_call[call_id] = (call.get("function") or {}).get("name") or "业务工具"
@@ -147,7 +150,11 @@ def run_trace(run, steps, decisions=None):
     if run.status in {"QUEUED", "RUNNING"} and isinstance(streaming, dict):
         text = (streaming.get("content") or "").strip()
         if text:
-            trace.append({"type": "message", "text": text, "streaming": True})
+            # This snapshot becomes the next persisted assistant message.  Its
+            # identity must not depend on the trace array position because tool
+            # observations are inserted ahead of it while a ReAct run advances.
+            trace.append({"type": "message", "text": text, "streaming": True,
+                          "message_key": f"assistant:{assistant_turn}"})
         for call in streaming.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue

@@ -17,6 +17,8 @@ LEASE_HEARTBEAT_SECONDS = 30
 ACTION_INTENT_TERMS = _policy.ACTION_INTENT_TERMS
 FORMAL_ACTION_TERMS = getattr(_policy, "FORMAL_ACTION_TERMS", ACTION_INTENT_TERMS)
 FORMAL_ACTION_NEGATED_PHRASES = getattr(_policy, "FORMAL_ACTION_NEGATED_PHRASES", ())
+READ_ONLY_INTENT_TERMS = getattr(_policy, "READ_ONLY_INTENT_TERMS", ())
+UNAMBIGUOUS_FORMAL_ACTION_TERMS = getattr(_policy, "UNAMBIGUOUS_FORMAL_ACTION_TERMS", FORMAL_ACTION_TERMS)
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
 BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
@@ -150,9 +152,21 @@ def _has_formal_action_intent(prompt):
     scope, a remaining positive action phrase still wins (for example
     "不要准备草稿，直接提交审批").
     """
-    compact = _compact_intent_text(prompt)
+    original = _compact_intent_text(prompt)
+    compact = original
+    negated_scope = False
     for phrase in sorted(FORMAL_ACTION_NEGATED_PHRASES, key=len, reverse=True):
-        compact = compact.replace(_compact_intent_text(phrase), "")
+        folded = _compact_intent_text(phrase)
+        if folded and folded in compact:
+            negated_scope = True
+            compact = compact.replace(folded, "")
+    # Business nouns can also be action verbs: “查询最近上报” is read-only,
+    # while “请上报进度” is an operation.  An explicit read-only scope plus an
+    # explicit operation negation wins unless a separate unambiguous action
+    # (for example 登记/提交/录入) remains after removing the negated phrase.
+    if (negated_scope and _contains_any(original, READ_ONLY_INTENT_TERMS)
+            and not _contains_any(compact, UNAMBIGUOUS_FORMAL_ACTION_TERMS)):
+        return False
     return _contains_any(compact, FORMAL_ACTION_TERMS)
 
 

@@ -61,6 +61,7 @@ TOOLS.update({
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
     'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
     'prepare_supplier_material_handoff':{'description':'准备向供应商提供客户资料、设计图纸或技术标准的交接证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和交接依据，本人确认后才写入资料交接记录。','permission':'full_outsource_contract.execute'},
+    'prepare_supplier_progress_policy':{'description':'准备供应商阶段填报的版本化频率与必需证据规则；必须使用真实项目、供应商、已生效整套委外合同和可选计划节点，本人确认后才生效。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_progress_report':{'description':'准备供应商设计、采购、生产、质检、装配、试模或验收节点上报证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和可选计划节点，本人确认后才写入。','permission':'full_outsource_contract.execute'},
     'query_change_intake_context':{'description':'按项目、模具、客户设变、工程联络或合同线索核对设变承接、收费/合同/开工依据、原模具/原项目、影响任务、执行复验和关闭上下文；只读，不替代 ERP 执行。','permission':'engineering_change.read'},
     'query_finance_context':{'description':'按项目、合同、付款节点、供应商付款、回款、发票、费用或结项线索核对财务节点与收付款上下文；只读，不确认回款付款、不生成财务台账。','permission':'project.dossier.read'},
@@ -122,8 +123,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'delivery_logistics_review':{'name':'交付物流上下文核对','tools':['query_delivery_logistics_context'],
                    'activation_queries':['出库发货','物流报价','客户签收','客户验收','发货物流']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context'],
-                   'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_progress_report','prepare_supplier_deduction_settlement'],
-                   'activation_queries':['整套委外执行','整套委外加工','供应商节点上报','供应商节点','供应商上报','进度上报','委外验收','委外扣款','委外合同签署','签署扫描件','资料交接','供应商资料']},
+                   'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_supplier_deduction_settlement'],
+                   'activation_queries':['整套委外执行','整套委外加工','供应商节点上报','供应商上报规则','上报频率','证据模板','供应商节点','供应商上报','进度上报','委外验收','委外扣款','委外合同签署','签署扫描件','资料交接','供应商资料']},
                'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context'],
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
                    'activation_queries':['客户设变','设变承接','工程设变','收费变更','原模具']},
@@ -202,6 +203,7 @@ CAPABILITY_NAMES = {
     'query_delivery_logistics_context': '读取交付物流上下文',
     'query_full_outsource_context': '读取整套委外上下文',
     'prepare_supplier_material_handoff': '准备供应商资料交接',
+    'prepare_supplier_progress_policy': '准备供应商上报规则',
     'prepare_supplier_progress_report': '准备供应商节点上报',
     'query_change_intake_context': '读取设变承接上下文',
     'query_finance_context': '读取财务节点上下文',
@@ -263,7 +265,8 @@ CAPABILITY_DEPARTMENTS = {
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
     'delivery_logistics_review': 'warehouse', 'query_full_outsource_context': 'purchase',
-    'prepare_supplier_material_handoff': 'purchase', 'prepare_supplier_progress_report': 'purchase',
+    'prepare_supplier_material_handoff': 'purchase', 'prepare_supplier_progress_policy': 'purchase',
+    'prepare_supplier_progress_report': 'purchase',
     'full_outsource_review': 'purchase', 'query_change_intake_context': 'engineering',
     'change_intake_review': 'engineering', 'query_procurement_price_context': 'purchase',
     'procurement_price_context_review': 'purchase', 'query_purchase_requests': 'purchase',
@@ -297,7 +300,8 @@ CAPABILITY_TYPES = {
     'design_route_context_review': 'review',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
     'delivery_logistics_review': 'review', 'full_outsource_review': 'review',
-    'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_progress_report': 'operation',
+    'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_progress_policy': 'operation',
+    'prepare_supplier_progress_report': 'operation',
     'change_intake_review': 'review', 'procurement_price_context_review': 'review',
     'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
     'business_status_review': 'review', 'project_dossier_review': 'review',
@@ -420,13 +424,16 @@ def tool_schema(key):
     if key=='query_delivery_logistics_context':
         from app.plan_tools import ProjectPlanContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_progress_report'}:
+    if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         if key=='prepare_supplier_material_handoff':
             from app.full_outsource_tools import supplier_material_handoff_schema
             parameters=supplier_material_handoff_schema()
         elif key=='prepare_supplier_progress_report':
             from app.full_outsource_tools import supplier_progress_report_schema
             parameters=supplier_progress_report_schema()
+        elif key=='prepare_supplier_progress_policy':
+            from app.full_outsource_tools import supplier_progress_policy_schema
+            parameters=supplier_progress_policy_schema()
         else:
             from app.plan_tools import ProjectPlanContextInput
             parameters=ProjectPlanContextInput.model_json_schema()
@@ -498,7 +505,7 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
         from app.finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_supplier_material_handoff','prepare_supplier_progress_report'}:
+    if key in {'prepare_supplier_material_handoff','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         from app.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':

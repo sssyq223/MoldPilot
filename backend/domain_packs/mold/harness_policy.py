@@ -28,6 +28,15 @@ FORMAL_ACTION_NEGATED_PHRASES = (
     "do not prepare or execute action", "do not prepare or execute",
     "do not prepare", "do not submit", "do not execute", "read only",
 )
+READ_ONLY_INTENT_TERMS = (
+    "只读", "仅查询", "只查询", "仅核对", "只核对", "read only",
+)
+UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
+    "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
+    "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
+    "确认回款", "确认付款", "扣款结算",
+    "prepare", "submit", "create", "record", "execute action",
+)
 WORKBENCH_SUPPORT_HINTS = (
     "harness", "toolsearch", "工具调用", "工具选择", "模型", "model", "llm", "qwen", "30b",
     "上下文窗口", "context", "token", "tokens", "压缩", "配置", "接口", "api", "http", "500", "404",

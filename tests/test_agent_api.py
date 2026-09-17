@@ -143,7 +143,42 @@ def test_streaming_model_snapshot_is_visible_before_tool_execution_starts(client
     assert active['progress']['phase'] == 'MODEL_STREAMING'
     assert [item['type'] for item in active['trace']] == ['message', 'tool_pending']
     assert active['trace'][0]['streaming'] is True
+    assert active['trace'][0]['message_key'] == 'assistant:0'
     assert active['trace'][1]['tool'] == 'query_project_plan_context'
+
+
+def test_streaming_message_key_survives_trace_insertions_and_persistence(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    first_turn = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'search-1', 'type': 'function',
+            'function': {'name': 'ToolSearch', 'arguments': '{"query":"项目计划"}'},
+        }]},
+        {'role': 'tool', 'tool_call_id': 'search-1',
+         'content': '{"source":"harness","activated":["query_project_plan_context"]}'},
+    ]
+    streaming = {
+        'role': 'assistant', 'content': '我继续读取项目计划。',
+        'tool_calls': [{'id': 'query-1', 'type': 'function',
+                        'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}],
+    }
+    checkpoint = {'messages': first_turn, 'turn': 2, 'phase': 'MODEL_STREAMING',
+                  'streaming_model_message': streaming}
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': checkpoint}).status_code == 200
+    trace = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]['trace']
+    live = next(item for item in trace if item['type'] == 'message')
+    assert live['streaming'] is True
+    assert live['message_key'] == 'assistant:1'
+
+    persisted = first_turn + [streaming]
+    checkpoint = {'messages': persisted, 'turn': 2, 'phase': 'TOOL_RUNNING'}
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': checkpoint}).status_code == 200
+    trace = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]['trace']
+    message = next(item for item in trace if item['type'] == 'message')
+    assert message.get('streaming') is None
+    assert message['message_key'] == 'assistant:1'
 
 
 def test_tool_assignment_cannot_grant_business_data_access(client, data):
