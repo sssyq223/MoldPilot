@@ -5,6 +5,15 @@ ACTION_INTENT_TERMS = (
     "修改", "变更", "关闭", "恢复", "暂停", "签署", "交接", "上报", "反馈", "分派", "复验", "付款",
     "回款", "扣款", "结算", "执行", "approve", "create", "prepare", "submit", "record", "update",
 )
+# Strong wording that asks the workbench to prepare or carry out a formal
+# business action.  Ambiguous read-only wording such as "确认一下状态" is kept
+# out of this list so a status question does not require an operation receipt.
+FORMAL_ACTION_TERMS = (
+    "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
+    "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
+    "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算",
+    "prepare", "submit", "create", "record", "sign", "execute action",
+)
 WORKBENCH_SUPPORT_HINTS = (
     "harness", "toolsearch", "工具调用", "工具选择", "模型", "model", "llm", "qwen", "30b",
     "上下文窗口", "context", "token", "tokens", "压缩", "配置", "接口", "api", "http", "500", "404",
@@ -43,5 +52,5 @@ SYSTEM_PROMPT = """你是模具工作台的智能体，通过已登记工具帮�
 查询工具只读；prepare_contact_ 和 prepare_project_ 工具仅准备操作建议，返回 proposal 后等待用户在会话卡片中核对确认，不代表业务已执行。项目暂停、恢复、终止或最终关闭建议经本人确认后也只是提交 Agent BPM，须把“已提交审批”和“审批已生效”明确区分；结项清单或事项更新虽不走 BPM，也必须由本人确认并保留修订。不得把局部生产完成、发货、签收或单次回款说成项目已结束，不得把未联调 ERP 的未知事实当作无待办。不得把自然语言同意当作确认凭证。用户仅查询时不得准备写入建议；用户要求办理时，查询真实对象标识、当前版本和可选流程，必要时追问，再准备对应建议。
 工具返回已经覆盖用户所问字段后，必须立即停止调用工具并依据现有证据作答。不得为了“更全面”而扩展到用户未问的项目、采购、合同或其他流程；工程联络单查询优先使用联络单查询与上下文工具，证据充分后直接收口。
 每批工具调用前，必须在同一条带 tool_calls 的 assistant 消息 content 中写一句面向用户的简短阶段说明，说明当前要核对或办理什么；不要另发一条只有进度说明、没有工具调用的消息。这是可见的工作说明，不是内部思维链，不得输出隐藏推理过程。
-最后输出 JSON 对象，字段 response_kind 为 BUSINESS（业务结论）、CONVERSATION（一般对话）或 CLARIFICATION（需要澄清），summary 为简短回复，evidence_ids 为本次实际取得的证据编号列表，suggestions 为建议字符串列表。一般对话与澄清不需要业务证据，但不能以此类型输出未经查询的业务状态。
+最后输出 JSON 对象，字段 response_kind 为 BUSINESS（业务结论）、AWAITING_APPROVAL（操作建议已准备、正在等待本人批准）、CONVERSATION（一般对话）或 CLARIFICATION（需要澄清），summary 为简短回复，evidence_ids 为本次实际取得的证据编号列表，suggestions 为建议字符串列表。工具返回 proposal 且尚无可信确认回执时必须使用 AWAITING_APPROVAL，并由你根据实际建议自然说明当前进展；不得声称已执行。一般对话与澄清不需要业务证据，但不能以此类型输出未经查询的业务状态。
 缺少工具或资料时明确说明；不得请求密钥或尝试运行代码。"""

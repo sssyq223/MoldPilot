@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
+from uuid import uuid4
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -82,15 +83,100 @@ def _runtime_model_config() -> dict:
         return {}
 
 
-def model_settings():
-    """Return model settings with local UI overrides applied.
+_PROFILE_RUNTIME_KEYS = {
+    "llm_enabled", "llm_provider", "llm_base_url", "llm_trusted_http_origin",
+    "llm_api_key", "llm_proxy_url", "llm_tls_max_version", "llm_tls_key_exchange",
+    "llm_connect_timeout", "llm_read_timeout", "llm_model", "ollama_base_url",
+    "ollama_model", "llm_max_turns", "llm_max_output_tokens", "llm_context_window",
+}
 
-    The base Settings object remains environment-driven. The small runtime JSON file
-    lets the desktop UI update model routing without mutating .env or restarting the
-    API process. Secrets are never included in public_model_config().
-    """
+
+def _profile_name(data: dict, fallback: str = "模型配置") -> str:
+    provider = data.get("llm_provider")
+    model = data.get("ollama_model") if provider == "ollama" else data.get("llm_model")
+    return str(model or fallback).strip() or fallback
+
+
+def _legacy_profile(data: dict, profile_id: str, *, fallback_name: str) -> dict:
+    profile = {key: data[key] for key in _PROFILE_RUNTIME_KEYS if key in data}
+    profile["id"] = profile_id
+    profile["name"] = str(data.get("name") or _profile_name(profile, fallback_name)).strip()
+    return profile
+
+
+def _environment_profile() -> dict:
     base = settings()
-    data = _runtime_model_config()
+    return {
+        "id": "environment",
+        "name": _profile_name({"llm_provider": base.llm_provider, "llm_model": base.llm_model,
+                               "ollama_model": base.ollama_model}, "环境变量配置"),
+        "llm_enabled": base.llm_enabled,
+        "llm_provider": base.llm_provider,
+        "llm_base_url": base.llm_base_url,
+        "llm_trusted_http_origin": base.llm_trusted_http_origin,
+        "llm_api_key": base.llm_api_key,
+        "llm_proxy_url": base.llm_proxy_url,
+        "llm_tls_max_version": base.llm_tls_max_version,
+        "llm_tls_key_exchange": base.llm_tls_key_exchange,
+        "llm_connect_timeout": base.llm_connect_timeout,
+        "llm_read_timeout": base.llm_read_timeout,
+        "llm_model": base.llm_model,
+        "ollama_base_url": base.ollama_base_url,
+        "ollama_model": base.ollama_model,
+        "llm_max_turns": base.llm_max_turns,
+        "llm_max_output_tokens": base.llm_max_output_tokens,
+        "llm_context_window": base.llm_context_window,
+    }
+
+
+def _profile_document() -> dict:
+    """Read v2 profiles or present the legacy file and .env as migratable profiles."""
+    raw = _runtime_model_config()
+    profiles = raw.get("profiles")
+    if isinstance(profiles, list) and profiles:
+        valid = [dict(item) for item in profiles
+                 if isinstance(item, dict) and item.get("id") and item.get("name")]
+        if valid:
+            active_id = str(raw.get("active_profile_id") or valid[0]["id"])
+            if not any(str(item["id"]) == active_id for item in valid):
+                active_id = str(valid[0]["id"])
+            return {"version": 2, "active_profile_id": active_id, "profiles": valid}
+
+    candidates = []
+    if any(key in raw for key in _PROFILE_RUNTIME_KEYS):
+        candidates.append(_legacy_profile(raw, "runtime", fallback_name="当前模型"))
+    env_profile = _environment_profile()
+    env_identity = (env_profile.get("llm_provider"), env_profile.get("llm_base_url"),
+                    env_profile.get("llm_model"), env_profile.get("ollama_base_url"),
+                    env_profile.get("ollama_model"))
+    current_identities = {
+        (item.get("llm_provider"), item.get("llm_base_url"), item.get("llm_model"),
+         item.get("ollama_base_url"), item.get("ollama_model")) for item in candidates
+    }
+    if (env_profile.get("llm_model") or env_profile.get("ollama_model")) and env_identity not in current_identities:
+        candidates.append(env_profile)
+    if not candidates:
+        candidates.append(env_profile)
+    return {"version": 2, "active_profile_id": str(candidates[0]["id"]), "profiles": candidates}
+
+
+def _write_profile_document(document: dict) -> None:
+    path = _model_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _active_profile(document: dict | None = None) -> dict:
+    document = document or _profile_document()
+    active_id = str(document.get("active_profile_id") or "")
+    return next((item for item in document["profiles"] if str(item["id"]) == active_id),
+                document["profiles"][0])
+
+
+def _settings_values(data: dict) -> dict:
+    base = settings()
     provider = data.get("llm_provider", base.llm_provider)
     values = {
         "llm_enabled": bool(data.get("llm_enabled", base.llm_enabled)),
@@ -113,13 +199,26 @@ def model_settings():
         "api_base_url": base.api_base_url,
     }
     values["active_model"] = values["ollama_model"] if values["llm_provider"] == "ollama" else values["llm_model"]
+    return values
+
+
+def model_settings():
+    """Return model settings with local UI overrides applied.
+
+    The base Settings object remains environment-driven. The small runtime JSON file
+    lets the desktop UI update model routing without mutating .env or restarting the
+    API process. Secrets are never included in public_model_config().
+    """
+    values = _settings_values(_active_profile())
     values["config_version"] = json.dumps({k: v for k, v in values.items() if k not in {"worker_secret", "api_base_url"}}, sort_keys=True, ensure_ascii=False)
     return SimpleNamespace(**values)
 
 
-def public_model_config() -> dict:
-    config = model_settings()
+def _public_profile(profile: dict) -> dict:
+    config = SimpleNamespace(**_settings_values(profile))
     return {
+        "id": str(profile.get("id") or ""),
+        "name": str(profile.get("name") or _profile_name(profile)),
         "enabled": config.llm_enabled,
         "provider": config.llm_provider,
         "model": config.active_model,
@@ -142,13 +241,23 @@ def public_model_config() -> dict:
     }
 
 
-def save_model_config(data: dict) -> dict:
-    current = _runtime_model_config()
+def public_model_config() -> dict:
+    document = _profile_document()
+    active = _active_profile(document)
+    result = _public_profile(active)
+    result["active_profile_id"] = str(active["id"])
+    result["profiles"] = [_public_profile(profile) for profile in document["profiles"]]
+    return result
+
+
+def _merge_profile(current: dict, data: dict, *, profile_id: str, name: str | None = None) -> dict:
     provider = data.get("provider", current.get("llm_provider", settings().llm_provider))
     if provider not in {"company", "ollama"}:
         raise ValueError("Unsupported model provider")
     merged = {
-        **current,
+        **{key: value for key, value in current.items() if key in _PROFILE_RUNTIME_KEYS},
+        "id": profile_id,
+        "name": str(name if name is not None else current.get("name") or _profile_name(current)).strip(),
         "llm_enabled": bool(data.get("enabled", True)),
         "llm_provider": provider,
         "llm_max_output_tokens": int(data.get("max_output_tokens", current.get("llm_max_output_tokens", settings().llm_max_output_tokens))),
@@ -173,9 +282,61 @@ def save_model_config(data: dict) -> dict:
         raise ValueError("Company model requires base_url and model")
     if provider == "ollama" and merged.get("llm_enabled") and (not merged.get("ollama_base_url") or not merged.get("ollama_model")):
         raise ValueError("Ollama model requires base_url and model")
-    path = _model_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    if not merged["name"]:
+        raise ValueError("Profile name is required")
+    return merged
+
+
+def save_model_config(data: dict) -> dict:
+    document = _profile_document()
+    active = _active_profile(document)
+    replacement = _merge_profile(active, data, profile_id=str(active["id"]))
+    document["profiles"] = [replacement if str(item["id"]) == str(active["id"]) else item
+                            for item in document["profiles"]]
+    _write_profile_document(document)
+    return public_model_config()
+
+
+def create_model_profile(data: dict) -> dict:
+    document = _profile_document()
+    profile_id = str(uuid4())
+    profile = _merge_profile({}, data, profile_id=profile_id, name=data.get("name"))
+    document["profiles"].append(profile)
+    document["active_profile_id"] = profile_id
+    _write_profile_document(document)
+    return public_model_config()
+
+
+def update_model_profile(profile_id: str, data: dict) -> dict:
+    document = _profile_document()
+    current = next((item for item in document["profiles"] if str(item["id"]) == profile_id), None)
+    if current is None:
+        raise KeyError(profile_id)
+    replacement = _merge_profile(current, data, profile_id=profile_id, name=data.get("name"))
+    document["profiles"] = [replacement if str(item["id"]) == profile_id else item
+                            for item in document["profiles"]]
+    _write_profile_document(document)
+    return public_model_config()
+
+
+def activate_model_profile(profile_id: str) -> dict:
+    document = _profile_document()
+    if not any(str(item["id"]) == profile_id for item in document["profiles"]):
+        raise KeyError(profile_id)
+    document["active_profile_id"] = profile_id
+    _write_profile_document(document)
+    return public_model_config()
+
+
+def delete_model_profile(profile_id: str) -> dict:
+    document = _profile_document()
+    if len(document["profiles"]) <= 1:
+        raise ValueError("At least one model profile must remain")
+    remaining = [item for item in document["profiles"] if str(item["id"]) != profile_id]
+    if len(remaining) == len(document["profiles"]):
+        raise KeyError(profile_id)
+    document["profiles"] = remaining
+    if str(document["active_profile_id"]) == profile_id:
+        document["active_profile_id"] = str(remaining[0]["id"])
+    _write_profile_document(document)
     return public_model_config()

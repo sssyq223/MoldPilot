@@ -13,6 +13,10 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     prepared = {name for name in core_gateway.TOOLS if name.startswith("prepare_")}
     handled = {name for handler in handlers.HANDLERS for name in handler.tools}
     assert prepared == handled
+    for key in ('project_plan_change', 'project_pause_resume', 'project_termination_closure'):
+        skill = core_gateway.SKILLS[key]
+        assert all(name.startswith('query_') for name in skill['tools'])
+        assert any(name.startswith('prepare_') for name in skill['optional_tools'])
 
 
 def test_agent_core_source_does_not_embed_mold_business_policy():

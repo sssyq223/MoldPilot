@@ -165,3 +165,7 @@ class ModelConfigInput(StrictModel):
     max_turns: int = Field(default=12, ge=1, le=30)
     connect_timeout: float = Field(default=10, gt=0, le=20)
     read_timeout: float = Field(default=60, gt=0, le=120)
+
+
+class ModelProfileInput(ModelConfigInput):
+    name: str = Field(min_length=1, max_length=80)

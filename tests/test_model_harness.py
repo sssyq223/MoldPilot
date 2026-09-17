@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import text
 
+import agent_core.harness as harness_module
 from app.harness import run_loop
 from app.model_adapter import ModelAdapter, ModelError, tls_context
 
@@ -31,6 +32,102 @@ def test_model_request_shape_and_tool_call():
             'role': 'assistant', 'tool_calls': [{'id': 'c1', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}}]})
     model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model', transport=httpx.MockTransport(serve))
     assert model.generate([{'role': 'user', 'content': 'query'}], [])['tool_calls'][0]['id'] == 'c1'
+
+
+def test_model_stream_coalesces_visible_text_and_tool_call_deltas():
+    chunks = [
+        {'choices': [{'delta': {'role': 'assistant', 'content': '我先查询'}, 'finish_reason': None}]},
+        {'choices': [{'delta': {'content': '项目计划。', 'tool_calls': [{
+            'index': 0, 'id': 'c1', 'type': 'function',
+            'function': {'name': 'query_project_', 'arguments': '{"project_'}
+        }]}, 'finish_reason': None}]},
+        {'choices': [{'delta': {'tool_calls': [{
+            'index': 0, 'function': {'name': 'plan_context', 'arguments': 'code":"SMOKE-M001"}'}
+        }]}, 'finish_reason': 'tool_calls'}],
+         'usage': {'prompt_tokens': 12, 'completion_tokens': 8, 'total_tokens': 20}},
+    ]
+    body = ''.join('data: '+json.dumps(chunk)+'\n\n' for chunk in chunks)+'data: [DONE]\n\n'
+
+    def serve(request):
+        payload = json.loads(request.content)
+        assert payload['stream'] is True
+        assert payload['stream_options'] == {'include_usage': True}
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    updates = []
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [TOOL],
+                                    lambda value: updates.append(copy.deepcopy(value)))
+
+    assert message['content'] == '我先查询项目计划。'
+    assert message['tool_calls'][0]['id'] == 'c1'
+    assert message['tool_calls'][0]['function'] == {
+        'name': 'query_project_plan_context',
+        'arguments': '{"project_code":"SMOKE-M001"}',
+    }
+    assert updates[0]['content'] == '我先查询'
+    assert updates[-1] == message
+    assert model.last_metrics['total_tokens'] == 20
+
+
+def test_model_stream_retries_one_upstream_5xx_before_any_sse_delta():
+    calls = []
+    body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '恢复成功'},
+                                                  'finish_reason': 'stop'}]})+'\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(504, text='private gateway detail')
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [], lambda _: None)
+
+    assert message['content'] == '恢复成功'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_count'] == 1
+
+
+def test_model_stream_retries_read_timeout_before_first_sse_delta():
+    calls = []
+    body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '重试成功'},
+                                                  'finish_reason': 'stop'}]})+'\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout('provider stayed silent', request=request)
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [], lambda _: None)
+
+    assert message['content'] == '重试成功'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_count'] == 1
+    assert model.last_metrics['retry_reason'] == 'read_timeout_before_first_chunk'
+    assert model.last_metrics['retry_wait_ms'] >= 0
+    assert model.last_metrics['http_status'] == 200
+
+
+def test_model_stream_does_not_retry_non_transient_http_error():
+    calls = []
+
+    def serve(request):
+        calls.append(request)
+        return httpx.Response(400, text='private validation detail')
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    with pytest.raises(ModelError, match='MODEL_HTTP_FAILED'):
+        model.generate_stream([], [], lambda _: None)
+
+    assert len(calls) == 1
+    assert model.last_metrics['http_status'] == 400
 
 
 @pytest.mark.parametrize('status,code', [(401,'MODEL_AUTH_FAILED'), (403,'MODEL_AUTH_FAILED'),
@@ -112,6 +209,15 @@ class InspectingRepliesModel(Model):
         return super().generate(messages, tools)
 
 
+class TranscriptModel(Model):
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.transcripts = []
+    def generate(self, messages, tools):
+        self.transcripts.append(copy.deepcopy(messages))
+        return super().generate(messages, tools)
+
+
 class Gateway:
     def __init__(self):
         self.saved, self.receipts, self.physical_calls, self.final = {}, {}, 0, None
@@ -155,6 +261,214 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_streaming_model_progress_is_checkpointed_then_cleared_after_completion():
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.checkpoints = []
+        def checkpoint(self, state):
+            super().checkpoint(state)
+            self.checkpoints.append(copy.deepcopy(state))
+
+    class StreamingModel:
+        def __init__(self):
+            self.replies = [
+                {**copy.deepcopy(PROPOSAL), 'content': '我先查询当前可见项目。'},
+                copy.deepcopy(FINAL),
+            ]
+            self.last_metrics = {}
+        def generate_stream(self, messages, tools, on_update):
+            reply = self.replies.pop(0)
+            on_update(reply)
+            return reply
+
+    gateway = RecordingGateway()
+    result = run_loop(context(), StreamingModel(), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert any((checkpoint.get('streaming_model_message') or {}).get('content') ==
+               '我先查询当前可见项目。' for checkpoint in gateway.checkpoints)
+    assert not any((checkpoint.get('streaming_model_message') or {}).get('content') ==
+                   FINAL['content'] for checkpoint in gateway.checkpoints)
+    assert gateway.saved['streaming_model_message'] is None
+    assert gateway.physical_calls == 1
+
+
+def test_terminal_fenced_json_after_visible_preamble_is_parsed_without_repair():
+    payload = json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '项目满足现有证据范围内的结项条件。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)
+    final_with_preamble = {
+        'role': 'assistant',
+        'content': f'已核对完毕，依据现有证据作答。\n```json\n{payload}\n```',
+    }
+    gateway = Gateway()
+
+    result = run_loop(context(), Model([PROPOSAL, final_with_preamble]), gateway)
+
+    assert result['summary'] == '项目满足现有证据范围内的结项条件。'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.saved['protocol_repairs'] == 0
+    assert gateway.final == result
+
+
+@pytest.mark.parametrize('closing_tag', ['', '\n</tool_call>'])
+def test_terminal_qwen_tool_call_envelope_is_parsed_without_natural_language_fallback(closing_tag):
+    payload = json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '项目仍有未完成计划任务，不具备正常结项条件。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)
+    final_with_qwen_envelope = {
+        'role': 'assistant',
+        'content': f'依据已经取得的证据汇总结论。\n<tool_call>\n{payload}{closing_tag}',
+    }
+    gateway = Gateway()
+
+    result = run_loop(context(), Model([PROPOSAL, final_with_qwen_envelope]), gateway)
+
+    assert result['summary'] == '项目仍有未完成计划任务，不具备正常结项条件。'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.saved['protocol_repairs'] == 0
+    assert gateway.final == result
+
+
+def test_recoverable_tool_error_is_reinjected_for_model_clarification_instead_of_failing_run():
+    class RejectingGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {'tool_error': {'code': 'WORKFLOW_MISMATCH',
+                                   'message': '审批模板不可用，请重新查询流程选项'}}
+
+    gateway = RejectingGateway()
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '当前没有可用审批流程，无法准备暂停申请，请先配置流程。',
+        'evidence_ids': [],
+        'suggestions': ['配置适用的暂停审批流程后重新发起'],
+    }, ensure_ascii=False)}
+    model = TranscriptModel([PROPOSAL, clarification])
+
+    result = run_loop(context(), model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert gateway.physical_calls == 1
+    assert gateway.final == result
+    tool_result = model.transcripts[1][-1]
+    assert tool_result['role'] == 'tool'
+    payload = json.loads(tool_result['content'])
+    assert payload['tool_error']['code'] == 'WORKFLOW_MISMATCH'
+    assert gateway.saved['executed_tool_signatures']
+
+
+def test_failed_formal_action_cannot_be_reported_as_a_successful_confirmation_card():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    action_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'action-1', 'type': 'function',
+        'function': {'name': 'prepare_demo_action', 'arguments': '{}'},
+    }]}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '操作建议已经准备，请在确认卡中提交。',
+        'evidence_ids': [],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '操作建议尚未准备成功，请先配置可用流程。',
+        'evidence_ids': [],
+        'suggestions': ['配置流程后重新发起'],
+    }, ensure_ascii=False)}
+
+    class RejectingGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {'tool_error': {'code': 'WORKFLOW_MISMATCH', 'message': '没有可用流程'}}
+
+    gateway = RejectingGateway()
+    model = TranscriptModel([action_call, false_success, clarification])
+    result = run_loop(context(prompt='准备项目正式操作', tools=[action_tool], core_tool_names=['prepare_demo_action'],
+                              tool_annotations={'prepare_demo_action': {'readOnlyHint': False}}),
+                      model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert result['summary'].startswith('操作建议尚未准备成功')
+    assert model.calls == 3
+    assert '正式操作结果协议' in model.transcripts[2][0]['content']
+    assert all(message['role'] != 'system' for message in model.transcripts[2][1:])
+    assert all(message['role'] != 'system' for message in gateway.saved['messages'][1:])
+    assert gateway.saved['action_outcomes']['prepare_demo_action']['status'] == 'error'
+
+
+def test_formal_action_request_cannot_use_read_only_evidence_to_claim_a_confirmation_card():
+    action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
+    false_success = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '确认卡已经准备完成。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '目前只有查询证据，确认卡尚未准备。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, false_success, clarification])
+
+    result = run_loop(context(prompt='请准备项目正式操作确认卡', tools=[TOOL, action_tool],
+                              tool_annotations={'query_projects': {'readOnlyHint': True},
+                                                'prepare_demo_action': {'readOnlyHint': False}}),
+                      model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert model.calls == 3
+    assert '没有任何成功的正式操作工具回执' in model.transcripts[2][0]['content']
+    assert all(message['role'] != 'system' for message in model.transcripts[2][1:])
+
+
+def test_current_prompt_action_intent_survives_a_narrower_tool_search_query():
+    query_tool = {'type': 'function', 'function': {
+        'name': 'query_project_closure_context',
+        'description': '读取项目终止与结项资料。',
+    }}
+    action_tools = [
+        {'type': 'function', 'function': {'name': 'prepare_project_closure_checklist',
+                                          'description': '准备正常结项核对清单。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_termination',
+                                          'description': '准备客户终止项目审批。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_closure_item',
+                                          'description': '准备更新一个结项事项。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_normal_close',
+                                          'description': '准备正常关闭项目审批。'}},
+        {'type': 'function', 'function': {'name': 'prepare_project_settlement_close',
+                                          'description': '准备终止结算关闭审批。'}},
+    ]
+    search = {'role': 'assistant', 'tool_calls': [{
+        'id': 'search-closure', 'type': 'function',
+        'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '项目终止'})},
+    }]}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION', 'summary': '请继续提供结项资料。',
+        'evidence_ids': [], 'suggestions': [],
+    }, ensure_ascii=False)}
+    model = InspectingRepliesModel([search, clarification])
+
+    run_loop(context(prompt='请为 BROWSER-OUT-001 准备正常结项核对清单', core_tool_names=[],
+                     tools=[TOOL, query_tool, *action_tools],
+                     skills=[{'key': 'project_termination_closure',
+                              'agent_description': '项目终止与结项核对',
+                              'tools': ['query_projects', 'query_project_closure_context'],
+                              'optional_tools': [tool['function']['name'] for tool in action_tools],
+                              'activation_queries': ['项目终止与结项资料']}]),
+             model, Gateway())
+
+    assert {'query_projects', 'query_project_closure_context',
+            'prepare_project_closure_checklist'} <= set(model.tool_names[1])
+    assert 'prepare_project_termination' not in model.tool_names[1]
 
 
 def test_persisted_tool_signatures_are_postgresql_jsonb_safe(data):
@@ -421,6 +735,19 @@ def test_recovery_does_not_reset_deadline():
     assert model.calls == 0 and gateway.physical_calls == 0
 
 
+def test_default_main_run_has_no_arbitrary_wall_clock_deadline():
+    gateway = Gateway()
+    reply = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CONVERSATION', 'summary': 'completed normally',
+        'evidence_ids': [], 'suggestions': [],
+    })}
+
+    result = run_loop(context(), Model([reply]), gateway)
+
+    assert result['summary'] == 'completed normally'
+    assert gateway.saved['deadline'] is None
+
+
 def test_cancel_after_model_return_blocks_tool_execution():
     gateway = Gateway()
     class CancellingModel:
@@ -525,6 +852,46 @@ def test_duplicate_tool_call_enters_finalization_without_reexecuting():
     assert gateway.saved["protocol_repairs"] == 1
 
 
+def test_duplicate_repair_is_transient_and_provider_receives_one_leading_system_message():
+    duplicate = copy.deepcopy(PROPOSAL)
+    duplicate["tool_calls"][0]["id"] = "call2"
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, duplicate, FINAL])
+
+    run_loop(context(), model, gateway)
+
+    repaired_request = model.transcripts[2]
+    assert repaired_request[0]['role'] == 'system'
+    assert '已经用相同参数返回过证据' in repaired_request[0]['content']
+    assert all(message['role'] != 'system' for message in repaired_request[1:])
+    assert all(message['role'] != 'system' for message in gateway.saved['messages'][1:])
+    assert gateway.saved['next_model_instructions'] == []
+
+
+def test_legacy_mid_history_system_messages_are_consolidated_at_provider_boundary():
+    class StrictProviderModel:
+        def generate(self, messages, tools):
+            assert messages[0]['role'] == 'system'
+            assert '原始系统提示' in messages[0]['content']
+            assert '旧检查点纠偏提示' in messages[0]['content']
+            assert all(message['role'] != 'system' for message in messages[1:])
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': '已兼容旧检查点。',
+                'evidence_ids': [], 'suggestions': [],
+            }, ensure_ascii=False)}
+
+    saved_messages = [
+        {'role': 'system', 'content': '原始系统提示'},
+        {'role': 'user', 'content': '继续'},
+        {'role': 'system', 'content': '旧检查点纠偏提示'},
+    ]
+    gateway = Gateway()
+    result = run_loop(context(prompt='继续', messages=saved_messages), StrictProviderModel(), gateway)
+
+    assert result['response_kind'] == 'CONVERSATION'
+    assert gateway.saved['messages'] == saved_messages
+
+
 def test_natural_language_final_after_evidence_gets_protocol_repair_not_wrapped():
     gateway = Gateway()
     result = run_loop(
@@ -559,7 +926,8 @@ def test_evidence_loop_is_forced_to_finalize_at_model_turn_budget():
                 proposal['tool_calls'][0]['id'] = f'call{index}'
                 proposal['tool_calls'][0]['function']['arguments'] = json.dumps({'page': index})
                 return proposal
-            assert '工具调用阶段现在结束' in messages[-1]['content']
+                assert '工具调用阶段现在结束' in messages[0]['content']
+                assert all(message['role'] != 'system' for message in messages[1:])
             return {'content': json.dumps({'response_kind': 'BUSINESS', 'summary': '根据已有证据回答',
                                            'evidence_ids': ['e1'], 'suggestions': []})}
 
@@ -628,6 +996,51 @@ def test_failed_model_call_records_timing_and_does_not_fake_result():
     assert gateway.saved['phase']=='MODEL_FAILED'
     assert gateway.saved['model_metrics']['total_ms']==60000
     assert gateway.final is None
+
+
+def test_silent_model_wait_renews_run_lease(monkeypatch):
+    monkeypatch.setattr(harness_module, 'LEASE_HEARTBEAT_SECONDS', 0.01)
+
+    class SlowModel:
+        def generate(self, messages, tools):
+            time.sleep(0.045)
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': 'heartbeat ok',
+                'evidence_ids': [], 'suggestions': [],
+            })}
+
+    class LeaseGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.lease_checks = 0
+        def check(self):
+            self.lease_checks += 1
+            super().check()
+
+    gateway = LeaseGateway()
+    result = run_loop(context(), SlowModel(), gateway)
+
+    assert result['summary'] == 'heartbeat ok'
+    assert gateway.lease_checks >= 3
+
+
+def test_safe_pre_delta_retry_wait_does_not_consume_business_deadline():
+    class RetriedModel:
+        last_metrics = {}
+
+        def generate(self, messages, tools):
+            time.sleep(0.15)
+            self.last_metrics = {'retry_count': 1, 'retry_wait_ms': 200}
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CONVERSATION', 'summary': 'retry budget preserved',
+                'evidence_ids': [], 'suggestions': [],
+            })}
+
+    gateway = Gateway()
+    result = run_loop(context(deadline=time.time() + 0.1), RetriedModel(), gateway, max_seconds=1)
+
+    assert result['summary'] == 'retry budget preserved'
+    assert gateway.saved['deadline'] > time.time()
 
 
 def test_context_budget_compacts_model_visible_tool_history_before_next_model_call():

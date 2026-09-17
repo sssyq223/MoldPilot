@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import threading
 import time
 from .context_budget import compact_messages_for_model, usage_snapshot
 from .domain_pack import component
@@ -12,7 +13,9 @@ TOOL_SEARCH_NAME = "ToolSearch"
 MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES = 12
 MAX_TOOL_SEARCH_MATCHES = 4
 MAX_ACTIVATED_TOOLS_PER_SEARCH = 4
+LEASE_HEARTBEAT_SECONDS = 30
 ACTION_INTENT_TERMS = _policy.ACTION_INTENT_TERMS
+FORMAL_ACTION_TERMS = getattr(_policy, "FORMAL_ACTION_TERMS", ACTION_INTENT_TERMS)
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
 BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
@@ -21,10 +24,72 @@ ELLIPTICAL_ACTION_TERMS = _policy.ELLIPTICAL_ACTION_TERMS
 SYSTEM = _policy.SYSTEM_PROMPT
 
 
+def _model_call_with_heartbeat(call, gateway):
+    """Keep the fenced run lease alive while the provider is silent.
+
+    Streaming checkpoints renew the lease while deltas arrive, but hosted
+    reasoning models can legitimately stay silent longer than the server's
+    lease window. The heartbeat is independent from model output so a valid
+    long response cannot lose its own run before the final checkpoint.
+    """
+    stop = threading.Event()
+    failures = []
+
+    def heartbeat():
+        while not stop.wait(LEASE_HEARTBEAT_SECONDS):
+            try:
+                gateway.check()
+            except Exception as exc:  # surfaced after the provider call returns
+                failures.append(exc)
+                stop.set()
+
+    thread = threading.Thread(target=heartbeat, name="run-lease-heartbeat", daemon=True)
+    thread.start()
+    try:
+        result = call()
+    finally:
+        stop.set()
+        thread.join(timeout=1)
+    if failures:
+        raise failures[0]
+    return result
+
+
+def _structured_result_text(content):
+    """Return the authoritative JSON payload from a final model message.
+
+    Some OpenAI-compatible reasoning models emit a short user-facing sentence
+    before the protocol object.  Accept one terminal fenced JSON object or the
+    ``<tool_call>`` envelope used by Qwen Coder for structured terminal output,
+    while leaving every other shape untouched so normal JSON validation still
+    fails closed.  The prose prefix is never used as evidence or as the saved
+    answer, and the extracted object still goes through the complete result and
+    evidence validation below.
+    """
+    stripped = (content or "{}").strip()
+    match = re.search(
+        r'(?:^|\n)```json[ \t]*\r?\n(?P<payload>\{.*\})[ \t]*\r?\n```[ \t]*$',
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        return match.group('payload').strip()
+    qwen_wrapper = re.search(
+        r'(?:^|\n)<tool_call>[ \t]*\r?\n?'
+        r'(?P<payload>\{.*\})[ \t]*(?:\r?\n?</tool_call>)?[ \t]*$',
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return qwen_wrapper.group('payload').strip() if qwen_wrapper else stripped
+
+
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
 UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮再调用 ToolSearch 返回的真实工具。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
+ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
+ACTION_EVIDENCE_REPAIR_REMINDER = """上一轮遗漏了正式操作的成功证据。只要结论声称已经准备、提交或执行操作，evidence_ids 就必须包含本轮所有成功正式操作工具返回的证据编号；不得只引用前置查询证据。请重新输出约定 JSON。"""
+ACTION_NOT_COMPLETED_REPAIR_REMINDER = """本轮用户明确要求准备或办理正式操作，但目前没有任何成功的正式操作工具回执或待确认操作证据。只读查询结果不能证明操作已经准备、提交或执行。不得声称已有确认卡；请输出 response_kind=CLARIFICATION，明确说明操作尚未完成以及需要用户补充或系统配置的条件。"""
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 MAX_PROTOCOL_REPAIRS = 2
@@ -180,14 +245,19 @@ def _search_terms(query):
     return terms
 
 
-def _rank_group_tools(query, group, deferred_tools):
+def _rank_group_tools(query, group, deferred_tools, action_intent=False, current_prompt=""):
     """Rank one matched skill's tools instead of exposing its whole pack."""
-    normalized = (query or "").strip().lower()
+    # ToolSearch chooses a capability group, but the user's current request is
+    # authoritative for the concrete operation inside that group.  A model may
+    # shorten "prepare a normal closure checklist" to "project termination";
+    # that abbreviation must not silently replace the requested action.
+    ranking_text = current_prompt if action_intent and current_prompt else query
+    normalized = (ranking_text or "").strip().lower()
     terms = _search_terms(normalized)
     cjk_query = "".join(character for character in normalized if "\u4e00" <= character <= "\u9fff")
     terminal_term = cjk_query[-2:] if len(cjk_query) >= 2 else ""
     required = set(group.get("required", []))
-    has_action_intent = any(term in normalized for term in ACTION_INTENT_TERMS)
+    has_action_intent = action_intent or any(term in normalized for term in ACTION_INTENT_TERMS)
     scored = []
     for position, name in enumerate(group["tools"]):
         tool = deferred_tools.get(name)
@@ -298,7 +368,7 @@ def _compact_skills(skills):
     return result
 
 
-def _find_deferred_tools(query, deferred_tools, tool_groups=None):
+def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=False, current_prompt=""):
     normalized = (query or "").strip().lower()
     if not normalized:
         return [], [], []
@@ -318,7 +388,7 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None):
         for _, key, _ in sorted((item for item in alias_scores if item[0] == best_score), reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
             matches.append(key)
             group = next(item for item in (tool_groups or []) if item["key"] == key)
-            tool_names = _rank_group_tools(normalized, group, deferred_tools)
+            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt)
             for name in tool_names:
                 if name not in activated:
                     activated.append(name)
@@ -339,7 +409,7 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None):
         for _, key, _ in sorted(group_scores, reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
             matches.append(key)
             group = next(item for item in (tool_groups or []) if item["key"] == key)
-            tool_names = _rank_group_tools(normalized, group, deferred_tools)
+            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt)
             for name in tool_names:
                 if name not in activated:
                     activated.append(name)
@@ -381,6 +451,32 @@ def _debug_model_message(message):
     return debug
 
 
+def _messages_for_model(messages, transient_instructions=()):
+    """Build a provider-safe request without changing the durable transcript.
+
+    Some OpenAI-compatible providers require every system instruction to live
+    in one leading message. Older checkpoints may already contain mid-history
+    system reminders, so consolidate both those and the one-shot Harness
+    instruction for the next request at the boundary.
+    """
+    system_parts = []
+    non_system = []
+    for message in messages:
+        if message.get("role") == "system":
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content.strip())
+        else:
+            non_system.append(message)
+    system_parts.extend(
+        instruction.strip() for instruction in transient_instructions
+        if isinstance(instruction, str) and instruction.strip()
+    )
+    if not system_parts:
+        return list(non_system)
+    return [{"role": "system", "content": "\n\n".join(system_parts)}, *non_system]
+
+
 def permission_mode_instruction(mode):
     if mode == "delegated_auto":
         return ("本轮 Agent 权限模式：按授权自动审批。只有流程设计明确允许 Agent 自动审批、审批人本人存在有效授权、"
@@ -391,16 +487,25 @@ def permission_mode_instruction(mode):
 
 
 
-def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=300,
+def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=None,
              context_window=DEFAULT_CONTEXT_WINDOW, max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
     """Persist proposals before execution so recovery replays the same idempotent step."""
-    deadline = context.get("deadline") or time.time()+max_seconds
+    # Main Agent runs do not get an arbitrary wall-clock deadline. Specific
+    # waits remain bounded by provider/tool timeouts and the user can Stop the
+    # run; an explicit legacy/test deadline is still honored when supplied.
+    deadline = context.get("deadline")
+    if deadline is None and max_seconds is not None:
+        deadline = time.time() + max_seconds
     mode_instruction = permission_mode_instruction(context.get("agent_permission_mode", "ask"))
     all_tools = {name: tool for tool in context["tools"] if (name := _tool_name(tool))}
     core_tool_names = set(context.get("core_tool_names", []))
     active_tool_names = set(context.get("active_tool_names", [])) & set(all_tools)
     active_tool_names |= core_tool_names & set(all_tools)
     business_tools_allowed = _business_tool_activation_allowed(context)
+    formal_action_requested = bool(
+        _contains_any(context.get("prompt", ""), FORMAL_ACTION_TERMS)
+        and _contains_any(context.get("prompt", ""), BUSINESS_OBJECT_HINTS)
+    )
     if not business_tools_allowed:
         active_tool_names.clear()
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
@@ -430,8 +535,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
     finalizing = context.get('finalizing', False)
     protocol_repairs = context.get('protocol_repairs', 0)
     executed_tool_signatures = list(context.get('executed_tool_signatures', []))
+    tool_annotations = context.get('tool_annotations', {})
+    action_outcomes = dict(context.get('action_outcomes', {}))
     compactions = list(context.get('context_compactions', []))
     last_model_message = context.get('last_model_message')
+    streaming_model_message = (context.get('streaming_model_message')
+                               if isinstance(context.get('streaming_model_message'), dict) else None)
+    stream_checkpoint_at = 0.0
+    next_model_instructions = [
+        instruction for instruction in context.get('next_model_instructions', [])
+        if isinstance(instruction, str) and instruction.strip()
+    ]
 
     def tool_signature(call):
         name = call["function"]["name"]
@@ -446,25 +560,27 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         return name + ":" + digest, arguments
 
     def request_protocol_repair(reminder):
-        nonlocal finalizing, protocol_repairs
+        nonlocal finalizing, protocol_repairs, next_model_instructions, streaming_model_message
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
             raise RuntimeError("MODEL_OUTPUT_INVALID")
         finalizing = True
         protocol_repairs += 1
-        messages.append({"role": "system", "content": reminder})
+        streaming_model_message = None
+        next_model_instructions.append(reminder)
         save()
 
     def request_tool_repair(reminder):
-        nonlocal protocol_repairs
+        nonlocal protocol_repairs, next_model_instructions, streaming_model_message
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
             raise RuntimeError("MODEL_OUTPUT_INVALID")
         protocol_repairs += 1
-        messages.append({"role": "system", "content": reminder})
+        streaming_model_message = None
+        next_model_instructions.append(reminder)
         save()
 
     def save():
         visible_tools = [] if finalizing else active_tools()
-        context_usage = usage_snapshot(messages, visible_tools,
+        context_usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
                                        context_window=context_window,
                                        max_output_tokens=max_output_tokens,
                                        model_metrics=model_metrics,
@@ -477,17 +593,20 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                             'finalizing': finalizing,
                             'protocol_repairs': protocol_repairs,
                             'executed_tool_signatures': executed_tool_signatures,
+                            'action_outcomes': action_outcomes,
                             'active_tool_names': sorted(active_tool_names),
                             'last_model_message': last_model_message,
+                            'streaming_model_message': streaming_model_message,
+                            'next_model_instructions': next_model_instructions,
                             'context_usage': context_usage,
                             'context_compactions': compactions})
 
     def check_budget():
         nonlocal messages, compactions
-        if time.time() >= deadline:
+        if deadline is not None and time.time() >= deadline:
             raise RuntimeError("BUDGET_EXCEEDED")
         visible_tools = [] if finalizing else active_tools()
-        usage = usage_snapshot(messages, visible_tools,
+        usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
                                context_window=context_window,
                                max_output_tokens=max_output_tokens,
                                model_metrics=model_metrics,
@@ -499,7 +618,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
             messages = compacted
             compactions.append(record)
             save()
-            usage = usage_snapshot(messages, visible_tools,
+            usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
                                    context_window=context_window,
                                    max_output_tokens=max_output_tokens,
                                    model_metrics=model_metrics,
@@ -509,7 +628,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
 
     while True:
         gateway.check()
-        if time.time() >= deadline:
+        if deadline is not None and time.time() >= deadline:
             raise RuntimeError("BUDGET_EXCEEDED")
         if pending:
             check_budget()
@@ -523,7 +642,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                 signature, arguments = tool_signature(call)
                 phase = 'TOOL_RUNNING'; save()
                 if name == TOOL_SEARCH_NAME:
-                    matches, candidates, matched_groups = _find_deferred_tools(arguments.get("query", ""), deferred_tools, tool_groups)
+                    matches, candidates, matched_groups = _find_deferred_tools(
+                        arguments.get("query", ""), deferred_tools, tool_groups,
+                        action_intent=formal_action_requested,
+                        current_prompt=context.get("prompt", ""))
                     activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
                     result = {"source": "harness", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -536,6 +658,19 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                     evidence_id = result.get("evidence_id")
                     if evidence_id:
                         evidence_ids.append(evidence_id)
+                    if (tool_annotations.get(name) or {}).get('readOnlyHint') is False:
+                        tool_error = result.get('tool_error')
+                        if isinstance(tool_error, dict):
+                            action_outcomes[name] = {
+                                'status': 'error',
+                                'code': tool_error.get('code') or 'TOOL_REJECTED',
+                                'message': tool_error.get('message') or '工具未接受本次请求',
+                            }
+                        else:
+                            action_outcomes[name] = {
+                                'status': 'success',
+                                'evidence_id': evidence_id,
+                            }
                 executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
@@ -544,7 +679,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
             pending, pending_index = [], 0
             save()
             continue
-        context_size = usage_snapshot(messages, [] if finalizing else active_tools(),
+        context_size = usage_snapshot(_messages_for_model(messages, next_model_instructions), [] if finalizing else active_tools(),
                                       context_window=context_window,
                                       max_output_tokens=max_output_tokens,
                                       model_metrics=model_metrics,
@@ -556,7 +691,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         )
         if should_finalize and not finalizing:
             finalizing = True
-            messages.append({"role": "system", "content": FINALIZE_REMINDER})
+            next_model_instructions.append(FINALIZE_REMINDER)
             save()
         if not finalizing and turn >= max_turns:
             raise RuntimeError("BUDGET_EXCEEDED")
@@ -567,12 +702,62 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
         save()
         model_ok = False
         try:
-            message = model.generate(messages, [] if finalizing else active_tools())
+            request_messages = _messages_for_model(messages, next_model_instructions)
+            request_tools = [] if finalizing else active_tools()
+
+            def publish_model_update(partial):
+                nonlocal streaming_model_message, stream_checkpoint_at, phase
+                partial_calls = partial.get("tool_calls")
+                has_tool_calls = isinstance(partial_calls, list) and bool(partial_calls)
+                streaming_model_message = {
+                    "role": "assistant",
+                    # Tool-stage narration is useful live progress. A no-tool
+                    # response is the final protocol envelope, so keep it
+                    # private until it has been parsed and evidence-validated.
+                    "content": partial.get("content") if has_tool_calls else None,
+                    **({"tool_calls": partial_calls} if has_tool_calls else {}),
+                    "reasoning_active": bool(partial.get("reasoning_content")),
+                }
+                phase = 'MODEL_STREAMING'
+                current = time.monotonic()
+                # Keep persisted progress close to the provider stream cadence. The
+                # browser refreshes active runs every 200 ms, so a 100 ms checkpoint
+                # avoids adding another visible batching layer without writing once
+                # per token.
+                if stream_checkpoint_at == 0.0 or current - stream_checkpoint_at >= 0.1:
+                    stream_checkpoint_at = current
+                    save()
+
+            generate_stream = getattr(model, "generate_stream", None)
+            if callable(generate_stream):
+                message = _model_call_with_heartbeat(
+                    lambda: generate_stream(request_messages, request_tools, publish_model_update), gateway)
+            else:
+                message = _model_call_with_heartbeat(
+                    lambda: model.generate(request_messages, request_tools), gateway)
+            next_model_instructions = []
+            message_calls = message.get("tool_calls") if isinstance(message, dict) else None
+            has_message_tool_calls = isinstance(message_calls, list) and bool(message_calls)
+            streaming_model_message = {
+                "role": "assistant",
+                "content": message.get("content") if has_message_tool_calls else None,
+                **({"tool_calls": message_calls} if has_message_tool_calls else {}),
+                "reasoning_active": bool(isinstance(message, dict) and message.get("reasoning_content")),
+            }
             last_model_message = _debug_model_message(message)
             model_ok = True
         finally:
             model_elapsed_ms += round((time.time()-model_started_at)*1000)
             model_metrics = getattr(model, 'last_metrics', {})
+            if model_ok:
+                # A safe transport retry happened before the provider emitted
+                # any delta. It consumed no model/tool turn and cannot cause a
+                # duplicate side effect, so do not charge that unavailable
+                # upstream time against the bounded business-run deadline.
+                retry_wait_ms = model_metrics.get('retry_wait_ms', 0)
+                if (deadline is not None and isinstance(retry_wait_ms, (int, float))
+                        and retry_wait_ms > 0):
+                    deadline += min(retry_wait_ms / 1000, max_seconds or retry_wait_ms / 1000)
             phase = 'VALIDATING' if model_ok else 'MODEL_FAILED'; model_started_at = None
             save()
         gateway.check()
@@ -604,12 +789,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
                 request_protocol_repair(DUPLICATE_TOOL_REMINDER)
                 continue
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
+            streaming_model_message = None
             pending, pending_index = calls, 0
             save()
             continue
-        content = (message.get("content") or "{}").strip()
-        if content.startswith("```json\n") and content.endswith("\n```"):
-            content = content[8:-4]
+        content = _structured_result_text(message.get("content"))
         try:
             result = json.loads(content)
         except ValueError:
@@ -624,9 +808,25 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=30
             continue
         if not set(result["evidence_ids"]) <= set(evidence_ids): raise RuntimeError("EVIDENCE_INVALID")
         kind = result.get('response_kind', 'BUSINESS')
-        if kind not in {'BUSINESS','CONVERSATION','CLARIFICATION'}: raise RuntimeError('MODEL_OUTPUT_INVALID')
+        if kind not in {'BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION'}: raise RuntimeError('MODEL_OUTPUT_INVALID')
         result['response_kind'] = kind
+        unresolved_actions = [outcome for outcome in action_outcomes.values()
+                              if outcome.get('status') == 'error']
+        successful_action_evidence = {outcome.get('evidence_id') for outcome in action_outcomes.values()
+                                      if outcome.get('status') == 'success' and outcome.get('evidence_id')}
+        if unresolved_actions and kind != 'CLARIFICATION':
+            details = json.dumps(unresolved_actions, ensure_ascii=False)
+            request_protocol_repair(ACTION_OUTCOME_REPAIR_REMINDER + "\n未解决的工具错误：" + details)
+            continue
+        if formal_action_requested and kind == 'BUSINESS' and not successful_action_evidence:
+            request_protocol_repair(ACTION_NOT_COMPLETED_REPAIR_REMINDER)
+            continue
+        if kind == 'BUSINESS' and successful_action_evidence and not successful_action_evidence <= set(result['evidence_ids']):
+            request_protocol_repair(ACTION_EVIDENCE_REPAIR_REMINDER)
+            continue
         if not evidence_ids and kind == 'BUSINESS':
             result = {"summary": "当前未取得业务证据，无法确认业务结论。请补充对象或检查可用工具。", "evidence_ids": [], "suggestions": []}
+        streaming_model_message = None
+        save()
         gateway.finish(result)
         return result

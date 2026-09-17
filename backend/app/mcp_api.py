@@ -78,7 +78,9 @@ def install_mcp(app,worker_auth,fence,execute_step):
                         'structuredContent':value,'isError':False}
             except DomainError as exc:
                 db.rollback()
-                result={'content':[{'type':'text','text':exc.message}],'isError':True}
+                tool_error={'tool_error':{'code':exc.code,'message':exc.message}}
+                result={'content':[{'type':'text','text':json.dumps(tool_error,ensure_ascii=False)}],
+                        'structuredContent':tool_error,'errorCode':exc.code,'isError':True}
         else:return error(rid,-32601,'不支持的工具协议方法')
         db.commit()
         return {'jsonrpc':'2.0','id':rid,'result':result}

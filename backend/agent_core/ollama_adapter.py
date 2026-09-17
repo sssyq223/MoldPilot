@@ -13,6 +13,55 @@ REPLY_SCHEMA = {'type':'object','properties':{
     'required':['response_kind','summary','evidence_ids','suggestions'],'additionalProperties':False}
 
 
+def _matches_input_schema(value, schema):
+    """Validate the useful JSON-Schema subset exposed by MCP tool inputs.
+
+    The MCP gateway remains authoritative and validates again before execution;
+    this local check prevents a model from smuggling arbitrary fields through
+    the adapter while still allowing real tools to receive declared arguments.
+    """
+    if not isinstance(schema, dict):
+        return False
+    if 'enum' in schema and value not in schema['enum']:
+        return False
+    alternatives = schema.get('oneOf') or schema.get('anyOf')
+    if isinstance(alternatives, list):
+        return any(_matches_input_schema(value, option) for option in alternatives)
+    expected = schema.get('type')
+    if isinstance(expected, list):
+        return any(_matches_input_schema(value, {**schema, 'type': item}) for item in expected)
+    if expected == 'object' or (expected is None and 'properties' in schema):
+        if not isinstance(value, dict):
+            return False
+        properties = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
+        if any(key not in value for key in schema.get('required', [])):
+            return False
+        additional = schema.get('additionalProperties', True)
+        for key, item in value.items():
+            if key in properties:
+                if not _matches_input_schema(item, properties[key]):
+                    return False
+            elif additional is False:
+                return False
+            elif isinstance(additional, dict) and not _matches_input_schema(item, additional):
+                return False
+        return True
+    if expected == 'array':
+        return isinstance(value, list) and all(
+            _matches_input_schema(item, schema.get('items', {})) for item in value)
+    if expected == 'string':
+        return isinstance(value, str)
+    if expected == 'integer':
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == 'number':
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == 'boolean':
+        return isinstance(value, bool)
+    if expected == 'null':
+        return value is None
+    return True
+
+
 class OllamaAdapter:
     def __init__(self,base_url,model,max_output_tokens=2048,read_timeout=75,transport=None,context_window=8192):
         url=httpx.URL(base_url)
@@ -42,7 +91,10 @@ class OllamaAdapter:
         schema=json.loads(json.dumps(REPLY_SCHEMA))
         schema['properties'].update({'action':{'type':'string','enum':['CALL_TOOL','RESPOND']},
             'tool_name':{'type':'string','enum':['']+[t['function']['name'] for t in tools]},
-            'arguments':{'type':'object','properties':{},'additionalProperties':False}})
+            # The selected tool's own schema is enforced below and again by
+            # the MCP gateway. Keeping this open is required for real tools
+            # whose inputs are not empty objects.
+            'arguments':{'type':'object','additionalProperties':True}})
         schema['required']=['action','tool_name','arguments',*schema['required']]
         instruction='''本轮使用结构化 ReAct 动作协议，覆盖上文的最终输出格式要求。
 根据用户完整意图自主选择下一步。需要业务事实时 action=CALL_TOOL，tool_name 选择下方已登记工具，arguments 按其参数填写；此时 summary 留空，evidence_ids 与 suggestions 为 []。每轮只请求一个工具，等待结果后再决定下一步。不能以对话回复假装执行了查询。
@@ -73,10 +125,15 @@ class OllamaAdapter:
                 if message.get('role')!='assistant':raise ModelError('MODEL_OUTPUT_INVALID')
                 action=json.loads(message.get('content') or '{}')
                 if action.get('action')=='CALL_TOOL':
-                    if action.get('tool_name') not in {t['function']['name'] for t in tools} or action.get('arguments')!={}:
+                    selected = next((t for t in tools
+                                     if t['function']['name'] == action.get('tool_name')), None)
+                    arguments = action.get('arguments')
+                    parameters = ((selected or {}).get('function') or {}).get('parameters') or {
+                        'type':'object','properties':{},'additionalProperties':False}
+                    if selected is None or not _matches_input_schema(arguments, parameters):
                         raise ModelError('MODEL_OUTPUT_INVALID')
                     return {'role':'assistant','content':None,'tool_calls':[{'id':'call_'+uuid.uuid4().hex,'type':'function','function':{
-                        'name':action['tool_name'],'arguments':json.dumps(action['arguments'])}}]}
+                        'name':action['tool_name'],'arguments':json.dumps(arguments)}}]}
                 if action.get('action')!='RESPOND' or action.get('tool_name')!='' or action.get('arguments')!={}:
                     raise ModelError('MODEL_OUTPUT_INVALID')
                 return {'role':'assistant','content':json.dumps({k:action[k] for k in REPLY_SCHEMA['required']},ensure_ascii=False)}

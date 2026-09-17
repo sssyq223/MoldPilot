@@ -84,6 +84,24 @@ def test_tool_search_result_is_projected_as_harness_activity(client, data, monke
     assert activity['as_of'] == '2026-09-16T16:46:45+0800'
 
 
+def test_tool_error_is_projected_as_recoverable_activity_not_interrupted_run(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    messages = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'prepare-1', 'type': 'function',
+            'function': {'name': 'prepare_project_pause', 'arguments': '{}'},
+        }]},
+        {'role': 'tool', 'tool_call_id': 'prepare-1', 'content': '{"tool_error":{"code":"WORKFLOW_MISMATCH","message":"审批模板不可用，请重新查询流程选项"}}'},
+    ]
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': {'messages': messages, 'turn': 1}}).status_code == 200
+
+    trace = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]['trace']
+
+    assert trace[0] == {'type': 'tool_error', 'tool': 'prepare_project_pause',
+                        'code': 'WORKFLOW_MISMATCH', 'message': '审批模板不可用，请重新查询流程选项'}
+
+
 def test_visible_model_progress_and_tool_activity_keep_provider_order(client, data, monkeypatch):
     run, claimed = start(client, monkeypatch)
     messages = [
@@ -99,6 +117,33 @@ def test_visible_model_progress_and_tool_activity_keep_provider_order(client, da
 
     assert [item['type'] for item in trace[:2]] == ['message', 'tool_search']
     assert trace[0]['text'] == '我先读取项目计划，再核对关键节点。'
+
+
+def test_streaming_model_snapshot_is_visible_before_tool_execution_starts(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    checkpoint = {
+        'messages': [],
+        'turn': 1,
+        'phase': 'MODEL_STREAMING',
+        'streaming_model_message': {
+            'role': 'assistant',
+            'content': '我先读取项目计划，再核对关键节点。',
+            'tool_calls': [{
+                'id': 'stream-call-1', 'type': 'function',
+                'function': {'name': 'query_project_plan_context',
+                             'arguments': '{"project_code":"SMOKE-M001"}'},
+            }],
+        },
+    }
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': checkpoint}).status_code == 200
+
+    active = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]
+
+    assert active['progress']['phase'] == 'MODEL_STREAMING'
+    assert [item['type'] for item in active['trace']] == ['message', 'tool_pending']
+    assert active['trace'][0]['streaming'] is True
+    assert active['trace'][1]['tool'] == 'query_project_plan_context'
 
 
 def test_tool_assignment_cannot_grant_business_data_access(client, data):

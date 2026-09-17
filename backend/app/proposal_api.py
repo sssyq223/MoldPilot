@@ -8,6 +8,7 @@ from .db import get_db
 from .errors import DomainError
 from .proposal_registry import require_tool_handler
 from .security import current_user
+from .agent_resume import queue_after_proposal_decision
 
 
 router = APIRouter(prefix="/api/proposals", tags=["agent-proposals"])
@@ -23,7 +24,11 @@ def proposal_source(db, user, step_id: str):
 
 @router.get("/{step_id}")
 def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)):
-    handler, _ = proposal_source(db, user, step_id)
+    step = db.get(m.Step, step_id)
+    run = db.get(m.Run, step.run_id) if step else None
+    if not step or not run or run.user_id != user.id:
+        raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
+    handler = require_tool_handler(step.tool)
     intent = db.scalar(select(m.HumanIntent).where(
         m.HumanIntent.user_id == user.id,
         m.HumanIntent.action == handler.action,
@@ -44,3 +49,11 @@ def proposal_intent(step_id: str, user=Depends(current_user), db=Depends(get_db)
     result["confirmation_policy"] = proposal.get("confirmation_policy")
     db.commit()
     return result
+
+
+@router.post("/{step_id}/dismiss")
+def dismiss_proposal(step_id: str, user=Depends(current_user), db=Depends(get_db)):
+    proposal_source(db, user, step_id)
+    queue_after_proposal_decision(db, user, step_id, "dismissed")
+    db.commit()
+    return {"status": "dismissed"}

@@ -109,7 +109,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_baseline'],
                    'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度']},
-               'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context','prepare_project_plan_change','prepare_plan_department_confirmation'],
+               'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context'],
+                   'optional_tools':['prepare_project_plan_change','prepare_plan_department_confirmation'],
                    'activation_queries':['项目计划变更','计划变更','节点顺延','部门影响确认']},
                'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context'],
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
@@ -147,11 +148,12 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'business_status_review':{'name':'业务审批与执行核对','tools':['query_purchase_orders']},
                'project_dossier_review':{'name':'项目业务档案核对','tools':['query_project_dossier'],
                    'activation_queries':['项目业务档案','业务档案','项目档案','反查项目']},
-               'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context','prepare_project_pause','prepare_project_resume'],
+               'project_pause_resume':{'name':'项目暂停与恢复','tools':['query_projects','query_project_control_context'],
+                   'optional_tools':['prepare_project_pause','prepare_project_resume'],
                    'activation_queries':['项目暂停','项目恢复','暂停恢复','恢复项目']},
-               'project_termination_closure':{'name':'项目终止、结算与关闭','tools':['query_projects','query_project_closure_context',
-                   'prepare_project_closure_checklist','prepare_project_termination','prepare_project_closure_item',
-                   'prepare_project_normal_close','prepare_project_settlement_close'],
+               'project_termination_closure':{'name':'项目终止、结算与关闭','tools':['query_projects','query_project_closure_context'],
+                   'optional_tools':['prepare_project_closure_checklist','prepare_project_termination',
+                   'prepare_project_closure_item','prepare_project_normal_close','prepare_project_settlement_close'],
                    'activation_queries':['项目终止','项目结项','项目关闭','终止结算','正常关闭']}})
 
 DEPARTMENT_NAMES = {

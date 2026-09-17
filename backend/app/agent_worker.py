@@ -10,6 +10,7 @@ class Gateway:
     def __init__(self, client, context):
         self.client, self.run_id, self.epoch = client, context["id"], context["epoch"]
         self.rpc_id=0
+        self.tool_annotations={}
 
     def rpc(self,method,params,notification=False):
         self.rpc_id+=1
@@ -30,16 +31,35 @@ class Gateway:
         if result['protocolVersion']!='2025-06-18':raise RuntimeError('MCP_VERSION_UNSUPPORTED')
         self.rpc('notifications/initialized',{},notification=True)
         catalog=self.rpc('tools/list',{})['tools']
+        self.tool_annotations={t['name']:dict(t.get('annotations') or {}) for t in catalog}
         return [{'type':'function','function':{'name':t['name'],'description':t['description'],
             'parameters':t['inputSchema'],'strict':True}} for t in catalog]
     def post(self, path, body=None):
         r = self.client.post(f"/internal/runs/{self.run_id}/{path}", json={"epoch": self.epoch, **(body or {})})
-        r.raise_for_status(); return r.json()
+        if not r.is_success:
+            try:
+                code = ((r.json().get("error") or {}).get("code"))
+            except (ValueError, AttributeError):
+                code = None
+            if code:
+                raise RuntimeError(str(code))
+            r.raise_for_status()
+        return r.json()
     def check(self): return self.post("check")
     def execute(self, sequence, key, arguments):
         result=self.rpc('tools/call',{'name':key,'arguments':arguments,'_meta':{'mold/sequence':sequence}})
-        if result.get('isError'):raise ModelError('TOOL_BUSINESS_REJECTED')
-        return result['structuredContent']
+        if result.get('isError'):
+            structured=result.get('structuredContent')
+            if isinstance(structured,dict) and isinstance(structured.get('tool_error'),dict):
+                return structured
+            content=result.get('content') or []
+            message=next((item.get('text') for item in content
+                          if isinstance(item,dict) and isinstance(item.get('text'),str)),
+                         '工具拒绝了本次请求，请根据错误信息修正或向用户澄清。')
+            return {'tool_error':{'code':result.get('errorCode') or 'TOOL_REJECTED','message':message}}
+        structured=result.get('structuredContent')
+        if not isinstance(structured,dict):raise RuntimeError('MCP_TOOL_RESULT_INVALID')
+        return structured
     def checkpoint(self, checkpoint): return self.post("checkpoint", {"checkpoint": checkpoint})
     def finish(self, result): return self.post("finish", {"result": result})
 
@@ -73,7 +93,8 @@ def main():
                 gateway = Gateway(client, context)
                 try:
                     context['tools']=gateway.discover()
-                    run_loop(context, model, gateway, max_turns=config.llm_max_turns,
+                    context['tool_annotations']=gateway.tool_annotations
+                    run_loop(context, model, gateway, max_turns=runtime_config.llm_max_turns,
                              context_window=runtime_config.llm_context_window,
                              max_output_tokens=runtime_config.llm_max_output_tokens)
                 except Exception as exc:

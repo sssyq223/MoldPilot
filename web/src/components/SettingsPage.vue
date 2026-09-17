@@ -13,7 +13,8 @@ const auditPageSize=8
 const archived=ref<any[]>([]),archivedSearch=ref(''),archivedLoading=ref(false)
 const capabilitySearch=ref(''),capabilityDepartment=ref(''),capabilityType=ref(''),capabilityTab=ref<'tools'|'skills'|'all'>('all')
 const capabilityDropdown=ref<'department'|'type'|''>(''),capabilityToolbar=ref<HTMLElement|null>(null)
-const modelConfig=ref<any|null>(null),modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
+const modelConfig=ref<any|null>(null),modelProfiles=ref<any[]>([]),activeModelProfileId=ref(''),creatingModelProfile=ref(false)
+const modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
 const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
 const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
 const avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
@@ -129,23 +130,23 @@ async function loadAudit(nextPage=auditPage.value){
  }catch(e:any){emit('error',e.message)}finally{auditLoading.value=false}
 }
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
-const modelProviderName=computed(()=>modelConfig.value?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口')
-const activeModelName=computed(()=>{
- if(!modelConfig.value)return props.modelName||'未配置模型'
- return modelConfig.value.model||modelConfig.value[modelConfig.value.provider]?.model||'未配置模型'
-})
 const delegationOptionMap=computed(()=>Object.fromEntries(delegationOptions.value.map((item:any)=>[item.process_key+'::'+item.node_key,item])))
 const selectedDelegationOption=computed(()=>delegationOptionMap.value[delegationNode.value])
-const modelEndpoint=computed(()=>{
- if(!modelConfig.value)return '—'
- const source=modelConfig.value.provider==='ollama'?modelConfig.value.ollama:modelConfig.value.company
- return source?.base_url||'未配置服务地址'
-})
-const modelCredentialState=computed(()=>{
- if(!modelConfig.value)return '—'
- if(modelConfig.value.provider==='ollama')return '本机服务无需 API Key'
- return modelConfig.value.company?.api_key_configured?'API Key 已配置':'API Key 未配置'
-})
+function modelProviderLabel(profile:any){return profile?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口'}
+function modelProfileCredential(profile:any){
+ if(profile?.provider==='ollama')return '本机服务'
+ if(profile?.company?.trusted_http_origin)return '内网可信服务'
+ return profile?.company?.api_key_configured?'API Key 已配置':'API Key 未配置'
+}
+function modelProfileEndpoint(profile:any){return (profile?.provider==='ollama'?profile?.ollama?.base_url:profile?.company?.base_url)||'未配置服务地址'}
+function cloneModelProfile(profile:any){return JSON.parse(JSON.stringify(profile))}
+function applyModelConfig(result:any,preferredId?:string){
+ modelProfiles.value=Array.isArray(result?.profiles)?result.profiles:result?[result]:[]
+ activeModelProfileId.value=String(result?.active_profile_id||result?.id||'')
+ const selected=modelProfiles.value.find(profile=>String(profile.id)===String(preferredId||activeModelProfileId.value))||result
+ modelConfig.value=selected?cloneModelProfile(selected):null
+ modelApiKey.value='';clearModelApiKey.value=false;creatingModelProfile.value=false
+}
 const navigation=computed(()=>[
  {key:'account',name:'账号信息',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
@@ -171,16 +172,52 @@ watch(()=>props.initialPage,key=>{if(key)select(key)},{immediate:true})
 async function loadModelConfig(){
  if(!props.me.super_admin)return
  modelLoading.value=true;modelSaved.value=''
- try{modelConfig.value=await api('/model-config');modelApiKey.value='';clearModelApiKey.value=false;modelDetailsOpen.value=false}catch(e:any){emit('error',e.message)}finally{modelLoading.value=false}
+ try{applyModelConfig(await api('/model-config'));modelDetailsOpen.value=false}catch(e:any){emit('error',e.message)}finally{modelLoading.value=false}
+}
+function modelPayload(){
+ const config=modelConfig.value
+ return {name:String(config.name||config.model||'模型配置').trim(),enabled:Boolean(config.enabled),provider:config.provider,
+  company:{base_url:config.company?.base_url||'',model:config.company?.model||'',trusted_http_origin:config.company?.trusted_http_origin||'',
+   proxy_url:config.company?.proxy_url||'',api_key:modelApiKey.value,clear_api_key:clearModelApiKey.value},
+  ollama:{base_url:config.ollama?.base_url||'http://127.0.0.1:11434',model:config.ollama?.model||''},
+  max_output_tokens:config.max_output_tokens,context_window:config.context_window,max_turns:config.max_turns,
+  connect_timeout:config.connect_timeout,read_timeout:config.read_timeout}
 }
 async function saveModelConfig(){
  if(!modelConfig.value||modelSaving.value)return
  modelSaving.value=true;modelSaved.value=''
  try{
-  const payload={...modelConfig.value,company:{...modelConfig.value.company,api_key:modelApiKey.value,clear_api_key:clearModelApiKey.value}}
-  const saved=await api('/model-config',{method:'PUT',body:JSON.stringify(payload)})
-  modelConfig.value=saved;modelApiKey.value='';clearModelApiKey.value=false;modelSaved.value='模型配置已保存，下一次任务会使用新配置。'
+  const endpoint=creatingModelProfile.value?'/model-profiles':`/model-profiles/${modelConfig.value.id}`
+  const saved=await api(endpoint,{method:creatingModelProfile.value?'POST':'PUT',body:JSON.stringify(modelPayload())})
+  applyModelConfig(saved);modelDetailsOpen.value=false;modelSaved.value='模型配置已保存并生效，下一次任务会使用该模型。'
   emit('modelUpdated',saved.model||'未配置模型')
+ }catch(e:any){emit('error',e.message)}finally{modelSaving.value=false}
+}
+async function activateModelProfile(profile:any){
+ if(modelSaving.value)return
+ if(String(profile.id)===activeModelProfileId.value){
+  modelConfig.value=cloneModelProfile(profile);creatingModelProfile.value=false;modelApiKey.value='';clearModelApiKey.value=false;modelDetailsOpen.value=!modelDetailsOpen.value
+  return
+ }
+ modelSaving.value=true;modelSaved.value=''
+ try{
+  const saved=await post(`/model-profiles/${profile.id}/activate`)
+  applyModelConfig(saved,profile.id);modelDetailsOpen.value=false;modelSaved.value=`已切换到 ${profile.name}，下一次任务生效。`
+  emit('modelUpdated',saved.model||'未配置模型')
+ }catch(e:any){emit('error',e.message)}finally{modelSaving.value=false}
+}
+function newModelProfile(){
+ creatingModelProfile.value=true;modelDetailsOpen.value=true;modelSaved.value='';modelApiKey.value='';clearModelApiKey.value=false
+ modelConfig.value={id:'',name:'新模型配置',enabled:true,provider:'company',model:'',
+  company:{base_url:'',model:'',trusted_http_origin:'',proxy_url:'',api_key_configured:false},
+  ollama:{base_url:'http://127.0.0.1:11434',model:''},max_output_tokens:2048,context_window:32768,max_turns:12,connect_timeout:10,read_timeout:60}
+}
+async function deleteModelProfile(){
+ if(!modelConfig.value?.id||modelSaving.value)return
+ modelSaving.value=true;modelSaved.value=''
+ try{
+  const saved=await api(`/model-profiles/${modelConfig.value.id}`,{method:'DELETE'})
+  applyModelConfig(saved);modelDetailsOpen.value=false;modelSaved.value='模型配置已删除。';emit('modelUpdated',saved.model||'未配置模型')
  }catch(e:any){emit('error',e.message)}finally{modelSaving.value=false}
 }
 async function loadArchived(){
@@ -296,27 +333,32 @@ async function clearAvatar(){
    </section>
    </template>
    <template v-else-if="page==='model'&&me.super_admin">
-    <div class="section-heading model-config-heading"><div><h2>模型配置</h2><p class="muted">配置工作台智能体调用的模型服务。API Key 只会保存，不会回显明文。</p></div><button type="button" class="model-add-button" @click="modelDetailsOpen=true">新增模型配置</button></div>
+    <div class="section-heading model-config-heading"><div><h2>模型配置</h2><p class="muted">保存多个模型服务并一键切换。API Key 只会保存，不会回显明文。</p></div><button type="button" class="model-add-button" @click="newModelProfile">新增模型配置</button></div>
     <p v-if="modelLoading" role="status">正在读取模型配置…</p>
     <form v-else-if="modelConfig" class="model-config-form surface" @submit.prevent="saveModelConfig">
-     <div class="model-selection-heading"><strong>选择模型配置</strong><small class="muted">选择当前工作台要启用的模型服务。</small></div>
-     <button type="button" class="model-summary-card active" :aria-expanded="modelDetailsOpen" @click="modelDetailsOpen=!modelDetailsOpen">
-      <span class="model-summary-icon"><BrainCircuit :size="19"/></span>
-      <span class="model-summary-main">
-       <strong>{{activeModelName}}</strong>
-       <small>{{modelProviderName}} · {{modelConfig.enabled?'模型已启用':'模型未启用'}}</small>
-      </span>
-      <span class="model-summary-toggle" @click.stop>
-       <input id="active-model-enabled" v-model="modelConfig.enabled" type="checkbox"/>
-       <label for="active-model-enabled">{{modelConfig.enabled?'已启用':'未启用'}}</label>
-      </span>
-      <span class="model-summary-meta">
-       <span>{{modelCredentialState}}</span>
-       <small>{{modelEndpoint}}</small>
-      </span>
-      <span class="model-summary-action">{{modelDetailsOpen?'收起详细配置':'查看详细配置'}}</span>
-     </button>
+     <div class="model-selection-heading"><strong>选择模型配置</strong><small class="muted">点击模型即可切换，新的任务会使用当前生效模型。</small></div>
+     <div class="model-profile-list">
+      <button v-for="profile in modelProfiles" :key="profile.id" type="button" class="model-summary-card"
+       :class="{active:String(profile.id)===activeModelProfileId}" :aria-pressed="String(profile.id)===activeModelProfileId"
+       @click="activateModelProfile(profile)">
+       <span class="model-summary-icon"><BrainCircuit :size="19"/></span>
+       <span class="model-summary-main">
+        <strong>{{profile.name}}</strong>
+        <small>{{profile.model||'未配置模型'}} · {{modelProviderLabel(profile)}}</small>
+       </span>
+       <span class="model-profile-status" :class="{active:String(profile.id)===activeModelProfileId}">{{String(profile.id)===activeModelProfileId?'当前使用':'可切换'}}</span>
+       <span class="model-summary-meta">
+        <span>{{modelProfileCredential(profile)}}</span>
+        <small>{{modelProfileEndpoint(profile)}}</small>
+       </span>
+       <span class="model-summary-action">{{String(profile.id)===activeModelProfileId?(modelDetailsOpen?'收起配置':'编辑配置'):'切换'}}</span>
+      </button>
+     </div>
      <div v-if="modelDetailsOpen" class="model-config-details">
+      <div class="form-grid compact">
+       <label>配置名称<input v-model.trim="modelConfig.name" placeholder="例如：生产模型 / 本机模型"/></label>
+       <label class="check-label model-enabled-check"><input v-model="modelConfig.enabled" type="checkbox"/>启用该模型配置</label>
+      </div>
       <div class="model-config-row service-only">
        <label>服务类型<select v-model="modelConfig.provider"><option value="company">OpenAI 兼容接口</option><option value="ollama">本机 Ollama</option></select></label>
       </div>
@@ -349,8 +391,9 @@ async function clearAvatar(){
       </div>
      </div>
      <div v-if="modelDetailsOpen" class="model-config-footer">
-      <span class="muted small">当前生效模型：{{modelConfig.model||'未配置'}}</span>
-      <button v-if="modelDetailsOpen" class="primary" :disabled="modelSaving">{{modelSaving?'正在保存…':'保存模型配置'}}</button>
+      <button v-if="!creatingModelProfile&&modelProfiles.length>1" type="button" class="danger ghost" :disabled="modelSaving" @click="deleteModelProfile">删除此配置</button>
+      <span v-else class="muted small">{{creatingModelProfile?'保存后将自动切换到新模型':'至少保留一个模型配置'}}</span>
+      <button class="primary" :disabled="modelSaving||!modelConfig.name">{{modelSaving?'正在保存…':creatingModelProfile?'保存并启用':'保存模型配置'}}</button>
      </div>
      <p v-if="modelSaved" class="muted small">{{modelSaved}}</p>
    </form>

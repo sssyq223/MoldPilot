@@ -22,6 +22,7 @@ def test_harness_mcp_discovery_and_execution_use_same_receipt(client,data,monkey
     gateway=Gateway(client,c)
     catalog=gateway.discover()
     assert {t['function']['name'] for t in catalog}=={'query_purchase_requests'}
+    assert gateway.tool_annotations['query_purchase_requests']['readOnlyHint'] is True
     first=gateway.execute(0,'query_purchase_requests',{})
     assert first['source']=='agent_db' and len(first['data'])==1
     assert gateway.execute(0,'query_purchase_requests',{})['evidence_id']==first['evidence_id']
@@ -48,6 +49,13 @@ def test_mcp_cannot_expand_actor_tools_and_reports_tool_errors(client,data,monke
     assert rpc(client,c,'tools/call',{'name':'query_contact_cases','arguments':{},'_meta':{'mold/sequence':0}}).json()['error']['code']==-32602
     r=rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{'user_id':data[0]['admin']},'_meta':{'mold/sequence':0}})
     assert r.status_code==200 and r.json()['result']['isError'] is True
+    error_result=r.json()['result']
+    assert error_result['errorCode']=='INVALID_TOOL_INPUT'
+    assert error_result['structuredContent']['tool_error']['code']=='INVALID_TOOL_INPUT'
+    client.headers.update(worker_headers())
+    gateway=Gateway(client,c)
+    observed=gateway.execute(0,'query_purchase_requests',{'user_id':data[0]['admin']})
+    assert observed['tool_error']['code']=='INVALID_TOOL_INPUT'
     with data[1]() as db:assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==c['id']))==0
 
 
