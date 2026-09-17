@@ -345,7 +345,7 @@ def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(clien
     assert 'machining' in str(evidence['proposal']['display']['受影响部门'])
     with factory() as db:
         assert not list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change')))
-    intent_response=client.post('/api/project-plan-proposals/'+evidence['evidence_id']+'/intent')
+    intent_response=client.post('/api/proposals/'+evidence['evidence_id']+'/intent')
     assert intent_response.status_code==200,intent_response.text
     intent=intent_response.json()
     assert intent['confirmation_policy']['status']=='CONFIRM_THEN_DELEGATED_APPROVAL_ALLOWED'
@@ -360,7 +360,7 @@ def test_plan_change_proposal_requires_human_confirmation_then_submits_bpm(clien
     receipt=confirm.json()
     assert receipt['status']=='SUBMITTED'
     assert captured['mode']=='delegated_auto'
-    assert client.get('/api/project-plan-proposals/'+evidence['evidence_id']).json()['receipt']==receipt
+    assert client.get('/api/proposals/'+evidence['evidence_id']).json()['receipt']==receipt
     with factory() as db:
         change=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='plan_change'))
         assert change and change.status=='SUBMITTED'

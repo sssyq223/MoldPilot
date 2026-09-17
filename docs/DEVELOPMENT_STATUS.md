@@ -701,3 +701,10 @@ Redis 消息 Worker 已有投递租约、失败重试、Inbox 去重、权限核
 
 OpenSSL 官方说明 3.5 默认发送 X25519MLKEM768 和 X25519 两种 key share，作为分析握手差异的依据：[OpenSSL TLS 1.3 文档](https://github.com/openssl/openssl/wiki/TLS1.3)。此依据不等同于证明当前网络中的具体故障设备。
 
+## 通用 Agent Core / 可替换业务包拆分（2026-09-17）
+
+- 新建 `backend/agent_core`，物理承载模型适配器、上下文压缩、通用多轮 Harness 和领域包加载/工具门面；核心 Python 源码不再包含工程联络、项目暂停等模具业务规则。
+- 新建 `backend/domain_packs/mold`，集中模具系统策略、25 个 Skill、73 个工具注册与执行分发、九类确认动作处理器及现有 ERP HTTP 适配器。业务包由 `domain_packs/active.py` 或进程变量 `AGENT_BUSINESS_PACK` 选择。
+- 新增业务中立的 `/api/proposals/{step_id}` 与 `/intent` 接口；前端确认卡不再按 `proposal.kind` 硬编码九套路由和审批类型，审批展示读取服务端确认策略。原领域端点暂时保留兼容。
+- `business.create_intent/confirm_intent` 不再硬编码九类 action 分支，改由当前业务包的 proposal handler registry 校验和执行。新增契约测试保证每个 `prepare_*` 工具都有确认处理器。
+- 全量后端 385 项通过，Vue 类型检查和生产构建通过。内置浏览器以 `admin / admin123` 登录后验证历史对话、一般对话、两轮工具调用、供应商进度确认卡和通用意图接口；打开确认弹窗后选择“暂不执行”，未落业务数据，浏览器无新增错误或警告。

@@ -1461,6 +1461,8 @@ html[data-theme="light"] .composer:focus-within{border-color:#b9c6d3!important;b
 .workbench:not(.sidebar-collapsed) .new-chat{padding-left:9px!important}
 .workbench:not(.sidebar-collapsed) .new-chat svg{margin-left:0!important;color:#172334!important;stroke-width:2}
 .conversation-main svg{color:#172334!important;opacity:1!important;stroke-width:1.9}
+html[data-theme="light"] .conversation-row:not(.active):hover{background:#f3f8ff!important;border-color:#d9e8f7!important}
+html[data-theme="light"] .conversation-row.active{background:#eaf4ff!important;border-color:#bed7f0!important;color:#172334!important}
 .conversation-turn{margin-bottom:24px!important}
 .user-message-block{position:relative!important}
 .user-message-actions{position:absolute!important;top:calc(100% + 4px)!important;right:0!important;height:20px!important;margin-top:0!important;z-index:2}

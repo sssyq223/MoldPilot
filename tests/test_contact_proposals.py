@@ -17,7 +17,7 @@ def propose(client,ctx,action,args,sequence=0):
 
 
 def intent(client,evidence):
-    r=client.post('/api/contact-proposals/'+evidence['evidence_id']+'/intent')
+    r=client.post('/api/proposals/'+evidence['evidence_id']+'/intent')
     assert r.status_code==200,r.text
     return r.json()
 
@@ -46,7 +46,7 @@ def test_proposal_no_business_write_confirmation_and_retry(client,data,monkeypat
     with factory() as db:assert db.scalar(select(func.count()).select_from(ContactCase))==0
     r=confirm(client,i);assert r.status_code==200,r.text
     assert confirm(client,i).json()==r.json()
-    assert client.get('/api/contact-proposals/'+e['evidence_id']).json()['receipt']==r.json()
+    assert client.get('/api/proposals/'+e['evidence_id']).json()['receipt']==r.json()
     with factory() as db:
         assert db.scalar(select(func.count()).select_from(ContactCase))==1
         assert db.scalar(select(ContactCase)).category=='hardware'
@@ -56,7 +56,7 @@ def test_proposal_no_business_write_confirmation_and_retry(client,data,monkeypat
 def test_confirmation_cannot_be_cross_user_and_cancellation_blocks(client,data,monkeypatch):
     _,ctx=start(client,monkeypatch,'admin');e=propose(client,ctx,'create',create_args(data[0]));i=intent(client,e)
     sign_in(client,'test_buyer')
-    assert client.post('/api/contact-proposals/'+e['evidence_id']+'/intent').status_code==404
+    assert client.post('/api/proposals/'+e['evidence_id']+'/intent').status_code==404
     assert confirm(client,i).status_code==403
     sign_in(client);client.post('/api/runs/'+ctx['id']+'/cancel')
     assert confirm(client,i).status_code==409
@@ -66,7 +66,7 @@ def test_confirmation_cannot_be_cross_user_and_cancellation_blocks(client,data,m
 def test_worker_cannot_obtain_human_challenge_or_confirm(client,data,monkeypatch):
     _,ctx=start(client,monkeypatch,'admin');e=propose(client,ctx,'create',create_args(data[0]));i=intent(client,e)
     client.cookies.clear()
-    assert client.post('/api/contact-proposals/'+e['evidence_id']+'/intent',headers=worker_headers()).status_code==401
+    assert client.post('/api/proposals/'+e['evidence_id']+'/intent',headers=worker_headers()).status_code==401
     assert client.post('/api/human-actions/'+i['id']+'/confirm',headers=worker_headers(),json={'challenge':i['challenge']}).status_code==401
     with data[1]() as db:assert db.scalar(select(func.count()).select_from(ContactCase))==0
 

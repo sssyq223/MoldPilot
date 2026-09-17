@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 .pytest-tmp/
+.pytest_tmp/
 .browser-test/
 .npm-cache/
 *.pyc

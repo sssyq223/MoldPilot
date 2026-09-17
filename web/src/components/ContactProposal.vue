@@ -12,8 +12,8 @@ function displayValue(key:string,value:any){
   if(typeof value==='object'&&value!==null)return Object.entries(value).map(([k,v])=>`${k}：${v}`).join('\n')
   return String(value)
 }
-const base=props.proposal.kind==='project_control'?'/project-control-proposals/':props.proposal.kind==='project_closure'?'/project-closure-proposals/':props.proposal.kind==='internal_start'?'/internal-start-proposals/':props.proposal.kind==='quote_acceptance'?'/quote-acceptance-proposals/':['sales_contract','full_outsource_contract','contract_signing_record'].includes(props.proposal.kind)?'/contract-proposals/':['supplier_material_handoff','supplier_progress_report'].includes(props.proposal.kind)?'/full-outsource-proposals/':['customer_receipt','supplier_payment_confirmation','supplier_deduction_settlement'].includes(props.proposal.kind)?'/finance-proposals/':['project_plan_baseline','project_plan_change','plan_department_confirmation'].includes(props.proposal.kind)?'/project-plan-proposals/':'/contact-proposals/'
-const approval=props.proposal.kind==='project_control'||props.proposal.kind==='project_plan_change'||props.proposal.requires_approval
+const base='/proposals/'
+const approval=computed(()=>Boolean(policy.value?.requires_approval??props.proposal.requires_approval))
 onMounted(async()=>{try{receipt.value=(await api(base+props.stepId)).receipt}catch(e:any){error.value=e.message}})
 async function review(){busy.value=true;error.value='';try{intent.value=await post(base+props.stepId+'/intent')}catch(e:any){error.value=e.message}finally{busy.value=false}}
 async function confirm(){busy.value=true;error.value='';try{receipt.value=await post('/human-actions/'+intent.value.id+'/confirm',{challenge:intent.value.challenge});intent.value=null}catch(e:any){error.value=e.message;if(e.status===403||e.status===409)intent.value=null}finally{busy.value=false}}
@@ -26,7 +26,7 @@ async function confirm(){busy.value=true;error.value='';try{receipt.value=await 
       <small>{{policy.description}}</small>
     </div>
     <dl><template v-for="(value,key) in proposal.display" :key="String(key)"><dt>{{key}}</dt><dd>{{displayValue(String(key),value)}}</dd></template></dl>
-    <p class="muted small">{{receipt?(approval?'提交动作本身不改变项目状态；请以 BPM 最终审批和生效回执为准。':proposal.kind==='project_closure'?'清单修订已留痕；该记录本身不修改 ERP，也不代表项目已关闭。':'以操作回执和联络单过程记录为准。'):'尚未执行业务操作。内容有误时，请在会话中说明修改要求，重新准备。'}}</p>
+    <p class="muted small">{{receipt?(approval?'提交动作本身不改变业务状态；请以 BPM 最终审批和生效回执为准。':'操作已按回执留痕；请以卡片中的执行结果为准。'):'尚未执行业务操作。内容有误时，请在会话中说明修改要求，重新准备。'}}</p>
     <p v-if="error" role="alert">{{error}}</p>
     <button v-if="proposal.kind==='contact'&&receipt&&receipt.case_id" @click="emit('open',receipt.case_id)">查看联络单材料</button>
     <button v-else-if="!receipt" :disabled="busy" @click="review">核对并准备确认</button>
@@ -37,7 +37,7 @@ async function confirm(){busy.value=true;error.value='';try{receipt.value=await 
       <strong>{{policy.title}}</strong>
       <small>{{policy.description}}</small>
     </div>
-    <p class="muted">{{approval?'点击确认后创建申请并提交 Agent BPM；只有最终审批生效才会改变项目状态。':proposal.kind==='project_closure'?'点击确认后保存结项清单或事项修订；原记录继续保留，不会修改 ERP 或直接关闭项目。':'点击确认后才会保存记录或派发事项。协作反馈不等于正式审批。'}}</p>
+    <p class="muted">{{approval?'点击确认后创建申请并提交 Agent BPM；只有最终审批生效才会改变业务状态。':'点击确认后才会执行卡片中列明的操作并生成审计回执。'}}</p>
     <div class="actions"><button :disabled="busy" @click="intent=null">暂不执行</button><button class="primary" :disabled="busy" @click="confirm">确认执行</button></div>
   </section></div></Teleport>
 </template>

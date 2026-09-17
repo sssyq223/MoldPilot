@@ -1,9 +1,9 @@
 import time
 import httpx
 from .config import settings, model_settings
-from .harness import run_loop
-from .model_adapter import ModelAdapter, ModelError
-from .ollama_adapter import OllamaAdapter
+from agent_core.harness import run_loop
+from agent_core.model_adapter import ModelAdapter, ModelError
+from agent_core.ollama_adapter import OllamaAdapter
 
 
 class Gateway:
@@ -26,7 +26,7 @@ class Gateway:
 
     def discover(self):
         result=self.rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},
-            'clientInfo':{'name':'mold-harness','version':'0.1.0'}})
+            'clientInfo':{'name':'agent-core','version':'0.1.0'}})
         if result['protocolVersion']!='2025-06-18':raise RuntimeError('MCP_VERSION_UNSUPPORTED')
         self.rpc('notifications/initialized',{},notification=True)
         catalog=self.rpc('tools/list',{})['tools']

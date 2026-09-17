@@ -27,6 +27,8 @@ from .files import router as file_router
 app.include_router(file_router)
 from .erp_design_upload import router as erp_design_upload_router
 app.include_router(erp_design_upload_router)
+from .proposal_api import router as proposal_router
+app.include_router(proposal_router)
 
 _conversation_flags_checked = False
 _user_profiles_checked = False
