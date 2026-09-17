@@ -78,7 +78,9 @@ def apply(db,user,subject):
     elif kind=='design_route':
         detail=db.get(m.DesignDetail,subject.id)
         reviewer_approved=db.scalar(select(m.ApprovalAction.id).join(m.ApprovalInstance).where(
-            m.ApprovalInstance.subject_id==subject.id,m.ApprovalInstance.revision==subject.revision,
+            m.ApprovalInstance.resource_type=='business_subject',
+            m.ApprovalInstance.resource_id==subject.id,
+            m.ApprovalInstance.revision==subject.revision,
             m.ApprovalInstance.round_no==subject.round_no,m.ApprovalAction.user_id==detail.reviewer_id,
             m.ApprovalAction.decision=='APPROVE').limit(1))
         if not reviewer_approved:raise DomainError('DESIGN_REVIEW_REQUIRED','本轮须有指定设计复核人员的同意记录')

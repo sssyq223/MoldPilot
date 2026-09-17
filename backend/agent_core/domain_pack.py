@@ -82,7 +82,44 @@ def manifest():
     return value
 
 
+@lru_cache
+def authorization_contract():
+    """Return validated permissions and scope dimensions for the active pack."""
+    value = component("authorization")
+    permissions = getattr(value, "PERMISSIONS", None)
+    dimensions = getattr(value, "DIMENSIONS", None)
+    if not isinstance(permissions, dict) or not all(
+        isinstance(name, str)
+        and name.strip()
+        and isinstance(fields, (list, tuple))
+        and all(isinstance(field, str) and field for field in fields)
+        for name, fields in permissions.items()
+    ):
+        raise RuntimeError("Domain-pack authorization.PERMISSIONS must map names to field lists")
+    if not isinstance(dimensions, (set, frozenset)) or not all(
+        isinstance(dimension, str) and dimension for dimension in dimensions
+    ):
+        raise RuntimeError("Domain-pack authorization.DIMENSIONS must be a string set")
+    return value
+
+
+@lru_cache
+def resource_contract():
+    """Return validated resource types accepted by generic persistence records."""
+    value = component("resources")
+    approval_types = getattr(value, "APPROVAL_RESOURCE_TYPES", None)
+    if not isinstance(approval_types, (set, frozenset)) or not all(
+        isinstance(resource_type, str) and resource_type for resource_type in approval_types
+    ):
+        raise RuntimeError(
+            "Domain-pack resources.APPROVAL_RESOURCE_TYPES must be a string set"
+        )
+    return value
+
+
 def reset_domain_pack_cache():
     """Test helper for applications that switch pack configuration before startup."""
     manifest.cache_clear()
+    authorization_contract.cache_clear()
+    resource_contract.cache_clear()
     component.cache_clear()

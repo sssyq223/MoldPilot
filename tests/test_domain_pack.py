@@ -5,13 +5,22 @@ import subprocess
 import sys
 import pytest
 
-from agent_core.domain_pack import active_pack_name, component, manifest, validate_public_metadata
+from agent_core.domain_pack import (
+    active_pack_name,
+    authorization_contract,
+    component,
+    manifest,
+    resource_contract,
+    validate_public_metadata,
+)
 from agent_core.host_ports import HostPorts, host_ports
 from agent_core import tool_gateway as core_gateway
 from app import tool_gateway as host_gateway
 
 
 def test_product_selects_installed_business_pack_and_core_uses_its_contract():
+    from app import models as model_catalog
+
     assert active_pack_name() == "mold"
     policy = component("harness_policy")
     handlers = component("proposal_handlers")
@@ -24,6 +33,15 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
         "target": "contacts",
         "receipt_field": "case_id",
         "label": "查看材料",
+    }
+    assert model_catalog.Project.__module__ == "domain_packs.mold.models"
+    assert model_catalog.BusinessSubject.__module__ == "domain_packs.mold.domain_models"
+    assert model_catalog.ContactCase.__module__ == "domain_packs.mold.contact_models"
+    assert model_catalog.ContactAttachment.__module__ == "domain_packs.mold.attachment_models"
+    assert model_catalog.Base.__module__ == "app.model_base"
+    assert "purchase.read" in authorization_contract().PERMISSIONS
+    assert resource_contract().APPROVAL_RESOURCE_TYPES == {
+        "purchase_request", "business_subject",
     }
     assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
@@ -134,17 +152,31 @@ def test_template_pack_boots_host_without_registering_mold_http_surface():
     }
     script = """
 import json
+import sys
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 from app.api import app
+from app.models import Base
+from app.authorization import PERMISSIONS, DIMENSIONS
 from app.erp_adapter import ERPClient
 from agent_core.harness import _tool_search_schema, permission_mode_instruction
 from agent_core.ollama_adapter import REACT_GUIDANCE
-from agent_core.domain_pack import manifest
+from agent_core.domain_pack import manifest, resource_contract
 paths = {route.path for route in app.routes if hasattr(route, 'path')}
+sorted_tables = list(Base.metadata.sorted_tables)
+ddl = [str(CreateTable(table).compile(dialect=postgresql.dialect())) for table in sorted_tables]
 print(json.dumps({
     'title': app.title,
     'paths': sorted(paths),
     'erp_module': ERPClient.__module__,
     'proposal_presentation': manifest().PUBLIC_METADATA['proposal_presentation'],
+    'tables': sorted(Base.metadata.tables),
+    'sorted_tables': [table.name for table in sorted_tables],
+    'ddl_count': len(ddl),
+    'permissions': sorted(PERMISSIONS),
+    'dimensions': sorted(DIMENSIONS),
+    'approval_resource_types': sorted(resource_contract().APPROVAL_RESOURCE_TYPES),
+    'mold_modules': sorted(name for name in sys.modules if name.startswith('domain_packs.mold')),
     'policy_text': ' '.join([
         _tool_search_schema()['function']['description'],
         _tool_search_schema()['function']['parameters']['properties']['query']['description'],
@@ -174,6 +206,22 @@ print(json.dumps({
         "detail_links": {},
         "value_names": {},
     }
+    assert payload["mold_modules"] == []
+    assert payload["sorted_tables"] == payload["tables"] or set(payload["sorted_tables"]) == set(payload["tables"])
+    assert payload["ddl_count"] == len(payload["tables"])
+    assert payload["permissions"] == [
+        "audit.read", "file.upload", "grant.manage", "user.manage",
+        "workflow.design", "workflow.publish",
+    ]
+    assert payload["dimensions"] == []
+    assert payload["approval_resource_types"] == []
+    assert not ({
+        "project", "material", "purchase_request", "purchase_request_line",
+        "business_subject", "supplier", "customer", "mold", "project_mold",
+        "project_profile", "warehouse", "purchase_order", "contact_case",
+        "contact_task", "contact_record", "contact_resolution", "contact_attachment",
+        "logistics_route", "logistics_quote",
+    } & set(payload["tables"]))
     assert not any(term in payload["policy_text"] for term in (
         "项目", "模具", "工程联络", "合同", "采购", "审批席位",
     ))

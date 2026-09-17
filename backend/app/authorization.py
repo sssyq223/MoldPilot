@@ -4,21 +4,16 @@ from sqlalchemy import select, and_, or_, false, true
 from .db import now
 from .models import Grant, User, Capability, AgentApprovalDelegation
 from .errors import DomainError
+from agent_core.domain_pack import authorization_contract
 
-PERMISSIONS = {
-    "project.read": ["id", "code", "name", "status"],
-    "project.dossier.read": ["*"],
-    "purchase.read": ["id", "number", "project_id", "material_id", "material_name", "category", "quantity", "unit", "due_date", "remark", "status", "created_at", "revision", "created_by"],
-    "purchase.create": ["project_id", "material_id", "quantity", "due_date", "remark"],
-    "purchase.submit": ["*"], "purchase.approve": ["*"],
+CORE_PERMISSIONS = {
     "workflow.design": ["*"], "workflow.publish": ["*"],
     "user.manage": ["*"], "grant.manage": ["*"], "audit.read": ["*"],
+    "file.upload": ["*"],
 }
-PERMISSIONS['file.upload']=['*']
-DIMENSIONS = {"project_id", "category", "warehouse_id"}
-from .domain_schemas import PERMISSIONS as DOMAIN_PERMISSIONS
-PERMISSIONS.update(DOMAIN_PERMISSIONS)
-PERMISSIONS.update({f'contact.{action}':['*'] for action in ('read','create','coordinate','assign','respond','record','attach','plan','review','close','set_reviewer','cancel_task')})
+_domain_authorization = authorization_contract()
+PERMISSIONS = {**CORE_PERMISSIONS, **_domain_authorization.PERMISSIONS}
+DIMENSIONS = frozenset(_domain_authorization.DIMENSIONS)
 
 
 @dataclass(frozen=True)

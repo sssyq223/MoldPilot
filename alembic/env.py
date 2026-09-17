@@ -6,8 +6,17 @@ from app.models import Base
 from app.config import settings
 
 target_metadata = Base.metadata
-url = os.environ.get("MOLD_MIGRATION_URL") or dotenv_values('.env').get("MOLD_MIGRATION_URL")
-if not url: raise RuntimeError("MOLD_MIGRATION_URL is required; application credentials cannot migrate")
+environment = dotenv_values('.env')
+url = (
+    os.environ.get("AGENT_MIGRATION_URL")
+    or environment.get("AGENT_MIGRATION_URL")
+    or os.environ.get("MOLD_MIGRATION_URL")
+    or environment.get("MOLD_MIGRATION_URL")
+)
+if not url:
+    raise RuntimeError(
+        "AGENT_MIGRATION_URL is required; MOLD_MIGRATION_URL remains a legacy alias"
+    )
 
 if context.is_offline_mode():
     context.configure(url=url, target_metadata=target_metadata, literal_binds=True)

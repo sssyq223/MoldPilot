@@ -34,6 +34,20 @@ generic `ProposalCard` renders that validated contract and emits a generic
 workspace target; it does not import the mold UI dictionary or assume every
 proposal opens a contact-case panel.
 
+`models.py` is the pack's ORM registry. Project, material and purchase models
+live there; the larger typed business-fact and collaboration model sets live
+in `domain_models.py` and `contact_models.py`, with contact/file relationships
+in `attachment_models.py`. The host re-exports these mapped classes from
+`app.models` while this pack is active so mature services remain compatible.
+Selecting the template pack does not import these modules or register their
+tables in the host metadata.
+
+`authorization.py` owns the mold permission vocabulary and scope dimensions;
+`resources.py` registers the resource types this pack can submit to the
+generic approval envelope. The host persists approvals as
+`resource_type/resource_id` and no longer has foreign keys or check constraints
+that name mold tables. Both contracts are empty in the template pack.
+
 The generic runtime loads it with:
 
 ```text

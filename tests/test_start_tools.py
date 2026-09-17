@@ -123,7 +123,10 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
             assert detail.decision=='START'
             assert detail.execution_mode=='FULL_OUTSOURCE'
             assert db.get(m.Project,args['project_id']).status=='DRAFT'
-            assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==start.id))
+            assert db.scalar(select(m.ApprovalInstance).where(
+                m.ApprovalInstance.resource_type=='business_subject',
+                m.ApprovalInstance.resource_id==start.id,
+            ))
     finally:
         engine.dispose()
 

@@ -169,7 +169,10 @@ def test_quote_acceptance_proposal_requires_human_confirmation_then_submits_bpm(
             assert detail.decision=='ACCEPT'
             assert detail.execution_mode=='FULL_OUTSOURCE'
             assert db.get(m.Project,args['project_id']).status=='DRAFT'
-            assert db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==subject.id))
+            assert db.scalar(select(m.ApprovalInstance).where(
+                m.ApprovalInstance.resource_type=='business_subject',
+                m.ApprovalInstance.resource_id==subject.id,
+            ))
     finally:
         engine.dispose()
 

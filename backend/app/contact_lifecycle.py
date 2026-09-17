@@ -131,7 +131,9 @@ def approved(db,user,case):
     if not resolution:raise DomainError('RESOLUTION_REQUIRED','须先提交并通过处理方案审批',409)
     subject=db.get(m.BusinessSubject,resolution.subject_id)
     authorize(db,user,subject,'read')
-    instance=db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==subject.id,
+    instance=db.scalar(select(m.ApprovalInstance).where(
+        m.ApprovalInstance.resource_type=='business_subject',
+        m.ApprovalInstance.resource_id==subject.id,
         m.ApprovalInstance.round_no==subject.round_no,m.ApprovalInstance.revision==subject.revision))
     if subject.status!='EFFECTIVE' or not instance or instance.status!='COMPLETED':
         raise DomainError('RESOLUTION_NOT_APPROVED','最新处理方案尚未审批通过并生效',409)
@@ -267,7 +269,10 @@ def context(db,user,case):
         subject=db.get(m.BusinessSubject,resolution.subject_id)
         try:domains.authorize(db,user,subject,'read')
         except DomainError:continue
-        instance=db.scalar(select(m.ApprovalInstance).where(m.ApprovalInstance.subject_id==subject.id).order_by(m.ApprovalInstance.created_at.desc()).limit(1))
+        instance=db.scalar(select(m.ApprovalInstance).where(
+            m.ApprovalInstance.resource_type=='business_subject',
+            m.ApprovalInstance.resource_id==subject.id,
+        ).order_by(m.ApprovalInstance.created_at.desc()).limit(1))
         result['resolutions'].append({'id':subject.id,'number':subject.number,'status':subject.status,'solution':resolution.solution,
             'instance_id':instance.id if instance else None,'snapshot':resolution.material_snapshot})
     return result

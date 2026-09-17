@@ -13,6 +13,13 @@ implement the stable components:
 - `tool_gateway.py`: Tool/Skill schemas, permissions and execution;
 - `proposal_handlers.py`: trusted confirmation-card handlers;
 - `erp_adapter.py`: optional original-system integration.
+- `models.py`: pack-owned ORM exports; the template intentionally exports none.
+- `authorization.py`: domain permissions and data-scope dimensions;
+- `resources.py`: resource types accepted by generic approval persistence.
+
+The template intentionally registers no models, domain permissions, scope
+dimensions, or approval resource types. Its metadata must remain sortable and
+compilable as PostgreSQL DDL so a new pack starts from a valid host schema.
 
 Select the package with `AGENT_BUSINESS_PACK=<package_name>`. Industry code
 must remain in that package and must not add branches to `agent_core`.

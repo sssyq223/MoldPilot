@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import timedelta, datetime
+from functools import lru_cache
+from importlib import import_module
 import json
 import re
 import secrets
@@ -13,7 +15,7 @@ from .db import get_db, SessionLocal, now, aware
 from .config import (settings, model_settings, public_model_config, save_model_config,
                      create_model_profile, update_model_profile, activate_model_profile,
                      delete_model_profile)
-from . import models as m, schemas as s, authorization as auth, business, bpm
+from . import models as m, schemas as s, authorization as auth
 from .security import current_user, login, public_user, hasher, normalize_username, digest
 from .errors import DomainError
 from .events import record
@@ -23,6 +25,18 @@ from .domain_pack import manifest as load_domain_manifest
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
 domain_router = APIRouter()
+
+
+@lru_cache
+def _business():
+    """Load the optional business transaction service only when a route needs it."""
+    return import_module("app.business")
+
+
+@lru_cache
+def _bpm():
+    """Load the business workflow compiler only for workflow operations."""
+    return import_module("app.bpm")
 from .organization_api import router as organization_router
 app.include_router(organization_router)
 from .workflow_categories import router as category_router, require_category
@@ -35,7 +49,6 @@ from .proposal_api import router as proposal_router
 app.include_router(proposal_router)
 
 _conversation_flags_checked = False
-_user_profiles_checked = False
 
 
 def compact_conversation_title(prompt: str) -> str:
@@ -56,26 +69,9 @@ def ensure_conversation_flags(db):
     _conversation_flags_checked = True
 
 
-def ensure_user_profiles(db):
-    """Ensure the optional user profile table exists on the PostgreSQL baseline."""
-    global _user_profiles_checked
-    if _user_profiles_checked:
-        return
-    dialect = db.bind.dialect.name
-    if dialect != "postgresql":
-        raise RuntimeError("MoldPilot runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
-    db.execute(text("""CREATE TABLE IF NOT EXISTS app_user_profile (
-        user_id VARCHAR(36) PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
-        avatar_url TEXT NOT NULL DEFAULT '',
-        updated_at TIMESTAMPTZ
-    )"""))
-    db.commit()
-    _user_profiles_checked = True
-
-
 def avatar_url_for(db, user_id: str) -> str:
-    ensure_user_profiles(db)
-    return db.execute(text("SELECT avatar_url FROM app_user_profile WHERE user_id = :user_id"), {"user_id": user_id}).scalar() or ""
+    profile = db.get(m.UserProfile, user_id)
+    return profile.avatar_url if profile else ""
 
 
 def public_user_with_profile(db, user):
@@ -337,11 +333,11 @@ def update_my_avatar(data: s.AvatarInput, user=Depends(current_user), db=Depends
     avatar = data.avatar_url.strip()
     if avatar and not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", avatar):
         raise DomainError("AVATAR_INVALID", "头像必须是 PNG、JPG 或 WebP 图片", 400)
-    ensure_user_profiles(db)
-    db.execute(text("DELETE FROM app_user_profile WHERE user_id = :user_id"), {"user_id": user.id})
+    profile = db.get(m.UserProfile, user.id)
+    if profile:
+        db.delete(profile)
     if avatar:
-        db.execute(text("INSERT INTO app_user_profile (user_id, avatar_url, updated_at) VALUES (:user_id, :avatar_url, :updated_at)"),
-                   {"user_id": user.id, "avatar_url": avatar, "updated_at": now()})
+        db.add(m.UserProfile(user_id=user.id, avatar_url=avatar, updated_at=now()))
     record(db, user, "user.avatar.updated", user.id, {"has_avatar": bool(avatar)})
     db.commit()
     return public_user_with_profile(db, user)
@@ -493,18 +489,18 @@ def materials(project_id: str, user=Depends(current_user), db=Depends(get_db)):
 
 @domain_router.get("/api/purchases")
 def purchases(user=Depends(current_user), db=Depends(get_db)):
-    return [business.request_data(db, user, req) for req in db.scalars(business.visible_requests(db, user).order_by(m.PurchaseRequest.created_at.desc()).limit(100))]
+    return [_business().request_data(db, user, req) for req in db.scalars(_business().visible_requests(db, user).order_by(m.PurchaseRequest.created_at.desc()).limit(100))]
 
 
 @domain_router.post("/api/purchases")
 def create_purchase(data: s.PurchaseInput, user=Depends(current_user), db=Depends(get_db)):
-    req = business.create_request(db, user, data); db.commit()
+    req = _business().create_request(db, user, data); db.commit()
     return {"id": req.id, "number": req.number, "status": req.status}
 
 
 @domain_router.post("/api/purchases/{request_id}/submit-intent")
 def submit_intent(request_id: str, data: s.SubmitInput, user=Depends(current_user), db=Depends(get_db)):
-    result = business.create_intent(db, user, "purchase.submit", request_id, data.model_dump())
+    result = _business().create_intent(db, user, "purchase.submit", request_id, data.model_dump())
     db.commit(); return result
 
 
@@ -512,7 +508,7 @@ def definition_data(d):
     return {"id": d.id, "process_key": d.process_key, "version": d.version, "name": d.name,
             "status": d.status, "business_type": d.config['business_type'], "config": d.config, "category_id":d.category_id,
             "bpmn_xml": d.bpmn_xml, "package_hash": d.package_hash,'material_template_id':d.material_template_id,
-            "edit_hash": bpm.content_hash({'name': d.name, 'config': d.config, 'category_id':d.category_id,'material_template_id':d.material_template_id}),
+            "edit_hash": _bpm().content_hash({'name': d.name, 'config': d.config, 'category_id':d.category_id,'material_template_id':d.material_template_id}),
             "created_at": d.created_at}
 
 
@@ -531,7 +527,7 @@ def workflows(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100
 def create_workflow(data: s.DefinitionInput, user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "workflow.design")
     data.config=bind_contract(db,data.config,data.material_template_id)
-    bpm.validate(data.config)
+    _bpm().validate(data.config)
     require_category(db,data.config,data.category_id)
     # Serialize version allocation per process key; concurrent drafts must not race max(version).
     db.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'workflow:'+data.process_key})
@@ -545,7 +541,7 @@ def create_workflow(data: s.DefinitionInput, user=Depends(current_user), db=Depe
 def simulate_workflow(data: s.WorkflowSimulationInput, user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, 'workflow.design')
     # Simulation uses caller-provided test data only; it never loads business records or creates tasks.
-    return bpm.simulate(bind_contract(db,data.config,data.material_template_id), data.snapshot)
+    return _bpm().simulate(bind_contract(db,data.config,data.material_template_id), data.snapshot)
 
 
 @app.get('/api/workflows/available')
@@ -586,7 +582,7 @@ def edit_workflow(definition_id: str, data: s.DefinitionEditInput, user=Depends(
         raise DomainError('VERSION_CONFLICT', '草稿已被修改，请重新打开后编辑', 409)
     material_id=data.material_template_id if 'material_template_id' in data.model_fields_set else d.material_template_id
     data.config=bind_contract(db,data.config,material_id)
-    bpm.validate(data.config)
+    _bpm().validate(data.config)
     require_category(db,data.config,data.category_id)
     d.name = data.name; d.config = data.config; d.category_id=data.category_id; d.material_template_id=material_id
     record(db, user, 'workflow.draft.updated', d.id, {'previous_hash': data.expected_hash})
@@ -601,13 +597,13 @@ def publish(definition_id: str, user=Depends(current_user), db=Depends(get_db)):
     if not d: raise DomainError("NOT_FOUND", "模板不存在", 404)
     if d.status == "PUBLISHED": return {"status": d.status, "hash": d.package_hash}
     bind_contract(db,d.config,d.material_template_id)
-    bpm.validate(d.config)
+    _bpm().validate(d.config)
     require_category(db,d.config,d.category_id)
     from .assignments import check_publish
     check_publish(db,d.config)
-    d.bpmn_xml = bpm.compile_bpmn(d.config)
-    bpm.start_engine(d.bpmn_xml)
-    d.package_hash = bpm.content_hash({"config": d.config, "xml": d.bpmn_xml,'material_template_id':d.material_template_id})
+    d.bpmn_xml = _bpm().compile_bpmn(d.config)
+    _bpm().start_engine(d.bpmn_xml)
+    d.package_hash = _bpm().content_hash({"config": d.config, "xml": d.bpmn_xml,'material_template_id':d.material_template_id})
     d.status = "PUBLISHED"; record(db, user, "workflow.published", d.id, {"hash": d.package_hash}); db.commit()
     return {"status": d.status, "hash": d.package_hash}
 
@@ -617,7 +613,7 @@ def approvals(user=Depends(current_user), db=Depends(get_db)):
     q = select(m.ApprovalInstance).join(m.ApprovalSeat).where(m.ApprovalSeat.user_id == user.id, m.ApprovalSeat.status == "PENDING").distinct()
     results = []
     for instance in db.scalars(q.limit(100)):
-        try: results.append(business.approval_detail(db, user, instance))
+        try: results.append(_business().approval_detail(db, user, instance))
         except DomainError: continue
     return results
 
@@ -626,12 +622,12 @@ def approvals(user=Depends(current_user), db=Depends(get_db)):
 def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
     instance = db.get(m.ApprovalInstance, instance_id)
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
-    return business.approval_detail(db, user, instance)
+    return _business().approval_detail(db, user, instance)
 
 
 @app.post("/api/approvals/decision-intent")
 def decision_intent(data: s.DecisionInput, user=Depends(current_user), db=Depends(get_db)):
-    result = business.create_intent(db, user, "approval.decide", data.instance_id, data.model_dump())
+    result = _business().create_intent(db, user, "approval.decide", data.instance_id, data.model_dump())
     db.commit(); return result
 
 
@@ -727,7 +723,7 @@ def revoke_approval_delegation(delegation_id: str, data: s.AgentApprovalDelegati
 def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user), db=Depends(get_db)):
     intent = db.scalar(select(m.HumanIntent).where(
         m.HumanIntent.id == intent_id, m.HumanIntent.user_id == user.id))
-    result = business.confirm_intent(db, user, intent_id, data.challenge)
+    result = _business().confirm_intent(db, user, intent_id, data.challenge)
     resumed_run = None
     if intent:
         from .agent_resume import queue_after_proposal_decision
@@ -744,7 +740,7 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
 
 @domain_router.post("/api/business/command-intents")
 def command_intent(data: s.CommandIntentInput, user=Depends(current_user), db=Depends(get_db)):
-    result = business.create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
+    result = _business().create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
     db.commit()
     return result
 
