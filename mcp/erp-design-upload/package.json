@@ -1,0 +1,12 @@
+{
+  "name": "moldpilot-erp-design-upload-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local runtime for the management-system ERP design MCP.",
+  "scripts": {
+    "mcp": "node --env-file-if-exists=.env ./node_modules/erp-design-upload-mcp/scripts/erp-design-upload-mcp.mjs"
+  },
+  "dependencies": {
+    "erp-design-upload-mcp": "file:D:/work2/management-system/artifacts/erp-design-upload-mcp-0.5.0.tgz"
+  }
+}
