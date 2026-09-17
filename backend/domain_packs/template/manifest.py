@@ -8,6 +8,12 @@ PUBLIC_METADATA = {
     "display_name": "通用智能体工作台",
     "tagline": "安装业务包后即可接入工具、Skill 与确认卡。",
     "workspace_tabs": [],
+    "proposal_presentation": {
+        "action_prefixes": [],
+        "action_suffixes": [],
+        "detail_links": {},
+        "value_names": {},
+    },
 }
 APP_TITLE = "Agent Workbench"
 

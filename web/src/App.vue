@@ -6,23 +6,20 @@ import {capabilityName,auditName,numberText,fieldName,valueText} from './uiText'
 import SettingsPage from './components/SettingsPage.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
 import ContactPanel from './components/ContactPanel.vue'
-import ContactProposal from './components/ContactProposal.vue'
+import ProposalCard from './components/ProposalCard.vue'
 import FileMaterial from './components/FileMaterial.vue'
 import BusinessFacts from './components/BusinessFacts.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
-const product=ref<any>({id:'mold',product_name:'MoldPilot',display_name:'模具项目智能工作台',tagline:'从一个任务开始，让业务能力协同工作。',workspace_tabs:[
- {key:'materials',name:'材料总览',hint:'说明工作区会展示哪些业务材料'},
- {key:'approvals',name:'审批材料',hint:'查看待审批事项、节点和依据'},
- {key:'contacts',name:'联络单材料',hint:'查看工程联络单、附件和协作进度'},
-]})
+const product=ref<any>({id:'agent',product_name:'Agent Workbench',display_name:'智能体工作台',tagline:'',workspace_tabs:[],proposal_presentation:{action_prefixes:[],action_suffixes:[],detail_links:{},value_names:{}}})
 const modelName=ref('未配置模型')
 const modelLimits=ref<any>({context_window:8192,max_output_tokens:2048})
 const modelProfiles=ref<any[]>([]),activeModelProfileId=ref(''),modelSwitchingId=ref('')
 const DEFAULT_SIDEBAR_WIDTH=248
 const DEFAULT_WORKSPACE_WIDTH=650
-const contactTarget=ref('')
+type WorkspaceTarget={target:string;id:string}
+const workspaceTargets=ref<Record<string,string>>({})
 const selectedEvidence=ref<any|null>(null)
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
 let conversationEpoch=0
@@ -424,10 +421,16 @@ async function handleCurrentProposalDecision(dismissed=false){
 async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const savedMode=localStorage.getItem(approvalModeStorageKey())??localStorage.getItem('mold.agentPermissionMode.'+me.value.id);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??localStorage.getItem('mold.layout.'+me.value.id);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch{}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
-function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
+function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem(productStoragePrefix()+'.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
 async function openPanel(key:string){if(!workspaceTabs.value.some((tab:any)=>tab.key===key))return;panel.value=key;expanded.value=true;saveLayout()}
+async function openWorkspaceTarget(link:WorkspaceTarget){
+ if(!link?.target||!link?.id)return
+ workspaceTargets.value={...workspaceTargets.value,[link.target]:link.id}
+ await openPanel(link.target)
+}
+async function openEvidenceTarget(link:WorkspaceTarget){selectedEvidence.value=null;await openWorkspaceTarget(link)}
 function workspaceEmptyTitle(){return panel.value==='approvals'?'暂无审批材料':panel.value==='contacts'?'暂无联络单材料':'材料总览'}
 function workspaceEmptyText(){return panel.value==='approvals'?'从消息通知或会话中的审批建议打开具体审批，节点、依据和操作记录会显示在这里。':panel.value==='contacts'?'从会话结果中选择联络单，附件、处理方案和协作进度会显示在这里。':'工作区用于承载会话中打开的业务材料，目前包含审批材料和联络单材料；从会话结果或消息通知选择具体事项后会自动切换。'}
 function toggleWorkspace(){if(!workspaceTabs.value.length)return;if(expanded.value)collapse();else{if(!panel.value)panel.value=String(workspaceTabs.value[0].key);expanded.value=true}}
@@ -451,7 +454,7 @@ async function uploadFiles(event:Event){
   if(epoch===conversationEpoch){conversation.value=target;selectedFiles.value.push(result)}
  }await refresh()}catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
-async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else if(n.kind?.startsWith('contact.')){contactTarget.value=n.resource_id;await openPanel('contacts')}else await openNotices()}catch(e:any){fail(e.message)}}
+async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else if(n.kind?.startsWith('contact.'))await openWorkspaceTarget({target:'contacts',id:n.resource_id});else await openNotices()}catch(e:any){fail(e.message)}}
 function resizeSession(move:(event:PointerEvent)=>void){document.body.classList.add('layout-resizing');const end=()=>{document.body.classList.remove('layout-resizing');window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);saveLayout()};window.addEventListener('pointermove',move);window.addEventListener('pointerup',end);window.addEventListener('pointercancel',end)}
 function beginResize(e:PointerEvent){if(e.button!==0)return;const x=e.clientX,start=width.value;resizeSession((ev)=>{width.value=Math.max(560,Math.min(window.innerWidth-480,start+x-ev.clientX))})}
 function resizeBy(delta:number){width.value=Math.max(560,Math.min(window.innerWidth-480,width.value+delta));saveLayout()}
@@ -520,7 +523,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                         <button v-if="item.data?.length" @click="selectedEvidence=item">查看详情</button>
                       </div>
                       <div v-if="['query_contact_cases','query_contact_context'].includes(item.tool)" class="actions">
-                        <button v-for="row in item.data" :key="row.id" @click="contactTarget=row.id;openPanel('contacts')">查看联络材料：{{row.title}}</button>
+                        <button v-for="row in item.data" :key="row.id" @click="openWorkspaceTarget({target:'contacts',id:row.id})">查看联络材料：{{row.title}}</button>
                       </div>
                     </div>
                   </details>
@@ -538,7 +541,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
             <div v-if="runResolvedProposals(run).length" class="resolved-proposals" aria-label="已处理确认卡">
               <div v-for="item in runResolvedProposals(run)" :key="'resolved:'+item.id" class="resolved-proposal">
-                <ContactProposal placement="message" :product-name="product.product_name" :step-id="item.id" :proposal="item.proposal" :decision="item.proposal_decision||'approved'" @status="confirmed=>setProposalConfirmed(item.id,confirmed)" @open="id=>{contactTarget=id;openPanel('contacts')}"/>
+                <ProposalCard placement="message" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="item.id" :proposal="item.proposal" :decision="item.proposal_decision||'approved'" @status="confirmed=>setProposalConfirmed(item.id,confirmed)" @open="openWorkspaceTarget"/>
                 <div v-if="proposalResolutionFor(run,item.id)" class="agent-tool-row proposal-resolution-row">
                   <span class="agent-tool-icon"><Check :size="13"/></span>
                   <span class="proposal-resolution-copy">{{proposalResolutionFor(run,item.id).decision==='approved'?'本人已确认':'本人已取消'}} · {{proposalResolutionFor(run,item.id).receipt?.status==='CONFIRMED'?'执行回执已确认':(proposalResolutionFor(run,item.id).receipt?.status||'决定已记录')}}</span>
@@ -569,7 +572,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
     </article>
   </div>
-  <ContactProposal v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="id=>{contactTarget=id;openPanel('contacts')}"/>
+  <ProposalCard v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="openWorkspaceTarget"/>
   <form v-else class="composer" @submit.prevent="send">
     <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
@@ -626,7 +629,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 </section>
   <div v-if="workspaceOpen&&!full" class="resize-handle" role="separator" tabindex="0" aria-label="调整工作区宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginResize" @dblclick="resetWorkspaceWidth" @keydown.left.prevent="resizeBy(20)" @keydown.right.prevent="resizeBy(-20)"/>
   <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs" aria-label="工作区页签"><button v-for="tab in workspaceTabs" :key="tab.key" :class="{active:panel===tab.key}" :aria-current="panel===tab.key?'page':undefined" :title="tab.hint" @click="openPanel(tab.key)">{{tab.name}}</button><button v-if="detail&&panel==='approvals'" class="object-tab">{{numberText(detail.snapshot.number)}}</button></nav><div class="workspace-content">
-    <ContactPanel @approval="openApproval" v-if="panel==='contacts'" :key="contactTarget" :initial-id="contactTarget" @error="fail"/>
+    <ContactPanel @approval="openApproval" v-if="panel==='contacts'" :key="workspaceTargets.contacts" :initial-id="workspaceTargets.contacts||''" @error="fail"/>
     <template v-else-if="panel==='approvals'&&detail"><button class="back-button" @click="collapse();openNotices()">← 返回消息通知</button><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
 </template>
     <div v-else class="empty workspace-empty"><h3>{{workspaceEmptyTitle()}}</h3><p>{{workspaceEmptyText()}}</p><div class="workspace-empty-cards"><button type="button" :class="{active:panel==='approvals'}" @click="openPanel('approvals')"><strong>审批材料</strong><small>待审批事项、流程节点、附件和审批记录</small></button><button type="button" :class="{active:panel==='contacts'}" @click="openPanel('contacts')"><strong>联络单材料</strong><small>工程联络单、处理方案、附件和协作进度</small></button></div></div>
@@ -688,7 +691,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
           </section>
         </article>
-        <ContactProposal v-if="selectedEvidence.proposal" :product-name="product.product_name" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="id=>{selectedEvidence=null;contactTarget=id;openPanel('contacts')}"/>
+        <ProposalCard v-if="selectedEvidence.proposal" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="openEvidenceTarget"/>
       </div>
     </section>
   </div>

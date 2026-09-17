@@ -8,6 +8,50 @@ import re
 _PACK_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def validate_public_metadata(metadata: object, pack_name: str) -> dict:
+    """Validate the small, serializable contract exposed to the generic host UI."""
+    if not isinstance(metadata, dict) or metadata.get("id") != pack_name:
+        raise RuntimeError("Domain-pack manifest PUBLIC_METADATA.id must match the active pack")
+    if not isinstance(metadata.get("product_name"), str) or not metadata["product_name"].strip():
+        raise RuntimeError("Domain-pack manifest requires a product_name")
+
+    workspace_tabs = metadata.get("workspace_tabs", [])
+    if not isinstance(workspace_tabs, list) or not all(
+        isinstance(tab, dict) and isinstance(tab.get("key"), str) and tab["key"].strip()
+        for tab in workspace_tabs
+    ):
+        raise RuntimeError("Domain-pack workspace_tabs must contain objects with string keys")
+    workspace_targets = {tab["key"] for tab in workspace_tabs}
+
+    presentation = metadata.get("proposal_presentation", {})
+    if not isinstance(presentation, dict):
+        raise RuntimeError("Domain-pack proposal_presentation must be an object")
+    for key in ("action_prefixes", "action_suffixes"):
+        values = presentation.get(key, [])
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise RuntimeError(f"Domain-pack proposal_presentation.{key} must be a string list")
+    value_names = presentation.get("value_names", {})
+    if not isinstance(value_names, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in value_names.items()
+    ):
+        raise RuntimeError("Domain-pack proposal_presentation.value_names must map strings to strings")
+    detail_links = presentation.get("detail_links", {})
+    if not isinstance(detail_links, dict):
+        raise RuntimeError("Domain-pack proposal_presentation.detail_links must be an object")
+    for kind, link in detail_links.items():
+        if not isinstance(kind, str) or not isinstance(link, dict) or any(
+            not isinstance(link.get(field), str) or not link[field].strip()
+            for field in ("target", "receipt_field", "label")
+        ):
+            raise RuntimeError(
+                "Each proposal detail link requires string target, receipt_field and label"
+            )
+        if link["target"] not in workspace_targets:
+            raise RuntimeError("Proposal detail link target must name an installed workspace tab")
+    return metadata
+
+
 def active_pack_name() -> str:
     configured = os.environ.get("AGENT_BUSINESS_PACK")
     if configured is None:
@@ -30,11 +74,7 @@ def component(name: str):
 def manifest():
     """Return the selected pack's validated host-integration contract."""
     value = component("manifest")
-    metadata = getattr(value, "PUBLIC_METADATA", None)
-    if not isinstance(metadata, dict) or metadata.get("id") != active_pack_name():
-        raise RuntimeError("Domain-pack manifest PUBLIC_METADATA.id must match the active pack")
-    if not isinstance(metadata.get("product_name"), str) or not metadata["product_name"].strip():
-        raise RuntimeError("Domain-pack manifest requires a product_name")
+    validate_public_metadata(getattr(value, "PUBLIC_METADATA", None), active_pack_name())
     if not callable(getattr(value, "install", None)):
         raise RuntimeError("Domain-pack manifest requires install(app, domain_router)")
     if not callable(getattr(value, "conversation_title", None)):

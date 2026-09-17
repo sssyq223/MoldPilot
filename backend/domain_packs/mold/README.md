@@ -12,9 +12,9 @@ behind this pack boundary. Its schemas, read model, validation, proposal
 preparation and confirmed writes live in `delivery_logistics.py`; the similarly
 named module under `app` is a compatibility facade only. This is a migration
 step, not a fully independent vertical slice: logistics ORM, migrations,
-configuration, presentation metadata and several upstream mold services still
-need to move. New mold slices should follow this direction until `app` contains
-host ports and transport concerns rather than industry rules.
+configuration and several upstream mold services still need to move. New mold
+slices should follow this direction until `app` contains host ports and
+transport concerns rather than industry rules.
 
 The relocated service consumes generic infrastructure only through the
 validated `agent_core.host_ports` contract. Mold-wide project locator schemas
@@ -27,6 +27,12 @@ services move into the pack.
 term, the user-facing permission-mode instructions, and the Ollama structured
 ReAct guidance. The reusable harness consumes those fields without knowing
 project, contract, contact-case or mold vocabulary.
+
+`manifest.py` also owns proposal-card presentation metadata: action-title
+normalization, domain value labels, and receipt-to-workspace detail links. The
+generic `ProposalCard` renders that validated contract and emits a generic
+workspace target; it does not import the mold UI dictionary or assume every
+proposal opens a contact-case panel.
 
 The generic runtime loads it with:
 
