@@ -1164,12 +1164,14 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "新增 supplier_material_handoff PostgreSQL 模型与迁移，保存项目、供应商、委外合同、资料文件或资料标题、资料类型、审批状态、交接日期、交接对象、交接渠道、依据、来源系统和核验人",
+        "新增追加式 supplier_material_verification PostgreSQL 模型与对话办理工具，关联一条已批准资料交接，分别保存供应商已收到、已接受、待澄清或退回结果、回复人/渠道/日期、回复文件、原因、跟进日期和来源引用；核验结果不覆盖原交接记录",
         "query_full_outsource_context 返回已生效整套委外合同、供应商资料交接、供应商发货/收货/检验、工程联络质量延期问题、设变整改影响和客户验收/关闭清单上下文",
         "prepare_supplier_material_handoff 基于真实项目版本、有效供应商、已生效整套委外合同和交接依据准备对话内确认卡，本人确认后才写入资料交接证据，不创建供应商门户、不代表供应商已核验、不触发 ERP 执行",
-        "analysis.warnings 在未关闭委外质量、延期、验收、扣款或草稿/撤回资料交接事项存在时阻止认定异常闭环"
+        "prepare_supplier_material_verification 重新校验项目版本、合同、供应商和交接记录一致性，本人确认后才追加核验；query_full_outsource_context 区分 RECEIVED 与 ACCEPTED，并显式返回未核验、待澄清和退回资料",
+        "analysis.warnings 在未关闭委外质量、延期、验收、扣款、草稿/撤回资料交接或供应商资料核验未完成时阻止认定异常闭环"
       ],
       "verification_evidence": [
-        "tests/test_full_outsource_tools.py 覆盖供应商资料交接、供应商收货检验不合格、工程联络整改扣款线索、客户验收清单、资料交接 proposal 不直接写库、本人确认后写入 SupplierMaterialHandoff、重复来源和正式获准交接缺少合同阻断；真实客户资料上传、附件安全、采购向供应商提供资料正式审批/回执和供应商核验反馈尚未验收"
+        "tests/test_full_outsource_tools.py 覆盖资料交接 proposal、供应商核验 proposal 不直接写库、本人确认后追加 SupplierMaterialVerification、重复来源/日期倒置/退回缺少原因与跟进日期阻断，以及已收到不等于已接受；tests/test_capability_catalog.py 和 tests/test_model_harness.py 覆盖能力登记与按需工具选择；真实客户资料上传、附件安全、正式采购审批和供应商真实反馈仍待联调验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

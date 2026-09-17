@@ -66,6 +66,16 @@ def test_supplier_material_handoff_tool_is_in_full_outsource_pack():
     assert "prepare_supplier_material_handoff" in skill["optional_dependencies"]
 
 
+def test_supplier_material_verification_tool_is_human_confirmed_full_outsource_operation():
+    tool = capability_descriptor("TOOL", "prepare_supplier_material_verification", TOOLS["prepare_supplier_material_verification"])
+    assert tool["name"] == "准备供应商资料核验"
+    assert tool["department"] == "purchase"
+    assert tool["type"] == "operation"
+    assert tool["mode"] == "human_confirmed_proposal"
+    skill = capability_descriptor("SKILL", "full_outsource_review", SKILLS["full_outsource_review"])
+    assert "prepare_supplier_material_verification" in skill["optional_dependencies"]
+
+
 def test_supplier_progress_report_tool_is_human_confirmed_full_outsource_operation():
     tool = capability_descriptor("TOOL", "prepare_supplier_progress_report", TOOLS["prepare_supplier_progress_report"])
     assert tool["name"] == "准备供应商节点上报"

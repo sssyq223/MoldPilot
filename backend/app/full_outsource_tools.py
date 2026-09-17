@@ -22,6 +22,7 @@ OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "s
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
 FULL_OUTSOURCE_PROPOSAL_TOOLS = {
     "prepare_supplier_material_handoff",
+    "prepare_supplier_material_verification",
     "prepare_supplier_progress_policy",
     "prepare_supplier_progress_report",
 }
@@ -44,6 +45,24 @@ class SupplierMaterialHandoffProposalInput(StrictModel):
     handoff_channel: Literal["MANUAL","EMAIL","IMPORT","ERP","OTHER"] = "MANUAL"
     evidence: str = Field(min_length=1, max_length=4000)
     source_ref: str | None = Field(default=None, max_length=120)
+
+
+class SupplierMaterialVerificationProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    handoff_id: str = Field(min_length=1, max_length=36)
+    response_file_id: str | None = Field(default=None, max_length=36)
+    response_date: date
+    result: Literal["RECEIVED","ACCEPTED","NEEDS_CLARIFICATION","REJECTED"]
+    supplier_contact: str = Field(min_length=1, max_length=150)
+    response_channel: Literal["MANUAL","EMAIL","IMPORT","OTHER"] = "MANUAL"
+    response_summary: str = Field(default="", max_length=4000)
+    follow_up_due_date: date | None = None
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_system: Literal["MANUAL","IMPORT"] = "MANUAL"
+    source_ref: str = Field(min_length=1, max_length=120)
 
 
 class SupplierProgressReportProposalInput(StrictModel):
@@ -87,6 +106,10 @@ def supplier_material_handoff_schema():
     return SupplierMaterialHandoffProposalInput.model_json_schema()
 
 
+def supplier_material_verification_schema():
+    return SupplierMaterialVerificationProposalInput.model_json_schema()
+
+
 def supplier_progress_report_schema():
     return SupplierProgressReportProposalInput.model_json_schema()
 
@@ -102,6 +125,24 @@ def parse_supplier_material_handoff(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "供应商资料交接参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
     if data.approval_status == "APPROVED" and not data.contract_subject_id:
         raise DomainError("INVALID_TOOL_INPUT", "正式获准资料交接必须关联已生效整套委外合同")
+    return data
+
+
+def parse_supplier_material_verification(arguments):
+    try:
+        data = SupplierMaterialVerificationProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商资料核验参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    today = now().date()
+    if data.response_date > today:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商资料核验日期不能晚于当前日期")
+    if data.follow_up_due_date and data.follow_up_due_date < data.response_date:
+        raise DomainError("INVALID_TOOL_INPUT", "资料核验跟进日期不能早于供应商回复日期")
+    if data.result in {"NEEDS_CLARIFICATION", "REJECTED"}:
+        if not data.response_summary.strip():
+            raise DomainError("INVALID_TOOL_INPUT", "供应商要求澄清或退回资料时必须填写回复说明")
+        if not data.follow_up_due_date:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商要求澄清或退回资料时必须填写跟进日期")
     return data
 
 
@@ -393,6 +434,92 @@ def create_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProp
     return row
 
 
+def preview_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "资料核验必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "整套委外合同供应商与资料核验供应商不一致", 409)
+    if contract.status not in {"EFFECTIVE", "CLOSED"}:
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "供应商资料核验必须关联已生效或已关闭整套委外合同", 409)
+    handoff = db.get(m.SupplierMaterialHandoff, data.handoff_id)
+    if (not handoff or handoff.project_id != project.id or handoff.supplier_id != supplier.id
+            or handoff.contract_subject_id != contract.id):
+        raise DomainError("SUPPLIER_MATERIAL_HANDOFF_NOT_FOUND", "资料交接记录不存在或与项目、供应商、合同不一致", 404)
+    if handoff.approval_status != "APPROVED":
+        raise DomainError("SUPPLIER_MATERIAL_HANDOFF_NOT_APPROVED", "只有已批准并实际交接的资料才能登记供应商核验结果", 409)
+    if data.response_date < handoff.provided_date:
+        raise DomainError("INVALID_TOOL_INPUT", "供应商回复日期不能早于资料交接日期")
+    if data.response_file_id:
+        from .files import uploaded_file
+        uploaded_file(db, user, data.response_file_id)
+    if db.scalar(select(m.SupplierMaterialVerification.id).where(
+        m.SupplierMaterialVerification.handoff_id == handoff.id,
+        m.SupplierMaterialVerification.source_ref == data.source_ref,
+    )):
+        raise DomainError("SUPPLIER_MATERIAL_VERIFICATION_DUPLICATE", "该供应商资料核验来源已登记", 409)
+    display = {
+        "操作": "登记供应商资料核验结果",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "资料交接记录": handoff.id,
+        "资料标题": handoff.document_title,
+        "资料类型": handoff.document_type,
+        "交接日期": handoff.provided_date.isoformat(),
+        "供应商回复日期": data.response_date.isoformat(),
+        "核验结果": data.result,
+        "供应商联系人": data.supplier_contact,
+        "回复渠道": data.response_channel,
+        "回复说明": data.response_summary or "未填写",
+        "跟进日期": data.follow_up_due_date.isoformat() if data.follow_up_due_date else "无需跟进",
+        "回复文件": data.response_file_id or "未关联文件",
+        "来源系统": data.source_system,
+        "来源引用": data.source_ref,
+        "依据": data.evidence,
+        "说明": "本人确认后仅追加供应商对本次资料交接的核验结果；已收到不等于已接受，退回或待澄清不会修改或覆盖原资料交接记录。",
+    }
+    return project, supplier, contract, handoff, display
+
+
+def create_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput):
+    _, supplier, contract, handoff, _ = preview_supplier_material_verification(db, user, data)
+    row = m.SupplierMaterialVerification(
+        project_id=data.project_id,
+        supplier_id=supplier.id,
+        contract_subject_id=contract.id,
+        handoff_id=handoff.id,
+        response_file_id=data.response_file_id,
+        response_date=data.response_date,
+        result=data.result,
+        supplier_contact=data.supplier_contact,
+        response_channel=data.response_channel,
+        response_summary=data.response_summary,
+        follow_up_due_date=data.follow_up_due_date,
+        evidence=data.evidence,
+        source_system=data.source_system,
+        source_ref=data.source_ref,
+        recorded_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def execute_full_outsource_tool(db, user, key, arguments, run=None):
     if key == "prepare_supplier_material_handoff":
         data = parse_supplier_material_handoff(arguments)
@@ -400,6 +527,12 @@ def execute_full_outsource_tool(db, user, key, arguments, run=None):
         kind = "supplier_material_handoff"
         action = "confirm_supplier_material_handoff"
         limitation = "仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"
+    elif key == "prepare_supplier_material_verification":
+        data = parse_supplier_material_verification(arguments)
+        _, _, _, _, display = preview_supplier_material_verification(db, user, data)
+        kind = "supplier_material_verification"
+        action = "confirm_supplier_material_verification"
+        limitation = "仅准备供应商对一条已批准资料交接的核验结果；本人确认后才追加记录，已收到不等于已接受，不覆盖原交接事实。"
     elif key == "prepare_supplier_progress_policy":
         data = parse_supplier_progress_policy(arguments)
         _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
@@ -847,6 +980,56 @@ def _material_handoffs(db, user, project_id, allowed_tools):
     return rows
 
 
+def _material_verifications(db, user, project_id, allowed_tools):
+    if not _can_read_kind("full_outsource_contract", allowed_tools):
+        return []
+    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+        return []
+    rows = []
+    seen_handoffs = set()
+    q = (
+        select(m.SupplierMaterialVerification, m.SupplierMaterialHandoff, m.Supplier)
+        .join(m.SupplierMaterialHandoff, m.SupplierMaterialVerification.handoff_id == m.SupplierMaterialHandoff.id)
+        .join(m.Supplier, m.SupplierMaterialVerification.supplier_id == m.Supplier.id)
+        .where(m.SupplierMaterialVerification.project_id == project_id)
+        .order_by(
+            m.SupplierMaterialVerification.handoff_id,
+            m.SupplierMaterialVerification.response_date.desc(),
+            m.SupplierMaterialVerification.created_at.desc(),
+            m.SupplierMaterialVerification.id,
+        )
+        .limit(100)
+    )
+    for verification, handoff, supplier in db.execute(q):
+        is_latest = handoff.id not in seen_handoffs
+        seen_handoffs.add(handoff.id)
+        rows.append(
+            {
+                "id": verification.id,
+                "project_id": verification.project_id,
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "contract_subject_id": verification.contract_subject_id,
+                "handoff_id": handoff.id,
+                "document_title": handoff.document_title,
+                "document_type": handoff.document_type,
+                "response_file_id": verification.response_file_id,
+                "response_date": verification.response_date.isoformat(),
+                "result": verification.result,
+                "supplier_contact": verification.supplier_contact,
+                "response_channel": verification.response_channel,
+                "response_summary": verification.response_summary,
+                "follow_up_due_date": verification.follow_up_due_date.isoformat() if verification.follow_up_due_date else None,
+                "evidence": verification.evidence,
+                "source_system": verification.source_system,
+                "source_ref": verification.source_ref,
+                "recorded_by": verification.recorded_by,
+                "is_latest_for_handoff": is_latest,
+            }
+        )
+    return rows
+
+
 def _deduction_settlements(db, user, project_id, allowed_tools):
     if not _can_read_kind("full_outsource_contract", allowed_tools):
         return []
@@ -1124,7 +1307,7 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
     }
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, material_verifications, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -1137,6 +1320,12 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     evidence_noncompliant = [row for row in supplier_progress_policies if row.get("latest_report_id") and row.get("latest_missing_evidence")]
     approved_handoffs = [row for row in material_handoffs if row.get("approval_status") == "APPROVED"]
     draft_or_revoked_handoffs = [row for row in material_handoffs if row.get("approval_status") != "APPROVED"]
+    latest_material_verifications = [row for row in material_verifications if row.get("is_latest_for_handoff")]
+    accepted_material_verifications = [row for row in latest_material_verifications if row.get("result") == "ACCEPTED"]
+    received_only_material_verifications = [row for row in latest_material_verifications if row.get("result") == "RECEIVED"]
+    open_material_verifications = [row for row in latest_material_verifications if row.get("result") in {"NEEDS_CLARIFICATION", "REJECTED"}]
+    accepted_handoff_ids = {row["handoff_id"] for row in accepted_material_verifications}
+    unverified_handoffs = [row for row in approved_handoffs if row.get("id") not in accepted_handoff_ids]
     confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
     settled_deductions = [row for row in deduction_settlements if row.get("status") == "SETTLED"]
     pending_deductions = [row for row in deduction_settlements if row.get("status") == "PROPOSED" or row.get("responsibility") == "UNKNOWN"]
@@ -1173,6 +1362,12 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         gaps.append("未见按合同或业务需要向供应商提供获准客户资料/设计资料的交接依据。")
     if draft_or_revoked_handoffs:
         warnings.append("存在草稿或已撤回的供应商资料交接记录，不能作为正式获准交接依据。")
+    if approved_handoffs and unverified_handoffs:
+        gaps.append("存在已批准并交接的供应商资料，但未见供应商对全部资料完成接受核验；已收到不能替代已接受。")
+    if received_only_material_verifications:
+        warnings.append("存在供应商仅确认收到、尚未确认接受的资料交接，需继续核验版本和适用性。")
+    if open_material_verifications:
+        warnings.append("存在供应商要求澄清或退回的资料，需按最新回复补充或更正后重新交接并核验。")
     if not active_plan:
         warnings.append("当前可见范围未见有效项目计划，无法核对供应商节点上报与项目同步节奏。")
     if not plan_tasks:
@@ -1245,6 +1440,7 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         "supplier_progress_policies": supplier_progress_policies,
         "supplier_progress_reports": supplier_progress_reports,
         "supplier_material_handoffs": material_handoffs,
+        "supplier_material_verifications": material_verifications,
         "supplier_deduction_settlements": deduction_settlements,
         "outsource_change_negotiations": change_negotiations,
         "supplier_execution_tracking": order_tracking,
@@ -1271,6 +1467,10 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_overdue_supplier_progress_followup": bool(overdue_reports),
             "has_approved_supplier_material_handoff": bool(approved_handoffs),
             "has_draft_or_revoked_supplier_material_handoff": bool(draft_or_revoked_handoffs),
+            "has_supplier_material_acceptance": bool(accepted_material_verifications),
+            "has_unverified_supplier_material_handoff": bool(unverified_handoffs),
+            "has_supplier_material_received_only": bool(received_only_material_verifications),
+            "has_open_supplier_material_clarification": bool(open_material_verifications),
             "has_confirmed_supplier_deduction": bool(confirmed_deductions),
             "has_settled_supplier_deduction": bool(settled_deductions),
             "has_pending_supplier_deduction": bool(pending_deductions),
@@ -1312,6 +1512,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         supplier_progress_policies = _supplier_progress_policies(db, user, project.id, allowed_tools)
         supplier_progress_reports = _supplier_progress_reports(db, user, project.id, allowed_tools)
         material_handoffs = _material_handoffs(db, user, project.id, allowed_tools)
+        material_verifications = _material_verifications(db, user, project.id, allowed_tools)
         deduction_settlements = _deduction_settlements(db, user, project.id, allowed_tools)
         change_negotiations = _change_negotiations(db, user, project.id, allowed_tools)
         engineering_changes = _engineering_changes(_subject_rows(db, user, project.id, "engineering_change", allowed_tools))
@@ -1358,6 +1559,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                         supplier_progress_policies,
                         supplier_progress_reports,
                         material_handoffs,
+                        material_verifications,
                         deduction_settlements,
                         change_negotiations,
                         order_tracking,
@@ -1410,6 +1612,9 @@ def validate_intent(db, user, payload):
     if kind == "supplier_material_handoff":
         data = parse_supplier_material_handoff(proposal["input"])
         _, _, _, display = preview_supplier_material_handoff(db, user, data)
+    elif kind == "supplier_material_verification":
+        data = parse_supplier_material_verification(proposal["input"])
+        _, _, _, _, display = preview_supplier_material_verification(db, user, data)
     elif kind == "supplier_progress_policy":
         data = parse_supplier_progress_policy(proposal["input"])
         _, _, _, _, _, _, display = preview_supplier_progress_policy(db, user, data)
@@ -1429,6 +1634,11 @@ def confirm(db, user, payload):
         row = create_supplier_material_handoff(db, user, data)
         return {"project_id": data.project_id, "supplier_id": data.supplier_id,
             "supplier_material_handoff_id": row.id, "action": "supplier_material_handoff", "status": "CONFIRMED"}
+    if proposal["kind"] == "supplier_material_verification":
+        row = create_supplier_material_verification(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "supplier_material_verification_id": row.id, "supplier_material_handoff_id": row.handoff_id,
+            "action": "supplier_material_verification", "status": "CONFIRMED"}
     if proposal["kind"] == "supplier_progress_policy":
         row = create_supplier_progress_policy(db, user, data)
         return {"project_id": data.project_id, "supplier_id": data.supplier_id,

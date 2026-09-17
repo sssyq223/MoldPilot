@@ -202,11 +202,16 @@ HALLUCINATED_SKILL_CALL = {'role': 'assistant', 'tool_calls': [{'id': 'bad-skill
 PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call1', 'type': 'function', 'function': {'name': 'query_projects', 'arguments': '{}'}}]}
 PLAN_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-plan', 'type': 'function', 'function': {'name': 'query_project_plan_context', 'arguments': '{}'}}]}
 CONTACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact', 'type': 'function', 'function': {'name': 'query_contact_context', 'arguments': '{}'}}]}
+CONTACT_CLOSE_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contact-close', 'type': 'function', 'function': {'name': 'prepare_contact_close', 'arguments': '{}'}}]}
 CONTRACT_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract', 'type': 'function', 'function': {'name': 'query_contract_context', 'arguments': '{}'}}]}
+CONTRACT_RECORD_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-contract-record', 'type': 'function', 'function': {'name': 'prepare_contract_record', 'arguments': '{}'}}]}
 OUTSOURCE_PROGRESS_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-progress', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '供应商节点上报'})}}]}
 OUTSOURCE_POLICY_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-policy', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '登记供应商上报频率和证据模板'})}}]}
+OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH = {'role': 'assistant', 'tool_calls': [{'id': 'search-outsource-material-verify', 'type': 'function', 'function': {'name': 'ToolSearch', 'arguments': json.dumps({'query': '登记供应商资料核验接受结果'})}}]}
 OUTSOURCE_QUERY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource', 'type': 'function', 'function': {'name': 'query_full_outsource_context', 'arguments': '{}'}}]}
+OUTSOURCE_PROGRESS_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-progress', 'type': 'function', 'function': {'name': 'prepare_supplier_progress_report', 'arguments': '{}'}}]}
 OUTSOURCE_POLICY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-policy', 'type': 'function', 'function': {'name': 'prepare_supplier_progress_policy', 'arguments': '{}'}}]}
+OUTSOURCE_MATERIAL_VERIFY_PROPOSAL = {'role': 'assistant', 'tool_calls': [{'id': 'call-outsource-material-verify', 'type': 'function', 'function': {'name': 'prepare_supplier_material_verification', 'arguments': '{}'}}]}
 FINAL = {'role': 'assistant', 'content': json.dumps({'summary': 'one visible project', 'evidence_ids': ['e1'], 'suggestions': []})}
 
 
@@ -602,12 +607,12 @@ def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
 def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools():
     gateway = Gateway()
     model = InspectingRepliesModel([CONTACT_TOOL_SEARCH, CONTACT_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=[
+    run_loop(context(prompt='请查询工程联络单详情和当前状态。', core_tool_names=[], tools=[
                          CONTACT_CASES_TOOL, CONTACT_CONTEXT_TOOL, CONTACT_RESOLUTION_TOOL,
                          CONTACT_REVIEW_TOOL, CONTACT_CLOSE_TOOL, CONTACT_RESPOND_TOOL,
                          CONTACT_ASSIGN_TOOL,
                      ],
-                     skills=[{'key': 'contact_collaboration_review',
+                         skills=[{'key': 'contact_collaboration_review',
                               'agent_description': '工程联络协作核对',
                               'tools': ['query_contact_cases'],
                               'optional_tools': ['query_contact_context','prepare_contact_resolution',
@@ -619,13 +624,11 @@ def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_close'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context',
-         'prepare_contact_close'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
     ]
     assert len(gateway.saved['active_tool_names']) <= 4
-    assert 'prepare_contact_close' in gateway.saved['active_tool_names']
+    assert 'prepare_contact_close' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_resolution' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
 
@@ -644,8 +647,9 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
     dossier = {'type': 'function', 'function': {'name': 'query_project_dossier',
                                                 'description': '按项目编号、模具号、工程联络、合同或订单编号反查项目业务档案。'}}
     gateway = Gateway()
-    model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=[contract_context, contract_prepare, contract_signing, quote_context, quote_prepare, dossier],
+    model = InspectingRepliesModel([CONTRACT_TOOL_SEARCH, CONTRACT_RECORD_PROPOSAL, FINAL])
+    run_loop(context(prompt='请准备登记销售合同，先读取合同上下文。', core_tool_names=[], tools=[contract_context, contract_prepare, contract_signing, quote_context, quote_prepare, dossier],
+                     tool_annotations={'prepare_contract_record': {'readOnlyHint': False}},
                      skills=[{'key': 'contract_context_review',
                               'agent_description': '合同上下文核对',
                               'tools': ['query_contract_context'],
@@ -663,10 +667,14 @@ def test_tool_search_prefers_activation_alias_over_neighboring_business_mentions
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
-        ['ToolSearch', 'query_contract_context', 'prepare_contract_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record',
+         'prepare_contract_signing_record'],
+        ['ToolSearch', 'query_contract_context', 'prepare_contract_record',
+         'prepare_contract_signing_record'],
     ]
-    assert gateway.saved['active_tool_names'] == ['prepare_contract_record', 'query_contract_context']
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_contract_record', 'prepare_contract_signing_record', 'query_contract_context'
+    ]
 
 
 def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operation():
@@ -685,8 +693,9 @@ def test_tool_search_narrows_supplier_progress_scene_to_query_and_report_operati
                                           'description': '准备供应商扣款责任或结算依据登记建议。'}},
     ]
     gateway = Gateway()
-    model = InspectingRepliesModel([OUTSOURCE_PROGRESS_TOOL_SEARCH, OUTSOURCE_QUERY_PROPOSAL, FINAL])
-    run_loop(context(core_tool_names=[], tools=tools,
+    model = InspectingRepliesModel([OUTSOURCE_PROGRESS_TOOL_SEARCH, OUTSOURCE_PROGRESS_PROPOSAL, FINAL])
+    run_loop(context(prompt='请登记 BROWSER-OUT-001 的供应商节点上报。', core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_progress_report': {'readOnlyHint': False}},
                      skills=[{'key': 'full_outsource_review',
                               'agent_description': '整套委外协同上下文核对',
                               'tools': ['query_full_outsource_context'],
@@ -734,6 +743,85 @@ def test_tool_search_selects_progress_policy_for_frequency_and_evidence_template
     assert gateway.saved['active_tool_names'] == [
         'prepare_supplier_progress_policy', 'prepare_supplier_progress_report', 'query_full_outsource_context'
     ]
+
+
+def test_tool_search_selects_supplier_material_verification_without_loading_unrelated_outsource_actions():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、资料交接和供应商核验上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备向供应商交接资料的证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_verification',
+                                          'description': '准备供应商对已交接资料的收到、接受、待澄清或退回核验结果。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_progress_report',
+                                          'description': '准备供应商节点进度上报。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([
+        OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH,
+        OUTSOURCE_MATERIAL_VERIFY_PROPOSAL,
+        FINAL,
+    ])
+    run_loop(context(prompt='请为 BROWSER-OUT-001 登记供应商资料核验接受结果。',
+                     core_tool_names=[], tools=tools,
+                     tool_annotations={'prepare_supplier_material_verification': {'readOnlyHint': False}},
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_material_handoff',
+                                                 'prepare_supplier_material_verification',
+                                                 'prepare_supplier_progress_report'],
+                              'activation_queries': ['资料交接', '资料核验', '资料接受']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
+    ]
+    assert gateway.saved['active_tool_names'] == [
+        'prepare_supplier_material_verification', 'query_full_outsource_context'
+    ]
+
+
+def test_read_only_prompt_cannot_open_prepare_tool_from_action_worded_group_search():
+    tools = [
+        {'type': 'function', 'function': {'name': 'query_full_outsource_context',
+                                          'description': '读取整套委外合同、资料交接和供应商核验上下文。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_handoff',
+                                          'description': '准备向供应商交接资料的证据登记建议。'}},
+        {'type': 'function', 'function': {'name': 'prepare_supplier_material_verification',
+                                          'description': '准备供应商资料核验结果登记建议。'}},
+    ]
+    gateway = Gateway()
+    model = InspectingRepliesModel([OUTSOURCE_MATERIAL_VERIFY_TOOL_SEARCH, OUTSOURCE_QUERY_PROPOSAL, FINAL])
+    run_loop(context(prompt='只读查询 BROWSER-OUT-001 的资料交接与供应商核验情况，不要准备或执行任何操作。',
+                     core_tool_names=[], tools=tools,
+                     skills=[{'key': 'full_outsource_review',
+                              'agent_description': '整套委外协同上下文核对',
+                              'tools': ['query_full_outsource_context'],
+                              'optional_tools': ['prepare_supplier_material_handoff',
+                                                 'prepare_supplier_material_verification'],
+                              'activation_queries': ['资料交接', '资料核验']}]),
+             model, gateway)
+    assert model.tool_names == [
+        ['ToolSearch'],
+        ['ToolSearch', 'query_full_outsource_context'],
+        ['ToolSearch', 'query_full_outsource_context'],
+    ]
+    assert gateway.saved['active_tool_names'] == ['query_full_outsource_context']
+
+
+def test_read_only_prompt_cannot_open_exact_prepare_tool_name():
+    prepare_tool = {'type': 'function', 'function': {
+        'name': 'prepare_supplier_material_verification',
+        'description': '准备供应商资料核验结果登记建议。',
+    }}
+    assert harness_module._find_deferred_tools(
+        'prepare_supplier_material_verification',
+        {'prepare_supplier_material_verification': prepare_tool},
+        action_intent=False,
+        current_prompt='只读查询资料核验情况，不要准备或执行任何操作。',
+    ) == ([], [], [])
 
 
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():

@@ -302,6 +302,32 @@ class SupplierMaterialHandoff(IdentityMixin, Base):
     )
 
 
+class SupplierMaterialVerification(IdentityMixin, Base):
+    """Append-only supplier response to one approved material handoff."""
+    __tablename__ = 'supplier_material_verification'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    contract_subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    handoff_id: Mapped[str] = mapped_column(ForeignKey('supplier_material_handoff.id'), index=True)
+    response_file_id: Mapped[str | None] = mapped_column(ForeignKey('file_object.id'), index=True)
+    response_date: Mapped[date] = mapped_column(Date)
+    result: Mapped[str] = mapped_column(String(30))
+    supplier_contact: Mapped[str] = mapped_column(String(150))
+    response_channel: Mapped[str] = mapped_column(String(40), default='MANUAL')
+    response_summary: Mapped[str] = mapped_column(Text, default='')
+    follow_up_due_date: Mapped[date | None] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL')
+    source_ref: Mapped[str] = mapped_column(String(120))
+    recorded_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('handoff_id','source_ref', name='supplier_material_verification_unique_source'),
+        CheckConstraint("result IN ('RECEIVED','ACCEPTED','NEEDS_CLARIFICATION','REJECTED')", name='supplier_material_verification_result'),
+        CheckConstraint("response_channel IN ('MANUAL','EMAIL','IMPORT','ERP','OTHER')", name='supplier_material_verification_channel'),
+        CheckConstraint("source_system IN ('MANUAL','IMPORT','ERP')", name='supplier_material_verification_source_system'),
+    )
+
+
 class ReceiptInspection(IdentityMixin, Base):
     __tablename__ = 'receipt_inspection'
     receipt_id: Mapped[str] = mapped_column(ForeignKey('goods_receipt.id'), unique=True)

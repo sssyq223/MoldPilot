@@ -175,7 +175,12 @@ def _business_tool_activation_allowed(context):
     if _is_pure_conversation(current_prompt):
         return False
     has_current_business_object = _contains_any(current_prompt, BUSINESS_OBJECT_HINTS)
-    has_current_action = _contains_any(current_prompt, BUSINESS_ACTION_HINTS)
+    # Reuse the formal-action parser instead of maintaining a second,
+    # inevitably divergent list of verbs for tool visibility.  It already
+    # removes explicit negation/read-only scope, while BUSINESS_ACTION_HINTS
+    # continues to cover query and conversational inspection wording.
+    has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
+                          or _has_formal_action_intent(current_prompt))
     has_workbench_support = _contains_any(current_prompt, WORKBENCH_SUPPORT_HINTS)
     if has_current_business_object and has_current_action:
         return True
@@ -287,7 +292,10 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
     cjk_query = "".join(character for character in normalized if "\u4e00" <= character <= "\u9fff")
     terminal_term = cjk_query[-2:] if len(cjk_query) >= 2 else ""
     required = set(group.get("required", []))
-    has_action_intent = action_intent or any(term in normalized for term in ACTION_INTENT_TERMS)
+    # Only the user's current prompt may open write-capable tools.  The model's
+    # ToolSearch wording is a retrieval hint, not authority to turn a read-only
+    # request into an operation.
+    has_action_intent = bool(action_intent)
     scored = []
     for position, name in enumerate(group["tools"]):
         tool = deferred_tools.get(name)
@@ -404,6 +412,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         return [], [], []
     terms = _search_terms(normalized)
     if normalized in deferred_tools:
+        if normalized.startswith("prepare_") and not action_intent:
+            return [], [], []
         return [normalized], [normalized], []
     alias_scores = []
     for group in tool_groups or []:
@@ -448,6 +458,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         return matches, activated, matches
     scored = []
     for name, tool in deferred_tools.items():
+        if name.startswith("prepare_") and not action_intent:
+            continue
         lname = name.lower()
         description = _tool_description(tool).lower()
         score = 0

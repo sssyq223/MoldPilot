@@ -583,7 +583,14 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
            <button v-for="profile in modelProfiles" :key="profile.id" type="button" class="model-popover-row"
             :class="{active:String(profile.id)===activeModelProfileId}" role="menuitemradio"
             :aria-checked="String(profile.id)===activeModelProfileId" :disabled="Boolean(modelSwitchingId)" @click="switchModelProfile(profile)">
-            <span class="model-popover-label"><Bot :size="15"/>{{profile.name}}</span><strong>{{profile.model||'未配置'}}</strong><Check v-if="String(profile.id)===activeModelProfileId" :size="14"/>
+            <span class="model-popover-label">
+             <Bot :size="15"/>
+             <span class="model-popover-copy">
+              <span>{{profile.name}}</span>
+              <small v-if="(profile.model||'未配置')!==profile.name">{{profile.model||'未配置'}}</small>
+             </span>
+            </span>
+            <Check v-if="String(profile.id)===activeModelProfileId" :size="14"/>
            </button>
           </div>
         </div>
