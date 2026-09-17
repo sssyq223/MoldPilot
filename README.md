@@ -1,136 +1,190 @@
-# MoldPilot · 模具项目智能工作台
+# MoldPilot
 
-独立的 Vue3 + FastAPI Agent 项目。核心是 Agent、Harness、LLM、受控 Tool 和独立编写的 Skills；统一会话在左中区，人工业务操作在右侧可收展工作区。完整范围依据需求 V1.1、技术 V3.6 和用户最新约定。开发前检查 ERP 已有能力：现有业务复用 ERP 接口，正式操作必须人工确认；Agent 新增辅材、办公用品和试模料采购，不重复原材、五金或委外采购。对照见 [ERP_SCOPE_AUDIT.md](docs/ERP_SCOPE_AUDIT.md)，实现进度见 [DEVELOPMENT_STATUS.md](docs/DEVELOPMENT_STATUS.md)。
+面向模具项目协作场景的智能工作台。
 
-## 通用框架与可替换业务包
+MoldPilot 将 Agent 对话、受控工具调用、人工确认、流程审批和操作留痕集中在一个 Web 工作区中。系统采用前后端分离架构，支持接入兼容 OpenAI API 的模型服务或本地 Ollama，并通过独立 Worker 执行 Agent 任务。
 
-代码按两层装配：`backend/agent_core` 是可复用的 LLM、Harness、多轮工具协议、上下文治理和 Skill/工具加载运行时；`backend/domain_packs/mold` 是 MoldPilot 的可替换业务包，保存模具业务策略、Skill 文件、工具注册与分发、确认卡处理器和 ERP 适配器。通用核心不登记模具业务规则。
+> [!IMPORTANT]
+> 项目仍在开发中，当前版本主要用于本地开发、业务验证和交互原型迭代。
 
-产品默认由 `backend/domain_packs/active.py` 选择 `mold`，部署时也可用进程环境变量 `AGENT_BUSINESS_PACK` 选择另一个已安装业务包。车辆、工装等项目应各自建立同级业务包，实现相同的 `manifest.py`、`harness_policy.py`、`tool_gateway.py`、`proposal_handlers.py` 和 `erp_adapter.py` 契约；不应向 `agent_core` 增加行业分支。`manifest.py` 负责公开品牌/工作区元数据、对话标题规则与领域 HTTP 路由装配。`backend/domain_packs/template` 是可直接启动的最小模板包，切换到它时不会注册模具业务路由。旧 `app.*` 导入仅保留兼容门面，新增业务实现必须进入业务包边界。
+## 界面预览
 
-## 当前本地运行
+<p align="center">
+  <img src="docs/image/readme/workbench-home.jpg" alt="MoldPilot 工作台首页" width="94%" />
+</p>
 
-完整范围按 [V1.1 逐条覆盖表](docs/REQUIREMENTS_TRACEABILITY.md) 跟踪，包含报价、中标、合同上传、项目大节点维护等全部需求。下方列举的模块不是穷尽清单；ERP 有基础接口不等于完成 Agent 的业务流程。
+<p align="center"><sub>工作台首页：从会话发起查询、核对和业务任务</sub></p>
 
-审批统一由 Agent 自建的可配置 BPM 提供，只参考 ERP 既有业务审批规则，不调用旧审批流。ERP 业务执行与 Agent 审批结果分开记录。
+<p align="center">
+  <img src="docs/image/readme/tools-and-skills.jpg" alt="MoldPilot 工具与技能页面" width="94%" />
+</p>
 
-管理员通过同一 BPM 配置新模/改模设计上传、采购价格等审批模板。异常处理及用于解决异常的工程联络单也在 Agent 新开发，包含方案评估、审批、整改、复验和关闭；不调用 ERP 异常流程。具体约束见 [BPM_AND_EXCEPTION_CONTRACT.md](docs/BPM_AND_EXCEPTION_CONTRACT.md)。
+<p align="center"><sub>工具与技能：按部门和风险等级展示当前可用能力</sub></p>
 
-流程中的采购下单、拆单复用 ERP 已有业务能力；辅材、办公用品、试模料新增采购及发货车辆、物流信息维护由 Agent 完善。审批编排与业务执行分开，不重复开发已有业务动作或建立重复台账。
+## 主要能力
 
-- 网页：http://127.0.0.1:5173
-- FastAPI：http://127.0.0.1:8000/api/health
-- 独立 PostgreSQL：以本机 `.env` 的 `MOLD_DATABASE_URL` 为准；当前开发库为 `127.0.0.1:5432/moldpilot`。Navicat 连接后可运行 [verify_moldpilot_navicat.sql](database/verify_moldpilot_navicat.sql) 核对当前库、连接用户、admin 超级管理员、关键表行数和 Alembic 迁移版本。
-- 本地模拟账号保存在 `.local/test-accounts.txt`。该文件、`.env` 和 `.local` 原目录不得提交或打包。交接包仅单独导出数据库备份及已登记业务原件，不包含本机密码和运行目录。
-- ERP 源码、结构文件只作为关联参考，没有导入旧业务数据，没有修改 ERP，没有建立转发或投影数据库。
+- 统一的 Agent 会话与流式运行状态
+- 查询工具、业务工具和模型调用过程展示
+- 重要业务操作的人工确认与执行回执
+- BPM 流程编排及审批记录
+- 项目资料、操作证据和审计事件留痕
+- 多模型配置，支持兼容 OpenAI API 的服务与 Ollama
 
-已有环境启动命令（分别在项目根目录的终端执行）：
+## 项目架构
+
+```mermaid
+flowchart LR
+    Browser["Web 工作台<br/>Vue 3 · TypeScript · Vite"]
+    API["应用接口<br/>FastAPI"]
+    Worker["Agent Worker<br/>任务执行 · 工具编排"]
+    Model["模型服务<br/>OpenAI 兼容接口 · Ollama"]
+    Services["业务服务<br/>BPM · 文件 · 受控工具"]
+    ERP["外部系统<br/>ERP · MCP"]
+    DB[(PostgreSQL)]
+    Cache[(Redis)]
+
+    Browser <--> API
+    API <--> Worker
+    Worker <--> Model
+    API --> Services
+    Services <--> ERP
+    API <--> DB
+    API <--> Cache
+```
+
+### 技术栈
+
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | Vue 3、TypeScript、Vite、Pinia、Vue Router、bpmn-js |
+| 后端 | Python 3.12、FastAPI、SQLAlchemy、Alembic |
+| Agent | 独立 Worker、模型适配、工具调用、人工确认 |
+| 数据 | PostgreSQL、Redis |
+| 集成 | HTTP API、MCP、对象存储 |
+
+## 目录结构
+
+```text
+MoldPilot/
+├─ backend/             # FastAPI、Agent Worker 与业务服务
+├─ web/                 # Vue 3 前端
+├─ alembic/             # 数据库迁移
+├─ mcp/                 # MCP 服务
+├─ tests/               # 后端测试
+├─ scripts/             # 开发与运维辅助脚本
+├─ docs/                # 产品与技术文档
+├─ .env.example         # 环境变量示例
+└─ requirements.lock    # Python 依赖锁定文件
+```
+
+## 本地启动
+
+以下命令以 Windows PowerShell 为例。
+
+### 1. 环境要求
+
+- Python `3.12`
+- Node.js 与 npm
+- PostgreSQL
+- Redis
+
+### 2. 配置环境变量
+
+在项目根目录复制配置模板：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`，至少确认以下配置：
+
+```dotenv
+MOLD_DATABASE_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
+MOLD_MIGRATION_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
+MOLD_REDIS_URL=redis://127.0.0.1:6379/0
+MOLD_WORKER_SECRET=替换为本地随机密钥
+```
+
+如需运行 Agent，再配置模型服务，并将 `MOLD_LLM_ENABLED` 设为 `true`。完整字段和示例见 [`.env.example`](.env.example)。请勿提交包含真实凭据的 `.env`。
+
+请先在 PostgreSQL 中创建名为 `moldpilot` 的空数据库。Redis 可以使用本机服务；也可以通过仓库中的 Compose 文件启动：
+
+```powershell
+docker compose -f docker-compose.redis.yml up -d
+```
+
+Compose 服务监听 `127.0.0.1:56379`，使用它时请将 `.env` 中的 `MOLD_REDIS_URL` 改为 `redis://127.0.0.1:56379/0`。
+
+### 3. 安装后端依赖并初始化数据库
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+
+$env:PYTHONPATH='backend'
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m app.bootstrap --username admin --name 管理员
+```
+
+创建管理员时，命令行会提示输入初始密码，密码长度至少为 12 个字符。
+
+### 4. 安装前端依赖
+
+```powershell
+Set-Location web
+npm ci
+Set-Location ..
+```
+
+### 5. 启动服务
+
+分别打开三个 PowerShell 终端，并在项目根目录运行以下命令。
+
+终端一：启动 API。
 
 ```powershell
 $env:PYTHONPATH='backend'
-.venv/Scripts/python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
+.\.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
+
+终端二：配置好模型后启动 Agent Worker。
 
 ```powershell
 $env:PYTHONPATH='backend'
-.venv/Scripts/python.exe -m app.agent_worker
+.\.venv\Scripts\python.exe -m app.agent_worker
 ```
+
+终端三：启动前端。
 
 ```powershell
-cd web
-npm.cmd run dev -- --host 127.0.0.1
+Set-Location web
+npm run dev -- --host 127.0.0.1
 ```
 
-Python 使用 3.12；首次搭建可用 `requirements.lock` 安装本次验证的依赖，前端使用 `npm ci`。复制 `.env.example` 后填写独立环境凭据；不要覆盖已有 `.env`。迁移通过 `alembic upgrade head` 执行，必须显式配置迁移账号，运行账号不得持有迁移权限。首次超级管理员使用 `python -m app.bootstrap --username admin --name 管理员` 在终端交互创建。
+启动完成后访问：
 
-本机 PostgreSQL 以 `.env` 为唯一权威配置；不要再使用 SQLite 作为开发业务库。当前环境已初始化，不要重复 initdb 或重新播种；如需核对数据库，用 Navicat 连接 `moldpilot` 后运行 `database/verify_moldpilot_navicat.sql`。
+- Web 工作台：<http://127.0.0.1:5173>
+- API 健康检查：<http://127.0.0.1:8000/api/health>
 
-命令行也可用同一份 SQL 核对 PostgreSQL 基线：
+## 开发验证
 
-```powershell
-$env:PYTHONPATH='backend'
-.venv/Scripts/python.exe scripts/verify_postgres_baseline.py
-```
-
-该脚本只读取 `.env`，拒绝 SQLite，确认连接到 `moldpilot`、检查 `admin` 为启用的超级管理员，并比较数据库 `alembic_version` 与仓库 Alembic head；输出不会包含密码哈希。
-
-本地逻辑备份脚本：
+后端测试：
 
 ```powershell
 $env:PYTHONPATH='backend'
-.venv/Scripts/python.exe scripts/backup_postgres.py --dry-run
-.venv/Scripts/python.exe scripts/backup_postgres.py
-.venv/Scripts/python.exe scripts/restore_postgres.py
-.venv/Scripts/python.exe scripts/restore_postgres.py --backup .local/backups/moldpilot_YYYYMMDD_HHMMSS.dump
+.\.venv\Scripts\python.exe -m pytest
 ```
 
-脚本只支持 PostgreSQL，拒绝 SQLite，默认输出到 `.local/backups`，不会提交到 Git。数据库密码只通过 `PGPASSWORD` 环境变量传给 `pg_dump` / `pg_restore`，不会打印到控制台或写入命令参数。恢复脚本默认读取 `MOLD_RESTORE_DATABASE_URL`，应指向 `moldpilot_restore` 这类隔离库；默认 dry-run，不会改库。真实恢复必须额外传 `--execute --i-understand-this-will-change-target-db`，且默认拒绝恢复到主库 `moldpilot`。若本机未安装 PostgreSQL 客户端工具，脚本可用 `--client-mode docker` 通过 `MOLD_PG_CLIENT_IMAGE`（默认 `postgres:18-alpine`）临时运行 pg_dump/pg_restore；如果已安装但未加入 PATH，可在 `.env` 设置 `MOLD_PG_DUMP_PATH` / `MOLD_PG_RESTORE_PATH`，或通过 `--pg-dump` / `--pg-restore` 指定路径。Docker 模式下访问本机 `127.0.0.1` PostgreSQL 会自动改用 `host.docker.internal`。
-
-日志保留期限也通过 `.env` 显式配置。`MOLD_AUDIT_LOG_RETENTION_DAYS`、`MOLD_APP_LOG_RETENTION_DAYS`、`MOLD_ACCESS_LOG_RETENTION_DAYS`、`MOLD_MODEL_LOG_RETENTION_DAYS` 默认为 `0`，表示尚未确认，不会被运行就绪工具视为已验收。设置具体天数后，仍需补充日志采集位置、脱敏、归档、检索和删除策略的验收证据。
-
-本地日志保留脚本默认只做 dry-run，不会删除或脱敏数据：
+前端检查与构建：
 
 ```powershell
-$env:PYTHONPATH='backend'
-.venv/Scripts/python.exe scripts/log_retention.py
+Set-Location web
+npm run test
+npm run build
 ```
 
-真实执行必须同时传 `--execute --i-understand-this-will-prune-logs`。脚本只支持 PostgreSQL，拒绝 SQLite，并且只允许连接 `moldpilot`；审计事件会先归档到 `.local/log-archives` 再删除，模型工具步骤只归档并脱敏结果/checkpoint，不删除会话、用户 prompt 或最终业务摘要，登录会话只清理过期或超出保留期的会话。部署层应用日志和访问日志仍需在反向代理/服务管理器中配置采集、轮转、脱敏和归档。
+## 相关文档
 
-运行就绪工具会只读探测 `MOLD_REDIS_URL`：执行 `PING` / `INFO` / `XINFO`，核对业务事件 stream 和通知消费组是否已初始化；不会创建 stream/group，也不会发布或消费消息。Redis URL 中的密码只显示为布尔状态，不会出现在返回结果中。
-
-本地 Redis 默认复用 Windows 本机安装的 `D:\Redis`，`.env` / `.env.example` 默认连接 `redis://127.0.0.1:6379/0`。`scripts/dev_redis.py` 默认按 native 模式检查和启动本机 `redis-server.exe`；Docker 只作为显式 `--backend docker` 的可选备用方式。
-
-```powershell
-.venv/Scripts/python.exe scripts/dev_redis.py status
-.venv/Scripts/python.exe scripts/dev_redis.py start --execute
-.venv/Scripts/python.exe scripts/dev_redis.py init-stream --execute
-```
-
-`status` 只读；`start` 在 native 模式下会使用 `MOLD_REDIS_HOME`（默认 `D:\Redis`）中的 `redis-server.exe`；`init-stream` 只创建 `message_worker` 所需的业务事件 stream 和通知消费组，不发布业务消息。若确需隔离容器，可显式传 `--backend docker` 使用 [docker-compose.redis.yml](docker-compose.redis.yml)。
-
-部署运行前提也由同一个工具只读核对：Python 运行时、Node/npm、Docker CLI、Docker daemon、Docker compose、前端 `web/dist/index.html` 和后端 API/Agent/消息 Worker 入口文件。该核对不会启动服务、不会构建前端、不会执行 Docker 操作；缺失项会保持 FR-118 部署拓扑门槛未通过。
-
-运行就绪返回中的 `readiness_summary` 会把机器可验证阻断项和仍需人工/实施验收的门槛分开列出。模型回答交付状态时应引用该汇总，不能只因为某个配置存在或某个本机探测通过就宣称整体已交付。
-
-正式验收项通过本机证据文件登记，默认路径为 `.local/acceptance-gates.json`，不会提交到 Git。先生成模板：
-
-```powershell
-$env:PYTHONPATH='backend'
-.venv/Scripts/python.exe scripts/acceptance_gates.py --write-template --confirmed-by sssyq
-```
-
-只有某个 gate 填写 `confirmed=true`、确认人、确认时间和至少一条 `evidence_refs` 后，`query_operations_readiness_context` 才会把该项标记为 confirmed。该机制用于登记正式验收，不替代实际压测、恢复演练、生产存储验证或业务签字。
-
-## 模型接入
-
-模型供应商、地址和模型名均通过本机 `.env` 配置；仓库只提供无凭据的示例值。若必须连接私网 HTTP 模型服务，需通过 `MOLD_LLM_TRUSTED_HTTP_ORIGIN` 显式批准精确的主机和端口；此类请求不携带公网密钥、不读取环境代理、不跟随重定向，也不自动回退公网地址。修改配置后需重启 API 和 Agent worker。
-
-除明确配置的私网 HTTP 服务外，模型地址仍要求 HTTPS 并验证证书。连接与读取超时独立设置。历史公网 TLS 兼容选项对当前 HTTP 内网请求不生效，系统代理设置无需修改。密钥只从环境配置读取，不交给浏览器、模型提示词或业务工具。
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-.venv/Scripts/python.exe scripts/model_probe.py
-```
-
-此命令只向已配置模型发送短测试消息，不读取 ERP 或业务数据库。模型独立探测成功不替代工作台端到端验证。模型生成读取超时仍会明确失败，不伪造结果或把聊天文字当审批回执。
-
-## 验证
-
-```powershell
-.venv/Scripts/python.exe -m pytest -q
-cd web
-npm.cmd run build
-```
-
-数据库测试只在显式配置的 `moldpilot_test` 内清理合成数据，禁止把测试 DSN 指向业务库。真实模型验证通过工作台发起查询，可查看持久化工具证据。模型网络请求不放进数据库事务。
-
-当前仅本地开发验证；完整业务、ERP 只读连接、Redis 消费链和 Docker 部署尚未全部完成，不能作为生产发布版本。
-
-## 维护者
-
-- 作者：sssyq
-- GitHub：[@sssyq223](https://github.com/sssyq223)
-- 邮箱：2372822523@qq.com
-
-
+- [产品约定](docs/PRODUCT_CONTRACT.md)
+- [开发状态](docs/DEVELOPMENT_STATUS.md)
+- [需求覆盖](docs/REQUIREMENTS_TRACEABILITY.md)
