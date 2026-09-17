@@ -27,3 +27,6 @@ the pack until both sides have been migrated.
 
 The host application may keep compatibility facades while business modules are
 migrated, but new industry behavior belongs in a business pack, not here.
+ToolSearch wording/examples, domain search terms, permission-mode instructions
+and provider-specific ReAct guidance are also harness policy. Agent Core owns
+their protocol shape only and must not embed one industry's examples.

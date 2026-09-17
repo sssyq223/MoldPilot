@@ -3,7 +3,18 @@ import json
 import time
 import uuid
 import httpx
+from .domain_pack import component
 from .model_adapter import ModelError
+
+
+_policy = component("harness_policy")
+REACT_GUIDANCE = getattr(_policy, "OLLAMA_REACT_GUIDANCE", """
+Use the structured ReAct action protocol for this turn.
+Choose CALL_TOOL only when registered facts are required; otherwise choose RESPOND.
+For CALL_TOOL, select one available tool and provide arguments matching its schema.
+For RESPOND, leave tool_name empty and arguments as an empty object.
+Return one JSON object without hidden reasoning. Evidence identifiers may only come from tool results.
+""").strip()
 
 
 REPLY_SCHEMA = {'type':'object','properties':{
@@ -96,12 +107,7 @@ class OllamaAdapter:
             # whose inputs are not empty objects.
             'arguments':{'type':'object','additionalProperties':True}})
         schema['required']=['action','tool_name','arguments',*schema['required']]
-        instruction='''本轮使用结构化 ReAct 动作协议，覆盖上文的最终输出格式要求。
-根据用户完整意图自主选择下一步。需要业务事实时 action=CALL_TOOL，tool_name 选择下方已登记工具，arguments 按其参数填写；此时 summary 留空，evidence_ids 与 suggestions 为 []。每轮只请求一个工具，等待结果后再决定下一步。不能以对话回复假装执行了查询。
-一般交流、澄清或已取得足够证据时 action=RESPOND，tool_name 留空，arguments={}，填写 response_kind、summary、evidence_ids、suggestions。问题要求查看当前有权项目时可调用查询项目工具，不应向用户重复询问已由系统提供的权限。
-输出一个 JSON 对象，不要输出推理过程。证据编号只能来自工具结果的 evidence_id 字段，按原值引用。
-可用工具（权限已由系统预筛选，执行时还会再次校验）：
-'''+json.dumps(tools,ensure_ascii=False)
+        instruction=REACT_GUIDANCE+'\n'+json.dumps(tools,ensure_ascii=False)
         # This installed template consumes only the last system message, so merge instructions.
         system='\n'.join(m['content'] for m in converted if m['role']=='system')+'\n'+instruction
         converted=[{'role':'system','content':system}]+[m for m in converted if m['role']!='system']

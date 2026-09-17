@@ -25,6 +25,23 @@ BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
 PURE_CONVERSATION_TERMS = _policy.PURE_CONVERSATION_TERMS
 ELLIPTICAL_ACTION_TERMS = _policy.ELLIPTICAL_ACTION_TERMS
 SYSTEM = _policy.SYSTEM_PROMPT
+TOOL_SEARCH_SCHEMA_DESCRIPTION = getattr(
+    _policy,
+    "TOOL_SEARCH_SCHEMA_DESCRIPTION",
+    "Activate one registered on-demand tool by exact name or capability description.",
+)
+TOOL_SEARCH_QUERY_DESCRIPTION = getattr(
+    _policy,
+    "TOOL_SEARCH_QUERY_DESCRIPTION",
+    "Exact tool name or short capability description.",
+)
+TOOL_SEARCH_DOMAIN_TERMS = getattr(_policy, "TOOL_SEARCH_DOMAIN_TERMS", ())
+TOOL_SEARCH_PROMPT_INTRO = getattr(
+    _policy,
+    "TOOL_SEARCH_PROMPT_INTRO",
+    "Each entry is a ToolSearch example, not a callable function name. Search only when the current request needs a registered capability.",
+)
+PERMISSION_MODE_INSTRUCTIONS = getattr(_policy, "PERMISSION_MODE_INSTRUCTIONS", {})
 
 
 def _model_call_with_heartbeat(call, gateway):
@@ -163,8 +180,8 @@ def _has_formal_action_intent(prompt):
             compact = compact.replace(folded, "")
     # Business nouns can also be action verbs: “查询最近上报” is read-only,
     # while “请上报进度” is an operation.  An explicit read-only scope plus an
-    # explicit operation negation wins unless a separate unambiguous action
-    # (for example 登记/提交/录入) remains after removing the negated phrase.
+    # explicit operation negation wins unless a separate unambiguous formal
+    # action remains after removing the negated phrase.
     if (negated_scope and _contains_any(original, READ_ONLY_INTENT_TERMS)
             and not _contains_any(compact, UNAMBIGUOUS_FORMAL_ACTION_TERMS)):
         return False
@@ -197,9 +214,9 @@ def _business_tool_activation_allowed(context):
 def _tool_search_schema():
     return {"type": "function", "function": {
         "name": TOOL_SEARCH_NAME,
-        "description": "按准确工具名或能力描述激活一个按需业务工具；只激活工具 schema，不读取业务数据、不执行业务动作。",
+        "description": TOOL_SEARCH_SCHEMA_DESCRIPTION,
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "准确工具名或简短能力描述，例如 query_project_plan_context 或 项目计划核对。"}
+            "query": {"type": "string", "description": TOOL_SEARCH_QUERY_DESCRIPTION}
         }, "required": ["query"], "additionalProperties": False},
         "strict": True}}
 
@@ -254,8 +271,7 @@ def _score_search_candidate(query, terms, *fields):
 
 def _search_terms(query):
     terms = [term for term in query.replace("/", " ").replace("|", " ").replace(";", " ").replace(",", " ").split() if term]
-    domain_terms = (*BUSINESS_OBJECT_HINTS, *BUSINESS_ACTION_HINTS,
-                    "协作", "复验", "验收", "反馈", "分派", "派发", "处理方案", "附件", "联络")
+    domain_terms = (*BUSINESS_OBJECT_HINTS, *BUSINESS_ACTION_HINTS, *TOOL_SEARCH_DOMAIN_TERMS)
     for term in domain_terms:
         folded = term.lower()
         if folded in query and folded not in terms:
@@ -391,7 +407,7 @@ def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt=""):
         lines.append(f"- ... 还有 {remaining} 个能力/工具；请用准确工具名或简短能力描述搜索")
     return "\n".join([
         "# 按需工具",
-        "以下各行是 ToolSearch 的搜索示例，不是可直接调用的函数名。只有当本次请求明确需要业务查询或业务操作时，才调用 ToolSearch；ToolSearch 只让小工具集在下一轮可用，不代表已经取得业务事实。优先搜索用户实际要查询或办理的场景，不要仅因出现项目号、合同号等编号先搜索候选匹配。准确工具名只激活单个工具，能力/场景描述会激活对应小工具集。",
+        TOOL_SEARCH_PROMPT_INTRO,
         *lines,
     ])
 
@@ -521,12 +537,13 @@ def _messages_for_model(messages, transient_instructions=()):
 
 
 def permission_mode_instruction(mode):
-    if mode == "delegated_auto":
-        return ("本轮 Agent 权限模式：按授权自动审批。只有流程设计明确允许 Agent 自动审批、审批人本人存在有效授权、"
-                "当前节点安全条件命中且服务端审批规则允许同意时，系统才可自动同意该审批席位；其他正式动作仍须本人确认，"
-                "不能自动驳回、不能跳过审批席位、不能把待确认 proposal 说成已执行。")
-    return ("本轮 Agent 权限模式：每次询问。所有正式业务动作都只能准备待确认请求，必须等待本人在确认卡片中核对提交；"
-            "即使存在历史自动审批授权，本轮也不能触发 Agent 自动同意，不能把自然语言同意当作确认凭证。")
+    selected = PERMISSION_MODE_INSTRUCTIONS.get(mode)
+    if isinstance(selected, str) and selected.strip():
+        return selected.strip()
+    fallback = PERMISSION_MODE_INSTRUCTIONS.get("ask")
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
+    return f"Agent permission mode for this turn: {mode}. Follow the host confirmation and authorization protocol."
 
 
 

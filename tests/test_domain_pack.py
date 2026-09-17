@@ -39,7 +39,10 @@ def test_agent_core_source_does_not_embed_mold_business_policy():
         path.read_text(encoding="utf-8")
         for path in root.glob("*.py")
     )
-    for business_term in ("工程联络", "模具工作台", "prepare_project_pause"):
+    for business_term in (
+        "工程联络", "模具工作台", "项目计划", "项目号", "合同号", "当前有权项目",
+        "prepare_project_pause",
+    ):
         assert business_term not in runtime_source
 
 
@@ -93,11 +96,19 @@ def test_template_pack_boots_host_without_registering_mold_http_surface():
 import json
 from app.api import app
 from app.erp_adapter import ERPClient
+from agent_core.harness import _tool_search_schema, permission_mode_instruction
+from agent_core.ollama_adapter import REACT_GUIDANCE
 paths = {route.path for route in app.routes if hasattr(route, 'path')}
 print(json.dumps({
     'title': app.title,
     'paths': sorted(paths),
     'erp_module': ERPClient.__module__,
+    'policy_text': ' '.join([
+        _tool_search_schema()['function']['description'],
+        _tool_search_schema()['function']['parameters']['properties']['query']['description'],
+        permission_mode_instruction('ask'),
+        REACT_GUIDANCE,
+    ]),
 }))
 """
     completed = subprocess.run(
@@ -115,6 +126,9 @@ print(json.dumps({
 
     assert payload["title"] == "Agent Workbench"
     assert payload["erp_module"] == "domain_packs.template.erp_adapter"
+    assert not any(term in payload["policy_text"] for term in (
+        "项目", "模具", "工程联络", "合同", "采购", "审批席位",
+    ))
     assert {"/api/product", "/api/auth/login", "/api/runs"} <= paths
     assert "/api/projects" not in paths
     assert "/api/purchases" not in paths

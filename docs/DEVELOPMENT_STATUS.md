@@ -8,10 +8,11 @@
 - 本批将交付物流应用服务从 `app/delivery_logistics_tools.py` 迁至 `domain_packs/mold/delivery_logistics.py`；路线/报价 schema、查询投影、业务校验、proposal 准备与本人确认后的写入均由领域包持有。领域工具网关和 proposal handler 直接指向包内实现，`app` 同名文件仅保留旧调用兼容 facade。
 - 新增稳定的 `agent_core.host_ports` 宿主能力契约，宿主模型、授权、时钟、配置、内容哈希和确认策略由 `AGENT_HOST_PORTS_MODULE` 独立装配；通用 `DomainError` 与 `StrictModel` 也移入 Agent Core，`app` 只保留兼容导出。交付物流服务不再直接导入任何 `app.*` 实现。
 - 模具共用的项目定位输入与匹配规则已迁入 `domain_packs/mold/contracts.py`；尚未迁出的业务材料、采购订单与工程联络读取被集中到 `legacy_read_ports.py`，不再散落在物流应用服务中。该文件是显式迁移债务，不代表依赖已经消失。
+- Harness 领域语义继续抽离：ToolSearch schema 示例、领域检索补词、按需工具提示、权限模式说明和 Ollama 结构化 ReAct 指引全部由活动 `harness_policy` 注入；`agent_core` 不再写死项目计划、工程联络、项目号、合同号或“当前有权项目”等模具示例。模板包拥有独立的中性策略，换业务包无需修改 Harness。
 - 已增加架构门禁，验证领域 handler 指向包内实现、宿主 facade 不再承载物流业务类、领域网关不反向调用旧实现；`AGENT_BUSINESS_PACK=template` 仍能以 `Agent Workbench` 启动且不注册模具 HTTP 路由。
 - 当前仍不是完整领域抽离：物流 ORM/配置/Alembic 迁移仍在 `app` 与全局迁移链，物流服务仍依赖 `app.plan_tools`、`app.domains`、`app.procurement`、`app.contacts` 等相邻模具服务；整套委外仍通过兼容 facade 复用四个物流投影；模板包的 SQLAlchemy metadata 仍注册项目、采购、工程联络、供应商和物流表；Agent Core、API 与前端仍有模具语义和确认卡字段硬编码。
 - 后续拆分顺序固定为：先建立只能由领域包依赖的 `host_ports`/pack 注册协议；再迁移模具共享模型、权限和项目解析；随后迁移物流上游 read providers；最后迁移 ORM、配置、领域迁移、API 与前端呈现元数据并删除兼容 facade。达到模板包 metadata 不含任何模具表后，才可认定业务包可完整替换。
-- 验证：宿主端口、计划、交付物流、整套委外、能力目录和领域包定向回归 52 项通过；完整后端回归在仓库隔离临时目录下 445 项通过，Python 编译/import smoke 通过。内置浏览器复核已确认物流卡：卡片在折叠执行链中永久保留，详情可回看，已确认后的“暂不执行/已确认执行”按钮均禁用；本批没有新增业务功能或传统 ERP 页面。
+- 验证：宿主端口、计划、交付物流、整套委外、能力目录和领域包定向回归 52 项通过；Harness、Ollama 适配器和领域包策略定向回归 101 项通过；完整后端回归在仓库隔离临时目录下 445 项通过，Python 编译/import smoke 通过。内置浏览器复核已确认物流卡：卡片在折叠执行链中永久保留，详情可回看，已确认后的“暂不执行/已确认执行”按钮均禁用；本批没有新增业务功能或传统 ERP 页面。
 
 ## 持续开发：FR-065～067 物流路线、核准报价与结算价办理闭环（2026-09-17）
 

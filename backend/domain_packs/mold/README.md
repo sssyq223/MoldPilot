@@ -23,6 +23,11 @@ plan/procurement/contact read services are deliberately isolated in
 `legacy_read_ports.py`; that adapter is migration debt and must shrink as those
 services move into the pack.
 
+`harness_policy.py` owns every mold-specific ToolSearch example and search
+term, the user-facing permission-mode instructions, and the Ollama structured
+ReAct guidance. The reusable harness consumes those fields without knowing
+project, contract, contact-case or mold vocabulary.
+
 The generic runtime loads it with:
 
 ```text
