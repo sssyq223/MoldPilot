@@ -1523,3 +1523,4 @@ body.layout-resizing{cursor:col-resize!important;user-select:none!important}
 
 /* Approval seat transfer stays inside the existing approval workspace. */
 .transfer-box{border-style:dashed}.transfer-box .form-grid{align-items:end}.transfer-box .actions{margin-top:12px}
+.add-sign-box{border-style:dashed}.add-sign-box .form-grid{align-items:end}.add-sign-box .actions{margin-top:12px}

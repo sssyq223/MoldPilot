@@ -167,7 +167,22 @@ class ApprovalSeat(IdentityMixin, Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
     status: Mapped[str] = mapped_column(String(30), default="PENDING")
     version: Mapped[int] = mapped_column(Integer, default=1)
-    __table_args__ = (UniqueConstraint("instance_id", "stage_index", "user_id"),)
+    parent_seat_id: Mapped[str | None] = mapped_column(ForeignKey("approval_seat.id"), index=True)
+    countersign_timing: Mapped[str | None] = mapped_column(String(10))
+    countersign_initiated_by: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"))
+    countersign_reason: Mapped[str | None] = mapped_column(Text)
+    countersign_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        UniqueConstraint("instance_id", "stage_index", "user_id"),
+        CheckConstraint(
+            "(parent_seat_id IS NULL AND countersign_timing IS NULL AND countersign_initiated_by IS NULL "
+            "AND countersign_reason IS NULL AND countersign_sequence = 0) OR "
+            "(parent_seat_id IS NOT NULL AND countersign_timing IN ('PRE','POST') "
+            "AND countersign_initiated_by IS NOT NULL AND countersign_reason IS NOT NULL "
+            "AND countersign_sequence > 0)",
+            name="approval_seat_countersign_shape",
+        ),
+    )
 
 
 class ApprovalAction(IdentityMixin, Base):

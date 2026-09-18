@@ -37,6 +37,25 @@ def validate_assignment(node):
         )
 
 
+def validate_add_sign_policy(node):
+    policy = node.get("add_sign_policy")
+    if policy is None:
+        return
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != {"timings", "users"}
+        or not valid_ids(policy.get("users"))
+        or not isinstance(policy.get("timings"), list)
+        or not policy["timings"]
+        or len(policy["timings"]) != len(set(policy["timings"]))
+        or any(timing not in {"PRE", "POST"} for timing in policy["timings"])
+    ):
+        raise DomainError(
+            "INVALID_WORKFLOW",
+            "加签策略须选择前加签或后加签，并配置不重复的合格人员池",
+        )
+
+
 def resolve_users(db, node):
     validate_assignment(node)
     if "assignment" not in node:
@@ -88,4 +107,12 @@ def check_publish(db, config):
         ):
             raise DomainError(
                 "ASSIGNMENT_BLOCKED", "节点没有有效人员或包含停用人员，请维护人员规则"
+            )
+        policy = node.get("add_sign_policy")
+        if policy and any(
+            not (user := db.get(models.User, user_id)) or not user.active
+            for user_id in policy["users"]
+        ):
+            raise DomainError(
+                "ASSIGNMENT_BLOCKED", "加签人员池包含不存在或已停用的人员，请重新维护"
             )

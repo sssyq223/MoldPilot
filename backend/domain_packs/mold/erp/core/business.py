@@ -1,7 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 import secrets
-from sqlalchemy import select, exists, and_, or_
+from sqlalchemy import select, exists, and_, or_, func
 from domain_packs.mold import bpm
 from domain_packs.mold.ports.db import now,aware
 from domain_packs.mold.models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
@@ -154,6 +154,7 @@ def process_agent_auto_approvals(db, instance_id, agent_permission_mode="ask", l
             ApprovalSeat.instance_id == instance.id,
             ApprovalSeat.stage_index == instance.stage_index,
             ApprovalSeat.status == "PENDING",
+            ApprovalSeat.parent_seat_id.is_(None),
         ).order_by(ApprovalSeat.created_at, ApprovalSeat.id)))
         if not seats:
             break
@@ -278,7 +279,14 @@ def approval_detail(db, user, instance):
         AuditEvent.resource_id == instance.id,
         AuditEvent.action == "approval.seat.transferred",
     ).order_by(AuditEvent.created_at)))
+    add_sign_events = list(db.scalars(select(AuditEvent).where(
+        AuditEvent.resource_id == instance.id,
+        AuditEvent.action == "approval.seat.added",
+    ).order_by(AuditEvent.created_at)))
     transfer_options = approval_transfer_options(db, user, instance, req, definition, current) if current else []
+    add_sign_policy = node_add_sign_policy(definition, instance)
+    add_sign_allowed = bool(current and "APPROVE" in actions and add_sign_policy)
+    add_sign_options = approval_add_sign_options(db, user, instance, req, definition, current) if add_sign_allowed else []
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
             "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
@@ -286,15 +294,21 @@ def approval_detail(db, user, instance):
             "definition": {"name": definition.name, "version": definition.version},
             "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"]} for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
-            "assigned_people": [{"name":db.get(User,s.user_id).display_name,"stage_index":s.stage_index,"status":s.status} for s in seats],
+            "assigned_people": [{"name":db.get(User,s.user_id).display_name,"stage_index":s.stage_index,
+                                 "status":s.status,"seat_id":s.id,"parent_seat_id":s.parent_seat_id,
+                                 "countersign_timing":s.countersign_timing} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
             "transfer_allowed": bool(current and node_allows_transfer(definition, instance)),
             "transfer_options": transfer_options,
+            "add_sign_allowed": add_sign_allowed,
+            "add_sign_timings": add_sign_policy["timings"] if add_sign_allowed else [],
+            "add_sign_options": add_sign_options,
             "allowed_actions": actions, "rejection_reasons": matched if complete else [],
             "missing_rules": missing if complete else [], "materials_complete": complete,
             "history": [{"user": a.user_snapshot, "decision": a.decision, "comment": a.comment,
                          "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))],
-            "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events]}
+            "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events],
+            "add_sign_history": [{**event.detail, "at": event.created_at.isoformat()} for event in add_sign_events]}
 
 
 def node_allows_transfer(definition, instance):
@@ -303,6 +317,12 @@ def node_allows_transfer(definition, instance):
         and instance.stage_index < len(definition.config["nodes"])
         and definition.config["nodes"][instance.stage_index].get("allow_transfer") is True
     )
+
+
+def node_add_sign_policy(definition, instance):
+    if instance.status != "RUNNING" or instance.stage_index >= len(definition.config["nodes"]):
+        return None
+    return definition.config["nodes"][instance.stage_index].get("add_sign_policy")
 
 
 def _complete_approval_access(db, candidate, req):
@@ -339,6 +359,30 @@ def approval_transfer_options(db, user, instance, req=None, definition=None, cur
     ).order_by(User.display_name, User.id)))
     return [{"id": candidate.id, "display_name": candidate.display_name, "department": candidate.department}
             for candidate in candidates if _complete_approval_access(db, candidate, req)]
+
+
+def approval_add_sign_options(db, user, instance, req=None, definition=None, current=None):
+    definition = definition or db.get(WorkflowDefinition, instance.definition_id)
+    policy = node_add_sign_policy(definition, instance)
+    if not policy:
+        return []
+    req = req or load_subject(db, instance)
+    current = current or db.scalar(select(ApprovalSeat).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+        ApprovalSeat.user_id == user.id,
+        ApprovalSeat.status == "PENDING",
+    ))
+    if not current:
+        return []
+    occupied = set(db.scalars(select(ApprovalSeat.user_id).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+    )))
+    candidates = [db.get(User, user_id) for user_id in policy["users"] if user_id not in occupied]
+    return [{"id": candidate.id, "display_name": candidate.display_name, "department": candidate.department}
+            for candidate in candidates
+            if candidate and candidate.active and _complete_approval_access(db, candidate, req)]
 
 
 def transfer_approval_seat(db, user, payload):
@@ -400,6 +444,113 @@ def transfer_approval_seat(db, user, payload):
             "transferred_to": target, "seat_version": seat.version, "version": instance.version}
 
 
+def add_sign_approval_seat(db, user, payload):
+    instance = db.scalar(select(ApprovalInstance).where(
+        ApprovalInstance.id == payload["instance_id"]
+    ).with_for_update())
+    if not instance:
+        raise DomainError("NOT_FOUND", "审批不存在", 404)
+    req = load_subject(db, instance, lock=True)
+    definition = db.get(WorkflowDefinition, instance.definition_id)
+    policy = node_add_sign_policy(definition, instance)
+    if not policy or payload["timing"] not in policy["timings"]:
+        raise DomainError("ADD_SIGN_DISABLED", "当前审批节点未允许这种加签方式", 409)
+    if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
+        raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化", 409)
+    seat = db.scalar(select(ApprovalSeat).where(
+        ApprovalSeat.id == payload["seat_id"],
+        ApprovalSeat.instance_id == instance.id,
+    ).with_for_update())
+    if (not seat or seat.stage_index != instance.stage_index or seat.user_id != user.id
+            or seat.status != "PENDING" or seat.version != payload["seat_version"]):
+        raise DomainError("VERSION_CONFLICT", "审批席位已变化", 409)
+    detail = approval_detail(db, user, instance)
+    options = {item["id"]: item for item in detail["add_sign_options"]}
+    target = options.get(payload["target_user_id"])
+    if not detail["add_sign_allowed"] or not target:
+        raise DomainError("ADD_SIGN_TARGET_INVALID", "目标人员不在合格加签池内或当前规则不允许加签", 409)
+    sequence = db.scalar(select(func.coalesce(func.max(ApprovalSeat.countersign_sequence), 0)).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+    )) + 1
+    added = ApprovalSeat(
+        instance_id=instance.id,
+        stage_index=instance.stage_index,
+        user_id=target["id"],
+        status="PENDING" if payload["timing"] == "PRE" else "WAITING_PREDECESSOR",
+        parent_seat_id=seat.id,
+        countersign_timing=payload["timing"],
+        countersign_initiated_by=user.id,
+        countersign_reason=payload["reason"],
+        countersign_sequence=sequence,
+    )
+    db.add(added)
+    if payload["timing"] == "PRE":
+        seat.status = "WAITING_COUNTERSIGN"
+        seat.version += 1
+    instance.version += 1
+    db.flush()
+    actor = {"id": user.id, "name": user.display_name, "department": user.department}
+    addition = {
+        "stage_index": instance.stage_index,
+        "parent_seat_id": seat.id,
+        "added_seat_id": added.id,
+        "initiated_by": actor,
+        "target_user": target,
+        "timing": payload["timing"],
+        "reason": payload["reason"],
+        "sequence": sequence,
+        "instance_version": instance.version,
+        "at": now().isoformat(),
+    }
+    snapshot_key = str(instance.stage_index)
+    assignment_snapshot = dict((instance.assignment_snapshots or {}).get(snapshot_key, {}))
+    additions = list(assignment_snapshot.get("additions", []))
+    additions.append(addition)
+    assignment_snapshot["additions"] = additions
+    instance.assignment_snapshots = {**(instance.assignment_snapshots or {}), snapshot_key: assignment_snapshot}
+    record(db, user, "approval.seat.added", instance.id, addition,
+           [target["id"]] if added.status == "PENDING" else [])
+    return {"instance_id": instance.id, "seat_id": seat.id, "added_seat_id": added.id,
+            "status": instance.status, "timing": payload["timing"],
+            "added_user": target, "version": instance.version}
+
+
+def _activate_after_approval(db, instance, seat):
+    recipients = []
+    if seat.countersign_timing == "PRE" and seat.parent_seat_id:
+        parent = db.get(ApprovalSeat, seat.parent_seat_id)
+        siblings = list(db.scalars(select(ApprovalSeat).where(
+            ApprovalSeat.parent_seat_id == parent.id,
+            ApprovalSeat.countersign_timing == "PRE",
+        )))
+        if parent.status == "WAITING_COUNTERSIGN" and all(item.status == "APPROVE" for item in siblings):
+            parent.status = "PENDING"
+            parent.version += 1
+            recipients.append(parent.user_id)
+    post_children = list(db.scalars(select(ApprovalSeat).where(
+        ApprovalSeat.parent_seat_id == seat.id,
+        ApprovalSeat.countersign_timing == "POST",
+        ApprovalSeat.status == "WAITING_PREDECESSOR",
+    )))
+    for child in post_children:
+        child.status = "PENDING"
+        child.version += 1
+        recipients.append(child.user_id)
+    if recipients:
+        record(db, None, "approval.pending", instance.id, recipients=sorted(set(recipients)))
+
+
+def _stage_is_approved(node, peers):
+    base = [seat for seat in peers if seat.parent_seat_id is None]
+    additions = [seat for seat in peers if seat.parent_seat_id is not None]
+    if any(seat.status != "APPROVE" for seat in additions):
+        return False
+    return (any(seat.status == "APPROVE" for seat in base)
+            if node["mode"] == "ANY"
+            else bool(base) and all(seat.status == "APPROVE" for seat in base))
+
+
 def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     instance = db.scalar(select(ApprovalInstance).where(ApprovalInstance.id == payload["instance_id"]).with_for_update())
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
@@ -431,10 +582,17 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
             from domain_packs.mold.erp.core.domains import release_reservation
             release_reservation(db,req)
         for peer in peers:
-            if peer.status == "PENDING": peer.status = "CANCELLED"
-    elif node["mode"] == "ANY" or all(s.status == "APPROVE" for s in peers):
+            if peer.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}: peer.status = "CANCELLED"
+    else:
+        _activate_after_approval(db, instance, seat)
+        db.flush()
+        peers = list(db.scalars(select(ApprovalSeat).where(
+            ApprovalSeat.instance_id == instance.id,
+            ApprovalSeat.stage_index == instance.stage_index,
+        )))
+    if payload["decision"] == "APPROVE" and _stage_is_approved(node, peers):
         for peer in peers:
-            if peer.status == "PENDING": peer.status = "CANCELLED"
+            if peer.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}: peer.status = "CANCELLED"
         target = bpm.route_target(definition.config, instance.stage_index, instance.snapshot)
         instance.engine_state = bpm.advance_engine(instance.engine_state, node["key"], target if 'routes' in node else None)
         instance.stage_index = bpm.current_stage(instance.engine_state, definition.config)
@@ -478,6 +636,13 @@ def create_intent(db, user, action, resource_id, payload):
         if (not detail["transfer_allowed"] or payload["target_user_id"] not in
                 {item["id"] for item in detail["transfer_options"]}):
             raise DomainError("TRANSFER_TARGET_INVALID", "当前审批不能转交给该人员", 409)
+    elif action == "approval.seat.add_sign":
+        instance = db.get(ApprovalInstance, resource_id)
+        if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
+        detail = approval_detail(db, user, instance)
+        if (not detail["add_sign_allowed"] or payload["timing"] not in detail["add_sign_timings"]
+                or payload["target_user_id"] not in {item["id"] for item in detail["add_sign_options"]}):
+            raise DomainError("ADD_SIGN_TARGET_INVALID", "当前审批不能按所选方式加签给该人员", 409)
     elif action == "purchase.submit":
         req = db.get(PurchaseRequest, resource_id)
         if not req: raise DomainError("NOT_FOUND", "申请不存在", 404)
@@ -513,6 +678,7 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     if intent.payload_hash != bpm.content_hash(intent.payload): raise DomainError("CONFIRMATION_INVALID", "确认内容不一致", 409)
     if intent.action == "approval.decide": result = decide(db, user, intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action == "approval.seat.transfer": result = transfer_approval_seat(db, user, intent.payload)
+    elif intent.action == "approval.seat.add_sign": result = add_sign_approval_seat(db, user, intent.payload)
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
     elif (handler := handler_for_action(intent.action)) is not None:

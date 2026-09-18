@@ -89,6 +89,23 @@ def test_transfer_flag_must_be_boolean():
     with pytest.raises(DomainError): bpm.validate(cfg)
 
 
+def test_add_sign_policy_requires_timing_and_unique_pool():
+    cfg = config()
+    cfg["nodes"][0]["add_sign_policy"] = {"timings": ["PRE", "POST"], "users": ["reviewer"]}
+    bpm.validate(cfg)
+    for invalid in (
+        {"timings": [], "users": ["reviewer"]},
+        {"timings": ["PRE", "PRE"], "users": ["reviewer"]},
+        {"timings": ["AROUND"], "users": ["reviewer"]},
+        {"timings": ["PRE"], "users": []},
+        {"timings": ["PRE"], "users": ["reviewer", "reviewer"]},
+    ):
+        cfg = config()
+        cfg["nodes"][0]["add_sign_policy"] = invalid
+        with pytest.raises(DomainError):
+            bpm.validate(cfg)
+
+
 @pytest.mark.parametrize('quantity,expected_stages', [('5', [0, 2]), ('11', [0, 1, 2])])
 def test_persisted_route_seats_and_final_approval(client, data, quantity, expected_stages):
     ids, factory = data

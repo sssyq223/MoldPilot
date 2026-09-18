@@ -7,7 +7,7 @@ from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow import TaskState
 from .errors import DomainError
-from .assignments import validate_assignment
+from .assignments import validate_assignment, validate_add_sign_policy
 from .domain_pack import component
 from .hashing import canonical, content_hash
 
@@ -34,7 +34,7 @@ def validate(config):
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer"}:
+        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "add_sign_policy"}:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
@@ -53,6 +53,7 @@ def validate(config):
                 raise DomainError("INVALID_WORKFLOW", "Agent 自动审批策略必须包含安全条件")
             validate_condition(node["agent_auto_policy"]["condition"], contract)
         validate_assignment(node)
+        validate_add_sign_policy(node)
         if not isinstance(node.get('reject_rules', []), list) or len(node.get('reject_rules', [])) > 20:
             raise DomainError('INVALID_RULE', '单个节点最多配置20条驳回规则')
         for rule in node.get("reject_rules", []):

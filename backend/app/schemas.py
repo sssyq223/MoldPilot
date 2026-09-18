@@ -82,6 +82,10 @@ class ApprovalSeatTransferInput(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class ApprovalSeatAddSignInput(ApprovalSeatTransferInput):
+    timing: Literal["PRE", "POST"]
+
+
 class AgentApprovalDelegationInput(StrictModel):
     process_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
     node_key: str = Field(min_length=1, max_length=80)

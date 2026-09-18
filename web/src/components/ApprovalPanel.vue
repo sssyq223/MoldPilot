@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ArrowRightLeft, Check, Circle, FileText, ShieldCheck } from 'lucide-vue-next'
+import { ArrowRightLeft, Check, Circle, FileText, ShieldCheck, UserPlus } from 'lucide-vue-next'
 import { api, post, shanghai } from '../api'
 import FileMaterial from './FileMaterial.vue'
 import ApprovalBusinessDetails from '@domain-pack/components/ApprovalBusinessDetails.vue'
@@ -10,6 +10,7 @@ const props = defineProps<{ detail: any }>()
 const emit = defineEmits<{ changed: []; error: [message: string] }>()
 const comment = ref(''), busy = ref(false), confirmation = ref<any>(null)
 const transferTarget = ref(''), transferReason = ref(''), transferConfirmation = ref<any>(null)
+const addSignTarget = ref(''), addSignTiming = ref(''), addSignReason = ref(''), addSignConfirmation = ref<any>(null)
 const labels: Record<string,string> = { APPROVE:'同意', REJECT:'驳回', RETURN:'退回修改' }
 async function prepare(decision: string) {
   if (!comment.value.trim()) return emit('error','请填写本次审批意见')
@@ -45,6 +46,29 @@ async function confirmTransfer() {
   } catch(e:any) { emit('error',e.message) } finally { busy.value=false }
 }
 function transferTargetName(id:string) { return props.detail.transfer_options.find((item:any)=>item.id===id)?.display_name||'目标人员' }
+async function prepareAddSign() {
+  if (!addSignTiming.value) return emit('error','请选择前加签或后加签')
+  if (!addSignTarget.value) return emit('error','请选择加签人员')
+  if (!addSignReason.value.trim()) return emit('error','请填写加签原因')
+  busy.value = true
+  try {
+    const d = props.detail
+    addSignConfirmation.value = await post('/approval-seat-additions/intent', {
+      instance_id:d.id, seat_id:d.seat_id, seat_version:d.seat_version,
+      version:d.version, snapshot_hash:d.snapshot_hash,
+      target_user_id:addSignTarget.value, timing:addSignTiming.value, reason:addSignReason.value,
+    })
+  } catch(e:any) { emit('error',e.message) } finally { busy.value=false }
+}
+async function confirmAddSign() {
+  busy.value = true
+  try {
+    await post(`/human-actions/${addSignConfirmation.value.id}/confirm`, { challenge:addSignConfirmation.value.challenge })
+    addSignConfirmation.value=null; addSignTarget.value=''; addSignTiming.value=''; addSignReason.value=''; emit('changed')
+  } catch(e:any) { emit('error',e.message) } finally { busy.value=false }
+}
+function addSignTargetName(id:string) { return props.detail.add_sign_options.find((item:any)=>item.id===id)?.display_name||'目标人员' }
+function timingName(value:string) { return value==='PRE'?'前加签':'后加签' }
 </script>
 <template>
   <div class="approval-head"><div><span class="muted">{{detail.definition.name}}</span><h2>{{ numberText(detail.snapshot.number) }}</h2></div><span class="status">{{ detail.status==='RUNNING'?'待审批':detail.status==='COMPLETED'?'审批已完成':statusName(detail.status) }}</span></div>
@@ -63,11 +87,14 @@ function transferTargetName(id:string) { return props.detail.transfer_options.fi
   </div>
   <section v-if="detail.history.length" class="surface"><h3>历史审批意见</h3><div v-for="(h,i) in detail.history" :key="i" class="history-row"><strong>{{h.user.name}} · {{labels[h.decision]}}</strong><small>{{shanghai(h.at)}}</small><p>{{h.comment}}</p></div></section>
   <section v-if="detail.transfer_history?.length" class="surface"><h3><ArrowRightLeft :size="16"/> 席位转交记录</h3><div v-for="(h,i) in detail.transfer_history" :key="i" class="history-row"><strong>{{h.from_user.name}} → {{h.to_user.display_name}}</strong><small>{{shanghai(h.at)}}</small><p>{{h.reason}}</p></div></section>
+  <section v-if="detail.add_sign_history?.length" class="surface"><h3><UserPlus :size="16"/> 加签记录</h3><div v-for="(h,i) in detail.add_sign_history" :key="i" class="history-row"><strong>{{h.initiated_by.name}} → {{h.target_user.display_name}} · {{timingName(h.timing)}}</strong><small>{{shanghai(h.at)}}</small><p>{{h.reason}}</p></div></section>
   <p v-if="detail.material_notice" class="warning">{{detail.material_notice}}</p>
   <div v-if="detail.rejection_reasons.length" class="warning"><strong>命中必须驳回的条件</strong><p v-for="reason in detail.rejection_reasons" :key="reason">{{reason}}</p><small>请核对原因并确认驳回。不能继续同意或以退回代替。</small></div>
   <div v-if="!detail.materials_complete" class="warning">当前权限不足以读取全部必需审批资料，不能提交决定。</div>
   <div class="decision-box" v-if="detail.allowed_actions.length"><h3><ShieldCheck :size="17"/> 本次审批意见</h3><textarea v-model="comment" placeholder="填写判断依据和审批意见…" rows="3" aria-label="审批意见"/><div class="actions"><button v-for="action in detail.allowed_actions" :key="action" :class="action==='APPROVE'?'primary':''" :disabled="busy" @click="prepare(action)">{{labels[action]}}</button></div></div>
   <div class="decision-box transfer-box" v-if="detail.transfer_allowed"><h3><ArrowRightLeft :size="17"/> 转交审批席位</h3><template v-if="detail.transfer_options.length"><div class="form-grid"><label>转交给<select v-model="transferTarget" aria-label="转交人员"><option value="" disabled>请选择具备权限的人员</option><option v-for="person in detail.transfer_options" :key="person.id" :value="person.id">{{person.display_name}}{{person.department?' · '+person.department:''}}</option></select></label><label>转交原因<input v-model="transferReason" maxlength="500" placeholder="说明无法处理或转交依据" aria-label="转交原因"/></label></div><div class="actions"><button :disabled="busy" @click="prepareTransfer">准备转交</button></div></template><p v-else class="muted">当前没有通过业务读取与审批权限复核的可转交人员。</p></div>
+  <div class="decision-box add-sign-box" v-if="detail.add_sign_allowed"><h3><UserPlus :size="17"/> 增加审批复核人</h3><template v-if="detail.add_sign_options.length"><div class="form-grid"><label>加签方式<select v-model="addSignTiming" aria-label="加签方式"><option value="" disabled>请选择前加签或后加签</option><option v-for="timing in detail.add_sign_timings" :key="timing" :value="timing">{{timingName(timing)}}</option></select></label><label>加签人员<select v-model="addSignTarget" aria-label="加签人员"><option value="" disabled>请选择预设合格人员</option><option v-for="person in detail.add_sign_options" :key="person.id" :value="person.id">{{person.display_name}}{{person.department?' · '+person.department:''}}</option></select></label><label>加签原因<input v-model="addSignReason" maxlength="500" placeholder="说明需要增加复核的依据" aria-label="加签原因"/></label></div><div class="actions"><button :disabled="busy" @click="prepareAddSign">准备加签</button></div></template><p v-else class="muted">预设人员池中当前没有通过权限和材料读取复核的可加签人员。</p></div>
   <Teleport to="body"><div v-if="confirmation" class="modal-shade"><section class="modal" role="dialog" aria-modal="true" aria-label="确认审批决定"><h2>确认本次{{labels[confirmation.payload.decision]}}</h2><p>{{numberText(detail.snapshot.number)}} · 第 {{detail.revision}} 版</p><p class="preserve">{{confirmation.payload.comment}}</p><p class="muted">{{approvalConfirmationNotice}}</p><div class="actions"><button :disabled="busy" @click="confirmation=null">返回核对</button><button class="primary" :disabled="busy" @click="confirm">{{busy?'正在提交…':'确认提交'}}</button></div></section></div></Teleport>
   <Teleport to="body"><div v-if="transferConfirmation" class="modal-shade"><section class="modal" role="dialog" aria-modal="true" aria-label="确认转交审批席位"><h2>确认转交审批席位</h2><p>{{numberText(detail.snapshot.number)}} · {{transferTargetName(transferConfirmation.payload.target_user_id)}}</p><p class="preserve">{{transferConfirmation.payload.reason}}</p><p class="muted">确认后当前待审批席位将转给目标人员，你将不能再提交该席位的审批决定。系统会再次校验版本和权限。</p><div class="actions"><button :disabled="busy" @click="transferConfirmation=null">返回核对</button><button class="primary" :disabled="busy" @click="confirmTransfer">{{busy?'正在转交…':'确认转交'}}</button></div></section></div></Teleport>
+  <Teleport to="body"><div v-if="addSignConfirmation" class="modal-shade"><section class="modal" role="dialog" aria-modal="true" aria-label="确认增加审批复核人"><h2>确认{{timingName(addSignConfirmation.payload.timing)}}</h2><p>{{numberText(detail.snapshot.number)}} · {{addSignTargetName(addSignConfirmation.payload.target_user_id)}}</p><p class="preserve">{{addSignConfirmation.payload.reason}}</p><p class="muted">确认后将创建一个必须明确处理的加签席位。前加签完成后原席位继续；后加签在原席位同意后开始。系统会再次校验版本、人员池和业务权限。</p><div class="actions"><button :disabled="busy" @click="addSignConfirmation=null">返回核对</button><button class="primary" :disabled="busy" @click="confirmAddSign">{{busy?'正在加签…':'确认加签'}}</button></div></section></div></Teleport>
 </template>
