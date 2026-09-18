@@ -2,6 +2,6 @@ export const approvalConfirmationNotice='提交后将记录你的正式审批决
 export const authorizationUi:any={defaultPermission:'audit.read',defaultCategory:'',resourceEndpoint:'',resourceScopeKey:'',resourceLabel:'数据范围',resourcePlaceholder:'选择范围',resourceCodeField:'name',unrestrictedPermissions:['file.upload','audit.read','grant.manage','user.manage','workflow.design','workflow.publish'],categoryScopeKey:'',categoryPermissionPrefixes:[],categoryLabel:'分类范围',categoryOptions:{},permissionHints:{'file.upload':'允许向本人会话上传附件。'} as Record<string,string>,allScopeLabel:'授予全部数据范围',scopeHelp:'每条授权独立限定动作和数据范围。'}
 export const workflowUi:any={defaultField:'quantity',fields:[['quantity','数量'],['amount','金额'],['currency','币种'],['remark','备注']],numericFields:['amount','quantity'],selectOptions:{currency:{CNY:'人民币',USD:'美元',EUR:'欧元'}} as Record<string,Record<string,string>>,simulationFields:[{key:'quantity',label:'测试数量',value:''},{key:'amount',label:'测试金额',value:''},{key:'currency',label:'测试币种',value:'CNY',options:{CNY:'人民币',USD:'美元',EUR:'欧元'}},{key:'remark',label:'测试备注',value:''}],categoryHelp:'类别由管理员自行命名，用于整理模板，不授予业务权限。'}
 export const capabilityUi:any={queryUsage:'用法：在对话里提供明确对象或关键词，系统只查询授权范围内资料并返回依据。',pageHelp:'当前账号可使用的能力由管理员分配；需确认的工具会先生成建议，不会直接提交。',delegationReasonPlaceholder:'例如：资料齐全且风险较低时允许自动同意',termReplacements:{Agent:'智能体'}}
-export function notificationWorkspaceTarget(){return null}
-export function toolEvidenceLinks(){return []}
-export function legacyStorageKeys(){return {approvalMode:'',layout:''}}
+export function notificationWorkspaceTarget(_notification:any):{target:string;id:string}|null{return null}
+export function toolEvidenceLinks(_item:any):Array<{target:string;id:string;label:string}>{return []}
+export function legacyStorageKeys(_userId:string){return {approvalMode:'',layout:''}}

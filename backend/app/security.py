@@ -29,7 +29,7 @@ def login(db, username, password):
 
 
 def current_user(request: Request, db=Depends(get_db)):
-    token = request.cookies.get("agent_session", "") or request.cookies.get("mold_session", "")
+    token = request.cookies.get("agent_session", "")
     session = db.scalar(select(LoginSession).where(LoginSession.token_hash == digest(token), LoginSession.expires_at > now()))
     if not session: raise DomainError("UNAUTHENTICATED", "请先登录", 401)
     user = db.get(User, session.user_id)

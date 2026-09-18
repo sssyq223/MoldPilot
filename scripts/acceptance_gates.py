@@ -30,7 +30,8 @@ GATES = [
 
 
 def _configured_path(env_file: str) -> Path:
-    value = dotenv_values(env_file).get("MOLD_ACCEPTANCE_EVIDENCE_FILE") or ".local/acceptance-gates.json"
+    values = dotenv_values(env_file)
+    value = values.get("AGENT_ACCEPTANCE_EVIDENCE_FILE") or values.get("MOLD_ACCEPTANCE_EVIDENCE_FILE") or ".local/acceptance-gates.json"
     return Path(value)
 
 
@@ -86,7 +87,7 @@ def inspect(path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create or inspect a MoldPilot acceptance evidence file.")
     parser.add_argument("--env-file", default=".env")
-    parser.add_argument("--path", default="", help="Override evidence file path. Defaults to MOLD_ACCEPTANCE_EVIDENCE_FILE.")
+    parser.add_argument("--path", default="", help="Override evidence file path. Defaults to AGENT_ACCEPTANCE_EVIDENCE_FILE.")
     parser.add_argument("--environment", default="local-delivery")
     parser.add_argument("--confirmed-by", default="")
     parser.add_argument("--write-template", action="store_true", help="Write a template if the target file does not exist.")

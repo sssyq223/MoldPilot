@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import String, Text, Integer, Date, DateTime, Numeric, ForeignKey, UniqueConstraint, CheckConstraint, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
-from app.model_base import Base, IdentityMixin, J
+from agent_core.model_base import Base, IdentityMixin, J
 
 
 class ContactCase(IdentityMixin, Base):

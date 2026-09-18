@@ -5,8 +5,8 @@ from decimal import Decimal
 from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.model_base import Base, IdentityMixin
-from app import core_models as _core_models
+from agent_core.model_base import Base, IdentityMixin
+from agent_core import models as _core_models
 
 # Business services may reference host-owned identities, workflow records and
 # audit records through the pack model namespace.  The dependency points from

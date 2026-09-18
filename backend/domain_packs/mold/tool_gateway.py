@@ -2,13 +2,21 @@
 from pathlib import Path
 from functools import lru_cache
 from sqlalchemy import select, or_
-from app.authorization import grants_for, predicate, require, select_fields
-from app.models import Project, PurchaseRequest, Capability
 from domain_packs.mold.erp.core.business import visible_requests, request_data
 from agent_core.errors import DomainError
-from app.db import now
-from app.bpm import content_hash
+from agent_core.host_ports import host_ports
 from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput
+
+
+_host = host_ports()
+m = _host.models
+Project, PurchaseRequest, Capability = m.Project, m.PurchaseRequest, m.Capability
+grants_for = _host.grants_for
+predicate = _host.predicate
+require = _host.require
+select_fields = _host.select_fields
+now = _host.now
+content_hash = _host.content_hash
 
 
 def skill_agent_description(content: str) -> str:
@@ -777,10 +785,9 @@ def execute(db, user, key, arguments, run=None):
         return analyze_delivery_risk(db,user,data)
     if arguments: raise DomainError("INVALID_TOOL_INPUT", "该工具不接受额外参数")
     if key=='query_uploaded_files':
-        from app.files import conversation_files
         from fastapi.encoders import jsonable_encoder
         if not run or run.user_id!=user.id:raise DomainError("FILE_CONTEXT_INVALID","附件查询须绑定当前任务",403)
-        return jsonable_encoder({"data":conversation_files(run.conversation_id,user,db),"source":"agent_db","as_of":now(),"limitations":["仅当前会话可见附件元数据；文件内容尚未解析，不能据此声称已识别文本或完成审批"]})
+        return jsonable_encoder({"data":_host.conversation_files(run.conversation_id,user,db),"source":"agent_db","as_of":now(),"limitations":["仅当前会话可见附件元数据；文件内容尚未解析，不能据此声称已识别文本或完成审批"]})
     if key == "query_projects":
         p = predicate(db, user, "project.read", {"project_id": Project.id})
         data = [select_fields({"id": row.id, "code": row.code, "name": row.name, "status": row.status},
@@ -790,7 +797,7 @@ def execute(db, user, key, arguments, run=None):
         data = [request_data(db, user, r) for r in db.scalars(visible_requests(db, user).order_by(PurchaseRequest.created_at.desc()).limit(100))]
     elif key=='query_contact_cases':
         from sqlalchemy import func
-        from app.models import ContactCase,ContactTask,AssignmentGroup,User
+        ContactCase,ContactTask,AssignmentGroup,User = m.ContactCase,m.ContactTask,m.AssignmentGroup,m.User
         from domain_packs.mold.erp.change.contacts import permitted, progress_summary
         q=select(ContactCase).where(predicate(db,user,'contact.read',{'project_id':ContactCase.project_id,'category':ContactCase.category})).order_by(ContactCase.created_at.desc(),ContactCase.id).limit(100)
         data=[]

@@ -11,6 +11,7 @@ from agent_core.host_ports import host_ports
 from agent_core.schemas import StrictModel
 from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput, match_strength as _strength
 from domain_packs.mold.erp.core.legacy_read_ports import business_subject_data, contact_case_permitted, purchase_order_data
+from domain_packs.mold.config import settings as mold_settings
 
 
 _host = host_ports()
@@ -98,7 +99,7 @@ def parse_logistics_quote(arguments):
     validity_days = (data.valid_to - data.valid_from).days
     if validity_days < 0:
         raise DomainError("INVALID_TOOL_INPUT", "物流报价失效日期不能早于生效日期")
-    max_valid_days = settings().logistics_quote_max_valid_days
+    max_valid_days = mold_settings().logistics_quote_max_valid_days
     if validity_days > max_valid_days:
         raise DomainError("LOGISTICS_QUOTE_VALIDITY_TOO_LONG", f"物流报价有效期不能超过 {max_valid_days} 天")
     if data.pricing_method == "COMPETITIVE" and data.comparison_count < 2:

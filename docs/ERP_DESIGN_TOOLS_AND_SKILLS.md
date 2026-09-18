@@ -3,7 +3,7 @@
 更新时间：2026-09-16  
 范围：MoldPilot 当前注册的设计能力，共 **52 个工具**、**10 个技能**。
 
-其中，`query_design_route_context` 和 `design_route_context_review` 是 MoldPilot 本地项目数据能力；其余 **51 个工具、9 个技能** 通过 ERP 设计 MCP 调用 `D:\work2\management-system` 对应的 ERP 接口。这里的“工具”是可被模型调用的操作，“技能”是引导模型选择工具、安排步骤和控制确认的业务流程。
+其中，`query_design_route_context` 和 `design_route_context_review` 是 MoldPilot 本地项目数据能力；其余 **51 个工具、9 个技能** 通过随 Mold 业务包配置的 ERP 设计 MCP 调用现有 ERP 接口。这里的“工具”是可被模型调用的操作，“技能”是引导模型选择工具、安排步骤和控制确认的业务流程。
 
 ## 使用前提与触发规则
 
@@ -12,7 +12,7 @@
 要真正出现并可执行，需同时满足：
 
 1. 管理员已把相应工具或技能分配给该账号，并授予 `design_route.read`（查询）或 `design_route.execute`（写入）权限；超级管理员默认可见全部能力。
-2. ERP MCP 配置已可连接：[`mcp/erp-design-upload/.env`](../mcp/erp-design-upload/.env) 中的 `ERP_DESIGN_UPLOAD_BASE_URL`、`ERP_DESIGN_UPLOAD_TOKEN` 和超时配置正确。
+2. ERP MCP 配置已可连接：`backend/domain_packs/mold/mcp/erp-design-upload/.env` 中的 `ERP_DESIGN_UPLOAD_BASE_URL`、`ERP_DESIGN_UPLOAD_TOKEN` 和超时配置正确；依赖包位置通过 `MOLD_ERP_DESIGN_MCP_PACKAGE` 配置。
 3. 文件类操作只能使用**当前聊天中、当前用户上传的附件**：新模/BOM 为 XLSX，修模图纸为 DXF，标准件为当前聊天上传的文件。
 4. 查询可直接执行；所有会改变 ERP 的工具都先展示目标和字段，用户在下一句明确回复“确认”“确认导入”“按以上执行”等后才执行。删除、审批、提交、执行等不会因模糊表述自动发生。
 

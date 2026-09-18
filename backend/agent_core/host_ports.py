@@ -19,7 +19,9 @@ _MODULE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 @dataclass(frozen=True)
 class HostPorts:
     models: ModuleType
+    object_storage: ModuleType
     access: Callable[..., Any]
+    grants_for: Callable[..., Any]
     fingerprint: Callable[..., str]
     predicate: Callable[..., Any]
     require: Callable[..., Any]
@@ -27,7 +29,11 @@ class HostPorts:
     content_hash: Callable[[Any], str]
     proposal_confirmation_policy: Callable[..., dict]
     settings: Callable[[], Any]
+    get_db: Callable[..., Any]
     now: Callable[[], Any]
+    record: Callable[..., Any]
+    current_user: Callable[..., Any]
+    conversation_files: Callable[..., Any]
 
 
 @lru_cache

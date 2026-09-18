@@ -7,6 +7,7 @@ export default defineConfig(({mode}) => {
   if(!/^[a-z][a-z0-9_]*$/.test(pack))throw new Error('VITE_BUSINESS_PACK must name an installed domain pack')
   return {
     plugins: [vue()],
+    define:{__DOMAIN_PACK_ID__:JSON.stringify(pack)},
     resolve:{alias:{'@domain-pack':resolve(__dirname,`src/domain-packs/${pack}`)}},
     server: { proxy: { '/api': 'http://127.0.0.1:8000' } },
   }

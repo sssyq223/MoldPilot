@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from .config import settings
-from .model_base import Base, SHANGHAI, now
+from agent_core.model_base import Base, SHANGHAI, now
 
 
 def aware(value):

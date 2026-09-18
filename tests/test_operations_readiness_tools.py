@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models import User
 from app.tool_gateway import SKILLS, TOOLS, available_tools, execute, skill_context, tool_schema
+from domain_packs.mold.config import settings as mold_settings
 from pg_db import factory as pg_factory
 
 
@@ -34,7 +35,7 @@ def test_operations_readiness_reports_unconfirmed_fr118_gates_and_redacts_secret
     monkeypatch.setattr(cfg, "database_url", "postgresql://agent:secret-db-pass@localhost:5432/agent_test?sslmode=require")
     monkeypatch.setattr(cfg, "redis_url", "redis://:secret-redis-pass@127.0.0.1:6379/0")
     monkeypatch.setattr(cfg, "worker_secret", "secret-worker-value")
-    monkeypatch.setattr(cfg, "credential_encryption_key", "secret-credential-value")
+    monkeypatch.setattr(mold_settings(), "credential_encryption_key", "secret-credential-value")
     monkeypatch.setattr(cfg, "file_s3_secret_key", "secret-s3-value")
     with pg_factory_with_admin() as db:
         admin = db.scalar(select(User).where(User.username == "admin"))

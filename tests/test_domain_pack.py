@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import re
 import pytest
 
 from agent_core.domain_pack import (
@@ -62,7 +63,7 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert model_catalog.BusinessSubject.__module__ == "domain_packs.mold.erp.core.domain_models"
     assert model_catalog.ContactCase.__module__ == "domain_packs.mold.erp.change.contact_models"
     assert model_catalog.ContactAttachment.__module__ == "domain_packs.mold.erp.change.attachment_models"
-    assert model_catalog.Base.__module__ == "app.model_base"
+    assert model_catalog.Base.__module__ == "agent_core.model_base"
     assert "purchase.read" in authorization_contract().PERMISSIONS
     assert resource_contract().APPROVAL_RESOURCE_TYPES == {
         "purchase_request", "business_subject",
@@ -120,6 +121,65 @@ def test_tool_implementations_are_categorized_beside_skills():
     assert (tool_root / "agent" / "operations" / "operations_readiness_tools.py").is_file()
 
 
+def test_pack_boundary_has_no_hidden_host_imports_or_root_mcp_runtime():
+    project_root = Path(__file__).resolve().parents[1]
+    pack_root = project_root / "backend" / "domain_packs" / "mold"
+    direct_host_imports = []
+    for path in pack_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"(?m)^\s*(?:from\s+app(?:\.|\s)|import\s+app(?:\.|\s|$))", source):
+            direct_host_imports.append(path.relative_to(pack_root).as_posix())
+    assert sorted(direct_host_imports) == sorted([
+        "alembic/env.py",
+        "ports/assignments.py",
+        "ports/bpm.py",
+        "ports/config.py",
+        "ports/confirmation_policy.py",
+        "ports/db.py",
+        "ports/errors.py",
+        "ports/events.py",
+        "ports/files.py",
+        "ports/material_rules.py",
+        "ports/message_worker.py",
+        "ports/proposal_registry.py",
+        "ports/schemas.py",
+        "ports/security.py",
+    ])
+
+    mcp_root = pack_root / "mcp" / "erp-design-upload"
+    assert not (project_root / "mcp" / "erp-design-upload").exists()
+    assert (mcp_root / "package.json").is_file()
+    assert (mcp_root / "scripts" / "install-erp-design-package.mjs").is_file()
+    assert not (mcp_root / "package-lock.json").exists()
+    mcp_source = "\n".join(path.read_text(encoding="utf-8") for path in mcp_root.rglob("*") if path.is_file())
+    assert "D:/work2" not in mcp_source
+    assert "D:\\work2" not in mcp_source
+
+
+def test_generic_host_config_and_frontend_shell_are_product_neutral():
+    project_root = Path(__file__).resolve().parents[1]
+    config_source = (project_root / "backend" / "app" / "config.py").read_text(encoding="utf-8")
+    for field in (
+        "logistics_quote_max_valid_days", "erp_base_url",
+        "erp_allow_insecure_local", "credential_encryption_key",
+    ):
+        assert field not in config_source
+
+    generic_source = "\n".join(
+        (project_root / relative).read_text(encoding="utf-8")
+        for relative in ("web/index.html", "web/src/theme.ts", "web/src/api.ts")
+    ).lower()
+    for legacy in ("moldpilot", "mold_session", "mold_csrf"):
+        assert legacy not in generic_source
+
+    package = json.loads((project_root / "web" / "package.json").read_text(encoding="utf-8"))
+    assert "tsconfig.mold.json" in package["scripts"]["typecheck"]
+    assert "tsconfig.template.json" in package["scripts"]["typecheck"]
+    assert "tsconfig.template.json" in package["scripts"]["build:template"]
+    app_source = (project_root / "web" / "src" / "App.vue").read_text(encoding="utf-8")
+    assert "__DOMAIN_PACK_ID__" in app_source
+
+
 def test_agent_core_source_does_not_embed_mold_business_policy():
     from pathlib import Path
     import agent_core
@@ -166,8 +226,9 @@ def test_domain_pack_uses_validated_host_port_contract():
     assert isinstance(ports, HostPorts)
     assert ports.models.__name__ == "app.models"
     for name in (
-        "access", "fingerprint", "predicate", "require", "select_fields",
-        "content_hash", "proposal_confirmation_policy", "settings", "now",
+        "access", "grants_for", "fingerprint", "predicate", "require", "select_fields",
+        "content_hash", "proposal_confirmation_policy", "settings", "get_db", "now",
+        "record", "current_user", "conversation_files",
     ):
         assert callable(getattr(ports, name))
     from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput

@@ -30,13 +30,16 @@ def _database_url(env_file: str, url_key: str, explicit_url: str) -> str:
         return explicit_url
     if os.environ.get(url_key):
         return os.environ[url_key]
-    return dotenv_values(env_file).get(url_key) or ""
+    if url_key == "AGENT_DATABASE_URL" and os.environ.get("MOLD_DATABASE_URL"):
+        return os.environ["MOLD_DATABASE_URL"]
+    values = dotenv_values(env_file)
+    return values.get(url_key) or (values.get("MOLD_DATABASE_URL") if url_key == "AGENT_DATABASE_URL" else "") or ""
 
 
 def _require_postgresql(url: str) -> None:
     parsed = urlsplit(url)
     if not url:
-        raise SystemExit("PostgreSQL DSN is required. Set MOLD_DATABASE_URL or pass --database-url.")
+        raise SystemExit("PostgreSQL DSN is required. Set AGENT_DATABASE_URL or pass --database-url.")
     if parsed.scheme.startswith("sqlite"):
         raise SystemExit("Refusing SQLite: browser smoke tests must use PostgreSQL.")
     if not parsed.scheme.startswith("postgresql"):
@@ -311,9 +314,9 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--database-url", default="", help="PostgreSQL SQLAlchemy DSN. Defaults to MOLD_DATABASE_URL from env/.env.")
+    parser.add_argument("--database-url", default="", help="PostgreSQL SQLAlchemy DSN. Defaults to AGENT_DATABASE_URL from env/.env.")
     parser.add_argument("--env-file", default=".env")
-    parser.add_argument("--url-key", default="MOLD_DATABASE_URL")
+    parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
     parser.add_argument("--scenario", choices=["pause", "closure", "contact"], default="pause")

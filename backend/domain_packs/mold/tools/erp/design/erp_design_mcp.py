@@ -21,16 +21,18 @@ from uuid import UUID, uuid4
 from pydantic import Field, ValidationError
 from sqlalchemy import select
 
-from app import object_storage
 from domain_packs.mold import files, models as m
-from app.db import now
-from app.errors import DomainError
-from app.events import record
-from app.schemas import StrictModel
+from agent_core.errors import DomainError
+from agent_core.host_ports import host_ports
+from agent_core.schemas import StrictModel
+from domain_packs.mold.mcp_runtime import erp_design_upload_runtime
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_RUNTIME_ROOT = _PROJECT_ROOT / "mcp" / "erp-design-upload"
+_host = host_ports()
+object_storage = _host.object_storage
+now = _host.now
+record = _host.record
+_RUNTIME_ROOT = erp_design_upload_runtime()
 _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"
 _CONTROL_SERVER_FILE = _RUNTIME_ROOT / "scripts" / "erp-design-control-mcp.mjs"

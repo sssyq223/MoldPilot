@@ -20,19 +20,22 @@ from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy import select
 
-from app import authorization as auth, object_storage
 from domain_packs.mold import files, models as m
-from app.db import get_db
-from app.errors import DomainError
-from app.events import record
-from app.schemas import StrictModel
-from app.security import current_user
+from agent_core.errors import DomainError
+from agent_core.host_ports import host_ports
+from agent_core.schemas import StrictModel
+from domain_packs.mold.mcp_runtime import erp_design_upload_runtime
 
 
 router = APIRouter(prefix="/api/erp-design-uploads", tags=["ERP new-mold design uploads"])
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_RUNTIME_ROOT = _PROJECT_ROOT / "mcp" / "erp-design-upload"
+_host = host_ports()
+object_storage = _host.object_storage
+get_db = _host.get_db
+record = _host.record
+current_user = _host.current_user
+require = _host.require
+_RUNTIME_ROOT = erp_design_upload_runtime()
 _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"
 _PARSE_ACTION = "erp_design_upload.parsed"
@@ -193,7 +196,7 @@ def _validation_allows_import(value):
 
 @router.post("/parse")
 def parse_design(data: ParseInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.create")
+    require(db, user, "design_route.create")
     source = files.uploaded_file(db, user, str(data.file_id))
     if Path(source.filename).suffix.lower() != ".xlsx":
         raise DomainError("ERP_DESIGN_FILE_TYPE", "新模设计上传仅支持 XLSX 文件")
@@ -218,21 +221,21 @@ def parse_design(data: ParseInput, user=Depends(current_user), db=Depends(get_db
 
 @router.post("/status")
 def upload_status(data: StatusInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.read")
+    require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
     return call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result})
 
 
 @router.post("/result")
 def upload_result(data: SessionInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.read")
+    require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
     return call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
 
 
 @router.post("/validate")
 def validate_rows(data: RowsInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.create")
+    require(db, user, "design_route.create")
     _owned_session(db, user, data.session_id)
     result = call_mcp("validate_new_mold_design_rows", {
         "sessionId": data.session_id, "sheetType": data.sheet_type, "moldCode": data.mold_code,
@@ -245,7 +248,7 @@ def validate_rows(data: RowsInput, user=Depends(current_user), db=Depends(get_db
 
 @router.post("/reprice")
 def reprice_rows(data: RepriceInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.create")
+    require(db, user, "design_route.create")
     _owned_session(db, user, data.session_id)
     return call_mcp("reprice_new_mold_design_rows", {
         "sheetType": data.sheet_type, "moldCode": data.mold_code, "previewRows": data.preview_rows,
@@ -254,14 +257,14 @@ def reprice_rows(data: RepriceInput, user=Depends(current_user), db=Depends(get_
 
 @router.post("/approval-config")
 def approval_config(data: SessionInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.read")
+    require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
     return call_mcp("get_new_mold_approval_launch_config", {"sessionId": data.session_id})
 
 
 @router.post("/import")
 def import_design(data: ImportInput, user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "design_route.execute")
+    require(db, user, "design_route.execute")
     _owned_session(db, user, data.session_id)
     validation = call_mcp("validate_new_mold_design_rows", {
         "sessionId": data.session_id, "sheetType": data.sheet_type, "moldCode": data.mold_code,

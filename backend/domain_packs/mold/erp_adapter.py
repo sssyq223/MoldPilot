@@ -4,7 +4,8 @@ from decimal import Decimal
 import json
 import httpx
 from cryptography.fernet import Fernet,InvalidToken
-from app.config import settings
+from domain_packs.mold.config import settings
+from agent_core.host_ports import host_ports
 from agent_core.errors import DomainError
 
 CATEGORIES={'hardware':'hardware','hardware_standard':'hardware','wj':'hardware','五金':'hardware',
@@ -36,9 +37,10 @@ def decrypt(value):
 class ERPClient:
     def __init__(self,token=None,transport=None):
         config=settings();parts=urlsplit(config.erp_base_url)
+        environment=host_ports().settings().environment
         if not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
             raise DomainError('ERP_NOT_CONFIGURED','管理员尚未配置有效 ERP 服务地址',503)
-        if parts.scheme!='https' and not (parts.scheme=='http' and config.erp_allow_insecure_local and config.environment!='production'):
+        if parts.scheme!='https' and not (parts.scheme=='http' and config.erp_allow_insecure_local and environment!='production'):
             raise DomainError('ERP_HTTPS_REQUIRED','ERP 连接需要 HTTPS；本地测试例外必须显式配置',503)
         self.client=httpx.Client(base_url=config.erp_base_url.rstrip('/')+'/',transport=transport,
             headers={'Authorization':'Bearer '+token} if token else {},trust_env=False,follow_redirects=False,
@@ -73,9 +75,8 @@ class ERPClient:
     def production_schedules(self,mold_no=None,project_no=None):
         return self.request('GET','system/productionSchedule/list',params=plan_progress_params(mold_no,project_no))['data']
     def plan_execution_progress(self,mold_no=None,project_no=None):
-        from app.db import now
         return normalize_plan_progress(self.project_nodes(mold_no,project_no),
-            self.production_schedules(mold_no,project_no),now().isoformat())
+            self.production_schedules(mold_no,project_no),host_ports().now().isoformat())
 
 
 def verified_identity(client,expected_id,permission=None):

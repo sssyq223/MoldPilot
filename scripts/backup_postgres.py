@@ -23,7 +23,8 @@ def _configured(value: str | None) -> bool:
 
 
 def _config_value(config: dict, key: str, default: str = "") -> str:
-    return os.environ.get(key) or str(config.get(key) or default)
+    legacy = "MOLD_" + key.removeprefix("AGENT_") if key.startswith("AGENT_") else ""
+    return os.environ.get(key) or str(config.get(key) or os.environ.get(legacy) or config.get(legacy) or default)
 
 
 def _parse_url(value: str, expected_db: str) -> dict:
@@ -146,12 +147,12 @@ def _docker_command(image: str, database: dict, output_dir: Path, output_file: P
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a MoldPilot PostgreSQL pg_dump backup.")
     parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
-    parser.add_argument("--url-key", default="MOLD_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
+    parser.add_argument("--url-key", default="AGENT_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
     parser.add_argument("--expected-db", default="moldpilot", help="Expected database name. Defaults to moldpilot.")
     parser.add_argument("--output-dir", default=".local/backups", help="Backup directory. Defaults to .local/backups.")
     parser.add_argument("--pg-dump", default="", help="Optional explicit pg_dump executable path.")
     parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
-    parser.add_argument("--docker-image", default="", help="Docker image containing pg_dump. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:18-alpine.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_dump. Defaults to AGENT_PG_CLIENT_IMAGE or postgres:18-alpine.")
     parser.add_argument("--dry-run", action="store_true", help="Validate configuration and print the backup target only.")
     args = parser.parse_args()
 
@@ -161,9 +162,9 @@ def main() -> int:
         raise SystemExit(f"{args.url_key} is missing in {args.env_file}")
     database = _parse_url(str(url), args.expected_db)
 
-    pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or _config_value(config, "MOLD_PG_DUMP_PATH"))
+    pg_dump, pg_dump_source = _find_tool("pg_dump", args.pg_dump or _config_value(config, "AGENT_PG_DUMP_PATH"))
     docker = _docker_probe()
-    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:18-alpine")
+    image = args.docker_image or _config_value(config, "AGENT_PG_CLIENT_IMAGE", "postgres:18-alpine")
     client_mode = "native" if pg_dump and args.client_mode in {"auto", "native"} else ""
     if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
         client_mode = "docker"

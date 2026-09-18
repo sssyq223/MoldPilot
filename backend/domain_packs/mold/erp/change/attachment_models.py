@@ -2,7 +2,7 @@
 from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.model_base import Base, IdentityMixin
+from agent_core.model_base import Base, IdentityMixin
 
 
 class ContactAttachment(IdentityMixin, Base):

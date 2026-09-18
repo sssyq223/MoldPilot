@@ -21,7 +21,10 @@ def _test_database_url() -> str | None:
     if explicit:
         candidate = explicit
     else:
-        main = os.environ.get("MOLD_DATABASE_URL") or values.get("MOLD_DATABASE_URL")
+        main = (
+            os.environ.get("AGENT_DATABASE_URL") or values.get("AGENT_DATABASE_URL")
+            or os.environ.get("MOLD_DATABASE_URL") or values.get("MOLD_DATABASE_URL")
+        )
         if not main:
             return None
         url = make_url(main)

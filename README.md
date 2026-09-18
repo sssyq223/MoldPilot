@@ -70,7 +70,7 @@ MoldPilot/
 ├─ web/                 # Vue 3 前端
 ├─ alembic/             # MoldPilot 现有兼容迁移链
 ├─ alembic_core/        # 通用智能体宿主迁移链
-├─ mcp/                 # MCP 服务
+├─ backend/domain_packs/# 可替换业务包（含各自 ERP、Tool、Skill、MCP）
 ├─ tests/               # 后端测试
 ├─ scripts/             # 开发与运维辅助脚本
 ├─ docs/                # 产品与技术文档
@@ -100,13 +100,13 @@ Copy-Item .env.example .env
 编辑 `.env`，至少确认以下配置：
 
 ```dotenv
-MOLD_DATABASE_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
+AGENT_DATABASE_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
 AGENT_MIGRATION_URL=postgresql+psycopg://用户名:密码@127.0.0.1:5432/moldpilot
-MOLD_REDIS_URL=redis://127.0.0.1:6379/0
-MOLD_WORKER_SECRET=替换为本地随机密钥
+AGENT_REDIS_URL=redis://127.0.0.1:6379/0
+AGENT_WORKER_SECRET=替换为本地随机密钥
 ```
 
-如需运行 Agent，再配置模型服务，并将 `MOLD_LLM_ENABLED` 设为 `true`。完整字段和示例见 [`.env.example`](.env.example)。请勿提交包含真实凭据的 `.env`。
+如需运行 Agent，再配置模型服务，并将 `AGENT_LLM_ENABLED` 设为 `true`。旧版 `MOLD_*` 宿主变量仍可读取，但新部署统一使用 `AGENT_*`；Mold 领域策略和 ERP 连接仍使用 `MOLD_*`。完整字段和示例见 [`.env.example`](.env.example)。请勿提交包含真实凭据的 `.env`。
 
 请先在 PostgreSQL 中创建名为 `moldpilot` 的空数据库。Redis 可以使用本机服务；也可以通过仓库中的 Compose 文件启动：
 
@@ -114,7 +114,7 @@ MOLD_WORKER_SECRET=替换为本地随机密钥
 docker compose -f docker-compose.redis.yml up -d
 ```
 
-Compose 服务监听 `127.0.0.1:56379`，使用它时请将 `.env` 中的 `MOLD_REDIS_URL` 改为 `redis://127.0.0.1:56379/0`。
+Compose 服务监听 `127.0.0.1:56379`，使用它时请将 `.env` 中的 `AGENT_REDIS_URL` 改为 `redis://127.0.0.1:56379/0`。
 
 ### 3. 安装后端依赖并初始化数据库
 
@@ -140,6 +140,11 @@ Set-Location web
 npm ci
 Set-Location ..
 ```
+
+Mold ERP 设计上传 MCP 随业务包存放在 `backend/domain_packs/mold/mcp/erp-design-upload`。
+ERP 工程产出的 npm 包不复制进 Agent 仓库；设置 `MOLD_ERP_DESIGN_MCP_PACKAGE` 为该 tarball
+的实际路径后，在 MCP 目录执行 `npm run setup`。业务包也可用
+`MOLD_ERP_DESIGN_MCP_ROOT` 显式覆盖运行时目录。
 
 ### 5. 启动服务
 

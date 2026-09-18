@@ -1,5 +1,5 @@
 {
-  "name": "moldpilot-web",
+  "name": "agent-workbench-web",
   "version": "0.1.0",
   "private": true,
   "author": {
@@ -15,7 +15,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "npm run build:mold",
+    "build:mold": "vue-tsc --noEmit -p tsconfig.mold.json && vite build",
+    "build:template": "vue-tsc --noEmit -p tsconfig.template.json && vite build --mode template",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.mold.json && vue-tsc --noEmit -p tsconfig.template.json",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run"
   },

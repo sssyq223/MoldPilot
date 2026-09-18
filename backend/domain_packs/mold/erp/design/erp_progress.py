@@ -6,7 +6,7 @@ bounded DTO with native references and an as-of timestamp.
 """
 from sqlalchemy import select
 from domain_packs.mold import models as m
-from domain_packs.mold.ports.config import settings
+from domain_packs.mold.config import settings
 from domain_packs.mold.erp_adapter import ERPClient, decrypt
 from domain_packs.mold.ports.errors import DomainError
 

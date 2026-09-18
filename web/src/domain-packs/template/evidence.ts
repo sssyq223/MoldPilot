@@ -10,4 +10,4 @@ export function evidenceSections(row:any){return Object.entries(row||{}).filter(
 export function evidenceCardTitle(row:any,index:number,title:string){return compactRecordTitle(row)||`${title} ${index+1}`}
 export function evidenceBriefTitle(item:any){const rows=Array.isArray(item?.data)?item.data:[];return rows.length?(compactRecordTitle(rows[0])||`记录 ${rows.length} 条`):'暂无可见记录'}
 export function evidenceBriefSummary(item:any){const rows=Array.isArray(item?.data)?item.data:[];return rows.length?compactRecordFields(rows[0]).map((item:any)=>`${item.label} ${item.value}`).join(' · '):'本次查询未返回可见记录。'}
-export function hasBusinessFactHighlights(){return false}
+export function hasBusinessFactHighlights(_row:any){return false}

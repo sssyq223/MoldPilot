@@ -11,6 +11,7 @@ from pydantic import Field
 from sqlalchemy import func, select, text
 
 from domain_packs.mold.ports.config import model_settings, settings
+from domain_packs.mold.config import settings as mold_settings
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.models import AuditEvent, Outbox, Run, Step
 from domain_packs.mold.ports.schemas import StrictModel
@@ -366,7 +367,7 @@ def _backup_restore_status() -> dict:
         "can_run_local_backup": can_backup,
         "can_rehearse_restore": can_restore_rehearse,
         "status": "BACKUP_TOOLING_READY" if can_backup and can_restore_rehearse else "BACKUP_TOOLING_INCOMPLETE",
-        "note": "备份/恢复脚本只读取本机 .env，拒绝 SQLite；可使用本机 PostgreSQL 客户端或 Docker 临时 postgres 客户端；恢复默认要求隔离库 MOLD_RESTORE_DATABASE_URL，正式 RTO/RPO 仍需隔离恢复演练证明。",
+        "note": "备份/恢复脚本只读取本机 .env，拒绝 SQLite；可使用本机 PostgreSQL 客户端或 Docker 临时 postgres 客户端；恢复默认要求隔离库 AGENT_RESTORE_DATABASE_URL，正式 RTO/RPO 仍需隔离恢复演练证明。",
     }
 
 
@@ -680,7 +681,7 @@ def _readiness_summary(
     if database_baseline.get("delivery_ready") and database_health.get("reachable"):
         ready_items.append("postgres_moldpilot_database")
     else:
-        block("database", "PostgreSQL/moldpilot 数据库基线", database_baseline.get("status"), "检查 MOLD_DATABASE_URL，必须指向 PostgreSQL 的 moldpilot 库，并确认数据库可读。")
+        block("database", "PostgreSQL/moldpilot 数据库基线", database_baseline.get("status"), "检查 AGENT_DATABASE_URL，必须指向 PostgreSQL 的 moldpilot 库，并确认数据库可读。")
 
     if migration_status.get("matches_repository_heads"):
         ready_items.append("alembic_migration_head")
@@ -700,7 +701,7 @@ def _readiness_summary(
     if backup_restore.get("status") == "BACKUP_TOOLING_READY":
         ready_items.append("postgres_backup_restore_tooling")
     else:
-        block("backup_restore", "PostgreSQL 备份/恢复工具链", backup_restore.get("status"), "安装 PostgreSQL 客户端或指定 pg_dump/pg_restore，配置 MOLD_RESTORE_DATABASE_URL，执行备份并在隔离库恢复演练。")
+        block("backup_restore", "PostgreSQL 备份/恢复工具链", backup_restore.get("status"), "安装 PostgreSQL 客户端或指定 pg_dump/pg_restore，配置 AGENT_RESTORE_DATABASE_URL，执行备份并在隔离库恢复演练。")
 
     if log_retention.get("policy_fully_configured"):
         ready_items.append("log_retention_policy")
@@ -737,6 +738,7 @@ def _readiness_summary(
 
 def query(db, _user, data: OperationsReadinessInput) -> dict:
     cfg = settings()
+    mold_cfg = mold_settings()
     model_cfg = model_settings()
     deployment_runtime = _deployment_runtime_status()
     backup_restore = _backup_restore_status()
@@ -815,8 +817,8 @@ def query(db, _user, data: OperationsReadinessInput) -> dict:
                 "acceptance_evidence": acceptance_evidence,
                 "security_runtime": {
                     "worker_secret_configured": _configured(cfg.worker_secret),
-                    "credential_encryption_key_configured": _configured(cfg.credential_encryption_key),
-                    "erp_base_url_configured": _configured(cfg.erp_base_url),
+                    "credential_encryption_key_configured": _configured(mold_cfg.credential_encryption_key),
+                    "erp_base_url_configured": _configured(mold_cfg.erp_base_url),
                 },
                 "model_runtime": {
                     "enabled": model_cfg.llm_enabled,

@@ -27,7 +27,9 @@ def now() -> datetime:
 
 
 def _env(env_file: str, key: str, default: str = "") -> str:
-    return os.environ.get(key) or dotenv_values(env_file).get(key) or default
+    values = dotenv_values(env_file)
+    legacy = "MOLD_" + key.removeprefix("AGENT_") if key.startswith("AGENT_") else ""
+    return os.environ.get(key) or values.get(key) or os.environ.get(legacy) or values.get(legacy) or default
 
 
 def _days(env_file: str, key: str) -> int:
@@ -41,7 +43,7 @@ def _days(env_file: str, key: str) -> int:
 def _require_postgresql(url: str) -> None:
     parsed = urlsplit(url)
     if not url:
-        raise SystemExit("MOLD_DATABASE_URL is required")
+        raise SystemExit("AGENT_DATABASE_URL is required")
     if parsed.scheme.startswith("sqlite"):
         raise SystemExit("Refusing SQLite: log retention must run against PostgreSQL.")
     if not parsed.scheme.startswith("postgresql"):
@@ -78,7 +80,7 @@ def _load_rows(connection, sql: str, params: dict) -> list[dict]:
 
 def _audit_retention(connection, *, days: int, limit: int, archive_dir: Path, execute: bool) -> dict:
     if days <= 0:
-        return {"configured": False, "action": "skipped", "reason": "MOLD_AUDIT_LOG_RETENTION_DAYS is not configured"}
+        return {"configured": False, "action": "skipped", "reason": "AGENT_AUDIT_LOG_RETENTION_DAYS is not configured"}
     cutoff = now() - timedelta(days=days)
     total = connection.execute(text("SELECT count(*) FROM audit_event WHERE created_at < :cutoff"), {"cutoff": cutoff}).scalar_one()
     rows = _load_rows(
@@ -109,7 +111,7 @@ def _audit_retention(connection, *, days: int, limit: int, archive_dir: Path, ex
 
 def _model_retention(connection, *, days: int, limit: int, archive_dir: Path, execute: bool) -> dict:
     if days <= 0:
-        return {"configured": False, "action": "skipped", "reason": "MOLD_MODEL_LOG_RETENTION_DAYS is not configured"}
+        return {"configured": False, "action": "skipped", "reason": "AGENT_MODEL_LOG_RETENTION_DAYS is not configured"}
     cutoff = now() - timedelta(days=days)
     step_total = connection.execute(
         text(
@@ -215,7 +217,7 @@ def _model_retention(connection, *, days: int, limit: int, archive_dir: Path, ex
 
 def _access_retention(connection, *, days: int, execute: bool) -> dict:
     if days <= 0:
-        return {"configured": False, "action": "skipped", "reason": "MOLD_ACCESS_LOG_RETENTION_DAYS is not configured"}
+        return {"configured": False, "action": "skipped", "reason": "AGENT_ACCESS_LOG_RETENTION_DAYS is not configured"}
     cutoff = now() - timedelta(days=days)
     expired_total = connection.execute(text("SELECT count(*) FROM login_session WHERE expires_at < :now"), {"now": now()}).scalar_one()
     old_total = connection.execute(text("SELECT count(*) FROM login_session WHERE created_at < :cutoff"), {"cutoff": cutoff}).scalar_one()
@@ -239,14 +241,14 @@ def _access_retention(connection, *, days: int, execute: bool) -> dict:
 def build_report(env_file: str, archive_dir: Path, limit: int, execute: bool, acknowledge: bool) -> dict:
     if execute and not acknowledge:
         raise SystemExit("Refusing to prune logs without --i-understand-this-will-prune-logs")
-    url = _env(env_file, "MOLD_DATABASE_URL")
+    url = _env(env_file, "AGENT_DATABASE_URL")
     _require_postgresql(url)
     engine = create_engine(url, pool_pre_ping=True)
     cfg = {
-        "audit": _days(env_file, "MOLD_AUDIT_LOG_RETENTION_DAYS"),
-        "application": _days(env_file, "MOLD_APP_LOG_RETENTION_DAYS"),
-        "access": _days(env_file, "MOLD_ACCESS_LOG_RETENTION_DAYS"),
-        "model": _days(env_file, "MOLD_MODEL_LOG_RETENTION_DAYS"),
+        "audit": _days(env_file, "AGENT_AUDIT_LOG_RETENTION_DAYS"),
+        "application": _days(env_file, "AGENT_APP_LOG_RETENTION_DAYS"),
+        "access": _days(env_file, "AGENT_ACCESS_LOG_RETENTION_DAYS"),
+        "model": _days(env_file, "AGENT_MODEL_LOG_RETENTION_DAYS"),
     }
     with engine.begin() as connection:
         database = connection.execute(text("SELECT current_database()")).scalar_one()

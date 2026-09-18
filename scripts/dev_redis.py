@@ -27,11 +27,13 @@ DEFAULT_REDIS_HOME = Path(r"D:\Redis")
 
 
 def _redis_url(env_file: str) -> str:
-    return dotenv_values(env_file).get("MOLD_REDIS_URL") or "redis://127.0.0.1:6379/0"
+    values = dotenv_values(env_file)
+    return values.get("AGENT_REDIS_URL") or values.get("MOLD_REDIS_URL") or "redis://127.0.0.1:6379/0"
 
 
 def _redis_home(env_file: str) -> Path:
-    configured = dotenv_values(env_file).get("MOLD_REDIS_HOME")
+    values = dotenv_values(env_file)
+    configured = values.get("AGENT_REDIS_HOME") or values.get("MOLD_REDIS_HOME")
     return Path(configured) if configured else DEFAULT_REDIS_HOME
 
 
@@ -125,7 +127,7 @@ def _start_native(args) -> int:
     if not redis_server.exists():
         print("started=False")
         print(f"missing_redis_server={redis_server}")
-        print("hint=Set MOLD_REDIS_HOME to the folder containing redis-server.exe, or use --backend docker.")
+        print("hint=Set AGENT_REDIS_HOME to the folder containing redis-server.exe, or use --backend docker.")
         return 2
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(command, cwd=str(redis_home), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
@@ -188,7 +190,7 @@ def init_stream(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=".env")
-    parser.add_argument("--backend", choices=["native", "docker", "auto"], default="native", help="Redis runtime to inspect/start. Native uses MOLD_REDIS_HOME, default D:\\Redis.")
+    parser.add_argument("--backend", choices=["native", "docker", "auto"], default="native", help="Redis runtime to inspect/start. Native uses AGENT_REDIS_HOME, default D:\\Redis.")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status")
     start_parser = sub.add_parser("start")

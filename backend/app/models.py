@@ -1,5 +1,5 @@
 """Compatibility model facade assembled from host core and the active domain pack."""
-from .core_models import *  # noqa: F401,F403
+from agent_core.models import *  # noqa: F401,F403
 
 from agent_core.domain_pack import component as _pack_component
 

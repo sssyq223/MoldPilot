@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import String, Date, DateTime, Integer, Boolean, Text, Numeric, ForeignKey, UniqueConstraint, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
-from app.model_base import IdentityMixin, Base, J
+from agent_core.model_base import IdentityMixin, Base, J
 
 
 class BusinessSubject(IdentityMixin, Base):

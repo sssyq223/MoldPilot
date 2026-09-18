@@ -7,6 +7,7 @@ SQLite or not the expected local development database.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,14 +25,16 @@ def _statements(path: Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify MoldPilot PostgreSQL/Navicat baseline.")
     parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
-    parser.add_argument("--url-key", default="MOLD_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
+    parser.add_argument("--url-key", default="AGENT_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
     parser.add_argument("--expected-db", default="moldpilot", help="Expected database name. Defaults to moldpilot.")
     parser.add_argument("--sql", default="database/verify_moldpilot_navicat.sql", help="Verification SQL file.")
     parser.add_argument("--alembic-ini", default="alembic.ini", help="Alembic config used to resolve repository heads.")
     args = parser.parse_args()
 
     config = dotenv_values(args.env_file)
-    url = config.get(args.url_key)
+    url = os.environ.get(args.url_key) or config.get(args.url_key)
+    if not url and args.url_key == "AGENT_DATABASE_URL":
+        url = os.environ.get("MOLD_DATABASE_URL") or config.get("MOLD_DATABASE_URL")
     if not url:
         raise SystemExit(f"{args.url_key} is missing in {args.env_file}")
 

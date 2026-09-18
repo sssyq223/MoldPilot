@@ -1,6 +1,6 @@
 export type ColorTheme = 'light' | 'dark'
 
-const STORAGE_KEY = 'moldpilot.theme'
+const STORAGE_KEY = 'agent-workbench.theme'
 
 export function storedTheme(): ColorTheme {
   try {

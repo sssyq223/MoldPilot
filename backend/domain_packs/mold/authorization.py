@@ -1,5 +1,6 @@
 """Authorization vocabulary owned by the mold ERP business pack."""
 from domain_packs.mold.erp.core.domain_schemas import PERMISSIONS as DOMAIN_PERMISSIONS
+from agent_core.host_ports import host_ports
 
 
 PERMISSIONS = {
@@ -26,32 +27,25 @@ PERMISSIONS = {
 DIMENSIONS = frozenset({"project_id", "category", "warehouse_id"})
 
 
-def _host():
-    # Delayed import avoids the startup cycle while the host is composing the
-    # active pack's permission vocabulary.
-    from app import authorization
-    return authorization
-
-
 def access(*args, **kwargs):
-    return _host().access(*args, **kwargs)
+    return host_ports().access(*args, **kwargs)
 
 
 def fingerprint(*args, **kwargs):
-    return _host().fingerprint(*args, **kwargs)
+    return host_ports().fingerprint(*args, **kwargs)
 
 
 def grants_for(*args, **kwargs):
-    return _host().grants_for(*args, **kwargs)
+    return host_ports().grants_for(*args, **kwargs)
 
 
 def predicate(*args, **kwargs):
-    return _host().predicate(*args, **kwargs)
+    return host_ports().predicate(*args, **kwargs)
 
 
 def require(*args, **kwargs):
-    return _host().require(*args, **kwargs)
+    return host_ports().require(*args, **kwargs)
 
 
 def select_fields(*args, **kwargs):
-    return _host().select_fields(*args, **kwargs)
+    return host_ports().select_fields(*args, **kwargs)

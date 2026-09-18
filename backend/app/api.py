@@ -315,7 +315,6 @@ def sign_in(data: s.LoginInput, request: Request, response: Response, db=Depends
 def sign_out(request: Request, response: Response, user=Depends(current_user), db=Depends(get_db)):
     db.delete(request.state.session); db.commit()
     response.delete_cookie("agent_session"); response.delete_cookie("agent_csrf")
-    response.delete_cookie("mold_session"); response.delete_cookie("mold_csrf")
     return {"ok": True}
 
 

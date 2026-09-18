@@ -5,59 +5,67 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 from uuid import uuid4
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _compatible(name: str, default, **constraints):
+    """Prefer neutral AGENT_* variables while accepting legacy MOLD_* installs."""
+    upper = name.upper()
+    return Field(
+        default=default,
+        validation_alias=AliasChoices(f"AGENT_{upper}", f"MOLD_{upper}"),
+        **constraints,
+    )
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MOLD_", env_file=".env", extra="ignore")
-    database_url: str = "postgresql+psycopg://postgres@127.0.0.1:5432/moldpilot"
-    redis_url: str = "redis://127.0.0.1:6379/0"
-    redis_home: str = "D:\\Redis"
-    restore_database_url: str = ""
-    pg_dump_path: str = ""
-    pg_restore_path: str = ""
-    pg_client_image: str = "postgres:18-alpine"
-    acceptance_evidence_file: str = ".local/acceptance-gates.json"
-    origin: str = "http://127.0.0.1:5173"
-    cookie_secure: bool = True
-    environment: str = "development"
-    audit_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    app_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    access_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    model_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    logistics_quote_max_valid_days: int = Field(default=183, ge=1, le=3660)
-    llm_base_url: str = ""
+    model_config = SettingsConfigDict(
+        env_prefix="AGENT_", env_file=".env", extra="ignore", populate_by_name=True
+    )
+    database_url: str = _compatible("database_url", "postgresql+psycopg://postgres@127.0.0.1:5432/agent_workbench")
+    redis_url: str = _compatible("redis_url", "redis://127.0.0.1:6379/0")
+    redis_home: str = _compatible("redis_home", "D:\\Redis")
+    restore_database_url: str = _compatible("restore_database_url", "")
+    pg_dump_path: str = _compatible("pg_dump_path", "")
+    pg_restore_path: str = _compatible("pg_restore_path", "")
+    pg_client_image: str = _compatible("pg_client_image", "postgres:18-alpine")
+    acceptance_evidence_file: str = _compatible("acceptance_evidence_file", ".local/acceptance-gates.json")
+    origin: str = _compatible("origin", "http://127.0.0.1:5173")
+    cookie_secure: bool = _compatible("cookie_secure", True)
+    environment: str = _compatible("environment", "development")
+    audit_log_retention_days: int = _compatible("audit_log_retention_days", 0, ge=0, le=3650)
+    app_log_retention_days: int = _compatible("app_log_retention_days", 0, ge=0, le=3650)
+    access_log_retention_days: int = _compatible("access_log_retention_days", 0, ge=0, le=3650)
+    model_log_retention_days: int = _compatible("model_log_retention_days", 0, ge=0, le=3650)
+    llm_base_url: str = _compatible("llm_base_url", "")
     # Explicit HTTP origin for a trusted private-IP model service; empty requires HTTPS.
-    llm_trusted_http_origin: str = ""
-    llm_provider: Literal['company','ollama'] = 'company'
-    ollama_base_url: str = 'http://127.0.0.1:11434'
-    ollama_model: str = 'deepseek-r1:7b'
-    llm_api_key: str = ""
-    llm_proxy_url: str | None = None
-    llm_tls_max_version: Literal["auto", "1.2"] = "auto"
-    llm_tls_key_exchange: Literal["auto", "x25519"] = "auto"
-    llm_connect_timeout: float = Field(default=10, gt=0, le=20)
-    llm_read_timeout: float = Field(default=60, gt=0, le=75)
-    llm_model: str = ""
-    llm_max_turns: int = 12
-    llm_max_output_tokens: int = 2048
-    llm_context_window: int = 8192
-    llm_enabled: bool = False
-    worker_secret: str = ""
-    api_base_url: str = "http://127.0.0.1:8000"
-    erp_base_url: str = ""
-    erp_allow_insecure_local: bool = False
-    credential_encryption_key: str = ""
-    file_backend: Literal['local','s3'] = 'local'
-    file_local_root: str = '.local/files'
-    file_max_bytes: int = Field(default=20*1024*1024,ge=1024,le=50*1024*1024)
-    file_daily_bytes: int = Field(default=200*1024*1024,ge=1024)
-    file_s3_endpoint: str = ''
-    file_s3_bucket: str = ''
-    file_s3_region: str = 'us-east-1'
-    file_s3_access_key: str = ''
-    file_s3_secret_key: str = ''
+    llm_trusted_http_origin: str = _compatible("llm_trusted_http_origin", "")
+    llm_provider: Literal['company','ollama'] = _compatible("llm_provider", "company")
+    ollama_base_url: str = _compatible("ollama_base_url", "http://127.0.0.1:11434")
+    ollama_model: str = _compatible("ollama_model", "deepseek-r1:7b")
+    llm_api_key: str = _compatible("llm_api_key", "")
+    llm_proxy_url: str | None = _compatible("llm_proxy_url", None)
+    llm_tls_max_version: Literal["auto", "1.2"] = _compatible("llm_tls_max_version", "auto")
+    llm_tls_key_exchange: Literal["auto", "x25519"] = _compatible("llm_tls_key_exchange", "auto")
+    llm_connect_timeout: float = _compatible("llm_connect_timeout", 10, gt=0, le=20)
+    llm_read_timeout: float = _compatible("llm_read_timeout", 60, gt=0, le=75)
+    llm_model: str = _compatible("llm_model", "")
+    llm_max_turns: int = _compatible("llm_max_turns", 12)
+    llm_max_output_tokens: int = _compatible("llm_max_output_tokens", 2048)
+    llm_context_window: int = _compatible("llm_context_window", 8192)
+    llm_enabled: bool = _compatible("llm_enabled", False)
+    worker_secret: str = _compatible("worker_secret", "")
+    api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8000")
+    file_backend: Literal['local','s3'] = _compatible("file_backend", "local")
+    file_local_root: str = _compatible("file_local_root", ".local/files")
+    file_max_bytes: int = _compatible("file_max_bytes", 20*1024*1024, ge=1024, le=50*1024*1024)
+    file_daily_bytes: int = _compatible("file_daily_bytes", 200*1024*1024, ge=1024)
+    file_s3_endpoint: str = _compatible("file_s3_endpoint", "")
+    file_s3_bucket: str = _compatible("file_s3_bucket", "")
+    file_s3_region: str = _compatible("file_s3_region", "us-east-1")
+    file_s3_access_key: str = _compatible("file_s3_access_key", "")
+    file_s3_secret_key: str = _compatible("file_s3_secret_key", "")
 
     @property
     def active_model(self):
@@ -70,7 +78,9 @@ def settings() -> Settings:
 
 
 def _model_config_path() -> Path:
-    return Path(os.environ.get("MOLD_MODEL_CONFIG_FILE", ".local/model-config.json"))
+    return Path(os.environ.get("AGENT_MODEL_CONFIG_FILE") or os.environ.get(
+        "MOLD_MODEL_CONFIG_FILE", ".local/model-config.json"
+    ))
 
 
 def _runtime_model_config() -> dict:

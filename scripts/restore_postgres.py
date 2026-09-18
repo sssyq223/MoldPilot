@@ -2,7 +2,7 @@
 
 The default mode is a dry-run. Real restore requires both `--execute` and
 `--i-understand-this-will-change-target-db`, and the target database defaults to
-`MOLD_RESTORE_DATABASE_URL`, not the primary application database.
+`AGENT_RESTORE_DATABASE_URL`, not the primary application database.
 """
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ def _configured(value: str | None) -> bool:
 
 
 def _config_value(config: dict, key: str, default: str = "") -> str:
-    return os.environ.get(key) or str(config.get(key) or default)
+    legacy = "MOLD_" + key.removeprefix("AGENT_") if key.startswith("AGENT_") else ""
+    return os.environ.get(key) or str(config.get(key) or os.environ.get(legacy) or config.get(legacy) or default)
 
 
 def _parse_url(value: str, expected_db: str | None, allow_primary_target: bool) -> dict:
@@ -176,12 +177,12 @@ def _docker_restore_command(image: str, target: dict, backup_path: Path, clean: 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate or restore a MoldPilot PostgreSQL pg_dump backup.")
     parser.add_argument("--env-file", default=".env", help="Path to local dotenv file. Defaults to .env.")
-    parser.add_argument("--url-key", default="MOLD_RESTORE_DATABASE_URL", help="Dotenv key containing isolated restore PostgreSQL DSN.")
+    parser.add_argument("--url-key", default="AGENT_RESTORE_DATABASE_URL", help="Dotenv key containing isolated restore PostgreSQL DSN.")
     parser.add_argument("--expected-db", default="moldpilot_restore", help="Expected restore database. Defaults to moldpilot_restore.")
     parser.add_argument("--backup", default="", help="Path to a pg_dump custom-format backup file.")
     parser.add_argument("--pg-restore", default="", help="Optional explicit pg_restore executable path.")
     parser.add_argument("--client-mode", choices=["auto", "native", "docker"], default="auto", help="PostgreSQL client mode. Defaults to auto.")
-    parser.add_argument("--docker-image", default="", help="Docker image containing pg_restore. Defaults to MOLD_PG_CLIENT_IMAGE or postgres:18-alpine.")
+    parser.add_argument("--docker-image", default="", help="Docker image containing pg_restore. Defaults to AGENT_PG_CLIENT_IMAGE or postgres:18-alpine.")
     parser.add_argument("--execute", action="store_true", help="Actually run pg_restore. Omit for dry-run.")
     parser.add_argument("--clean", action="store_true", help="Pass --clean --if-exists to pg_restore during execution.")
     parser.add_argument("--allow-primary-target", action="store_true", help="Allow restoring into database named moldpilot. Not recommended.")
@@ -193,13 +194,13 @@ def main() -> int:
     if not _configured(url):
         print(f"{args.url_key}_configured=False")
         print("restore_ready=False")
-        print("hint=Set MOLD_RESTORE_DATABASE_URL to an isolated PostgreSQL restore database.")
+        print("hint=Set AGENT_RESTORE_DATABASE_URL to an isolated PostgreSQL restore database.")
         return 0 if not args.execute else 2
 
     target = _parse_url(str(url), args.expected_db or None, args.allow_primary_target)
-    pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or _config_value(config, "MOLD_PG_RESTORE_PATH"))
+    pg_restore, pg_restore_source = _find_tool("pg_restore", args.pg_restore or _config_value(config, "AGENT_PG_RESTORE_PATH"))
     docker = _docker_probe()
-    image = args.docker_image or _config_value(config, "MOLD_PG_CLIENT_IMAGE", "postgres:18-alpine")
+    image = args.docker_image or _config_value(config, "AGENT_PG_CLIENT_IMAGE", "postgres:18-alpine")
     client_mode = "native" if pg_restore and args.client_mode in {"auto", "native"} else ""
     if not client_mode and args.client_mode in {"auto", "docker"} and docker["available"]:
         client_mode = "docker"
