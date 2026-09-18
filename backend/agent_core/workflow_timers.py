@@ -121,7 +121,7 @@ def _deadline_metadata(due, reminder=None, calendar=None):
 
 def cancel_stage_timers(db, instance_id, stage_index):
     models = _models()
-    return db.execute(
+    cancelled = db.execute(
         update(models.WorkflowTimer)
         .where(
             models.WorkflowTimer.instance_id == instance_id,
@@ -130,11 +130,21 @@ def cancel_stage_timers(db, instance_id, stage_index):
         )
         .values(status="CANCELLED", lease_id=None, lease_until=None)
     ).rowcount
+    db.execute(
+        update(models.WorkflowEscalationTask)
+        .where(
+            models.WorkflowEscalationTask.instance_id == instance_id,
+            models.WorkflowEscalationTask.stage_index == stage_index,
+            models.WorkflowEscalationTask.status == "OPEN",
+        )
+        .values(status="CLOSED", closed_at=_now(), close_reason="STAGE_COMPLETED")
+    )
+    return cancelled
 
 
 def cancel_instance_timers(db, instance_id):
     models = _models()
-    return db.execute(
+    cancelled = db.execute(
         update(models.WorkflowTimer)
         .where(
             models.WorkflowTimer.instance_id == instance_id,
@@ -142,6 +152,15 @@ def cancel_instance_timers(db, instance_id):
         )
         .values(status="CANCELLED", lease_id=None, lease_until=None)
     ).rowcount
+    db.execute(
+        update(models.WorkflowEscalationTask)
+        .where(
+            models.WorkflowEscalationTask.instance_id == instance_id,
+            models.WorkflowEscalationTask.status == "OPEN",
+        )
+        .values(status="CLOSED", closed_at=_now(), close_reason="INSTANCE_CLOSED")
+    )
+    return cancelled
 
 
 def claim_due_timer(factory, *, lease_seconds=30):
@@ -247,6 +266,30 @@ def process_claimed_timer(factory, timer_id, lease_id):
                     **(instance.assignment_snapshots or {}),
                     snapshot_key: stage_snapshot,
                 }
+            definition = db.get(models.WorkflowDefinition, instance.definition_id)
+            node = definition.config["nodes"][timer.stage_index]
+            sla = node.get("sla", {})
+            cc_user_ids = sla.get("cc_user_ids", []) if timer.timer_key == "DUE" else []
+            escalation_user_ids = sla.get("escalation_user_ids", []) if timer.timer_key == "DUE" else []
+            escalation_ids = []
+            for user_id in escalation_user_ids:
+                task = models.WorkflowEscalationTask(
+                    timer_id=timer.id,
+                    instance_id=instance.id,
+                    stage_index=timer.stage_index,
+                    node_key=timer.node_key,
+                    user_id=user_id,
+                )
+                db.add(task)
+                db.flush()
+                escalation_ids.append(task.id)
+            if escalation_ids:
+                deadline.update({"escalation_status": "OPEN", "escalation_count": len(escalation_ids)})
+                stage_snapshot["deadline"] = deadline
+                instance.assignment_snapshots = {
+                    **(instance.assignment_snapshots or {}),
+                    snapshot_key: stage_snapshot,
+                }
             action = "approval.overdue" if timer.timer_key == "DUE" else "approval.reminder"
             detail = {
                 "stage_index": timer.stage_index,
@@ -254,9 +297,15 @@ def process_claimed_timer(factory, timer_id, lease_id):
                 "timer_key": timer.timer_key,
                 "due_at": timer.due_at.isoformat(),
                 "schedule_version": timer.schedule_version,
+                "cc_user_ids": cc_user_ids,
+                "escalation_user_ids": escalation_user_ids,
+                "escalation_task_ids": escalation_ids,
             }
+            recipients = set(_timer_recipients(db, instance))
+            recipients.update(cc_user_ids)
+            recipients.update(escalation_user_ids)
             host_ports().record(
-                db, None, action, instance.id, detail, _timer_recipients(db, instance)
+                db, None, action, instance.id, detail, sorted(recipients)
             )
             return "FIRED"
     except Exception as error:

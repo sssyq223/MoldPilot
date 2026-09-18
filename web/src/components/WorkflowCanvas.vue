@@ -8,7 +8,7 @@ const emit=defineEmits<{select:[index:number];add:[];addPerson:[userId:string];c
 const positions=ref<Record<string,Point>>({})
 const connecting=ref<number|null>(null)
 const lineMode=ref(false)
-const personQuery=ref(''),departmentFilter=ref(''),roleFilter=ref('')
+const personQuery=ref(''),departmentFilter=ref(''),roleFilter=ref(''),personSelectOpen=ref<'department'|'role'|''>('')
 const zoom=ref(100),panning=ref(false)
 const NODE_W=128,NODE_H=108,NODE_PORT_Y=23
 let drag:{index:number;dx:number;dy:number;left:number;top:number}|null=null
@@ -17,6 +17,8 @@ let pan:{x:number;y:number;left:number;top:number}|null=null
 const activeUsers=computed(()=>props.users.filter((user:any)=>user.active))
 const departments=computed(()=>props.groups.filter((group:any)=>group.active&&group.kind==='DEPARTMENT'))
 const roles=computed(()=>props.groups.filter((group:any)=>group.active&&group.kind==='ROLE'))
+const departmentLabel=computed(()=>departments.value.find((group:any)=>group.id===departmentFilter.value)?.name||'全部部门')
+const roleLabel=computed(()=>roles.value.find((group:any)=>group.id===roleFilter.value)?.name||'全部角色')
 const hasPersonFilter=computed(()=>!!(personQuery.value.trim()||departmentFilter.value||roleFilter.value))
 const filteredUsers=computed(()=>{
  if(!hasPersonFilter.value)return[]
@@ -87,6 +89,8 @@ function beginConnect(index:number){connecting.value=connecting.value===index?nu
 function connectEnd(){if(connecting.value===null)return;emit('connect',connecting.value,'end');connecting.value=null;lineMode.value=false}
 function toggleLineMode(){lineMode.value=!lineMode.value;if(!lineMode.value)connecting.value=null}
 function dragUser(event:DragEvent,userId:string){event.dataTransfer?.setData('application/x-workflow-user',userId);if(event.dataTransfer)event.dataTransfer.effectAllowed='copy'}
+function pickDepartment(value:string){departmentFilter.value=value;personSelectOpen.value=''}
+function pickRole(value:string){roleFilter.value=value;personSelectOpen.value=''}
 function dropUser(event:DragEvent,index:number){const id=event.dataTransfer?.getData('application/x-workflow-user');if(id)emit('assign',index,id)}
 async function dropPersonOnCanvas(event:DragEvent){
  const id=event.dataTransfer?.getData('application/x-workflow-user')
@@ -130,8 +134,8 @@ function resetLayout(){positions.value={};saveLayout()}
    <div class="workflow-palette-head"><strong>选择人员</strong><small>筛选后拖入</small></div>
    <div class="workflow-person-filter">
     <input v-model="personQuery" type="search" placeholder="搜索姓名或账号" aria-label="搜索人员"/>
-    <select v-model="departmentFilter" aria-label="按部门筛选"><option value="">全部部门</option><option v-for="group in departments" :key="group.id" :value="group.id">{{group.name}}</option></select>
-    <select v-model="roleFilter" aria-label="按角色筛选"><option value="">全部角色</option><option v-for="group in roles" :key="group.id" :value="group.id">{{group.name}}</option></select>
+    <div class="workflow-filter-select workflow-person-select" :class="{open:personSelectOpen==='department'}"><button type="button" class="workflow-filter-select-button" aria-label="按部门筛选" @click="personSelectOpen=personSelectOpen==='department'?'':'department'"><span>{{departmentLabel}}</span><i aria-hidden="true"></i></button><div v-if="personSelectOpen==='department'" class="workflow-filter-select-menu"><button type="button" :class="{active:!departmentFilter}" @click="pickDepartment('')">全部部门</button><button v-for="group in departments" :key="group.id" type="button" :class="{active:departmentFilter===group.id}" @click="pickDepartment(group.id)">{{group.name}}</button></div></div>
+    <div class="workflow-filter-select workflow-person-select" :class="{open:personSelectOpen==='role'}"><button type="button" class="workflow-filter-select-button" aria-label="按角色筛选" @click="personSelectOpen=personSelectOpen==='role'?'':'role'"><span>{{roleLabel}}</span><i aria-hidden="true"></i></button><div v-if="personSelectOpen==='role'" class="workflow-filter-select-menu"><button type="button" :class="{active:!roleFilter}" @click="pickRole('')">全部角色</button><button v-for="group in roles" :key="group.id" type="button" :class="{active:roleFilter===group.id}" @click="pickRole(group.id)">{{group.name}}</button></div></div>
    </div>
    <div v-if="hasPersonFilter" class="workflow-person-result"><span>找到 {{filteredUsers.length}} 人</span><button type="button" @click="personQuery='';departmentFilter='';roleFilter=''">清除</button></div>
    <div class="workflow-person-list"><button v-for="user in filteredUsers" :key="user.id" type="button" class="workflow-person-chip" draggable="true" @dragstart="dragUser($event,user.id)"><span>{{initials(user.display_name)}}</span><span><strong>{{user.display_name}}</strong><small>{{user.department||'未设置部门'}}</small></span></button><p v-if="!hasPersonFilter" class="workflow-person-empty">搜索姓名，或选择部门、角色后显示人员</p><p v-else-if="!filteredUsers.length" class="workflow-person-empty">没有符合条件的人员</p></div>

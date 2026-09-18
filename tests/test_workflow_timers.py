@@ -11,7 +11,9 @@ from app.models import (
     ApprovalInstance,
     ApprovalSeat,
     AuditEvent,
+    Outbox,
     WorkflowTimer,
+    WorkflowEscalationTask,
 )
 from agent_core.workflow_timers import tick_due_timers
 from conftest import draft, sign_in, submit
@@ -35,6 +37,8 @@ def test_sla_contract_is_restricted_and_never_configures_auto_approval():
         {"due_hours": 24},
         {"due_hours": 1.5, "remind_before_hours": 0},
         {"due_hours": 24, "remind_before_hours": 1, "decision": "APPROVE"},
+        {"due_hours": 24, "remind_before_hours": 1, "cc_user_ids": []},
+        {"due_hours": 24, "remind_before_hours": 1, "escalation_user_ids": ["same", "same"]},
     ):
         invalid = {**valid, "nodes": [{**valid["nodes"][0], "sla": sla}]}
         with pytest.raises(DomainError) as error:
@@ -42,13 +46,14 @@ def test_sla_contract_is_restricted_and_never_configures_auto_approval():
         assert error.value.code == "INVALID_WORKFLOW"
 
 
-def _sla_workflow(client, ids, *, nodes=1):
+def _sla_workflow(client, ids, *, nodes=1, sla_extra=None):
     approval_group = group(client, [ids["admin"]], name="定时审批组")
     definitions = []
     for index in range(nodes):
         item = node(approval_group["id"], key=f"review_{index + 1}")
         item["name"] = f"限时审批 {index + 1}"
         item["sla"] = {"due_hours": 2, "remind_before_hours": 1}
+        item["sla"].update(sla_extra or {})
         definitions.append(item)
     definition_id, published = publish(client, definitions)
     assert published.status_code == 200, published.text
@@ -147,6 +152,62 @@ def test_stage_completion_cancels_old_timers_and_schedules_next_stage(client, da
         assert {timer.status for timer in first} == {"CANCELLED", "FIRED"}
         assert len(second) == 2 and {timer.status for timer in second} == {"SCHEDULED"}
     assert all(row["id"] != instance_id for row in client.get("/api/workflow-incidents").json())
+
+
+def test_overdue_cc_and_escalation_create_follow_up_without_approval(client, data):
+    ids, factory = data
+    sign_in(client)
+    definition_id, _ = _sla_workflow(client, ids, sla_extra={
+        "cc_user_ids": [ids["reviewer"]],
+        "escalation_user_ids": [ids["reviewer"]],
+    })
+    sign_in(client, "test_buyer")
+    instance_id = submit(client, {**ids, "definition": definition_id}, draft(client, ids))
+    with factory.begin() as db:
+        due = db.scalar(select(WorkflowTimer).where(
+            WorkflowTimer.instance_id == instance_id,
+            WorkflowTimer.timer_key == "DUE",
+        ).with_for_update())
+        due.due_at = now() - timedelta(seconds=1)
+    assert tick_due_timers(factory) == ["FIRED"]
+    assert tick_due_timers(factory) == []
+
+    with factory() as db:
+        tasks = list(db.scalars(select(WorkflowEscalationTask).where(
+            WorkflowEscalationTask.instance_id == instance_id,
+        )))
+        assert len(tasks) == 1
+        assert tasks[0].user_id == ids["reviewer"] and tasks[0].status == "OPEN"
+        assert db.scalar(select(func.count()).select_from(ApprovalAction)) == 0
+        assert not list(db.scalars(select(ApprovalSeat).where(
+            ApprovalSeat.instance_id == instance_id,
+            ApprovalSeat.user_id == ids["reviewer"],
+        )))
+        event = db.scalar(select(AuditEvent).where(
+            AuditEvent.resource_id == instance_id,
+            AuditEvent.action == "approval.overdue",
+        ))
+        assert event.detail["cc_user_ids"] == [ids["reviewer"]]
+        assert event.detail["escalation_user_ids"] == [ids["reviewer"]]
+        outbox = db.scalar(select(Outbox).where(
+            Outbox.resource_id == instance_id,
+            Outbox.kind == "approval.overdue",
+        ))
+        assert ids["reviewer"] in outbox.payload["recipients"]
+
+    sign_in(client)
+    incident = next(row for row in client.get("/api/workflow-incidents").json()
+                    if row["id"] == instance_id)
+    assert incident["escalations"][0]["status"] == "OPEN"
+    assert incident["escalations"][0]["user"]["id"] == ids["reviewer"]
+    _, response = confirm_decision(client, instance_id)
+    assert response.status_code == 200, response.text
+    with factory() as db:
+        task = db.scalar(select(WorkflowEscalationTask).where(
+            WorkflowEscalationTask.instance_id == instance_id,
+        ))
+        assert task.status == "CLOSED"
+        assert task.close_reason == "STAGE_COMPLETED" and task.closed_at
 
 
 def test_assignment_incident_center_recovers_after_operator_fix(client, data):

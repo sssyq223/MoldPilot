@@ -7,7 +7,7 @@ from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow import TaskState
 from .errors import DomainError
-from .assignments import validate_assignment, validate_add_sign_policy
+from .assignments import validate_assignment, validate_add_sign_policy, valid_ids
 from .domain_pack import component
 from .hashing import canonical, content_hash
 
@@ -71,12 +71,15 @@ def validate(config):
             sla = node["sla"]
             if (
                 not isinstance(sla, dict)
-                or set(sla) not in ({"due_hours", "remind_before_hours"}, {"due_hours", "remind_before_hours", "calendar_id"})
+                or not {"due_hours", "remind_before_hours"} <= set(sla)
+                or set(sla) - {"due_hours", "remind_before_hours", "calendar_id", "cc_user_ids", "escalation_user_ids"}
                 or type(sla.get("due_hours")) is not int
                 or type(sla.get("remind_before_hours")) is not int
                 or not 1 <= sla["due_hours"] <= 24 * 365
                 or not 0 <= sla["remind_before_hours"] < sla["due_hours"]
                 or ("calendar_id" in sla and (not isinstance(sla["calendar_id"], str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sla["calendar_id"])))
+                or ("cc_user_ids" in sla and not valid_ids(sla["cc_user_ids"]))
+                or ("escalation_user_ids" in sla and not valid_ids(sla["escalation_user_ids"]))
             ):
                 raise DomainError(
                     "INVALID_WORKFLOW",

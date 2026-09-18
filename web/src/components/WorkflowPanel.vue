@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Plus, Trash2, GitBranch, Play, UserPlus, X, Search } from 'lucide-vue-next'
 import { api, post } from '../api'
-import RuleEditor from './RuleEditor.vue'
 import WorkflowCategoryPanel from './WorkflowCategoryPanel.vue'
 import MaterialTemplatePanel from './MaterialTemplatePanel.vue'
 import WorkflowCalendarPanel from './WorkflowCalendarPanel.vue'
@@ -16,10 +15,14 @@ const selectedNodeIndex=ref(0)
 const canvasPanel=ref<'simulation'|'add-sign'|''>(''),addSignQuery=ref('')
 const editId=ref(''), editHash=ref(''), selected=ref<any>(null), historyKey=ref(''), history=ref<any[]>([]), historyNext=ref<number|null>(null), notice=ref('')
 const incidents=ref<any[]>([]),incidentsOpen=ref(false),incidentReasons=ref<Record<string,string>>({})
-const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),templateQuery=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false)
+const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),templateQuery=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false),metaSelectOpen=ref<'category'|'material'|''>('')
 const categoryName=(id:string)=>flowCategories.value.find(c=>c.id===id)?.name||'待整理'
 const categoryFilterLabel=computed(()=>categoryFilter.value?categoryName(categoryFilter.value):'全部类别')
+const categoryEditLabel=computed(()=>categoryId.value?categoryName(categoryId.value):'请选择类别')
+const materialEditLabel=computed(()=>materialTemplateId.value?(materialTemplates.value.find(t=>t.id===materialTemplateId.value)?.name||'资料模板不可用'):'暂不绑定')
 function pickCategoryFilter(value:string){categoryFilter.value=value;categoryFilterOpen.value=false}
+function pickEditCategory(value:string){categoryId.value=value;metaSelectOpen.value=''}
+function pickEditMaterial(value:string){materialTemplateId.value=value;metaSelectOpen.value='';selectMaterial()}
 async function refreshCategories(){try{flowCategories.value=await api('/workflow-categories')}catch(e:any){emit('error',e.message)}}
 const assignmentGroups=ref<any[]>([])
 const materialTemplates=ref<any[]>([]),materialTemplateId=ref('')
@@ -28,11 +31,7 @@ const publishedCalendars=computed(()=>workflowCalendars.value.filter(item=>item.
 async function refreshMaterials(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/material-templates?offset=${offset}`);all.push(...page);if(page.length<100)break}materialTemplates.value=all}
 async function refreshCalendars(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflow-calendars?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}workflowCalendars.value=all}
 function selectMaterial(){const t=materialTemplates.value.find(t=>t.id===materialTemplateId.value);materialContract.value=t?JSON.parse(JSON.stringify(t.contract)):null;simulation.value=null}
-function assignmentMode(n:any,dynamic:boolean){n.users=[];if(dynamic)n.assignment={roles:[],departments:[],department_heads_only:false};else delete n.assignment}
-function assignmentNames(n:any){if(!n.assignment)return (n.users||[]).map((id:string)=>users.value.find(u=>u.id===id)?.display_name||'人员信息暂不可用').join('、');const names=(ids:string[])=>ids.map(id=>assignmentGroups.value.find(g=>g.id===id)?.name||'人员规则暂不可用').join('、');return [n.assignment.roles.length?'角色：'+names(n.assignment.roles):'',n.assignment.departments.length?(n.assignment.department_heads_only?'部门负责人：':'部门：')+names(n.assignment.departments):''].filter(Boolean).join('；同时满足')}
-function candidateNames(n:any){if(!n.assignment)return assignmentNames(n);const r=n.assignment;let ids:string[]|null=null;for(const [field,head] of [['roles',false],['departments',r.department_heads_only]] as const){if(!r[field].length)continue;const selected=assignmentGroups.value.filter(g=>g.active&&r[field].includes(g.id));const list:string[]=selected.flatMap(g=>g.members.filter((m:any)=>!head||m.is_head).map((m:any)=>m.user_id));ids=ids===null?list:ids.filter(id=>list.includes(id))}return [...new Set(ids||[])].filter(id=>users.value.find(u=>u.id===id)?.active).map(id=>users.value.find(u=>u.id===id)?.display_name).join('、')||'暂无有效候选人员'}
 const groups=computed(()=>{const query=templateQuery.value.trim().toLocaleLowerCase();return Object.values(templates.value.filter(t=>(!categoryFilter.value||t.category_id===categoryFilter.value)&&(!query||[t.name,t.process_key,categoryName(t.category_id),...(t.config?.nodes||[]).map((node:any)=>node.name)].some(value=>String(value||'').toLocaleLowerCase().includes(query)))).reduce((all:Record<string,any>,t:any)=>{if(!all[t.process_key])all[t.process_key]=t;return all},{}))})
-const selectedNodeEntry=computed(()=>nodes.value[selectedNodeIndex.value]?[{node:nodes.value[selectedNodeIndex.value],index:selectedNodeIndex.value}]:[])
 const selectedNode=computed(()=>nodes.value[selectedNodeIndex.value]||null)
 const addSignCandidates=computed(()=>{
   const node=selectedNode.value,query=addSignQuery.value.trim().toLocaleLowerCase()
@@ -103,10 +102,6 @@ function newCondition(){
 }
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number):any=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
-function modeName(mode:string){return mode==='ALL'?'全部人员同意（会签）':mode==='ANY'?'任一人员同意（或签）':'候选人领取后办理'}
-function setNodeMode(n:any,mode:string){n.mode=mode;if(mode==='CLAIM'){delete n.agent_auto_approval;delete n.agent_auto_policy}}
-function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
-function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled){const condition:any=newCondition();if(condition.table)condition.condition.op='lte';else condition.op='lte';n.agent_auto_policy={condition}}else delete n.agent_auto_policy}
 function toggleAddSign(n:any,enabled:boolean){if(enabled)n.add_sign_policy={timings:['PRE','POST'],users:[]};else delete n.add_sign_policy}
 function selectCanvasNode(index:number){selectedNodeIndex.value=index;canvasPanel.value='add-sign';addSignQuery.value=''}
 function toggleCanvasPanel(panel:'simulation'|'add-sign'){canvasPanel.value=canvasPanel.value===panel?'':panel;if(panel==='add-sign')addSignQuery.value=''}
@@ -119,9 +114,14 @@ function setAddSignTiming(n:any,timing:'PRE'|'POST'){
 function addAddSignUser(n:any,userId:string){if(!n.add_sign_policy||n.add_sign_policy.users.includes(userId))return;n.add_sign_policy.users.push(userId);addSignQuery.value=''}
 function removeAddSignUser(n:any,userId:string){if(n.add_sign_policy)n.add_sign_policy.users=n.add_sign_policy.users.filter((id:string)=>id!==userId)}
 function toggleSla(n:any,enabled:boolean){if(enabled)n.sla={due_hours:24,remind_before_hours:2};else delete n.sla}
+function toggleSlaRecipient(n:any,key:'cc_user_ids'|'escalation_user_ids',userId:string,enabled:boolean){
+  if(!n.sla)return
+  const current:string[]=Array.isArray(n.sla[key])?n.sla[key]:[]
+  const next=enabled?[...new Set([...current,userId])]:current.filter(id=>id!==userId)
+  if(next.length)n.sla[key]=next
+  else delete n.sla[key]
+}
 function normalizeReturnPolicy(n:any){if(!n.return_policy)n.return_policy={targets:['applicant']};return n}
-function returnTargets(i:number){return [{key:'applicant',name:'申请人修改'},...nodes.value.slice(0,i).map(n=>({key:n.key,name:n.name}))]}
-function returnTargetNames(n:any,i:number){const options=Object.fromEntries(returnTargets(i).map(item=>[item.key,item.name]));return (n.return_policy?.targets||['applicant']).map((target:string)=>options[target]||'目标已失效').join('、')}
 async function refreshIncidents(){incidents.value=await api('/workflow-incidents')}
 async function retryIncident(item:any){const reason=(incidentReasons.value[item.id]||'').trim();if(!reason)return emit('error','请填写本次恢复原因');busy.value=true;try{const result=await post(`/workflow-incidents/${item.id}/retry`,{expected_version:item.version,reason});notice.value=result.incident?'重试完成，但阻塞原因仍未消除':'流程节点已恢复并重新生成待办';incidentReasons.value[item.id]='';await refreshIncidents()}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function displayTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
@@ -133,7 +133,7 @@ async function view(t:any){try{selected.value=await api(`/workflows/${t.id}`);ed
 async function openHistory(t:any,more=false){try{const r=await api(`/workflows/history/${encodeURIComponent(t.process_key)}${more?'?before_version='+historyNext.value:''}`);historyKey.value=t.process_key;history.value=more?[...history.value,...r.items]:r.items;historyNext.value=r.next_before}catch(e:any){emit('error',e.message)}}
 async function copy(t:any,edit=false){try{const d=await api(`/workflows/${t.id}`);editId.value=edit?d.id:'';editHash.value=d.edit_hash;categoryId.value=d.category_id||'';legacyCopy.value=d.business_type!=='generic';name.value=d.name;key.value=d.process_key;materialTemplateId.value=d.material_template_id||'';nodes.value=JSON.parse(JSON.stringify(d.config.nodes)).map(normalizeReturnPolicy);materialContract.value=d.config.material_contract?JSON.parse(JSON.stringify(d.config.material_contract)):null;selected.value=null;selectedNodeIndex.value=0;canvasPanel.value='';editing.value=true}catch(e:any){emit('error',e.message)}}
 const configuration=()=>({business_type:'generic',nodes:nodes.value,...(materialContract.value?{material_contract:materialContract.value}:{})})
-async function save(){busy.value=true;try{const r=editId.value?await api(`/workflows/${editId.value}`,{method:'PUT',body:JSON.stringify({name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null,expected_hash:editHash.value})}):await post('/workflows',{process_key:key.value,name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null});notice.value=`第 ${r.version} 版草稿已保存，尚未发布`;editing.value=false;await load();await openHistory({process_key:key.value});await view(r)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
+async function save(){if(!categoryId.value)return emit('error','请选择流程类别');busy.value=true;try{const r=editId.value?await api(`/workflows/${editId.value}`,{method:'PUT',body:JSON.stringify({name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null,expected_hash:editHash.value})}):await post('/workflows',{process_key:key.value,name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null});notice.value=`第 ${r.version} 版草稿已保存，尚未发布`;editing.value=false;await load();await openHistory({process_key:key.value});await view(r)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 async function publish(t:any){busy.value=true;try{await post(`/workflows/${t.id}/publish`);notice.value=`第 ${t.version} 版已发布，已有审批实例继续使用原版本`;await load();if(historyKey.value===t.process_key)await openHistory(t);if(selected.value?.id===t.id)await view(t)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i));selectedNodeIndex.value=nodes.value.length-1}
 function addPersonNode(userId:string){
@@ -150,7 +150,6 @@ function assignPerson(index:number,userId:string){const node=nodes.value[index];
 function unassignPerson(index:number,userId:string){const node=nodes.value[index];if(node)node.users=node.users.filter((id:string)=>id!==userId)}
 function connectNodes(sourceIndex:number,targetKey:string){const node=nodes.value[sourceIndex],allowed=targets(sourceIndex);if(!node||!allowed.some(target=>target.key===targetKey)){emit('error','线路只能连接到当前节点之后的节点或结束');return}const sequential=nodes.value[sourceIndex+1]?.key||'end';if((!node.routes&&targetKey===sequential)||node.default_target===targetKey||node.routes?.some((route:any)=>route.target===targetKey)){emit('error','这条线路已经存在');return}if(!node.routes){node.routes=[{condition:newCondition(),target:targetKey}];node.default_target=sequential}else node.routes.push({condition:newCondition(),target:targetKey});selectedNodeIndex.value=sourceIndex}
 function targets(i:number){return [...nodes.value.slice(i+1).map(n=>({key:n.key,name:n.name})),{key:'end',name:'审批结束'}]}
-function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{condition:newCondition(),target:targets(i)[0].key}];n.default_target=targets(i)[0].key}else{delete n.routes;delete n.default_target}}
 async function simulate(){busy.value=true;try{simulation.value=await post('/workflows/simulate',{config:configuration(),snapshot:simulationSnapshot()})}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 </script>
 <template>
@@ -166,7 +165,7 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
     <div class="section-heading"><div><h3>流程事件中心</h3><p class="muted">超时只会提醒，不会自动同意；人员配置修复后可重新解析当前节点。</p></div><button type="button" :disabled="busy" @click="refreshIncidents">刷新</button></div>
     <p v-if="!incidents.length" class="muted">当前没有阻塞或超时的运行中审批。</p>
     <article v-for="item in incidents" :key="item.id" class="workflow-incident-row">
-      <div><strong>{{item.definition.name}} · {{item.node?.name||'流程结束节点'}}</strong><p><span v-if="item.incident==='ASSIGNMENT_BLOCKED'">审批人员解析阻塞</span><span v-else-if="item.incident==='TIMER_FAILED'">定时事件处理失败</span><span v-else-if="item.incident">{{item.incident}}</span><span v-if="item.overdue">{{item.incident?'；':''}}办理已超时</span></p><small v-if="item.deadline?.due_at" class="muted">应办时间 {{displayTime(item.deadline.due_at)}} · 第 {{item.definition.version}} 版</small></div>
+      <div><strong>{{item.definition.name}} · {{item.node?.name||'流程结束节点'}}</strong><p><span v-if="item.incident==='ASSIGNMENT_BLOCKED'">审批人员解析阻塞</span><span v-else-if="item.incident==='TIMER_FAILED'">定时事件处理失败</span><span v-else-if="item.incident">{{item.incident}}</span><span v-if="item.overdue">{{item.incident?'；':''}}办理已超时</span></p><small v-if="item.deadline?.due_at" class="muted">应办时间 {{displayTime(item.deadline.due_at)}} · 第 {{item.definition.version}} 版</small><div v-if="item.escalations?.length" class="workflow-escalation-list"><span v-for="task in item.escalations" :key="task.id">跟进人 {{task.user.display_name}} · {{task.status==='OPEN'?'待跟进':'已关闭'}}</span></div></div>
       <div v-if="item.retryable" class="workflow-incident-retry"><input v-model="incidentReasons[item.id]" maxlength="500" placeholder="填写修复内容和恢复原因" aria-label="恢复原因"/><button type="button" :disabled="busy" @click="retryIncident(item)">重新解析人员</button></div>
       <p v-else class="muted">该事件不改变审批决定；请先处理对应运行环境或等待审批人办理。</p>
     </article>
@@ -178,12 +177,12 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
     <div class="actions workflow-viewer-actions"><button @click="copy(selected,selected.status==='DRAFT')">{{selected.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="selected.status==='DRAFT'" class="primary" :disabled="busy" @click="publish(selected)">校验并发布</button></div>
   </section>
   <section v-if="historyKey" class="surface form-stack workflow-history-panel" aria-label="版本历史"><div class="section-heading"><h3>{{history[0]?.name||'审批流程'}} · 版本历史</h3><button @click="historyKey=''">收起历史</button></div><div v-for="t in history" :key="t.id" class="section-heading"><span>第 {{t.version}} 版 · {{t.status==='PUBLISHED'?'已发布':'草稿'}} · {{t.name}}</span><div class="actions"><button @click="view(t)">查看第 {{t.version}} 版</button><button @click="copy(t,t.status==='DRAFT')">{{t.status==='DRAFT'?'修改草稿':'修改为新版本'}}</button></div></div><button v-if="historyNext" @click="openHistory({process_key:historyKey},true)">加载更早版本</button><p class="muted">新版本保存后出现在这里；草稿需发布后才可发起审批。旧实例继续使用发起时的版本。</p></section>
-  <form v-if="editing" class="form-stack" @submit.prevent="save">
+  <form v-if="editing" class="surface form-stack workflow-editor-card" @submit.prevent="save">
     <h3>{{editId?'修改当前草稿':'新版本草稿编辑'}}</h3>
     <div class="workflow-meta-grid">
-      <label>流程类别<select v-model="categoryId" required><option value="" disabled>请选择类别</option><option v-for="c in flowCategories.filter(x=>x.active)" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
+      <label>流程类别<div class="workflow-filter-select workflow-meta-select" :class="{open:metaSelectOpen==='category'}"><button type="button" class="workflow-filter-select-button" :class="{placeholder:!categoryId}" @click="metaSelectOpen=metaSelectOpen==='category'?'':'category'"><span>{{categoryEditLabel}}</span><i aria-hidden="true"></i></button><div v-if="metaSelectOpen==='category'" class="workflow-filter-select-menu"><button v-for="c in flowCategories.filter(x=>x.active)" :key="c.id" type="button" :class="{active:categoryId===c.id}" @click="pickEditCategory(c.id)">{{c.name}}</button></div></div></label>
       <label>模板名称<input v-model="name" required maxlength="150"/></label>
-      <label>绑定资料模板版本<select v-model="materialTemplateId" @change="selectMaterial"><option value="">暂不绑定</option><option v-for="t in materialTemplates.filter(x=>x.status==='PUBLISHED')" :key="t.id" :value="t.id">{{t.name}} · 第 {{t.version}} 版</option></select></label>
+      <label>绑定资料模板版本<div class="workflow-filter-select workflow-meta-select" :class="{open:metaSelectOpen==='material'}"><button type="button" class="workflow-filter-select-button" @click="metaSelectOpen=metaSelectOpen==='material'?'':'material'"><span>{{materialEditLabel}}</span><i aria-hidden="true"></i></button><div v-if="metaSelectOpen==='material'" class="workflow-filter-select-menu"><button type="button" :class="{active:!materialTemplateId}" @click="pickEditMaterial('')">暂不绑定</button><button v-for="t in materialTemplates.filter(x=>x.status==='PUBLISHED')" :key="t.id" type="button" :class="{active:materialTemplateId===t.id}" @click="pickEditMaterial(t.id)">{{t.name}} · 第 {{t.version}} 版</button></div></div></label>
     </div>
     <p v-if="legacyCopy" class="muted">此次保存采用通用模板配置。原已发布版本及已有实例保持原规则。</p>
     <p v-if="materialTemplateId" class="muted">已绑定明确的 Excel 字段版本。条件分支可直接选择表头变量、任一明细、数值合计或明细数量；正式发起时需上传并确认对应资料。</p>
@@ -204,56 +203,16 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
             <div class="workflow-add-sign-timings"><button type="button" :class="{active:selectedNode.add_sign_policy.timings.includes('PRE')}" @click="setAddSignTiming(selectedNode,'PRE')">前加签<small>新增人员先审</small></button><button type="button" :class="{active:selectedNode.add_sign_policy.timings.includes('POST')}" @click="setAddSignTiming(selectedNode,'POST')">后加签<small>本人同意后再审</small></button></div>
             <div class="workflow-add-sign-pool"><span>可选加签人</span><div class="workflow-add-sign-chips"><button v-for="userId in selectedNode.add_sign_policy.users" :key="userId" type="button" :title="'移除 '+(users.find(user=>user.id===userId)?.display_name||'人员')" @click="removeAddSignUser(selectedNode,userId)">{{users.find(user=>user.id===userId)?.display_name||'人员不可用'}}<X :size="11"/></button><small v-if="!selectedNode.add_sign_policy.users.length">尚未选择候选人</small></div><div class="workflow-add-sign-search"><UserPlus :size="14"/><input v-model="addSignQuery" type="search" placeholder="搜索姓名、账号或部门"/></div><button v-for="user in addSignCandidates" :key="user.id" type="button" class="workflow-add-sign-result" @click="addAddSignUser(selectedNode,user.id)"><span>{{user.display_name}}</span><small>{{user.department||user.username}}</small></button></div>
           </template>
+          <label class="workflow-overlay-switch"><input type="checkbox" :checked="!!selectedNode.sla" @change="toggleSla(selectedNode,($event.target as HTMLInputElement).checked)"/><span><b>设置办理时限</b><small>按冻结的时间与日历版本计时</small></span></label>
+          <template v-if="selectedNode.sla">
+            <div class="workflow-overlay-fields workflow-sla-fields"><label><span>办理时限（小时）</span><input v-model.number="selectedNode.sla.due_hours" type="number" min="1" max="8760" required/></label><label><span>提前提醒（小时）</span><input v-model.number="selectedNode.sla.remind_before_hours" type="number" min="0" :max="Math.max(0,selectedNode.sla.due_hours-1)" required/></label><label><span>计时日历</span><select v-model="selectedNode.sla.calendar_id"><option :value="undefined">连续自然小时</option><option v-for="calendar in publishedCalendars" :key="calendar.id" :value="calendar.id">{{calendar.name}} · 第 {{calendar.version}} 版</option></select></label></div>
+            <div class="workflow-sla-recipients"><fieldset><legend>到期抄送</legend><label v-for="user in users.filter(item=>item.active)" :key="user.id" class="check-label"><input type="checkbox" :checked="selectedNode.sla.cc_user_ids?.includes(user.id)" @change="toggleSlaRecipient(selectedNode,'cc_user_ids',user.id,($event.target as HTMLInputElement).checked)"/>{{user.display_name}}</label><small>只增加到期通知，不增加审批票。</small></fieldset><fieldset><legend>升级跟进</legend><label v-for="user in users.filter(item=>item.active)" :key="user.id" class="check-label"><input type="checkbox" :checked="selectedNode.sla.escalation_user_ids?.includes(user.id)" @change="toggleSlaRecipient(selectedNode,'escalation_user_ids',user.id,($event.target as HTMLInputElement).checked)"/>{{user.display_name}}</label><small>超时后生成跟进任务，但不能代替审批人作决定。</small></fieldset></div>
+          </template>
+          <button v-if="nodes.length>1" type="button" class="subtle workflow-overlay-delete" @click="removeNode(selectedNodeIndex);canvasPanel=''" ><Trash2 :size="14"/>删除当前节点</button>
         </aside>
       </template>
     </WorkflowCanvas>
-    <template v-for="{node:n,index:i} in selectedNodeEntry" :key="n.key">
-      <details class="surface workflow-node-inspector" :aria-label="'审批节点 '+(i+1)">
-        <summary class="workflow-node-inspector-summary"><span><strong>{{n.name}}</strong><small>{{modeName(n.mode)}} · {{assignmentNames(n)||'未配置审批人员'}}</small></span><span>高级设置</span></summary>
-        <div class="form-stack workflow-node-inspector-body">
-        <div v-if="nodes.length>1" class="workflow-node-editor-actions"><button type="button" class="subtle" aria-label="删除节点" @click="removeNode(i)"><Trash2 :size="14"/>删除当前节点</button></div>
-        <div class="form-grid"><label>节点名称<input v-model="n.name" required/></label></div>
-        <label>审批方式<select :value="n.mode" @change="setNodeMode(n,($event.target as HTMLSelectElement).value)"><option value="ALL">全部人员同意（会签）</option><option value="ANY">任一人员同意（或签）</option><option value="CLAIM">候选人领取后办理</option></select></label>
-        <p v-if="n.mode==='CLAIM'" class="muted small">进入节点时只生成一个候选任务，不会为每位候选人建立审批票；首位成功领取者取得唯一责任席位，其他候选人的入口立即关闭。</p>
-        <label class="check-label"><input type="checkbox" :checked="!!n.sla" @change="toggleSla(n,($event.target as HTMLInputElement).checked)"/>设置节点办理时限与提前提醒</label>
-        <div v-if="n.sla" class="form-grid"><label>办理时限（小时）<input v-model.number="n.sla.due_hours" type="number" min="1" max="8760" required/></label><label>提前提醒（小时）<input v-model.number="n.sla.remind_before_hours" type="number" min="0" :max="Math.max(0,n.sla.due_hours-1)" required/></label><label>计时日历<select v-model="n.sla.calendar_id"><option :value="undefined">连续自然小时</option><option v-for="calendar in publishedCalendars" :key="calendar.id" :value="calendar.id">{{calendar.name}} · 第 {{calendar.version}} 版</option></select></label></div>
-        <p v-if="n.sla" class="muted small">选择工作日历后只累计已发布版本中的工作时段；未选择则按连续自然小时。时间和日历版本会冻结在实例快照，服务重启后补扫遗漏事件。到期只提醒和进入事件中心，不会自动同意。</p>
-        <label class="check-label"><input v-model="n.allow_transfer" type="checkbox"/>允许当前审批人转交本人的审批席位</label>
-        <p class="muted small">转交只更换当前席位负责人；系统会在准备和确认时重新校验目标人员的业务读取与审批权限。</p>
-        <label class="check-label"><input v-model="n.allow_proxy" type="checkbox"/>允许管理员为此节点配置人工审批代理</label>
-        <p class="muted small">代理不改变席位负责人，也不增加票数；决定会同时记录原责任人与实际操作人，代理人仍须具备当前业务权限。</p>
-        <label class="check-label"><input type="checkbox" :checked="!!n.agent_auto_approval" :disabled="n.mode==='CLAIM'" @change="toggleAgentAuto(n,($event.target as HTMLInputElement).checked)"/>允许审批人本人授权后由 Agent 自动同意该节点</label>
-        <p class="muted small">只建议用于低风险、资料齐全时可例行同意的节点。Agent 不会自动驳回，也不能绕过审批人员、业务权限、资料版本或必须驳回条件。</p>
-        <div v-if="n.agent_auto_approval" class="surface form-stack">
-          <strong>自动审批安全条件</strong>
-          <p class="muted small">可选。设置后条件必须明确满足才会自动同意；条件不满足或资料不足时继续人工处理。</p>
-          <template v-if="n.agent_auto_policy"><RuleEditor v-model="n.agent_auto_policy.condition" :contract="materialContract"/><button type="button" @click="setAgentAutoPolicy(n,false)">移除安全条件</button></template>
-          <button v-else type="button" class="subtle" @click="setAgentAutoPolicy(n,true)">增加安全条件</button>
-        </div>
-        <label>人员来源<select :value="n.assignment?'RULE':'USERS'" @change="assignmentMode(n,($event.target as HTMLSelectElement).value==='RULE')"><option value="USERS">指定人员</option><option value="RULE">按角色或部门选择</option></select></label>
-        <fieldset v-if="!n.assignment"><legend>审批人员</legend><label class="check-label" v-for="u in users.filter(x=>x.active)" :key="u.id"><input v-model="n.users" type="checkbox" :value="u.id"/>{{u.display_name}}</label></fieldset>
-        <template v-else>
-          <fieldset><legend>角色（可多选）</legend><label v-for="g in assignmentGroups.filter(x=>x.kind==='ROLE'&&x.active)" :key="g.id" class="check-label"><input v-model="n.assignment.roles" type="checkbox" :value="g.id"/>{{g.name}} · {{g.members.length}} 位成员</label></fieldset>
-          <fieldset><legend>部门（可多选）</legend><label v-for="g in assignmentGroups.filter(x=>x.kind==='DEPARTMENT'&&x.active)" :key="g.id" class="check-label"><input v-model="n.assignment.departments" type="checkbox" :value="g.id"/>{{g.name}}</label></fieldset>
-          <label class="check-label"><input v-model="n.assignment.department_heads_only" type="checkbox"/>只选择所选部门的负责人</label>
-          <p class="muted">同类多选取并集；同时配置角色和部门时必须同时满足。当前候选：{{candidateNames(n)}}。</p>
-        </template>
-        <p class="muted small">配置人员不会自动授予业务权限。会签人员失效时等待处理，不能减少签名人数后放行。</p>
-        <fieldset><legend>允许退回到</legend><label v-for="target in returnTargets(i)" :key="target.key" class="check-label"><input v-model="n.return_policy.targets" type="checkbox" :value="target.key"/>{{target.name}}</label></fieldset>
-        <p class="muted small">只能选择申请人或当前节点之前的责任节点。退回会结束当前审批轮并记录目标；修改后重新提交创建新轮次并从首个节点完整重审。</p>
-        <div v-for="(r,j) in n.reject_rules" :key="j" class="surface form-stack"><strong>必须驳回条件 {{Number(j)+1}}</strong><RuleEditor v-model="r.condition" :contract="materialContract"/><label>驳回原因<input v-model="r.reason" required/></label><button type="button" @click="n.reject_rules.splice(j,1)">删除驳回条件</button></div>
-        <button type="button" class="subtle" @click="n.reject_rules.push({condition:newCondition(),reason:''})">增加必须驳回条件</button>
-        <label class="check-label"><input type="checkbox" :checked="!!n.routes" @change="routing(n,i,($event.target as HTMLInputElement).checked)"/>按条件选择后续节点</label>
-        <template v-if="n.routes">
-          <div v-for="(r,j) in n.routes" :key="j" class="surface form-stack"><strong>条件分支 {{Number(j)+1}}</strong><RuleEditor v-model="r.condition" :contract="materialContract"/><label>命中后前往<select v-model="r.target"><option v-for="t in targets(i)" :key="t.key" :value="t.key">{{t.name}}</option></select></label><button v-if="n.routes.length>1" type="button" @click="n.routes.splice(j,1)">删除分支</button></div>
-          <button type="button" @click="n.routes.push({condition:newCondition(),target:targets(i)[0].key})">增加条件分支</button>
-          <label>全部条件未命中时前往<select v-model="n.default_target"><option v-for="t in targets(i)" :key="t.key" :value="t.key">{{t.name}}</option></select></label>
-          <p class="muted small">明细字段可判断任一行，数值字段可按合计判断；命中多个分支或资料缺失时阻塞，不走默认出口。金额条件请同时限定币种。</p>
-        </template><p v-else class="muted small">全部通过后 → {{nodes[i+1]?.name || '审批结束'}}</p>
-        </div>
-      </details>
-    </template>
-    <div class="actions"><button type="button" @click="editing=false">取消</button><button class="primary" :disabled="busy">{{editId?'保存当前草稿':'保存为新版本草稿'}}</button></div>
+    <div class="actions workflow-editor-actions"><button type="button" @click="editing=false">取消</button><button class="primary" :disabled="busy">{{editId?'保存当前草稿':'保存为新版本草稿'}}</button></div>
   </form>
   <p v-if="!groups.length" class="workflow-template-empty">没有匹配的审批流程模板</p>
   <div v-else class="workflow-summary-grid">

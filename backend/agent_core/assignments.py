@@ -116,3 +116,12 @@ def check_publish(db, config):
             raise DomainError(
                 "ASSIGNMENT_BLOCKED", "加签人员池包含不存在或已停用的人员，请重新维护"
             )
+        sla = node.get("sla", {})
+        timed_recipients = set(sla.get("cc_user_ids", [])) | set(sla.get("escalation_user_ids", []))
+        if any(
+            not (user := db.get(models.User, user_id)) or not user.active
+            for user_id in timed_recipients
+        ):
+            raise DomainError(
+                "ASSIGNMENT_BLOCKED", "超时抄送或升级人员包含不存在、已停用的账号"
+            )

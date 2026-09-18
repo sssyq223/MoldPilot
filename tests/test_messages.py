@@ -2,7 +2,8 @@ from datetime import timedelta
 from sqlalchemy import select,func
 from app import models as m
 from app.db import now
-from app.message_worker import publish_once,deliver,claim,consume_batch
+from app.message_worker import publish_once,deliver,claim,consume_batch,reclaim_pending
+from redis.exceptions import ResponseError
 from conftest import sign_in
 from test_domains import checked,workflow,confirm
 
@@ -13,6 +14,18 @@ class Transport:
         if self.fail:raise ConnectionError('synthetic URL with secret must never be persisted')
         self.messages.append(body);return '1-0'
     def xack(self,*args):self.acks.append(args)
+
+
+class RedisFiveTransport:
+    def __init__(self):self.claimed=None
+    def xautoclaim(self,*args,**kwargs):raise ResponseError("unknown command 'XAUTOCLAIM'")
+    def xpending_range(self,*args):
+        return [
+            {'message_id':'1-0','time_since_delivered':10_000},
+            {'message_id':'2-0','time_since_delivered':30_000},
+            {'message_id':'3-0','time_since_delivered':90_000},
+        ]
+    def xclaim(self,*args):self.claimed=args;return [('2-0',{'event_id':'a'*36}),('3-0',{'event_id':'b'*36})]
 
 
 def event(factory,resource_id,user_id):
@@ -64,6 +77,13 @@ def test_duplicate_stream_message_ack_after_inbox_commit(data):
     consume_batch(factory,transport,[('1-0',{'event_id':eid}),('2-0',{'event_id':eid})])
     assert len(transport.acks)==2
     with factory() as db:assert db.scalar(select(func.count()).select_from(m.Inbox).where(m.Inbox.event_id==eid))==1
+
+
+def test_redis_five_reclaims_pending_without_xautoclaim():
+    transport=RedisFiveTransport()
+    messages=reclaim_pending(transport,'worker-test')
+    assert [item[0] for item in messages]==['2-0','3-0']
+    assert transport.claimed[-1]==['2-0','3-0']
 
 
 def test_redis_loss_reconciles_unconsumed_published_event(data):

@@ -77,8 +77,29 @@ def consume_batch(factory,redis,messages):
         event_id=fields.get('event_id')
         if not event_id or len(event_id)!=36:
             redis.xack(STREAM,GROUP,stream_id);continue
-        deliver(factory,event_id)  # DB error leaves pending, retried through XAUTOCLAIM.
+        deliver(factory,event_id)  # DB error leaves pending for version-compatible reclaim.
         redis.xack(STREAM,GROUP,stream_id)
+
+
+def reclaim_pending(redis, consumer, *, min_idle_ms=30_000, count=25):
+    """Reclaim abandoned deliveries on both Redis 5 and Redis 6.2+."""
+    try:
+        return redis.xautoclaim(
+            STREAM, GROUP, consumer, min_idle_ms, '0-0', count=count
+        )[1]
+    except ResponseError as exc:
+        message = str(exc).lower()
+        if 'unknown command' not in message or 'xautoclaim' not in message:
+            raise
+    # Redis 5 has XPENDING/XCLAIM but not XAUTOCLAIM or XPENDING IDLE.
+    pending = redis.xpending_range(STREAM, GROUP, '-', '+', max(count * 10, count))
+    message_ids = [
+        item['message_id'] for item in pending
+        if item.get('time_since_delivered', 0) >= min_idle_ms
+    ][:count]
+    if not message_ids:
+        return []
+    return redis.xclaim(STREAM, GROUP, consumer, min_idle_ms, message_ids)
 
 
 def main():
@@ -94,8 +115,7 @@ def main():
                 if 'BUSYGROUP' not in str(exc):raise
             for _ in range(25):
                 if not publish_once(SessionLocal,redis):break
-            pending=redis.xautoclaim(STREAM,GROUP,consumer,30_000,'0-0',count=25)
-            consume_batch(SessionLocal,redis,pending[1])
+            consume_batch(SessionLocal,redis,reclaim_pending(redis,consumer))
             for _,messages in redis.xreadgroup(GROUP,consumer,{STREAM:'>'},count=25,block=1000):
                 consume_batch(SessionLocal,redis,messages)
         except Exception as exc:

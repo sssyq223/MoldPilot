@@ -661,6 +661,12 @@ def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
                         if instance.stage_index < len(definition.config["nodes"]) else None)
         deadline = ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
                     .get("deadline"))
+        escalation_tasks = list(db.scalars(
+            select(m.WorkflowEscalationTask).where(
+                m.WorkflowEscalationTask.instance_id == instance.id,
+                m.WorkflowEscalationTask.stage_index == instance.stage_index,
+            ).order_by(m.WorkflowEscalationTask.created_at, m.WorkflowEscalationTask.id)
+        ))
         result.append({
             "id": instance.id,
             "version": instance.version,
@@ -673,6 +679,15 @@ def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
             "stage_index": instance.stage_index,
             "node": ({"key": current_node["key"], "name": current_node["name"]}
                      if current_node else None),
+            "escalations": [{
+                "id": task.id,
+                "status": task.status,
+                "user": ({"id": assignee.id, "display_name": assignee.display_name}
+                         if (assignee := db.get(m.User, task.user_id)) else {"id": task.user_id, "display_name": "账号不可用"}),
+                "created_at": task.created_at.isoformat(),
+                "closed_at": task.closed_at.isoformat() if task.closed_at else None,
+                "close_reason": task.close_reason,
+            } for task in escalation_tasks],
             "retryable": instance.incident == "ASSIGNMENT_BLOCKED",
             "created_at": instance.created_at.isoformat(),
         })

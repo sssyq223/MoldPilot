@@ -262,6 +262,25 @@ class WorkflowTimer(IdentityMixin, Base):
     )
 
 
+class WorkflowEscalationTask(IdentityMixin, Base):
+    """Non-decision follow-up created when an approval stage becomes overdue."""
+    __tablename__ = "workflow_escalation_task"
+    timer_id: Mapped[str] = mapped_column(ForeignKey("wf_timer.id"), index=True)
+    instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"), index=True)
+    stage_index: Mapped[int] = mapped_column(Integer)
+    node_key: Mapped[str] = mapped_column(String(80))
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    close_reason: Mapped[str | None] = mapped_column(String(40))
+    __table_args__ = (
+        UniqueConstraint("timer_id", "user_id"),
+        CheckConstraint("status IN ('OPEN','CLOSED','STALE')", name="workflow_escalation_status"),
+        Index("ix_workflow_escalation_open", "status", "user_id", "created_at"),
+    )
+
+
 class ApprovalAction(IdentityMixin, Base):
     __tablename__ = "approval_action"
     instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"))
