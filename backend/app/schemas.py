@@ -85,6 +85,11 @@ class ApprovalClaimInput(StrictModel):
     snapshot_hash: str = Field(min_length=64, max_length=64)
 
 
+class WorkflowIncidentRetryInput(StrictModel):
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class ApprovalSeatTransferInput(StrictModel):
     instance_id: str = Field(min_length=1, max_length=36)
     seat_id: str = Field(min_length=1, max_length=36)

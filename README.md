@@ -148,7 +148,7 @@ ERP 工程产出的 npm 包不复制进 Agent 仓库；设置 `MOLD_ERP_DESIGN_M
 
 ### 5. 启动服务
 
-分别打开三个 PowerShell 终端，并在项目根目录运行以下命令。
+分别打开四个 PowerShell 终端，并在项目根目录运行以下命令。
 
 终端一：启动 API。
 
@@ -164,7 +164,15 @@ $env:PYTHONPATH='backend'
 .\.venv\Scripts\python.exe -m app.agent_worker
 ```
 
-终端三：启动前端。
+终端三：启动消息 Worker。该进程负责 PostgreSQL Outbox → Redis Streams 投递，
+同时扫描持久化的审批提醒/到期计时器；进程重启后会从数据库继续处理未完成计时器。
+
+```powershell
+$env:PYTHONPATH='backend'
+.\.venv\Scripts\python.exe -m app.message_worker
+```
+
+终端四：启动前端。
 
 ```powershell
 Set-Location web

@@ -132,6 +132,7 @@ async function claimApproval() {
           <div class="approval-flow-content"><div class="approval-flow-row"><strong>结束</strong><span class="approval-flow-state">{{detail.status==='COMPLETED'?'已完成':'待流转'}}</span></div><small>{{detail.status==='COMPLETED'?'审批流程已结束':'完成全部审批节点后结束'}}</small></div>
         </div>
       </div>
+      <p v-if="detail.deadline" :class="detail.deadline.status==='OVERDUE'?'warning':'muted'">{{detail.deadline.status==='OVERDUE'?'本节点已超过办理时限':'本节点办理时限'}} · {{shanghai(detail.deadline.due_at)}}。超时不会自动同意。</p>
       <p v-if="detail.incident" class="warning">{{detail.incident==='ASSIGNMENT_BLOCKED'?'暂无具备资格的审批人员，需要处理人员配置。':'审批暂时无法推进，请联系流程管理员处理。'}}</p>
     </section>
   </div>

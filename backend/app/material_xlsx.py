@@ -24,6 +24,8 @@ NS = {
 CELL_RE = re.compile(r"^([A-Z]{1,3})([1-9][0-9]{0,6})$")
 MAX_CELLS = 100_000
 MAX_ROW = 1_048_576
+MAX_INFER_ROWS = 80
+MAX_INFER_COLUMNS = 100
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,156 @@ def _column_for(selector: str, header: dict[str, int]) -> int | None:
 
 def _mapping_invalid(message):
     raise DomainError("INVALID_XLSX_MAPPING", message, 400)
+
+
+def _text(value) -> str:
+    return "" if value is None else str(value).replace("\n", " ").strip()
+
+
+def _looks_numeric(value) -> bool:
+    if type(value) is bool:
+        return False
+    try:
+        Decimal(_text(value))
+        return bool(_text(value))
+    except InvalidOperation:
+        return False
+
+
+def _inferred_type(values: list[str | bool], label: str = "") -> str:
+    samples = [value for value in values if value not in {None, ""}][:50]
+    if not samples:
+        numeric_labels=("金额","单价","费用","费","数量","重量","工时","合计","总价","长","宽","厚")
+        return "decimal" if any(word in label for word in numeric_labels) else "text"
+    folded = {_text(value).casefold() for value in samples}
+    if folded <= {"true", "false", "是", "否", "0", "1"} and not all(_looks_numeric(value) for value in samples):
+        return "boolean"
+    if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", _text(value)) for value in samples):
+        try:
+            for value in samples:
+                date.fromisoformat(_text(value))
+            return "date"
+        except ValueError:
+            pass
+    if sum(_looks_numeric(value) for value in samples) / len(samples) >= .8:
+        return "decimal"
+    return "text"
+
+
+def _header_candidate(sheet) -> int | None:
+    """Find the most likely detail header without relying on workbook styling."""
+    best: tuple[float, int] | None = None
+    max_row = min(sheet["max_row"], MAX_INFER_ROWS)
+    for row in range(1, max_row + 1):
+        columns = {col for (cell_row, col), cell in sheet["cells"].items()
+                   if cell_row == row and cell.value not in {None, ""}}
+        if len(columns) < 2:
+            continue
+        text_ratio = sum(not _looks_numeric(_cell(sheet, row, col).value) for col in columns) / len(columns)
+        following = []
+        for later in range(row + 1, min(max_row, row + 4) + 1):
+            occupied = {col for col in columns if _cell(sheet, later, col).value not in {None, ""}}
+            following.append(len(occupied) / len(columns))
+        coverage = max(following, default=0)
+        # Wide textual rows followed by similarly shaped rows are usually headers.
+        score = len(columns) * (1 + coverage) + text_ratio * 2 - row * .001
+        next_columns = {col for (cell_row, col), cell in sheet["cells"].items()
+                        if cell_row == row + 1 and cell.value not in {None, ""}}
+        after_columns = {col for (cell_row, col), cell in sheet["cells"].items()
+                         if cell_row == row + 2 and cell.value not in {None, ""}}
+        if next_columns:
+            next_text_ratio = sum(not _looks_numeric(_cell(sheet, row + 1, col).value) for col in next_columns) / len(next_columns)
+            combined = columns | next_columns
+            combined_coverage = len(after_columns & combined) / len(combined)
+            if next_text_ratio >= .75 and combined_coverage >= .5:
+                score += len(combined)
+        if coverage >= .1 and (best is None or score > best[0]):
+            best = (score, row)
+    return best[1] if best else None
+
+
+def _header_columns(sheet, header_row: int):
+    primary = {col: _text(cell.value) for (row, col), cell in sheet["cells"].items()
+               if row == header_row and cell.value not in {None, ""}}
+    next_values = {col: _text(cell.value) for (row, col), cell in sheet["cells"].items()
+                   if row == header_row + 1 and cell.value not in {None, ""}}
+    after_values = {col: _text(cell.value) for (row, col), cell in sheet["cells"].items()
+                    if row == header_row + 2 and cell.value not in {None, ""}}
+    next_text_ratio = (sum(not _looks_numeric(value) for value in next_values.values()) / len(next_values)) if next_values else 0
+    use_subheader = bool(next_values and next_text_ratio >= .75 and
+                         len(set(after_values) & (set(primary) | set(next_values))) >= max(2, len(next_values) // 2))
+    columns = sorted(set(primary) | (set(next_values) if use_subheader else set()))[:MAX_INFER_COLUMNS]
+    labels = {}
+    parent = ""
+    for col in columns:
+        if primary.get(col):
+            parent = primary[col]
+        child = next_values.get(col) if use_subheader else ""
+        labels[col] = f"{parent} / {child}" if child and parent and child != parent else child or primary.get(col) or f"第 {_col_letters(col)} 列"
+    return labels, use_subheader
+
+
+def infer_xlsx_contract(data: bytes, default_name: str = "Excel 资料"):
+    """Infer a reviewable contract and reusable mapping from a conventional XLSX.
+
+    The result is deliberately a draft: cell values are sampled only to suggest
+    primitive types, while labels and column coordinates remain editable before
+    the immutable template version is published.
+    """
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            names = set(archive.namelist())
+            warnings = []
+            if any(name.startswith("xl/externalLinks/") for name in names):
+                warnings.append("原文件包含外部链接，系统不会读取外部数据")
+            shared = _shared_strings(archive)
+            sheet_paths = _workbook_sheets(archive)
+            workbook = {name: _load_sheet(archive, path, shared) for name, path in sheet_paths.items()}
+    except BadZipFile:
+        raise DomainError("XLSX_STRUCTURE_INVALID", "Excel 文件不是有效的 XLSX 包", 400) from None
+
+    tables = []
+    mappings = {}
+    sheet_summaries = []
+    formula_count = 0
+    for sheet_index, (sheet_name, sheet) in enumerate(workbook.items(), 1):
+        formula_count += sum(cell.formula for cell in sheet["cells"].values())
+        header_row = _header_candidate(sheet)
+        if not header_row:
+            sheet_summaries.append({"name": sheet_name, "status": "EMPTY", "message": "未发现可解析的二维表格"})
+            continue
+        labels, subheader = _header_columns(sheet, header_row)
+        first_data_row = header_row + (2 if subheader else 1)
+        table_key = f"sheet_{sheet_index}"
+        fields = []
+        column_mapping = {}
+        for col, label in labels.items():
+            key = f"c_{_col_letters(col).lower()}"
+            samples = [_cell(sheet, row, col).value for row in range(first_data_row, min(sheet["max_row"], first_data_row + 49) + 1)
+                       if not _cell(sheet, row, col).formula]
+            field = {"key": key, "label": label[:100], "type": _inferred_type(samples, label)}
+            unit_match = re.search(r"[（(]([^（）()]{1,12})[）)]", label)
+            if unit_match:
+                field["unit"] = unit_match.group(1).strip()
+            fields.append(field)
+            column_mapping[key] = _col_letters(col)
+        if not fields:
+            continue
+        table_label = sheet_name if sheet_name.casefold() not in {"sheet1", "sheet2", "sheet3"} else f"{default_name}明细"
+        tables.append({"key": table_key, "label": table_label[:100], "fields": fields})
+        mappings[table_key] = {"sheet": sheet_name, "header_row": header_row, "first_data_row": first_data_row,
+                               "columns": column_mapping, "row_id_column": _col_letters(next(iter(labels)))}
+        sheet_summaries.append({"name": sheet_name, "status": "PARSED", "header_row": header_row,
+                                "first_data_row": first_data_row, "field_count": len(fields), "multi_row_header": subheader})
+    if formula_count:
+        warnings.append(f"检测到 {formula_count} 个公式单元格；模板字段可以导入，但业务解析不会采用公式结果")
+    if not tables:
+        raise DomainError("XLSX_TABLE_NOT_FOUND", "Excel 中没有识别到可作为模板的明细表", 400)
+    contract = {"fields": [], "tables": tables}
+    validate_contract(contract)
+    mapping = {"tables": mappings}
+    validate_xlsx_mapping(contract, mapping)
+    return {"contract": contract, "mapping": mapping, "sheets": sheet_summaries, "warnings": warnings}
 
 
 def validate_xlsx_mapping(contract: dict, mapping: dict):

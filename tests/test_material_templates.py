@@ -108,6 +108,34 @@ def test_template_authorization_and_empty_schema(client,data):
     assert client.get('/api/material-templates').status_code==403
     assert client.post('/api/material-templates',json={'template_key':'forbidden','name':'越权','contract':CONTRACT}).status_code==403
 
+
+def test_xlsx_can_infer_reviewable_contract_and_mapping(client,data,local_file_storage):
+    sign_in(client)
+    file=upload_xlsx(client,xlsx([
+        (1,'A','序号'),(1,'B','物料编号'),(1,'C','名称'),(1,'D','数量(PCS)'),(1,'E','需求日期'),
+        (2,'A',1),(2,'B','MAT-001'),(2,'C','定位块'),(2,'D',3),(2,'E','2026-09-30'),
+        (3,'A',2),(3,'B','MAT-002'),(3,'C','顶料销'),(3,'D',5),(3,'E','2026-10-01')])).json()
+    response=client.post('/api/material-templates/infer-xlsx',json={'file_id':file['id']})
+    assert response.status_code==200,response.text
+    body=response.json();table=body['contract']['tables'][0]
+    assert body['name']=='设计清单' and table['label']=='数据'
+    assert [field['label'] for field in table['fields']]==['序号','物料编号','名称','数量(PCS)','需求日期']
+    assert [field['type'] for field in table['fields']]==['decimal','text','text','decimal','date']
+    assert table['fields'][3]['unit']=='PCS'
+    assert body['mapping']['tables']['sheet_1']['header_row']==1
+    assert body['mapping']['tables']['sheet_1']['columns']['c_d']=='D'
+
+
+def test_xlsx_inference_combines_two_row_headers():
+    from app.material_xlsx import infer_xlsx_contract
+    body=infer_xlsx_contract(xlsx([
+        (1,'A','序号'),(1,'B','代码'),(1,'C','加工方式'),(1,'F','判定'),
+        (2,'C','铣面'),(2,'D','研磨'),(2,'E','倒角'),(2,'F','OK'),(2,'G','NG'),
+        (3,'A',1),(3,'B','A-01'),(3,'C',6),(3,'D',2),(3,'E',0),(3,'F','是'),(3,'G','否')]),'钢料清单')
+    fields=body['contract']['tables'][0]['fields']
+    assert [field['label'] for field in fields]==['序号','代码','加工方式 / 铣面','加工方式 / 研磨','加工方式 / 倒角','判定 / OK','判定 / NG']
+    assert body['mapping']['tables']['sheet_1']['first_data_row']==3
+
 def test_bound_schema_used_by_simulation_and_preserved_by_draft_edit(client,data):
     ids,_=data;sign_in(client);t=create(client)
     client.post('/api/material-templates/'+t['id']+'/publish')

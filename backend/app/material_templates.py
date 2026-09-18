@@ -29,6 +29,8 @@ class XlsxPreviewInput(StrictModel):
     file_id:str=Field(min_length=1,max_length=36)
     mapping:dict|None=None
     mapping_id:str|None=Field(default=None,min_length=1,max_length=36)
+class XlsxInferInput(StrictModel):
+    file_id:str=Field(min_length=1,max_length=36)
 class MaterialReviewConfirmInput(StrictModel):
     expected_hash:str=Field(min_length=64,max_length=64)
     comment:str=Field(default='',max_length=500)
@@ -101,6 +103,23 @@ def create(body:TemplateInput,user=Depends(current_user),db=Depends(get_db)):
     version=(db.scalar(select(func.max(MaterialTemplate.version)).where(MaterialTemplate.template_key==body.template_key)) or 0)+1
     t=MaterialTemplate(template_key=body.template_key,name=body.name.strip(),version=version,contract=body.contract)
     db.add(t);db.flush();record(db,user,'material.template.created',t.id,{'version':version});db.commit();return material_data(t)
+
+@router.post('/infer-xlsx')
+def infer_xlsx(body:XlsxInferInput,user=Depends(current_user),db=Depends(get_db)):
+    from pathlib import PurePath
+    from . import files,object_storage
+    from .material_xlsx import infer_xlsx_contract
+    require(db,user,'workflow.design')
+    blob=files.uploaded_file(db,user,body.file_id)
+    if blob.media_type!='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        raise DomainError('FILE_TYPE_UNSUPPORTED','资料模板导入只支持 XLSX 原件')
+    name=PurePath(blob.filename).stem.strip()[:150] or 'Excel 资料模板'
+    result=infer_xlsx_contract(object_storage.read(blob),name)
+    record(db,user,'material.xlsx_contract.inferred',blob.id,{'sheet_count':len(result['sheets']),
+        'table_count':len(result['contract']['tables']),'field_count':sum(len(t['fields']) for t in result['contract']['tables'])})
+    db.commit()
+    return {**result,'name':name,'file':files.metadata(blob),
+            'limitations':['字段类型是根据样本值推断的草案，发布前需要管理员核对','公式、宏和外部链接不会作为审批条件数据执行']}
 
 @router.put('/{template_id}')
 def edit(template_id:str,body:TemplateEdit,user=Depends(current_user),db=Depends(get_db)):

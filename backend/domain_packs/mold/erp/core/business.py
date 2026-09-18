@@ -15,6 +15,11 @@ from domain_packs.mold.ports.events import record
 from domain_packs.mold.ports.security import digest
 from domain_packs.mold.ports.proposal_registry import handler_for_action
 from agent_core.domain_pack import resource_contract
+from agent_core.workflow_timers import (
+    cancel_instance_timers,
+    cancel_stage_timers,
+    schedule_stage_timers,
+)
 
 
 def request_lines(db, req):
@@ -97,6 +102,9 @@ def enter_stage(db, instance, definition, req):
     resolution['blocked']=not eligible or (node['mode']=='ALL' and len(eligible)!=len(candidates))
     if node['mode'] == 'CLAIM':
         resolution['claim_status'] = 'AVAILABLE' if not resolution['blocked'] else 'BLOCKED'
+    deadline = schedule_stage_timers(db, instance, node)
+    if deadline:
+        resolution['deadline'] = deadline
     instance.assignment_snapshots={**(instance.assignment_snapshots or {}),str(instance.stage_index):resolution}
     if resolution['blocked']:
         instance.incident = "ASSIGNMENT_BLOCKED"
@@ -343,8 +351,12 @@ def approval_detail(db, user, instance):
             "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
             "material_notice":material_notice,
             "definition": {"name": definition.name, "version": definition.version},
-            "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"]} for n in definition.config["nodes"]],
+            "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"],
+                       "sla": n.get("sla")} for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
+            "deadline": ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
+                         .get("deadline") if instance.stage_index < len(definition.config["nodes"])
+                         else None),
             "assigned_people": [{"name":db.get(User,s.user_id).display_name,"stage_index":s.stage_index,
                                  "status":s.status,"seat_id":s.id,"parent_seat_id":s.parent_seat_id,
                                  "countersign_timing":s.countersign_timing} for s in seats],
@@ -769,6 +781,7 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     db.flush()
     peers = list(db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id, ApprovalSeat.stage_index == instance.stage_index)))
     if payload["decision"] in {"REJECT", "RETURN"}:
+        cancel_stage_timers(db, instance.id, instance.stage_index)
         instance.status = "REJECTED" if payload["decision"] == "REJECT" else "RETURNED"
         req.status = instance.status
         if isinstance(req,BusinessSubject):
@@ -784,6 +797,7 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
             ApprovalSeat.stage_index == instance.stage_index,
         )))
     if payload["decision"] == "APPROVE" and _stage_is_approved(node, peers):
+        cancel_stage_timers(db, instance.id, instance.stage_index)
         for peer in peers:
             if peer.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}: peer.status = "CANCELLED"
         target = bpm.route_target(definition.config, instance.stage_index, instance.snapshot)
@@ -856,6 +870,7 @@ def withdraw_approval(db, user, payload):
         release_reservation(db, req)
     instance.status = "CANCELLED"
     instance.incident = None
+    cancel_instance_timers(db, instance.id)
     instance.version += 1
     req.revision += 1
     req.status = "DRAFT"
@@ -870,6 +885,44 @@ def withdraw_approval(db, user, payload):
     return {"instance_id": instance.id, "status": instance.status,
             "business_status": req.status, "business_revision": req.revision,
             "cancelled_seats": cancelled}
+
+
+def retry_workflow_incident(db, user, instance_id, expected_version, reason):
+    """Retry a recoverable workflow incident after an operator fixes its cause."""
+    if not reason.strip():
+        raise DomainError("INVALID_INPUT", "请填写恢复原因")
+    instance = db.scalar(select(ApprovalInstance).where(
+        ApprovalInstance.id == instance_id,
+    ).with_for_update())
+    if not instance:
+        raise DomainError("NOT_FOUND", "流程实例不存在", 404)
+    if instance.version != expected_version:
+        raise DomainError("VERSION_CONFLICT", "流程实例已变化，请刷新事件中心", 409)
+    if instance.status != "RUNNING" or instance.incident != "ASSIGNMENT_BLOCKED":
+        raise DomainError("INCIDENT_NOT_RECOVERABLE", "当前事件不能通过重新解析审批人员恢复", 409)
+    if db.scalar(select(ApprovalSeat.id).where(
+            ApprovalSeat.instance_id == instance.id,
+            ApprovalSeat.stage_index == instance.stage_index)) or db.scalar(select(ApprovalCandidate.id).where(
+                ApprovalCandidate.instance_id == instance.id,
+                ApprovalCandidate.stage_index == instance.stage_index)):
+        raise DomainError("ENGINE_STATE_CONFLICT", "阻塞节点已经生成办理席位，请先刷新实例", 409)
+    definition = db.get(WorkflowDefinition, instance.definition_id)
+    req = load_subject(db, instance, lock=True)
+    previous_incident = instance.incident
+    instance.incident = None
+    enter_stage(db, instance, definition, req)
+    instance.version += 1
+    detail = {
+        "previous_incident": previous_incident,
+        "result_incident": instance.incident,
+        "stage_index": instance.stage_index,
+        "node_key": definition.config["nodes"][instance.stage_index]["key"],
+        "reason": reason.strip(),
+        "version": instance.version,
+    }
+    record(db, user, "approval.incident.retried", instance.id, detail)
+    return {"instance_id": instance.id, "status": instance.status,
+            "incident": instance.incident, "version": instance.version}
 
 
 def create_intent(db, user, action, resource_id, payload):

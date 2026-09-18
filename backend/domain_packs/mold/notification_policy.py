@@ -5,6 +5,10 @@ from domain_packs.mold.ports.errors import DomainError
 TITLES = {
     "approval.pending": "有新的审批待办",
     "approval.assignment.blocked": "审批人员配置需要处理",
+    "approval.reminder": "审批办理即将到期",
+    "approval.overdue": "审批办理已经超时",
+    "approval.timer.failed": "审批定时事件需要处理",
+    "approval.incident.retried": "审批事件已重新处理",
     "business.effective": "业务单据已生效",
     "order.execution.draft.created": "采购执行草稿已生成",
     "contact.created": "有新的工程联络单待协调",

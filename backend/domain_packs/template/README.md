@@ -25,7 +25,7 @@ The template intentionally registers no models, domain permissions, scope
 dimensions, or approval resource types. Its metadata must remain sortable and
 compilable as PostgreSQL DDL so a new pack starts from a valid host schema.
 `scripts/migrate.py` selects `alembic-core.ini` for this pack; its frozen SQL
-baseline creates only the 27 host tables plus `alembic_core_version` and has a
+baseline creates only the host-owned tables plus `alembic_core_version` and has a
 reviewed checksum. A real PostgreSQL integration test upgrades, checks and
 downgrades that chain in an isolated schema.
 

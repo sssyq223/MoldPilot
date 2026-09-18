@@ -19,6 +19,7 @@ from .config import settings
 from agent_core.message_contract import GROUP, STREAM
 log=logging.getLogger(__name__)
 from agent_core.domain_pack import component
+from agent_core.workflow_timers import tick_due_timers
 
 
 def claim(factory):
@@ -87,6 +88,7 @@ def main():
     consumer='worker-'+str(uuid.uuid4())
     while True:
         try:
+            tick_due_timers(SessionLocal, limit=25)
             try:redis.xgroup_create(STREAM,GROUP,id='0',mkstream=True)
             except ResponseError as exc:
                 if 'BUSYGROUP' not in str(exc):raise

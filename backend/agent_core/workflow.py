@@ -34,7 +34,7 @@ def validate(config):
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy"}:
+        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy", "sla"}:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
@@ -67,6 +67,20 @@ def validate(config):
             validate_condition(node["agent_auto_policy"]["condition"], contract)
         validate_assignment(node)
         validate_add_sign_policy(node)
+        if "sla" in node:
+            sla = node["sla"]
+            if (
+                not isinstance(sla, dict)
+                or set(sla) != {"due_hours", "remind_before_hours"}
+                or type(sla.get("due_hours")) is not int
+                or type(sla.get("remind_before_hours")) is not int
+                or not 1 <= sla["due_hours"] <= 24 * 365
+                or not 0 <= sla["remind_before_hours"] < sla["due_hours"]
+            ):
+                raise DomainError(
+                    "INVALID_WORKFLOW",
+                    "办理时限须为1至8760小时；提前提醒须小于办理时限，填0表示不提前提醒",
+                )
         if not isinstance(node.get('reject_rules', []), list) or len(node.get('reject_rules', [])) > 20:
             raise DomainError('INVALID_RULE', '单个节点最多配置20条驳回规则')
         for rule in node.get("reject_rules", []):

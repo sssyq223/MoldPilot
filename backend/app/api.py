@@ -7,7 +7,7 @@ import secrets
 from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, func, text, delete, literal, and_, or_
+from sqlalchemy import select, func, text, delete, literal, and_, or_, exists
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
@@ -628,6 +628,61 @@ def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
     instance = db.get(m.ApprovalInstance, instance_id)
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
     return _business().approval_detail(db, user, instance)
+
+
+@app.get("/api/workflow-incidents")
+def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
+    """Operational event center without exposing approval material payloads."""
+    auth.require(db, user, "workflow.design")
+    overdue_current_stage = exists(select(m.WorkflowTimer.id).where(
+        m.WorkflowTimer.instance_id == m.ApprovalInstance.id,
+        m.WorkflowTimer.stage_index == m.ApprovalInstance.stage_index,
+        m.WorkflowTimer.timer_key == "DUE",
+        m.WorkflowTimer.status == "FIRED",
+    ))
+    rows = list(db.scalars(
+        select(m.ApprovalInstance).where(
+            m.ApprovalInstance.status == "RUNNING",
+            or_(
+                m.ApprovalInstance.incident.is_not(None),
+                overdue_current_stage,
+            ),
+        ).order_by(m.ApprovalInstance.created_at.desc()).limit(100)
+    ))
+    result = []
+    for instance in rows:
+        definition = db.get(m.WorkflowDefinition, instance.definition_id)
+        current_node = (definition.config["nodes"][instance.stage_index]
+                        if instance.stage_index < len(definition.config["nodes"]) else None)
+        deadline = ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
+                    .get("deadline"))
+        result.append({
+            "id": instance.id,
+            "version": instance.version,
+            "status": instance.status,
+            "incident": instance.incident,
+            "overdue": bool(deadline and deadline.get("status") == "OVERDUE"),
+            "deadline": deadline,
+            "resource_type": instance.resource_type,
+            "definition": {"name": definition.name, "version": definition.version},
+            "stage_index": instance.stage_index,
+            "node": ({"key": current_node["key"], "name": current_node["name"]}
+                     if current_node else None),
+            "retryable": instance.incident == "ASSIGNMENT_BLOCKED",
+            "created_at": instance.created_at.isoformat(),
+        })
+    return result
+
+
+@app.post("/api/workflow-incidents/{instance_id}/retry")
+def retry_workflow_incident(instance_id: str, data: s.WorkflowIncidentRetryInput,
+                            user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "workflow.design")
+    result = _business().retry_workflow_incident(
+        db, user, instance_id, data.expected_version, data.reason
+    )
+    db.commit()
+    return result
 
 
 @app.post("/api/approvals/{instance_id}/claim")

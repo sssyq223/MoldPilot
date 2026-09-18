@@ -212,6 +212,37 @@ class ApprovalCandidate(IdentityMixin, Base):
     )
 
 
+class WorkflowTimer(IdentityMixin, Base):
+    """Durable reminder/deadline timer for one approval stage.
+
+    Redis may wake the scheduler faster, but this PostgreSQL record is the
+    authoritative clock and idempotency boundary.  Timers never carry an
+    approval decision and therefore cannot turn a timeout into an approval.
+    """
+    __tablename__ = "wf_timer"
+    instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"), index=True)
+    stage_index: Mapped[int] = mapped_column(Integer)
+    node_key: Mapped[str] = mapped_column(String(80))
+    timer_key: Mapped[str] = mapped_column(String(20))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
+    schedule_version: Mapped[int] = mapped_column(Integer, default=1)
+    lease_id: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(80))
+    __table_args__ = (
+        UniqueConstraint("instance_id", "stage_index", "timer_key", "schedule_version"),
+        CheckConstraint("timer_key IN ('REMINDER','DUE')", name="wf_timer_key"),
+        CheckConstraint(
+            "status IN ('SCHEDULED','FIRED','CANCELLED','STALE','FAILED')",
+            name="wf_timer_status",
+        ),
+        Index("ix_wf_timer_claim", "status", "due_at", "lease_until"),
+    )
+
+
 class ApprovalAction(IdentityMixin, Base):
     __tablename__ = "approval_action"
     instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"))
