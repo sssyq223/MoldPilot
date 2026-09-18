@@ -37,6 +37,10 @@ The package-root modules (`manifest`, `models`, `authorization`,
 stay thin and assemble categorized implementations; business rules must not
 move back into `app` or `agent_core`.
 
+`resources.py` also owns the mapping from domain records to approvals started
+by a user. The host stores only generic `resource_type/resource_id` references
+and must not query mold purchase or business-subject tables directly.
+
 The browser presentation follows the same boundary under
 `web/src/domain-packs/mold`. Select both halves together:
 

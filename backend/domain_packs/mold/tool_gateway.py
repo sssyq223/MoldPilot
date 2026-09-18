@@ -261,7 +261,7 @@ SKILLS.update({
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
     'finance': '财务部门', 'warehouse': '仓储部门', 'assembly': '装配部门', 'trial': '试模部门',
-    'sales': '销售部门', 'system': '管理部门', 'agent': '智能体',
+    'sales': '销售部门', 'system': '管理部门',
 }
 
 TYPE_NAMES = {'query': '查询', 'operation': '操作', 'approval': '审批', 'review': '核对'}
@@ -278,7 +278,7 @@ BUSINESS_DEPARTMENTS = {
     'project_plan_change': 'project',
     'plan_change': 'project', 'shipment': 'warehouse', 'receipt': 'warehouse', 'inspection': 'warehouse',
     'stock': 'warehouse', 'risk': 'purchase', 'master': 'system', 'file': 'system', 'user': 'system',
-    'grant': 'system', 'workflow': 'system', 'audit': 'system', 'agent': 'agent',
+    'grant': 'system', 'workflow': 'system', 'audit': 'system', 'agent': 'system',
 }
 
 CAPABILITY_NAMES = {
@@ -428,13 +428,13 @@ CAPABILITY_TYPES = {
 def capability_business_key(key, permission=''):
     raw = key.removeprefix('query_').removeprefix('prepare_')
     source = raw if raw in BUSINESS_DEPARTMENTS else (permission or '').split('.')[0]
-    return source or 'agent'
+    return source or 'system'
 
 
 def capability_descriptor(kind, key, spec):
     permission = spec.get('permission', '')
     business_key = capability_business_key(key, permission)
-    department = CAPABILITY_DEPARTMENTS.get(key) or BUSINESS_DEPARTMENTS.get(business_key, 'agent')
+    department = CAPABILITY_DEPARTMENTS.get(key) or BUSINESS_DEPARTMENTS.get(business_key, 'system')
     action = permission.split('.')[1] if '.' in permission else ''
     capability_type = CAPABILITY_TYPES.get(key) or (
         'query' if key.startswith('query_') or action == 'read' else

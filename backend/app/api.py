@@ -20,7 +20,7 @@ from .errors import DomainError
 from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
-from agent_core.domain_pack import component
+from agent_core.domain_pack import component, resource_contract
 
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
@@ -594,16 +594,19 @@ def approvals(user=Depends(current_user), db=Depends(get_db)):
 
 @app.get("/api/approvals/initiated")
 def initiated_approvals(user=Depends(current_user), db=Depends(get_db)):
-    purchase_ids = select(m.PurchaseRequest.id).where(m.PurchaseRequest.created_by == user.id)
-    subject_ids = select(m.BusinessSubject.id).where(m.BusinessSubject.created_by == user.id)
-    query = select(m.ApprovalInstance).where(or_(
-        and_(m.ApprovalInstance.resource_type == "purchase_request",
-             m.ApprovalInstance.resource_id.in_(purchase_ids)),
-        and_(m.ApprovalInstance.resource_type == "business_subject",
-             m.ApprovalInstance.resource_id.in_(subject_ids)),
-    )).order_by(m.ApprovalInstance.created_at.desc()).limit(50)
+    instance_ids = resource_contract().initiated_approval_ids(db, user.id, 50)
+    if not instance_ids:
+        return []
+    instances = {
+        instance.id: instance for instance in db.scalars(
+            select(m.ApprovalInstance).where(m.ApprovalInstance.id.in_(instance_ids))
+        )
+    }
     results = []
-    for instance in db.scalars(query):
+    for instance_id in instance_ids:
+        instance = instances.get(instance_id)
+        if not instance:
+            continue
         try:
             results.append(_business().approval_detail(db, user, instance))
         except DomainError:

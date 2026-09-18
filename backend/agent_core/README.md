@@ -21,6 +21,8 @@ under `backend/domain_packs`. The selected pack must expose:
 - `tool_gateway.py`: registered tools, skills, schemas, permissions and execution;
 - `proposal_handlers.py`: tool-to-human-confirmation action handlers.
 - `erp_adapter.py`: optional original-system integration behind the host facade.
+- `resources.py`: approvable resource types and the business-owned lookup for
+  approvals initiated by a user.
 
 `AGENT_HOST_PORTS_MODULE` independently selects the embedding host adapter
 (default `app.host_ports`). A pack may use `agent_core.host_ports.host_ports()`

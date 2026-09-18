@@ -114,6 +114,10 @@ def resource_contract():
         raise RuntimeError(
             "Domain-pack resources.APPROVAL_RESOURCE_TYPES must be a string set"
         )
+    if not callable(getattr(value, "initiated_approval_ids", None)):
+        raise RuntimeError(
+            "Domain-pack resources must provide initiated_approval_ids(db, user_id, limit)"
+        )
     return value
 
 

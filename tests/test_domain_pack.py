@@ -68,6 +68,7 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert resource_contract().APPROVAL_RESOURCE_TYPES == {
         "purchase_request", "business_subject",
     }
+    assert callable(resource_contract().initiated_approval_ids)
     assert component("migrations").ALEMBIC_CONFIG == "backend/domain_packs/mold/alembic.ini"
     assert component("migrations").VERSION_TABLE == "alembic_version"
     assert "erp_design_query_bom" in core_gateway.TOOLS
@@ -265,6 +266,7 @@ def test_generic_frontend_shell_has_no_mold_business_implementation():
         "purchase_request", "business_subject", "contact_case",
         "/api/projects", "/api/purchases", "/api/contacts",
         "mold.agentPermissionMode", "mold.layout",
+        "mold.workflow.canvas",
         "工程联络单", "采购申请明细", "测试采购类别", "测试项目标识",
         "项目角色", "project_id", "PROJECT_OWNER",
     )
@@ -282,6 +284,17 @@ def test_generic_frontend_shell_has_no_mold_business_implementation():
 
     assert (project_root / "web" / "src" / "domain-packs" / "mold" /
             "components" / "WorkflowSubmit.vue").is_file()
+
+
+def test_generic_api_delegates_initiated_resource_ownership_to_pack():
+    project_root = Path(__file__).resolve().parents[1]
+    source = (project_root / "backend" / "app" / "api.py").read_text(encoding="utf-8")
+
+    assert "resource_contract().initiated_approval_ids" in source
+    assert "m.PurchaseRequest" not in source
+    assert "m.BusinessSubject" not in source
+    assert 'resource_type == "purchase_request"' not in source
+    assert 'resource_type == "business_subject"' not in source
 
 
 def test_template_pack_boots_host_without_registering_mold_http_surface():

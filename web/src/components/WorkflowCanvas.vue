@@ -66,8 +66,8 @@ function connector(edge:any){
  return`M ${edge.source.x} ${edge.source.y} L ${middleX} ${edge.source.y} L ${middleX} ${edge.target.y} L ${edge.target.x} ${edge.target.y}`
 }
 function edgeLabel(edge:any){return{x:(edge.source.x+edge.target.x)/2,y:(edge.source.y+edge.target.y)/2-7}}
-function saveLayout(){try{localStorage.setItem(`mold.workflow.canvas.${props.storageKey}`,JSON.stringify(positions.value))}catch{}}
-function loadLayout(){try{positions.value=JSON.parse(localStorage.getItem(`mold.workflow.canvas.${props.storageKey}`)||'{}')}catch{positions.value={}}}
+function saveLayout(){try{localStorage.setItem(`agent.workflow.canvas.${props.storageKey}`,JSON.stringify(positions.value))}catch{}}
+function loadLayout(){try{positions.value=JSON.parse(localStorage.getItem(`agent.workflow.canvas.${props.storageKey}`)||'{}')}catch{positions.value={}}}
 watch(()=>props.storageKey,loadLayout,{immediate:true})
 watch(()=>props.nodes.map((node:any)=>node.key).join('|'),()=>{const valid=new Set(props.nodes.map((node:any)=>node.key));positions.value=Object.fromEntries(Object.entries(positions.value).filter(([key])=>valid.has(key)));saveLayout()})
 function startDrag(event:PointerEvent,index:number){
