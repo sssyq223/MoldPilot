@@ -70,6 +70,7 @@ class DecisionInput(StrictModel):
     snapshot_hash: str
     decision: Literal["APPROVE", "REJECT", "RETURN"]
     comment: str = Field(min_length=1, max_length=2000)
+    return_target_node_key: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class ApprovalSeatTransferInput(StrictModel):

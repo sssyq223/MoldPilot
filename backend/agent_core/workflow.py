@@ -34,7 +34,7 @@ def validate(config):
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy"}:
+        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy"}:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
@@ -48,6 +48,15 @@ def validate(config):
             raise DomainError("INVALID_WORKFLOW", "审批转交节点标记必须为布尔值")
         if "allow_proxy" in node and not isinstance(node["allow_proxy"], bool):
             raise DomainError("INVALID_WORKFLOW", "审批代理节点标记必须为布尔值")
+        if "return_policy" in node:
+            return_policy = node["return_policy"]
+            if not isinstance(return_policy, dict) or set(return_policy) != {"targets"}:
+                raise DomainError("INVALID_WORKFLOW", "退回策略必须只包含允许目标")
+            return_targets = return_policy["targets"]
+            if (not isinstance(return_targets, list) or not 1 <= len(return_targets) <= 20
+                    or any(not isinstance(target, str) for target in return_targets)
+                    or len(return_targets) != len(set(return_targets))):
+                raise DomainError("INVALID_WORKFLOW", "退回目标须为1至20个不重复节点")
         if "agent_auto_policy" in node:
             if not node.get("agent_auto_approval"):
                 raise DomainError("INVALID_WORKFLOW", "只有允许 Agent 自动审批的节点才能设置自动审批策略")
@@ -67,6 +76,10 @@ def validate(config):
     for i, node in enumerate(config['nodes']):
         if i not in reachable:
             raise DomainError('INVALID_WORKFLOW', '存在从开始节点无法到达的审批节点')
+        for return_target in node.get("return_policy", {}).get("targets", ["applicant"]):
+            if return_target != "applicant" and (
+                    return_target not in positions or positions[return_target] >= i):
+                raise DomainError("INVALID_WORKFLOW", "退回目标只能是申请人或当前节点之前的责任节点")
         if 'routes' in node or 'default_target' in node:
             routes = node.get('routes')
             if not isinstance(routes, list) or not 1 <= len(routes) <= 20 or 'default_target' not in node:

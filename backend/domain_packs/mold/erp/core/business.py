@@ -302,6 +302,7 @@ def approval_detail(db, user, instance):
     add_sign_policy = node_add_sign_policy(definition, instance)
     add_sign_allowed = bool(current and not proxy_delegation and "APPROVE" in actions and add_sign_policy)
     add_sign_options = approval_add_sign_options(db, user, instance, req, definition, current) if add_sign_allowed else []
+    return_options = node_return_options(definition, instance) if current and "RETURN" in actions else []
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
             "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
@@ -314,6 +315,7 @@ def approval_detail(db, user, instance):
                                  "countersign_timing":s.countersign_timing} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
             "proxy_delegation": approval_proxy_context(db, proxy_delegation) if proxy_delegation else None,
+            "return_options": return_options,
             "transfer_allowed": bool(current and not proxy_delegation and node_allows_transfer(definition, instance)),
             "transfer_options": transfer_options,
             "add_sign_allowed": add_sign_allowed,
@@ -322,9 +324,20 @@ def approval_detail(db, user, instance):
             "allowed_actions": actions, "rejection_reasons": matched if complete else [],
             "missing_rules": missing if complete else [], "materials_complete": complete,
             "history": [{"user": a.user_snapshot, "decision": a.decision, "comment": a.comment,
+                         "decision_context": a.decision_context or {},
                          "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))],
             "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events],
             "add_sign_history": [{**event.detail, "at": event.created_at.isoformat()} for event in add_sign_events]}
+
+
+def node_return_options(definition, instance):
+    if instance.stage_index >= len(definition.config["nodes"]):
+        return []
+    node = definition.config["nodes"][instance.stage_index]
+    targets = node.get("return_policy", {}).get("targets", ["applicant"])
+    names = {item["key"]: item["name"] for item in definition.config["nodes"]}
+    return [{"key": target, "name": "申请人修改" if target == "applicant" else names[target]}
+            for target in targets]
 
 
 def active_approval_proxy(db, actor, principal_user_id, definition, node, req):
@@ -607,6 +620,14 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
         raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化", 409)
     if payload["decision"] not in detail["allowed_actions"]:
         raise DomainError("RULE_BLOCKED", "当前任务不允许此决定，请核对权限与驳回条件", 409)
+    return_target = None
+    if payload["decision"] == "RETURN":
+        return_target = next((item for item in detail["return_options"]
+                              if item["key"] == payload.get("return_target_node_key")), None)
+        if not return_target:
+            raise DomainError("RETURN_TARGET_INVALID", "退回目标已变化或不在当前模板允许范围内", 409)
+    elif payload.get("return_target_node_key"):
+        raise DomainError("RETURN_TARGET_INVALID", "只有退回决定可以指定退回目标", 400)
     seat = db.get(ApprovalSeat, detail["seat_id"])
     if seat.id != payload["seat_id"] or seat.version != payload["seat_version"]:
         raise DomainError("VERSION_CONFLICT", "审批席位已变化", 409)
@@ -621,9 +642,11 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
         user_snapshot["proxy_reason"] = proxy["reason"]
     if delegation_id:
         user_snapshot["delegation_id"] = delegation_id
+    decision_context = {"return_target": return_target} if return_target else {}
     db.add(ApprovalAction(instance_id=instance.id, seat_id=seat.id, user_id=user.id,
                          user_snapshot=user_snapshot,
-                         decision=payload["decision"], comment=payload["comment"], snapshot_hash=instance.snapshot_hash))
+                         decision=payload["decision"], comment=payload["comment"],
+                         snapshot_hash=instance.snapshot_hash, decision_context=decision_context))
     definition = db.get(WorkflowDefinition, instance.definition_id)
     node = definition.config["nodes"][instance.stage_index]
     db.flush()
@@ -664,6 +687,8 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
         else: enter_stage(db, instance, definition, req)
     instance.version += 1
     detail = {"decision": payload["decision"], "business_status": req.status, "actor_type": actor_type}
+    if return_target:
+        detail["return_target"] = return_target
     if proxy:
         detail["principal_user_id"] = proxy["principal_user"]["id"]
         detail["actor_user_id"] = user.id
@@ -685,6 +710,18 @@ def create_intent(db, user, action, resource_id, payload):
         if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
         detail = approval_detail(db, user, instance)
         if payload["decision"] not in detail["allowed_actions"]: raise DomainError("RULE_BLOCKED", "当前任务不允许此决定", 409)
+        if payload["decision"] == "RETURN":
+            options = {item["key"]: item for item in detail["return_options"]}
+            target = payload.get("return_target_node_key")
+            if not target and len(options) == 1:
+                target = next(iter(options))
+            if target not in options:
+                raise DomainError("RETURN_TARGET_INVALID", "请选择当前模板允许的退回目标", 409)
+            payload["return_target_node_key"] = target
+        elif payload.get("return_target_node_key"):
+            raise DomainError("RETURN_TARGET_INVALID", "只有退回决定可以指定退回目标", 400)
+        else:
+            payload.pop("return_target_node_key", None)
     elif action == "approval.seat.transfer":
         instance = db.get(ApprovalInstance, resource_id)
         if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)

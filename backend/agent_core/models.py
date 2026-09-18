@@ -194,6 +194,7 @@ class ApprovalAction(IdentityMixin, Base):
     decision: Mapped[str] = mapped_column(String(20))
     comment: Mapped[str] = mapped_column(Text)
     snapshot_hash: Mapped[str] = mapped_column(String(64))
+    decision_context: Mapped[dict] = mapped_column(J, default=dict)
 
 
 class AgentApprovalDelegation(IdentityMixin, Base):

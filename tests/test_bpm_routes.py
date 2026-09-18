@@ -96,6 +96,27 @@ def test_proxy_flag_must_be_boolean():
         bpm.validate(cfg)
 
 
+def test_return_policy_only_allows_applicant_or_earlier_nodes():
+    cfg = config()
+    cfg["nodes"][2]["return_policy"] = {"targets": ["applicant", "review", "extra"]}
+    bpm.validate(cfg)
+    for invalid in (
+        {"targets": []},
+        {"targets": ["review", "review"]},
+        {"targets": ["finish"]},
+        {"targets": ["unknown"]},
+        {"targets": "review"},
+    ):
+        cfg = config()
+        cfg["nodes"][2]["return_policy"] = invalid
+        with pytest.raises(DomainError):
+            bpm.validate(cfg)
+    cfg = config()
+    cfg["nodes"][0]["return_policy"] = {"targets": ["extra"]}
+    with pytest.raises(DomainError):
+        bpm.validate(cfg)
+
+
 def test_add_sign_policy_requires_timing_and_unique_pool():
     cfg = config()
     cfg["nodes"][0]["add_sign_policy"] = {"timings": ["PRE", "POST"], "users": ["reviewer"]}

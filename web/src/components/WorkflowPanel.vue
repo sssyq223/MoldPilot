@@ -28,23 +28,26 @@ const groups=computed(()=>Object.values(templates.value.filter(t=>!categoryFilte
 const sample=ref<Record<string,any>>(Object.fromEntries(workflowUi.simulationFields.map((field:any)=>[field.key,field.value])))
 const newCondition=()=>({field:workflowUi.defaultField,op:'gt',value:''})
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
-const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false})
+const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
 function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
 function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled)n.agent_auto_policy={condition:{...newCondition(),op:'lte'}};else delete n.agent_auto_policy}
 function toggleAddSign(n:any,enabled:boolean){if(enabled)n.add_sign_policy={timings:['PRE','POST'],users:[]};else delete n.add_sign_policy}
 function addSignNames(n:any){return (n.add_sign_policy?.users||[]).map((id:string)=>users.value.find(u=>u.id===id)?.display_name||'人员信息暂不可用').join('、')}
+function normalizeReturnPolicy(n:any){if(!n.return_policy)n.return_policy={targets:['applicant']};return n}
+function returnTargets(i:number){return [{key:'applicant',name:'申请人修改'},...nodes.value.slice(0,i).map(n=>({key:n.key,name:n.name}))]}
+function returnTargetNames(n:any,i:number){const options=Object.fromEntries(returnTargets(i).map(item=>[item.key,item.name]));return (n.return_policy?.targets||['applicant']).map((target:string)=>options[target]||'目标已失效').join('、')}
 async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
 function create(){editId.value='';editHash.value='';selected.value=null;name.value='';key.value='flow_'+crypto.randomUUID().replaceAll('-','');categoryId.value='';legacyCopy.value=false;materialContract.value=null;materialTemplateId.value='';nodes.value=[freshNode(1)];editing.value=true}
 async function view(t:any){try{selected.value=await api(`/workflows/${t.id}`);editing.value=false}catch(e:any){emit('error',e.message)}}
 async function openHistory(t:any,more=false){try{const r=await api(`/workflows/history/${encodeURIComponent(t.process_key)}${more?'?before_version='+historyNext.value:''}`);historyKey.value=t.process_key;history.value=more?[...history.value,...r.items]:r.items;historyNext.value=r.next_before}catch(e:any){emit('error',e.message)}}
-async function copy(t:any,edit=false){try{const d=await api(`/workflows/${t.id}`);editId.value=edit?d.id:'';editHash.value=d.edit_hash;categoryId.value=d.category_id||'';legacyCopy.value=d.business_type!=='generic';name.value=d.name;key.value=d.process_key;materialTemplateId.value=d.material_template_id||'';nodes.value=JSON.parse(JSON.stringify(d.config.nodes));materialContract.value=d.config.material_contract?JSON.parse(JSON.stringify(d.config.material_contract)):null;selected.value=null;editing.value=true}catch(e:any){emit('error',e.message)}}
+async function copy(t:any,edit=false){try{const d=await api(`/workflows/${t.id}`);editId.value=edit?d.id:'';editHash.value=d.edit_hash;categoryId.value=d.category_id||'';legacyCopy.value=d.business_type!=='generic';name.value=d.name;key.value=d.process_key;materialTemplateId.value=d.material_template_id||'';nodes.value=JSON.parse(JSON.stringify(d.config.nodes)).map(normalizeReturnPolicy);materialContract.value=d.config.material_contract?JSON.parse(JSON.stringify(d.config.material_contract)):null;selected.value=null;editing.value=true}catch(e:any){emit('error',e.message)}}
 const configuration=()=>({business_type:'generic',nodes:nodes.value,...(materialContract.value?{material_contract:materialContract.value}:{})})
 async function save(){busy.value=true;try{const r=editId.value?await api(`/workflows/${editId.value}`,{method:'PUT',body:JSON.stringify({name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null,expected_hash:editHash.value})}):await post('/workflows',{process_key:key.value,name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null});notice.value=`第 ${r.version} 版草稿已保存，尚未发布`;editing.value=false;await load();await openHistory({process_key:key.value});await view(r)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 async function publish(t:any){busy.value=true;try{await post(`/workflows/${t.id}/publish`);notice.value=`第 ${t.version} 版已发布，已有审批实例继续使用原版本`;await load();if(historyKey.value===t.process_key)await openHistory(t);if(selected.value?.id===t.id)await view(t)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i))}
-function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}nodes.value.splice(i,1)}
+function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}if(nodes.value.some((n,j)=>j>i&&n.return_policy?.targets?.includes(target))){emit('error','请先从后续节点的退回目标中移除此节点');return}nodes.value.splice(i,1)}
 function targets(i:number){return [...nodes.value.slice(i+1).map(n=>({key:n.key,name:n.name})),{key:'end',name:'审批结束'}]}
 function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{condition:newCondition(),target:targets(i)[0].key}];n.default_target=targets(i)[0].key}else{delete n.routes;delete n.default_target}}
 const nodeName=(target:string)=>routeName(target,nodes.value)
@@ -67,6 +70,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
       <p v-if="n.allow_transfer" class="muted">审批转交：当前席位负责人可转交给重新校验权限后合格的人员。</p>
       <p v-if="n.allow_proxy" class="muted">人工代理：管理员可按本流程节点、决定范围和期限授权代理人办理原责任人的席位。</p>
       <p v-if="n.add_sign_policy" class="muted">审批加签：{{n.add_sign_policy.timings.includes('PRE')?'前加签':''}}{{n.add_sign_policy.timings.length===2?'、':''}}{{n.add_sign_policy.timings.includes('POST')?'后加签':''}}；合格池：{{addSignNames(n)}}。</p>
+      <p class="muted">退回目标：{{returnTargetNames(n,Number(i))}}。退回结束当前轮，修改后重新提交将完整重审。</p>
       <p v-if="n.agent_auto_policy" class="muted">自动审批安全条件：{{ruleText(n.agent_auto_policy.condition)}}。不满足或资料不足时保持人工审批。</p>
       <h4>必须驳回条件</h4><p v-if="!n.reject_rules.length" class="muted">未设置</p><div v-for="(r,j) in n.reject_rules" :key="j"><p>{{ruleText(r.condition)}}</p><p>驳回原因：{{r.reason}}</p></div>
       <h4>后续流转</h4><template v-if="n.routes"><p v-for="(r,j) in n.routes" :key="j">当{{ruleText(r.condition)}} → {{routeName(r.target,selected.config.nodes)}}</p><p>全部条件未命中 → {{routeName(n.default_target,selected.config.nodes)}}</p><small class="muted">资料缺失或同时命中多个分支时，等待处理。</small></template><p v-else>审批通过 → {{selected.config.nodes[Number(i)+1]?.name||'审批结束'}}</p>
@@ -114,6 +118,8 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
           <p class="muted">同类多选取并集；同时配置角色和部门时必须同时满足。当前候选：{{candidateNames(n)}}。</p>
         </template>
         <p class="muted small">配置人员不会自动授予业务权限。会签人员失效时等待处理，不能减少签名人数后放行。</p>
+        <fieldset><legend>允许退回到</legend><label v-for="target in returnTargets(i)" :key="target.key" class="check-label"><input v-model="n.return_policy.targets" type="checkbox" :value="target.key"/>{{target.name}}</label></fieldset>
+        <p class="muted small">只能选择申请人或当前节点之前的责任节点。退回会结束当前审批轮并记录目标；修改后重新提交创建新轮次并从首个节点完整重审。</p>
         <div v-for="(r,j) in n.reject_rules" :key="j" class="surface form-stack"><strong>必须驳回条件 {{Number(j)+1}}</strong><RuleEditor v-model="r.condition"/><label>驳回原因<input v-model="r.reason" required/></label><button type="button" @click="n.reject_rules.splice(j,1)">删除驳回条件</button></div>
         <button type="button" class="subtle" @click="n.reject_rules.push({condition:newCondition(),reason:''})">增加必须驳回条件</button>
         <label class="check-label"><input type="checkbox" :checked="!!n.routes" @change="routing(n,i,($event.target as HTMLInputElement).checked)"/>按条件选择后续节点</label>
