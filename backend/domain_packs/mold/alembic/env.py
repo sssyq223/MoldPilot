@@ -1,7 +1,8 @@
 from dotenv import dotenv_values
 from alembic import context
 from sqlalchemy import create_engine
-from app.models import Base
+from agent_core.model_base import Base
+from domain_packs.mold import models as _mold_models  # noqa: F401
 from agent_core.domain_pack import migration_contract
 from agent_core.migration_runtime import resolve_migration_url
 

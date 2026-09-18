@@ -1,8 +1,5 @@
 from datetime import timedelta
-from hashlib import sha256
 import secrets
-import unicodedata
-from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from fastapi import Request, Depends
 from sqlalchemy import select
@@ -10,11 +7,7 @@ from .db import get_db, now
 from .models import User, LoginSession
 from .errors import DomainError
 from .config import settings
-
-hasher = PasswordHasher()
-def digest(value: str): return sha256(value.encode()).hexdigest()
-def normalize_username(value: str): return unicodedata.normalize("NFKC", value).strip().casefold()
-
+from agent_core.security import digest, hasher, normalize_username
 
 def login(db, username, password):
     user = db.scalar(select(User).where(User.username == normalize_username(username)))

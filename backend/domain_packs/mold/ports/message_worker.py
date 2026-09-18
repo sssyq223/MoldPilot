@@ -1,2 +1,4 @@
-"""Stable host event-worker port used by operations readiness checks."""
-from app.message_worker import *  # noqa: F401,F403
+"""Stable event-delivery identifiers exposed by Agent Core."""
+from agent_core.message_contract import GROUP, STREAM
+
+__all__ = ["GROUP", "STREAM"]

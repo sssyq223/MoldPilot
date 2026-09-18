@@ -1,2 +1,8 @@
-"""Stable host persistence port used by the mold domain pack."""
-from app.db import *  # noqa: F401,F403
+"""Persistence and clock services exposed through Agent Core contracts."""
+from agent_core.host_ports import host_ports
+from agent_core.model_base import aware, now
+
+get_db = host_ports().get_db
+
+
+__all__ = ["aware", "get_db", "now"]

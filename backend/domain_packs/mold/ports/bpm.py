@@ -1,2 +1,2 @@
-"""Stable host workflow-engine port used by the mold domain pack."""
-from app.bpm import *  # noqa: F401,F403
+"""Stable workflow service exposed by Agent Core."""
+from agent_core.workflow import *  # noqa: F401,F403

@@ -29,11 +29,14 @@ class HostPorts:
     content_hash: Callable[[Any], str]
     proposal_confirmation_policy: Callable[..., dict]
     settings: Callable[[], Any]
+    model_settings: Callable[[], Any]
     get_db: Callable[..., Any]
     now: Callable[[], Any]
     record: Callable[..., Any]
     current_user: Callable[..., Any]
     conversation_files: Callable[..., Any]
+    uploaded_file: Callable[..., Any]
+    file_metadata: Callable[..., dict]
 
 
 @lru_cache

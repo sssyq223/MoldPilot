@@ -21,6 +21,11 @@ def now() -> datetime:
     return datetime.now(SHANGHAI)
 
 
+def aware(value):
+    """Normalize naive datetimes returned by legacy synthetic tests."""
+    return value.replace(tzinfo=SHANGHAI) if value.tzinfo is None else value
+
+
 def uid() -> str:
     return str(uuid4())
 

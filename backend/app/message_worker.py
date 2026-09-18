@@ -16,8 +16,7 @@ from . import models as m
 from .db import SessionLocal,now
 from .config import settings
 
-STREAM='agent:business-events:v1'
-GROUP='notifications-v1'
+from agent_core.message_contract import GROUP, STREAM
 log=logging.getLogger(__name__)
 from agent_core.domain_pack import component
 

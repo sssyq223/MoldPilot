@@ -3,9 +3,19 @@ from uuid import uuid4
 from pydantic import Field, field_validator
 from sqlalchemy import select, func
 
-from app.files import *  # noqa: F401,F403
+from agent_core.host_ports import host_ports
 from domain_packs.mold import contacts as c, models as m
 from domain_packs.mold.ports.errors import DomainError
+
+
+def uploaded_file(db, user, file_id):
+    return host_ports().uploaded_file(db, user, file_id)
+
+
+def metadata(blob):
+    return host_ports().file_metadata(blob)
+
+
 class AttachInput(c.Mutation):
     file_id:str=Field(min_length=1,max_length=36)
     title:str=Field(min_length=1,max_length=150)

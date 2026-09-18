@@ -1,2 +1,8 @@
-"""Stable host identity/security port used by the mold domain pack."""
-from app.security import *  # noqa: F401,F403
+"""Identity services exposed through Agent Core contracts."""
+from agent_core.host_ports import host_ports
+from agent_core.security import digest, hasher
+
+current_user = host_ports().current_user
+
+
+__all__ = ["current_user", "digest", "hasher"]

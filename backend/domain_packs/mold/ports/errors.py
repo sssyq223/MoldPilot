@@ -1,2 +1,4 @@
-"""Stable host error contract used by the mold domain pack."""
-from app.errors import *  # noqa: F401,F403
+"""Stable error contract exposed by Agent Core."""
+from agent_core.errors import DomainError
+
+__all__ = ["DomainError"]

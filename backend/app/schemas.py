@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Literal
 from pydantic import Field, field_validator
 
-from agent_core.schemas import StrictModel
+from agent_core.schemas import StrictModel, SubmitInput
 
 
 class LoginInput(StrictModel):
@@ -46,12 +46,6 @@ class DefinitionInput(StrictModel):
     config: dict
     category_id: str | None = Field(default=None,max_length=36)
     material_template_id: str | None = Field(default=None,max_length=36)
-
-
-class SubmitInput(StrictModel):
-    revision: int = Field(ge=1)
-    definition_id: str
-    material_review_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class DefinitionEditInput(StrictModel):

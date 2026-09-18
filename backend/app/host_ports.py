@@ -5,10 +5,10 @@ from . import models, object_storage
 from .authorization import access, fingerprint, grants_for, predicate, require, select_fields
 from .bpm import content_hash
 from .confirmation_policy import proposal_confirmation_policy
-from .config import settings
+from .config import model_settings, settings
 from .db import get_db, now
 from .events import record
-from .files import conversation_files
+from .files import conversation_files, metadata as file_metadata, uploaded_file
 from .security import current_user
 
 
@@ -24,9 +24,12 @@ PORTS = HostPorts(
     content_hash=content_hash,
     proposal_confirmation_policy=proposal_confirmation_policy,
     settings=settings,
+    model_settings=model_settings,
     get_db=get_db,
     now=now,
     record=record,
     current_user=current_user,
     conversation_files=conversation_files,
+    uploaded_file=uploaded_file,
+    file_metadata=file_metadata,
 )

@@ -1,2 +1,4 @@
-"""Stable host assignment port used by the mold domain pack."""
-from app.assignments import *  # noqa: F401,F403
+"""Stable assignment service exposed by Agent Core."""
+from agent_core.assignments import resolve_users
+
+__all__ = ["resolve_users"]

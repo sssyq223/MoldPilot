@@ -1,2 +1,4 @@
-"""Mold pack schemas plus the generic host schema primitives they extend."""
-from app.schemas import *  # noqa: F401,F403
+"""Stable schema primitives exposed by Agent Core."""
+from agent_core.schemas import StrictModel, SubmitInput
+
+__all__ = ["StrictModel", "SubmitInput"]

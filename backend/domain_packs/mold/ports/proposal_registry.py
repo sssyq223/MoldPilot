@@ -1,2 +1,4 @@
-"""Stable host proposal-handler port used by the mold domain pack."""
-from app.proposal_registry import *  # noqa: F401,F403
+"""Stable proposal handler registry exposed by Agent Core."""
+from agent_core.proposal_registry import handler_for_action
+
+__all__ = ["handler_for_action"]

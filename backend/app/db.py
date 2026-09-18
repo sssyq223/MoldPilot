@@ -1,12 +1,7 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from .config import settings
-from agent_core.model_base import Base, SHANGHAI, now
-
-
-def aware(value):
-    """Normalize datetimes returned by legacy synthetic tests."""
-    return value.replace(tzinfo=SHANGHAI) if value.tzinfo is None else value
+from agent_core.model_base import Base, aware, now
 
 
 def make_engine(url: str):

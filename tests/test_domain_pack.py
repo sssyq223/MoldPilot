@@ -129,22 +129,7 @@ def test_pack_boundary_has_no_hidden_host_imports_or_root_mcp_runtime():
         source = path.read_text(encoding="utf-8")
         if re.search(r"(?m)^\s*(?:from\s+app(?:\.|\s)|import\s+app(?:\.|\s|$))", source):
             direct_host_imports.append(path.relative_to(pack_root).as_posix())
-    assert sorted(direct_host_imports) == sorted([
-        "alembic/env.py",
-        "ports/assignments.py",
-        "ports/bpm.py",
-        "ports/config.py",
-        "ports/confirmation_policy.py",
-        "ports/db.py",
-        "ports/errors.py",
-        "ports/events.py",
-        "ports/files.py",
-        "ports/material_rules.py",
-        "ports/message_worker.py",
-        "ports/proposal_registry.py",
-        "ports/schemas.py",
-        "ports/security.py",
-    ])
+    assert direct_host_imports == []
 
     mcp_root = pack_root / "mcp" / "erp-design-upload"
     assert not (project_root / "mcp" / "erp-design-upload").exists()
@@ -191,7 +176,7 @@ def test_agent_core_source_does_not_embed_mold_business_policy():
     )
     for business_term in (
         "工程联络", "模具工作台", "项目计划", "项目号", "合同号", "当前有权项目",
-        "prepare_project_pause",
+        "prepare_project_pause", "domain_packs.mold",
     ):
         assert business_term not in runtime_source
 
@@ -227,8 +212,9 @@ def test_domain_pack_uses_validated_host_port_contract():
     assert ports.models.__name__ == "app.models"
     for name in (
         "access", "grants_for", "fingerprint", "predicate", "require", "select_fields",
-        "content_hash", "proposal_confirmation_policy", "settings", "get_db", "now",
-        "record", "current_user", "conversation_files",
+        "content_hash", "proposal_confirmation_policy", "settings", "model_settings",
+        "get_db", "now", "record", "current_user", "conversation_files",
+        "uploaded_file", "file_metadata",
     ):
         assert callable(getattr(ports, name))
     from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput
