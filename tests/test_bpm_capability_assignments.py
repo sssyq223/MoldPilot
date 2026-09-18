@@ -63,6 +63,17 @@ def test_catalog_and_preview_intersect_role_capability_and_project_scope(client,
     assert response.status_code == 200, response.text
     result = response.json()
     assert [person["id"] for person in result["users"]] == [ids["reviewer"]]
+    assert result["candidate_basis_count"] == 2
+    assert result["eligibility_gaps"] == [{
+        "user_id": ids["buyer"],
+        "display_name": "测试五金采购员",
+        "department": "采购",
+        "reasons": [{
+            "permission": "purchase.approve",
+            "code": "MISSING_PERMISSION",
+            "message": "缺少当前有效的允许授权",
+        }],
+    }]
     source = next(item for item in result["sources"] if item["kind"] == "BUSINESS_CAPABILITY")
     assert source["id"] == "purchase.approve"
     assert source["scope"] == {
@@ -78,6 +89,9 @@ def test_catalog_and_preview_intersect_role_capability_and_project_scope(client,
     })
     assert other.status_code == 200, other.text
     assert other.json()["count"] == 0
+    other_gaps = {item["user_id"]: item for item in other.json()["eligibility_gaps"]}
+    assert other_gaps[ids["reviewer"]]["reasons"][0]["code"] == "SCOPE_MISMATCH"
+    assert other_gaps[ids["buyer"]]["reasons"][0]["code"] == "MISSING_PERMISSION"
 
     definition_id, published = publish(
         client, [capability_node(role_id)], "capability_scope_runtime",
@@ -96,6 +110,59 @@ def test_catalog_and_preview_intersect_role_capability_and_project_scope(client,
             item for item in snapshot["sources"] if item["kind"] == "BUSINESS_CAPABILITY"
         )
         assert capability_source["scope"]["values"]["project_id"] == ids["project"]
+
+
+def test_capability_preview_explains_matching_deny(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    with factory.begin() as db:
+        db.add(Grant(
+            user_id=ids["reviewer"],
+            permission="purchase.approve",
+            effect="DENY",
+            scope={"project_id": [ids["project"]]},
+            fields=["*"],
+            active=True,
+            reason="合成责任域拒绝测试",
+            granted_by=ids["admin"],
+        ))
+
+    response = client.post("/api/workflows/assignment-preview", json={
+        "assignment": capability_node(role_id)["assignment"],
+        "context": {"project_id": ids["project"]},
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["count"] == 0
+    assert result["candidate_basis_count"] == 1
+    assert result["eligibility_gaps"][0]["user_id"] == ids["reviewer"]
+    assert result["eligibility_gaps"][0]["reasons"] == [{
+        "permission": "purchase.approve",
+        "code": "DENIED",
+        "message": "命中当前责任域的明确拒绝授权",
+    }]
+
+
+def test_capability_preview_explains_inactive_configured_candidate(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    with factory.begin() as db:
+        db.get(User, ids["reviewer"]).active = False
+
+    response = client.post("/api/workflows/assignment-preview", json={
+        "assignment": capability_node(role_id)["assignment"],
+        "context": {"project_id": ids["project"]},
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["count"] == 0
+    assert result["eligibility_gaps"][0]["reasons"] == [{
+        "permission": None,
+        "code": "ACCOUNT_INACTIVE",
+        "message": "账号不存在或已停用",
+    }]
 
 
 def test_capability_assignment_requires_published_permission_scope_and_context(client, data):

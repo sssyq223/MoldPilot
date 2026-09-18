@@ -110,13 +110,28 @@ def catalog(user=Depends(current_user),db=Depends(get_db)):
 @router.post('/workflows/assignment-preview')
 def assignment_preview(data:AssignmentPreviewInput,user=Depends(current_user),db=Depends(get_db)):
     auth.require(db,user,'workflow.design')
-    from agent_core.assignments import resolve_users
-    ids,sources=resolve_users(db,{'users':[],'assignment':data.assignment},data.context)
+    from agent_core.assignments import resolve_users_with_gaps
+    ids,sources,details=resolve_users_with_gaps(
+        db,{'users':[],'assignment':data.assignment},data.context
+    )
     people=[]
     for user_id in ids:
         person=db.get(User,user_id)
         if person and person.active:people.append(public_user(person))
-    return {'count':len(people),'users':people,'sources':sources}
+    gaps=[]
+    for item in details['gaps']:
+        person=db.get(User,item['user_id'])
+        gaps.append({
+            'user_id':item['user_id'],
+            'display_name':person.display_name if person else '账号不可用',
+            'department':person.department if person else '',
+            'reasons':item['reasons'],
+        })
+    return {
+        'count':len(people),'users':people,'sources':sources,
+        'candidate_basis_count':details['candidate_basis_count'],
+        'eligibility_gaps':gaps,
+    }
 
 @router.get('/organization/domain-role-bindings/{scope_id}')
 def domain_role_bindings(scope_id:str,user=Depends(current_user),db=Depends(get_db)):

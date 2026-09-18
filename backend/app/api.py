@@ -51,25 +51,8 @@ app.include_router(file_router)
 from .proposal_api import router as proposal_router
 app.include_router(proposal_router)
 
-_conversation_flags_checked = False
-
-
 def compact_conversation_title(prompt: str) -> str:
     return active_manifest.conversation_title(prompt)
-
-
-def ensure_conversation_flags(db):
-    """Ensure conversation flags exist on the PostgreSQL baseline."""
-    global _conversation_flags_checked
-    if _conversation_flags_checked:
-        return
-    dialect = db.bind.dialect.name
-    if dialect != "postgresql":
-        raise RuntimeError("The runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
-    db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false"))
-    db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
-    db.commit()
-    _conversation_flags_checked = True
 
 
 def avatar_url_for(db, user_id: str) -> str:
@@ -1140,7 +1123,6 @@ def audit(offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50), user
 
 @app.get("/api/conversations")
 def conversations(archived: bool = Query(False), user=Depends(current_user), db=Depends(get_db)):
-    ensure_conversation_flags(db)
     rows = list(db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id, m.Conversation.archived == archived)
                            .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).limit(100)))
     result = []
@@ -1162,7 +1144,6 @@ def conversations(archived: bool = Query(False), user=Depends(current_user), db=
 
 @app.post("/api/conversations/{conversation_id}/pin")
 def pin_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    ensure_conversation_flags(db)
     conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
     if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     conversation.pinned = not conversation.pinned
@@ -1174,7 +1155,6 @@ def pin_conversation(conversation_id: str, user=Depends(current_user), db=Depend
 
 @app.post("/api/conversations/{conversation_id}/archive")
 def archive_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    ensure_conversation_flags(db)
     conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
     if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     conversation.archived = True
@@ -1186,7 +1166,6 @@ def archive_conversation(conversation_id: str, user=Depends(current_user), db=De
 
 @app.post("/api/conversations/{conversation_id}/unarchive")
 def unarchive_conversation(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
-    ensure_conversation_flags(db)
     conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == conversation_id, m.Conversation.user_id == user.id))
     if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     conversation.archived = False
@@ -1197,7 +1176,6 @@ def unarchive_conversation(conversation_id: str, user=Depends(current_user), db=
 
 @app.post("/api/runs")
 def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db)):
-    ensure_conversation_flags(db)
     if data.conversation_id:
         conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id, m.Conversation.archived == False))
         if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)

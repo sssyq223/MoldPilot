@@ -101,12 +101,14 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
             )
     candidates = []
     versions = []
+    gaps = {}
     for user in db.scalars(select(models.User).where(models.User.active.is_(True)).order_by(models.User.id)):
         if user.super_admin:
             candidates.append(user.id)
             versions.append((user.id, user.security_version))
             continue
         qualified = True
+        reasons = []
         for permission in permissions:
             grants = ports.grants_for(db, user, permission)
             allows = [grant for grant in grants if grant.effect == "ALLOW"]
@@ -114,9 +116,10 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
             if publish:
                 permission_ok = bool(allows) and not any(grant.scope == {"all": True} for grant in denies)
             else:
-                permission_ok = any(
+                matching_allow = any(
                     _grant_covers(grant.scope, responsibility) for grant in allows
-                ) and not any(
+                )
+                matching_deny = any(
                     grant.scope == {"all": True}
                     or (
                         set(grant.scope).issubset(responsibility)
@@ -124,12 +127,26 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
                     )
                     for grant in denies
                 )
+                permission_ok = matching_allow and not matching_deny
+                if not permission_ok:
+                    if matching_deny:
+                        code, message = "DENIED", "命中当前责任域的明确拒绝授权"
+                    elif not allows:
+                        code, message = "MISSING_PERMISSION", "缺少当前有效的允许授权"
+                    else:
+                        code, message = "SCOPE_MISMATCH", "允许授权未覆盖当前责任域"
+                    reasons.append({
+                        "permission": permission,
+                        "code": code,
+                        "message": message,
+                    })
             if not permission_ok:
                 qualified = False
-                break
         if qualified:
             candidates.append(user.id)
             versions.append((user.id, user.security_version))
+        elif reasons:
+            gaps[user.id] = reasons
     source_scope = (
         {"keys": list(scope_keys), "resolved": False}
         if publish else {"keys": list(scope_keys), "values": responsibility, "resolved": True}
@@ -145,7 +162,7 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
             "candidates": versions,
         }),
     } for permission in permissions]
-    return candidates, sources
+    return candidates, sources, gaps
 
 
 def validate_add_sign_policy(node):
@@ -167,13 +184,29 @@ def validate_add_sign_policy(node):
         )
 
 
-def resolve_users(db, node, context=None, publish=False):
+def _resolve_users(db, node, context=None, publish=False, explain=False):
     validate_assignment(node)
     if "assignment" not in node:
-        return list(node["users"]), []
+        ids = list(node["users"])
+        details = {"candidate_basis_count": len(ids), "gaps": []}
+        if explain:
+            models = host_ports().models
+            for user_id in ids:
+                person = db.get(models.User, user_id)
+                if not person or not person.active:
+                    details["gaps"].append({
+                        "user_id": user_id,
+                        "reasons": [{
+                            "permission": None,
+                            "code": "ACCOUNT_INACTIVE",
+                            "message": "账号不存在或已停用",
+                        }],
+                    })
+        return ids, [], details
     models = host_ports().models
     rule = node["assignment"]
-    selections, sources = [], []
+    selections, basis_selections, sources = [], [], []
+    capability_gaps = {}
     for field, kind in (("roles", "ROLE"), ("departments", "DEPARTMENT")):
         if not rule.get(field):
             continue
@@ -195,7 +228,9 @@ def resolve_users(db, node, context=None, publish=False):
         )
         if kind == "DEPARTMENT" and rule["department_heads_only"]:
             query = query.where(models.AssignmentMember.is_head.is_(True))
-        selections.append(set(db.scalars(query)))
+        selected = set(db.scalars(query))
+        selections.append(selected)
+        basis_selections.append(selected)
         sources.extend({
             "id": group.id,
             "kind": group.kind,
@@ -209,10 +244,12 @@ def resolve_users(db, node, context=None, publish=False):
             if publish and context is None
             else extension.resolve(db, rule["domain_roles"], context)
         )
-        selections.append(set(domain_ids))
+        selected = set(domain_ids)
+        selections.append(selected)
+        basis_selections.append(selected)
         sources.extend(domain_sources)
     if rule.get("business_permissions"):
-        capability_ids, capability_sources = _capability_candidates(
+        capability_ids, capability_sources, capability_gaps = _capability_candidates(
             db,
             rule["business_permissions"],
             rule["responsibility_scope"],
@@ -224,7 +261,31 @@ def resolve_users(db, node, context=None, publish=False):
     ids = sorted(set.intersection(*selections))
     if len(ids) > 50:
         raise DomainError("ASSIGNMENT_BLOCKED", "节点候选人超过50位，请缩小人员范围")
+    details = {"candidate_basis_count": len(ids), "gaps": []}
+    if explain and basis_selections:
+        basis_ids = set.intersection(*basis_selections)
+        details["candidate_basis_count"] = len(basis_ids)
+        for user_id in sorted(basis_ids - set(ids)):
+            person = db.get(models.User, user_id)
+            reasons = capability_gaps.get(user_id, [])
+            if not person or not person.active:
+                reasons = [{
+                    "permission": None,
+                    "code": "ACCOUNT_INACTIVE",
+                    "message": "账号不存在或已停用",
+                }]
+            if reasons:
+                details["gaps"].append({"user_id": user_id, "reasons": reasons})
+    return ids, sources, details
+
+
+def resolve_users(db, node, context=None, publish=False):
+    ids, sources, _ = _resolve_users(db, node, context, publish)
     return ids, sources
+
+
+def resolve_users_with_gaps(db, node, context=None):
+    return _resolve_users(db, node, context, False, True)
 
 
 def check_publish(db, config):
