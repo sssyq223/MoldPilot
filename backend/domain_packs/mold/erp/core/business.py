@@ -298,6 +298,10 @@ def approval_detail(db, user, instance):
         AuditEvent.resource_id == instance.id,
         AuditEvent.action == "approval.seat.added",
     ).order_by(AuditEvent.created_at)))
+    withdrawal_event = db.scalar(select(AuditEvent).where(
+        AuditEvent.resource_id == instance.id,
+        AuditEvent.action == "approval.withdrawn",
+    ).order_by(AuditEvent.created_at.desc()))
     transfer_options = approval_transfer_options(db, user, instance, req, definition, current) if current and not proxy_delegation else []
     add_sign_policy = node_add_sign_policy(definition, instance)
     add_sign_allowed = bool(current and not proxy_delegation and "APPROVE" in actions and add_sign_policy)
@@ -315,6 +319,10 @@ def approval_detail(db, user, instance):
                                  "countersign_timing":s.countersign_timing} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
             "proxy_delegation": approval_proxy_context(db, proxy_delegation) if proxy_delegation else None,
+            "withdraw_allowed": bool(instance.status == "RUNNING" and req.status == "SUBMITTED"
+                                     and req.created_by == user.id),
+            "withdrawal": ({**withdrawal_event.detail, "at": withdrawal_event.created_at.isoformat()}
+                           if withdrawal_event else None),
             "return_options": return_options,
             "transfer_allowed": bool(current and not proxy_delegation and node_allows_transfer(definition, instance)),
             "transfer_options": transfer_options,
@@ -704,6 +712,48 @@ def decide(db, user, payload, agent_permission_mode="ask"):
     return {**result, "agent_auto_approved": auto_approved}
 
 
+def withdraw_approval(db, user, payload):
+    instance = db.scalar(select(ApprovalInstance).where(
+        ApprovalInstance.id == payload["instance_id"],
+    ).with_for_update())
+    if not instance:
+        raise DomainError("NOT_FOUND", "审批不存在", 404)
+    req = load_subject(db, instance, lock=True)
+    request_access(db, user, req, "purchase.read")
+    if req.created_by != user.id:
+        raise DomainError("WITHDRAW_FORBIDDEN", "只有本轮申请人可以撤回", 403)
+    if instance.status != "RUNNING" or req.status != "SUBMITTED":
+        raise DomainError("WITHDRAW_NOT_ALLOWED", "当前审批轮已形成结论或业务已进入后续状态，不能撤回", 409)
+    if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
+        raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化，请重新核对", 409)
+    cancelled = 0
+    recipients = set()
+    for seat in db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id)):
+        if seat.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}:
+            recipients.add(seat.user_id)
+            seat.status = "CANCELLED"
+            seat.version += 1
+            cancelled += 1
+    if isinstance(req, BusinessSubject):
+        from domain_packs.mold.erp.core.domains import release_reservation
+        release_reservation(db, req)
+    instance.status = "CANCELLED"
+    instance.incident = None
+    instance.version += 1
+    req.revision += 1
+    req.status = "DRAFT"
+    detail = {"reason": payload["reason"], "cancelled_seats": cancelled,
+              "business_status": req.status, "withdrawn_revision": instance.revision,
+              "draft_revision": req.revision,
+              "round_no": instance.round_no,
+              "applicant": {"id": user.id, "name": user.display_name,
+                            "department": user.department}}
+    record(db, user, "approval.withdrawn", instance.id, detail, sorted(recipients - {user.id}))
+    return {"instance_id": instance.id, "status": instance.status,
+            "business_status": req.status, "business_revision": req.revision,
+            "cancelled_seats": cancelled}
+
+
 def create_intent(db, user, action, resource_id, payload):
     if action == "approval.decide":
         instance = db.get(ApprovalInstance, resource_id)
@@ -722,6 +772,13 @@ def create_intent(db, user, action, resource_id, payload):
             raise DomainError("RETURN_TARGET_INVALID", "只有退回决定可以指定退回目标", 400)
         else:
             payload.pop("return_target_node_key", None)
+    elif action == "approval.withdraw":
+        instance = db.get(ApprovalInstance, resource_id)
+        if not instance:
+            raise DomainError("NOT_FOUND", "审批不存在", 404)
+        detail = approval_detail(db, user, instance)
+        if not detail["withdraw_allowed"]:
+            raise DomainError("WITHDRAW_NOT_ALLOWED", "当前审批轮不能由你撤回", 409)
     elif action == "approval.seat.transfer":
         instance = db.get(ApprovalInstance, resource_id)
         if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
@@ -770,6 +827,7 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     if aware(intent.expires_at) <= now(): raise DomainError("CONFIRMATION_EXPIRED", "请重新核对并确认", 409)
     if intent.payload_hash != bpm.content_hash(intent.payload): raise DomainError("CONFIRMATION_INVALID", "确认内容不一致", 409)
     if intent.action == "approval.decide": result = decide(db, user, intent.payload, agent_permission_mode=agent_permission_mode)
+    elif intent.action == "approval.withdraw": result = withdraw_approval(db, user, intent.payload)
     elif intent.action == "approval.seat.transfer": result = transfer_approval_seat(db, user, intent.payload)
     elif intent.action == "approval.seat.add_sign": result = add_sign_approval_seat(db, user, intent.payload)
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)

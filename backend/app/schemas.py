@@ -73,6 +73,13 @@ class DecisionInput(StrictModel):
     return_target_node_key: str | None = Field(default=None, min_length=1, max_length=80)
 
 
+class ApprovalWithdrawInput(StrictModel):
+    instance_id: str = Field(min_length=1, max_length=36)
+    version: int = Field(ge=1)
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class ApprovalSeatTransferInput(StrictModel):
     instance_id: str = Field(min_length=1, max_length=36)
     seat_id: str = Field(min_length=1, max_length=36)

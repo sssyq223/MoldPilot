@@ -7,7 +7,7 @@ import secrets
 from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, func, text, delete, literal, or_
+from sqlalchemy import select, func, text, delete, literal, and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
@@ -596,6 +596,25 @@ def approvals(user=Depends(current_user), db=Depends(get_db)):
     return results
 
 
+@app.get("/api/approvals/initiated")
+def initiated_approvals(user=Depends(current_user), db=Depends(get_db)):
+    purchase_ids = select(m.PurchaseRequest.id).where(m.PurchaseRequest.created_by == user.id)
+    subject_ids = select(m.BusinessSubject.id).where(m.BusinessSubject.created_by == user.id)
+    query = select(m.ApprovalInstance).where(or_(
+        and_(m.ApprovalInstance.resource_type == "purchase_request",
+             m.ApprovalInstance.resource_id.in_(purchase_ids)),
+        and_(m.ApprovalInstance.resource_type == "business_subject",
+             m.ApprovalInstance.resource_id.in_(subject_ids)),
+    )).order_by(m.ApprovalInstance.created_at.desc()).limit(50)
+    results = []
+    for instance in db.scalars(query):
+        try:
+            results.append(_business().approval_detail(db, user, instance))
+        except DomainError:
+            continue
+    return results
+
+
 @app.get("/api/approvals/{instance_id}")
 def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
     instance = db.get(m.ApprovalInstance, instance_id)
@@ -606,6 +625,12 @@ def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
 @app.post("/api/approvals/decision-intent")
 def decision_intent(data: s.DecisionInput, user=Depends(current_user), db=Depends(get_db)):
     result = _business().create_intent(db, user, "approval.decide", data.instance_id, data.model_dump())
+    db.commit(); return result
+
+
+@app.post("/api/approvals/withdraw-intent")
+def approval_withdraw_intent(data: s.ApprovalWithdrawInput, user=Depends(current_user), db=Depends(get_db)):
+    result = _business().create_intent(db, user, "approval.withdraw", data.instance_id, data.model_dump())
     db.commit(); return result
 
 
