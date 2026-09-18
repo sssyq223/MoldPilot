@@ -105,6 +105,7 @@ function newCondition(){
 }
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number):any=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
+function setNodeMode(node:any,mode:string){node.mode=mode;if(mode==='QUORUM')node.required_approvals=Math.max(1,Number(node.required_approvals)||2);else delete node.required_approvals;if(mode==='CLAIM'){node.agent_auto_approval=false;delete node.agent_auto_policy}}
 function toggleAddSign(n:any,enabled:boolean){if(enabled)n.add_sign_policy={timings:['PRE','POST'],users:[]};else delete n.add_sign_policy}
 function selectCanvasNode(index:number){selectedNodeIndex.value=index;canvasPanel.value='add-sign';addSignQuery.value='';assignmentPreview.value=null}
 function toggleCanvasPanel(panel:'simulation'|'add-sign'){canvasPanel.value=canvasPanel.value===panel?'':panel;if(panel==='add-sign')addSignQuery.value=''}
@@ -211,6 +212,8 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
         </aside>
         <aside v-else-if="canvasPanel==='add-sign'&&selectedNode" class="workflow-canvas-overlay" aria-label="节点加签设置">
           <div class="workflow-overlay-head"><div><strong>{{selectedNode.name}}</strong><small>节点快捷设置</small></div><button type="button" aria-label="关闭节点快捷设置" @click="canvasPanel=''" ><X :size="14"/></button></div>
+          <div class="workflow-overlay-fields"><label><span>办理方式</span><select :value="selectedNode.mode" aria-label="审批办理方式" @change="setNodeMode(selectedNode,($event.target as HTMLSelectElement).value)"><option value="ALL">全员会签</option><option value="ANY">任一人或签</option><option value="QUORUM">比例会签 K/N</option><option value="CLAIM">候选领取</option></select></label><label v-if="selectedNode.mode==='QUORUM'"><span>通过票数 K</span><input v-model.number="selectedNode.required_approvals" type="number" min="1" max="50" required aria-label="比例会签通过票数"/></label></div>
+          <p v-if="selectedNode.mode==='QUORUM'" class="muted small">进入节点时冻结有效席位总数 N；同意达到 K 票才通过，剩余席位已不可能达到 K 时才驳回。</p>
           <label class="workflow-overlay-switch"><input type="checkbox" :checked="!!selectedNode.assignment" @change="toggleDynamicAssignment(selectedNode,($event.target as HTMLInputElement).checked)"/><span><b>动态人员规则</b><small>按组织和业务包领域角色解析候选人</small></span></label>
           <template v-if="selectedNode.assignment">
             <div class="workflow-assignment-rules">

@@ -153,7 +153,7 @@ function resetLayout(){positions.value={};saveLayout()}
       <button v-if="!readOnly" type="button" class="workflow-node-connect" :title="connecting===index?'取消连线':'从此节点添加线路'" @click.stop="beginConnect(index)"><GitBranchPlus :size="13"/></button>
       <div class="workflow-bpm-person"><UserRound :size="27"/></div>
       <strong class="workflow-bpm-node-name">{{node.name}}</strong>
-      <small>{{node.mode==='ALL'?'会签':node.mode==='ANY'?'或签':'候选领取'}}{{node.routes?.length?' · 条件分支':''}}</small>
+      <small>{{node.mode==='ALL'?'会签':node.mode==='ANY'?'或签':node.mode==='QUORUM'?`${node.required_approvals||'?'} / N 比例会签`:'候选领取'}}{{node.routes?.length?' · 条件分支':''}}</small>
       <div class="workflow-node-people"><span v-if="node.assignment" class="rule-person">规则选人</span><template v-else><template v-for="user in assignedUsers(node).slice(0,2)" :key="user.id"><span v-if="readOnly" class="workflow-person-label">{{user.display_name}}</span><button v-else type="button" :title="'移除 '+user.display_name" @click.stop="emit('unassign',index,user.id)"><span>{{initials(user.display_name)}}</span>{{user.display_name}}</button></template><span v-if="!assignedUsers(node).length" class="empty-person">{{readOnly?'未指定人员':'拖入人员'}}</span><span v-else-if="assignedUsers(node).length>2" class="more-person">+{{assignedUsers(node).length-2}}</span></template></div>
       <span v-if="node.routes?.length" class="workflow-route-diamond" title="包含条件分支"><GitBranchPlus :size="11"/></span>
       <i v-if="!readOnly" class="workflow-node-port input"/><i v-if="!readOnly" class="workflow-node-port output"/>

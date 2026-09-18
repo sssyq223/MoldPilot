@@ -114,7 +114,14 @@ def enter_stage(db, instance, definition, req):
             eligible.append(user_id)
         except DomainError: continue
     resolution['eligible']=eligible
-    resolution['blocked']=not eligible or (node['mode']=='ALL' and len(eligible)!=len(candidates))
+    resolution['total_seats']=len(eligible)
+    if node['mode'] == 'QUORUM':
+        resolution['required_approvals']=node['required_approvals']
+    resolution['blocked']=(
+        not eligible
+        or (node['mode']=='ALL' and len(eligible)!=len(candidates))
+        or (node['mode']=='QUORUM' and len(eligible)<node['required_approvals'])
+    )
     if node['mode'] == 'CLAIM':
         resolution['claim_status'] = 'AVAILABLE' if not resolution['blocked'] else 'BLOCKED'
     deadline = schedule_stage_timers(db, instance, node)
@@ -361,14 +368,29 @@ def approval_detail(db, user, instance):
     add_sign_allowed = bool(current and not proxy_delegation and "APPROVE" in actions and add_sign_policy)
     add_sign_options = approval_add_sign_options(db, user, instance, req, definition, current) if add_sign_allowed else []
     return_options = node_return_options(definition, instance) if current and "RETURN" in actions else []
+    stage_completion = None
+    if current_node and current_node["mode"] == "QUORUM":
+        stage_seats = [seat for seat in seats
+                       if seat.stage_index == instance.stage_index and seat.parent_seat_id is None]
+        stage_completion = {
+            "mode": "QUORUM",
+            "required_approvals": current_node["required_approvals"],
+            "total_seats": len(stage_seats),
+            "approved": sum(seat.status == "APPROVE" for seat in stage_seats),
+            "rejected": sum(seat.status == "REJECT" for seat in stage_seats),
+            "pending": sum(seat.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}
+                           for seat in stage_seats),
+        }
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
             "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
             "material_notice":material_notice,
             "definition": {"name": definition.name, "version": definition.version},
             "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"],
+                       "required_approvals": n.get("required_approvals"),
                        "sla": n.get("sla")} for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
+            "stage_completion": stage_completion,
             "deadline": ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
                          .get("deadline") if instance.stage_index < len(definition.config["nodes"])
                          else None),
@@ -681,9 +703,18 @@ def _stage_is_approved(node, peers):
     additions = [seat for seat in peers if seat.parent_seat_id is not None]
     if any(seat.status != "APPROVE" for seat in additions):
         return False
-    return (any(seat.status == "APPROVE" for seat in base)
-            if node["mode"] == "ANY"
-            else bool(base) and all(seat.status == "APPROVE" for seat in base))
+    if node["mode"] == "ANY":
+        return any(seat.status == "APPROVE" for seat in base)
+    if node["mode"] == "QUORUM":
+        return sum(seat.status == "APPROVE" for seat in base) >= node["required_approvals"]
+    return bool(base) and all(seat.status == "APPROVE" for seat in base)
+
+
+def _quorum_cannot_pass(node, peers):
+    base = [seat for seat in peers if seat.parent_seat_id is None]
+    possible = sum(seat.status in {"APPROVE", "PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}
+                   for seat in base)
+    return possible < node["required_approvals"]
 
 
 def claim_approval(db, user, instance_id, payload):
@@ -795,7 +826,14 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     node = definition.config["nodes"][instance.stage_index]
     db.flush()
     peers = list(db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id, ApprovalSeat.stage_index == instance.stage_index)))
-    if payload["decision"] in {"REJECT", "RETURN"}:
+    quorum_rejected = (
+        payload["decision"] == "REJECT"
+        and node["mode"] == "QUORUM"
+        and seat.parent_seat_id is None
+        and detail["allowed_actions"] != ["REJECT"]
+        and not _quorum_cannot_pass(node, peers)
+    )
+    if payload["decision"] in {"REJECT", "RETURN"} and not quorum_rejected:
         cancel_stage_timers(db, instance.id, instance.stage_index)
         instance.status = "REJECTED" if payload["decision"] == "REJECT" else "RETURNED"
         req.status = instance.status
@@ -804,7 +842,7 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
             release_reservation(db,req)
         for peer in peers:
             if peer.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}: peer.status = "CANCELLED"
-    else:
+    elif payload["decision"] == "APPROVE":
         _activate_after_approval(db, instance, seat)
         db.flush()
         peers = list(db.scalars(select(ApprovalSeat).where(

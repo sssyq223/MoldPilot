@@ -77,7 +77,7 @@ async function confirmAddSign() {
 }
 function addSignTargetName(id:string) { return props.detail.add_sign_options.find((item:any)=>item.id===id)?.display_name||'目标人员' }
 function timingName(value:string) { return value==='PRE'?'前加签':'后加签' }
-function modeName(value:string) { return value==='ALL'?'会签':value==='ANY'?'或签':'候选领取' }
+function modeName(value:string,required?:number) { return value==='ALL'?'会签':value==='ANY'?'或签':value==='QUORUM'?`${required||'?'} / N 比例会签`:'候选领取' }
 function approvalActor(history:any) { return history.user.principal_user?`${history.user.name}（代 ${history.user.principal_user.display_name}）`:history.user.name }
 function nodeState(index:number) {
   if (props.detail.status==='COMPLETED') return '已通过'
@@ -125,7 +125,7 @@ async function claimApproval() {
         </div>
         <div v-for="(node,i) in detail.nodes" :key="node.key" class="approval-flow-node" :class="{current:detail.status==='RUNNING'&&i===detail.stage_index,complete:detail.status==='COMPLETED'||i<detail.stage_index,halted:['REJECTED','RETURNED','CANCELLED'].includes(detail.status)&&i===detail.stage_index}">
           <span class="approval-flow-marker"><Check v-if="detail.status==='COMPLETED'||i<detail.stage_index" :size="10"/><i v-else-if="detail.status==='RUNNING'&&i===detail.stage_index"/></span>
-          <div class="approval-flow-content"><div class="approval-flow-row"><strong>{{node.name}}</strong><span class="approval-flow-state">{{nodeState(Number(i))}}</span></div><small>{{modeName(node.mode)}}</small></div>
+          <div class="approval-flow-content"><div class="approval-flow-row"><strong>{{node.name}}</strong><span class="approval-flow-state">{{nodeState(Number(i))}}</span></div><small>{{modeName(node.mode,node.required_approvals)}}<template v-if="i===detail.stage_index&&detail.stage_completion"> · 已同意 {{detail.stage_completion.approved}} / {{detail.stage_completion.required_approvals}}，冻结 {{detail.stage_completion.total_seats}} 席</template></small></div>
         </div>
         <div class="approval-flow-node approval-flow-end" :class="{complete:detail.status==='COMPLETED'}">
           <span class="approval-flow-marker"><Check v-if="detail.status==='COMPLETED'" :size="10"/></span>

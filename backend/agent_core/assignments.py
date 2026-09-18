@@ -332,6 +332,10 @@ def check_publish(db, config):
             raise DomainError(
                 "ASSIGNMENT_BLOCKED", "节点没有有效人员或包含停用人员，请维护人员规则"
             )
+        if node["mode"] == "QUORUM" and len(ids) < node["required_approvals"]:
+            raise DomainError(
+                "ASSIGNMENT_BLOCKED", "比例会签候选人数少于所需通过票数，请调整人员或票数"
+            )
         policy = node.get("add_sign_policy")
         if policy and any(
             not (user := db.get(models.User, user_id)) or not user.active

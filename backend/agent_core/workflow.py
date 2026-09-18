@@ -34,14 +34,20 @@ def validate(config):
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy", "sla"}:
+        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "required_approvals", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy", "sla"}:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
             raise DomainError("INVALID_WORKFLOW", "节点标识不合法或重复")
         keys.add(key)
-        if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY", "CLAIM"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
+        if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY", "QUORUM", "CLAIM"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
             raise DomainError("INVALID_WORKFLOW", "必须设置节点名称和审批办理方式")
+        required_approvals = node.get("required_approvals")
+        if node.get("mode") == "QUORUM":
+            if type(required_approvals) is not int or not 1 <= required_approvals <= 50:
+                raise DomainError("INVALID_WORKFLOW", "比例会签须设置1至50人的通过票数")
+        elif required_approvals is not None:
+            raise DomainError("INVALID_WORKFLOW", "只有比例会签节点可以设置通过票数")
         if "agent_auto_approval" in node and not isinstance(node["agent_auto_approval"], bool):
             raise DomainError("INVALID_WORKFLOW", "Agent 自动审批节点标记必须为布尔值")
         if node.get("mode") == "CLAIM" and node.get("agent_auto_approval"):
@@ -216,7 +222,8 @@ def simulate(config, snapshot):
         node = config['nodes'][stage]
         matched, missing = reject_findings(node, snapshot,config.get('material_contract'))
         entry = {'key': node['key'], 'name': node['name'], 'users': node.get('users',[]), 'assignment': node.get('assignment'),
-                 'mode': node['mode'], 'rejection_reasons': matched, 'missing_rules': missing}
+                 'mode': node['mode'], 'required_approvals': node.get('required_approvals'),
+                 'rejection_reasons': matched, 'missing_rules': missing}
         path.append(entry)
         if config.get('material_contract') is not None:
             from .evidence_rules import evaluate as evaluate_material_rule
