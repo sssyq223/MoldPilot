@@ -207,6 +207,35 @@ def test_generic_proposal_card_has_no_mold_dictionary_or_contact_routing():
     assert "detailLink.target" in source
 
 
+def test_generic_frontend_shell_has_no_mold_business_implementation():
+    project_root = Path(__file__).resolve().parents[1]
+    common_files = [project_root / "web" / "src" / "App.vue"]
+    common_files.extend((project_root / "web" / "src" / "components").glob("*.vue"))
+    common_source = "\n".join(path.read_text(encoding="utf-8") for path in common_files)
+
+    forbidden = (
+        "query_projects", "query_purchase_requests", "query_contact_cases",
+        "purchase_request", "business_subject", "contact_case",
+        "/api/projects", "/api/purchases", "/api/contacts",
+        "mold.agentPermissionMode", "mold.layout",
+        "工程联络单", "采购申请明细", "测试采购类别", "测试项目标识",
+    )
+    assert not [term for term in forbidden if term in common_source]
+    assert not (project_root / "web" / "src" / "components" / "WorkflowSubmit.vue").exists()
+
+    for pack in ("mold", "template"):
+        pack_root = project_root / "web" / "src" / "domain-packs" / pack
+        for relative in (
+            "evidence.ts", "uiPolicy.ts", "components/WelcomePanel.vue",
+            "components/DomainWorkspacePanel.vue",
+            "components/ApprovalBusinessDetails.vue",
+        ):
+            assert (pack_root / relative).is_file(), f"{pack} is missing {relative}"
+
+    assert (project_root / "web" / "src" / "domain-packs" / "mold" /
+            "components" / "WorkflowSubmit.vue").is_file()
+
+
 def test_template_pack_boots_host_without_registering_mold_http_surface():
     project_root = Path(__file__).resolve().parents[1]
     environment = {

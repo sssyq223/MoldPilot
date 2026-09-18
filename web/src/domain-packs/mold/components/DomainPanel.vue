@@ -6,7 +6,7 @@ import {valueText,businessNames,statusName} from '../uiText'
 import SchemaFields from '../../../components/SchemaFields.vue'
 import BusinessFacts from './BusinessFacts.vue'
 import HumanCommand from '../../../components/HumanCommand.vue'
-import WorkflowSubmit from '../../../components/WorkflowSubmit.vue'
+import WorkflowSubmit from './WorkflowSubmit.vue'
 const selectedRow=ref<any>(null)
 const props=defineProps<{permissions:string[]}>()
 const emit=defineEmits<{error:[message:string];approval:[id:string];changed:[]}>()

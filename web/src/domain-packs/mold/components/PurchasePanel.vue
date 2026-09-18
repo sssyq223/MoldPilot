@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { Plus, Trash2 } from 'lucide-vue-next'
 import { api, post } from '../../../api'
-import WorkflowSubmit from '../../../components/WorkflowSubmit.vue'
+import WorkflowSubmit from './WorkflowSubmit.vue'
 const selectedRow=ref<any>(null)
 const emit = defineEmits<{ changed: []; error: [message: string]; approval: [id: string] }>()
 const props = defineProps<{ permissions:string[] }>()

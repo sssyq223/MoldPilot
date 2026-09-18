@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
-import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, Folder, ShoppingCart, Settings, Bot, ChevronRight, LogOut, X, Square, ArrowRight, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
+import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, ArrowRight, Settings, Bot, ChevronRight, LogOut, X, Square, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from '@domain-pack/uiText'
 import SettingsPage from './components/SettingsPage.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
-import ContactPanel from '@domain-pack/components/ContactPanel.vue'
+import WelcomePanel from '@domain-pack/components/WelcomePanel.vue'
+import DomainWorkspacePanel from '@domain-pack/components/DomainWorkspacePanel.vue'
 import ProposalCard from './components/ProposalCard.vue'
 import FileMaterial from './components/FileMaterial.vue'
 import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
+import {compactRecordTitle,evidenceBriefTitle,evidenceBriefSummary,evidenceSummary,evidenceSections,evidenceCardTitle,hasBusinessFactHighlights,isRecord,readableEntries} from '@domain-pack/evidence'
+import {legacyStorageKeys,notificationWorkspaceTarget,toolEvidenceLinks} from '@domain-pack/uiPolicy'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
@@ -117,97 +120,6 @@ const runErrorMessages:Record<string,string>={
  BUDGET_EXCEEDED:'本轮执行已达到时间、回合或工具预算上限。',
 }
 function runFailureReason(code:any){return runErrorMessages[String(code||'')]||'执行链路发生未分类异常，请按错误码核对服务日志。'}
-const compactHidden=new Set(['id','subject_id','plan_id','created_at','updated_at','analysis','detail','snapshot','project','subject','lines','history','tasks','attachments'])
-const titleKeys=['number','code','internal_number','project_code','name','title','project_name','status','project_status']
-const compactKeys=['execution_mode','customer_due_date','due_date','drawing_revision','revision','version','scope_confirmed','business_status','remark','description']
-function firstValue(row:any,key:string){return row?.[key]??row?.detail?.[key]??row?.snapshot?.[key]??row?.project?.[key]??row?.subject?.[key]}
-function compactRecordTitle(row:any){
- const code=firstValue(row,'number')??firstValue(row,'code')??firstValue(row,'internal_number')??firstValue(row,'project_code')
- const name=firstValue(row,'name')??firstValue(row,'title')??firstValue(row,'project_name')
- return [code&&valueText('number',code),name&&valueText('name',name)].filter(Boolean).join(' · ')
-}
-function compactRecordFields(row:any){
- const used=new Set(titleKeys.map(key=>firstValue(row,key)).filter(v=>v!==undefined&&v!==null&&v!=='').map(v=>String(v)))
- const pairs:{key:string;label:string;value:string}[]=[]
- const status=firstValue(row,'project_status')??firstValue(row,'status')
- if(status!==undefined&&status!==null&&status!=='')pairs.push({key:'project_status',label:'项目状态',value:valueText('status',status)})
- for(const key of compactKeys){
-  const raw=firstValue(row,key)
-  if(raw===undefined||raw===null||raw===''||typeof raw==='object'||used.has(String(raw)))continue
-  pairs.push({key,label:fieldName(key),value:valueText(key,raw)})
-  if(pairs.length>=3)return pairs
- }
- for(const [key,raw] of Object.entries(row||{})){
-  if(pairs.length>=3)break
-  if(compactHidden.has(key)||titleKeys.includes(key)||raw===undefined||raw===null||raw===''||typeof raw==='object'||used.has(String(raw)))continue
-  pairs.push({key,label:fieldName(key),value:valueText(key,raw)})
- }
- return pairs
-}
-const evidenceHidden=new Set([...compactHidden,'analysis','raw','payload','material_snapshot','system_facts'])
-const evidencePriority=['number','code','internal_number','project_code','project_name','name','title','status','project_status','customer_due_date','execution_mode','business_status','plan_number','active_plan_number','expected_ship_date','due_date','remark','description','reason','source_ref']
-function isRecord(value:any){return value&&typeof value==='object'&&!Array.isArray(value)}
-function readableEntries(obj:any,limit=12){
- if(!isRecord(obj))return []
- const entries=Object.entries(obj).filter(([key,value])=>!evidenceHidden.has(key)&&value!==undefined&&value!==null&&value!==''&&typeof value!=='object')
- entries.sort(([a],[b])=>{
-  const ia=evidencePriority.indexOf(a),ib=evidencePriority.indexOf(b)
-  return (ia<0?999:ia)-(ib<0?999:ib)
- })
- return entries.slice(0,limit).map(([key,value])=>({key,label:fieldName(key),value:valueText(key,value)}))
-}
-function evidenceSummary(row:any){
- const seen=new Set<string>(),pairs:{key:string;label:string;value:string}[]=[]
- for(const source of [row?.project,row?.subject,row,row?.detail,row?.snapshot]){
-  for(const item of readableEntries(source,16)){
-   const sig=item.label+':'+item.value
-   if(seen.has(sig))continue
-   seen.add(sig);pairs.push(item)
-   if(pairs.length>=12)return pairs
-  }
- }
- return pairs
-}
-function evidenceSections(row:any){
- const sections:any[]=[]
- const visited=new WeakSet<object>()
- for(const source of [row,row?.detail,row?.snapshot]){
-  if(!isRecord(source)||visited.has(source))continue
-  visited.add(source)
-  for(const [key,value] of Object.entries(source)){
-   if(evidenceHidden.has(key)||value===undefined||value===null||value==='')continue
-   if(Array.isArray(value)){
-    const rows=value.slice(0,12)
-    sections.push({key,title:fieldName(key),kind:'array',count:value.length,rows})
-   }else if(isRecord(value)&&!visited.has(value)){
-    visited.add(value)
-    const pairs=readableEntries(value,10)
-    if(pairs.length)sections.push({key,title:fieldName(key),kind:'object',pairs})
-   }
-   if(sections.length>=8)return sections
-  }
- }
- return sections
-}
-function evidenceCardTitle(row:any,index:number,title:string){
- return isRecord(row)?(compactRecordTitle(row)||`${title} ${Number(index)+1}`):`${title} ${Number(index)+1}`
-}
-function evidenceBriefTitle(item:any){
- const rows=Array.isArray(item?.data)?item.data:[]
- if(!rows.length)return '暂无可见记录'
- const title=compactRecordTitle(rows[0])||'业务记录'
- return rows.length>1?`${title} 等 ${rows.length} 条记录`:title
-}
-function evidenceBriefSummary(item:any){
- const rows=Array.isArray(item?.data)?item.data:[]
- if(!rows.length)return '本次查询未返回当前权限范围内的业务记录。'
- const facts=compactRecordFields(rows[0]).map(fact=>`${fact.label} ${fact.value}`)
- return facts.length?facts.join(' · '):`${rows.length} 条记录 · 按当前权限返回`
-}
-function hasBusinessFactHighlights(row:any){
- const analysis=row?.analysis
- return Boolean(analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
-}
 function runTrace(run:any){
  if(Array.isArray(run.trace)&&run.trace.length)return run.trace
  const items:any[]=[]
@@ -418,7 +330,7 @@ async function handleCurrentProposalDecision(dismissed=false){
  if(dismissed)await handleProposalDismissed(context.item.id,context.run.id)
  else await handleProposalConfirmed(context.item.id,context.run.id)
 }
-async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const savedMode=localStorage.getItem(approvalModeStorageKey())??localStorage.getItem('mold.agentPermissionMode.'+me.value.id);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??localStorage.getItem('mold.layout.'+me.value.id);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
+async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch{}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
 function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
@@ -431,8 +343,6 @@ async function openWorkspaceTarget(link:WorkspaceTarget){
  await openPanel(link.target)
 }
 async function openEvidenceTarget(link:WorkspaceTarget){selectedEvidence.value=null;await openWorkspaceTarget(link)}
-function workspaceEmptyTitle(){return panel.value==='approvals'?'暂无审批材料':panel.value==='contacts'?'暂无联络单材料':'材料总览'}
-function workspaceEmptyText(){return panel.value==='approvals'?'从消息通知或会话中的审批建议打开具体审批，节点、依据和操作记录会显示在这里。':panel.value==='contacts'?'从会话结果中选择联络单，附件、处理方案和协作进度会显示在这里。':'工作区用于承载会话中打开的业务材料，目前包含审批材料和联络单材料；从会话结果或消息通知选择具体事项后会自动切换。'}
 function toggleWorkspace(){if(!workspaceTabs.value.length)return;if(expanded.value)collapse();else{if(!panel.value)panel.value=String(workspaceTabs.value[0].key);expanded.value=true}}
 function collapse(){expanded.value=false;full.value=false;saveLayout()}
 async function openApproval(id:string){try{showNotices.value=false;detail.value=await api('/approvals/'+id);await openPanel('approvals')}catch(e:any){fail(e.message)}}
@@ -454,7 +364,7 @@ async function uploadFiles(event:Event){
   if(epoch===conversationEpoch){conversation.value=target;selectedFiles.value.push(result)}
  }await refresh()}catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
-async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else if(n.kind?.startsWith('contact.'))await openWorkspaceTarget({target:'contacts',id:n.resource_id});else await openNotices()}catch(e:any){fail(e.message)}}
+async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else{const target=notificationWorkspaceTarget(n);if(target)await openWorkspaceTarget(target);else await openNotices()}}catch(e:any){fail(e.message)}}
 function resizeSession(move:(event:PointerEvent)=>void){document.body.classList.add('layout-resizing');const end=()=>{document.body.classList.remove('layout-resizing');window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);saveLayout()};window.addEventListener('pointermove',move);window.addEventListener('pointerup',end);window.addEventListener('pointercancel',end)}
 function beginResize(e:PointerEvent){if(e.button!==0)return;const x=e.clientX,start=width.value;resizeSession((ev)=>{width.value=Math.max(560,Math.min(window.innerWidth-480,start+x-ev.clientX))})}
 function resizeBy(delta:number){width.value=Math.max(560,Math.min(window.innerWidth-480,width.value+delta));saveLayout()}
@@ -477,7 +387,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 <div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
   <div v-if="!sidebarCollapsed" class="sidebar-resize-handle" role="separator" tabindex="0" aria-label="调整左侧边栏宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginSidebarResize" @dblclick="resetSidebarWidth" @keydown.left.prevent="resizeSidebarBy(-10)" @keydown.right.prevent="resizeSidebarBy(10)"/>
   <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><button v-if="workspaceTabs.length&&!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
-    <div v-if="!runs.length" class="welcome"><div class="agent-mark"><Bot :size="28"/></div><h1>今天，我们一起完成什么？</h1><p>描述你的目标，我会在你的权限范围内调用工具、<br/>核对资料，并把需要你决定的事项交给你。</p><div class="suggestions"><button v-if="capabilities.tools.some((t:any)=>t.key==='query_projects')" @click="prompt='查询我有权限查看的项目及当前状态'"><Folder :size="17"/>查看我的项目<ArrowRight :size="14"/></button><button v-if="capabilities.tools.some((t:any)=>t.key==='query_purchase_requests')" @click="prompt='查询我负责范围内的采购申请，核对明细和审批进度'"><ShoppingCart :size="17"/>核对采购申请<ArrowRight :size="14"/></button></div><small>从会话开始办理，待审批事项在消息通知中查看。</small></div>
+    <WelcomePanel v-if="!runs.length" :capabilities="capabilities" @prompt="prompt=$event"/>
     <article v-for="run in runs" :key="run.id" class="conversation-turn">
       <div class="message-block user-message-block">
         <div class="user-message">{{run.prompt}}<FileMaterial v-for="file in run.files||[]" :key="file.id" :file="file" @error="fail"/></div>
@@ -522,8 +432,8 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                         </span>
                         <button v-if="item.data?.length" @click="selectedEvidence=item">查看详情</button>
                       </div>
-                      <div v-if="['query_contact_cases','query_contact_context'].includes(item.tool)" class="actions">
-                        <button v-for="row in item.data" :key="row.id" @click="openWorkspaceTarget({target:'contacts',id:row.id})">查看联络材料：{{row.title}}</button>
+                      <div v-if="toolEvidenceLinks(item).length" class="actions">
+                        <button v-for="link in toolEvidenceLinks(item)" :key="link.target+':'+link.id" @click="openWorkspaceTarget(link)">{{link.label}}</button>
                       </div>
                     </div>
                   </details>
@@ -629,10 +539,9 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 </section>
   <div v-if="workspaceOpen&&!full" class="resize-handle" role="separator" tabindex="0" aria-label="调整工作区宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginResize" @dblclick="resetWorkspaceWidth" @keydown.left.prevent="resizeBy(20)" @keydown.right.prevent="resizeBy(-20)"/>
   <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs" aria-label="工作区页签"><button v-for="tab in workspaceTabs" :key="tab.key" :class="{active:panel===tab.key}" :aria-current="panel===tab.key?'page':undefined" :title="tab.hint" @click="openPanel(tab.key)">{{tab.name}}</button><button v-if="detail&&panel==='approvals'" class="object-tab">{{numberText(detail.snapshot.number)}}</button></nav><div class="workspace-content">
-    <ContactPanel @approval="openApproval" v-if="panel==='contacts'" :key="workspaceTargets.contacts" :initial-id="workspaceTargets.contacts||''" @error="fail"/>
-    <template v-else-if="panel==='approvals'&&detail"><button class="back-button" @click="collapse();openNotices()">← 返回消息通知</button><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
+    <template v-if="panel==='approvals'&&detail"><button class="back-button" @click="collapse();openNotices()">← 返回消息通知</button><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
 </template>
-    <div v-else class="empty workspace-empty"><h3>{{workspaceEmptyTitle()}}</h3><p>{{workspaceEmptyText()}}</p><div class="workspace-empty-cards"><button type="button" :class="{active:panel==='approvals'}" @click="openPanel('approvals')"><strong>审批材料</strong><small>待审批事项、流程节点、附件和审批记录</small></button><button type="button" :class="{active:panel==='contacts'}" @click="openPanel('contacts')"><strong>联络单材料</strong><small>工程联络单、处理方案、附件和协作进度</small></button></div></div>
+    <DomainWorkspacePanel v-else :panel="panel" :target-id="workspaceTargets[panel]||''" @approval="openApproval" @error="fail" @open="openPanel"/>
   </div></template></section>
   <aside v-if="showNotices" class="notification-popover" :style="notificationPopoverStyle" aria-label="待处理"><div class="section-heading notification-head"><div><h2>待处理</h2><small class="muted">{{noticeCount?noticeCount+' 项需要查看':'暂无需要处理'}}</small></div><button class="icon-button" aria-label="关闭待处理" @click="showNotices=false"><X :size="16"/></button></div>
     <p v-if="noticeLoading" role="status" class="muted small">正在读取待处理事项…</p>

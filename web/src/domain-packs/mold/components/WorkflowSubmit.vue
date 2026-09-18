@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onMounted,ref,watch} from 'vue'
-import {api,post} from '../api'
+import {api,post} from '../../../api'
 const props=defineProps<{resourceType:string;row:any}>()
 const emit=defineEmits<{close:[];error:[message:string];submitted:[id:string]}>()
 const templates=ref<any[]>([]),category=ref(''),process=ref(''),definition=ref(''),intent=ref<any>(null),busy=ref(false)

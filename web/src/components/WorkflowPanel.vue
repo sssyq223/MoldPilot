@@ -5,7 +5,8 @@ import { api, post } from '../api'
 import RuleEditor from './RuleEditor.vue'
 import WorkflowCategoryPanel from './WorkflowCategoryPanel.vue'
 import MaterialTemplatePanel from './MaterialTemplatePanel.vue'
-import {ruleText,routeName,categoryNames,currencyNames} from '@domain-pack/uiText'
+import {ruleText,routeName} from '@domain-pack/uiText'
+import {workflowUi} from '@domain-pack/uiPolicy'
 const emit = defineEmits<{error:[message:string]}>()
 const templates=ref<any[]>([]), users=ref<any[]>([])
 const editing=ref(false), busy=ref(false), name=ref(''), key=ref('')
@@ -24,11 +25,12 @@ function assignmentMode(n:any,dynamic:boolean){n.users=[];if(dynamic)n.assignmen
 function assignmentNames(n:any){if(!n.assignment)return (n.users||[]).map((id:string)=>users.value.find(u=>u.id===id)?.display_name||'人员信息暂不可用').join('、');const names=(ids:string[])=>ids.map(id=>assignmentGroups.value.find(g=>g.id===id)?.name||'人员规则暂不可用').join('、');return [n.assignment.roles.length?'角色：'+names(n.assignment.roles):'',n.assignment.departments.length?(n.assignment.department_heads_only?'部门负责人：':'部门：')+names(n.assignment.departments):''].filter(Boolean).join('；同时满足')}
 function candidateNames(n:any){if(!n.assignment)return assignmentNames(n);const r=n.assignment;let ids:string[]|null=null;for(const [field,head] of [['roles',false],['departments',r.department_heads_only]] as const){if(!r[field].length)continue;const selected=assignmentGroups.value.filter(g=>g.active&&r[field].includes(g.id));const list:string[]=selected.flatMap(g=>g.members.filter((m:any)=>!head||m.is_head).map((m:any)=>m.user_id));ids=ids===null?list:ids.filter(id=>list.includes(id))}return [...new Set(ids||[])].filter(id=>users.value.find(u=>u.id===id)?.active).map(id=>users.value.find(u=>u.id===id)?.display_name).join('、')||'暂无有效候选人员'}
 const groups=computed(()=>Object.values(templates.value.filter(t=>!categoryFilter.value||t.category_id===categoryFilter.value).reduce((all:Record<string,any>,t:any)=>{if(!all[t.process_key])all[t.process_key]=t;return all},{})))
-const sample=ref({quantity:'',amount:'',currency:'CNY',category:'',remark:'',project_id:''})
+const sample=ref<Record<string,any>>(Object.fromEntries(workflowUi.simulationFields.map((field:any)=>[field.key,field.value])))
+const newCondition=()=>({field:workflowUi.defaultField,op:'gt',value:''})
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[]})
 function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
-function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled)n.agent_auto_policy={condition:{field:'quantity',op:'lte',value:''}};else delete n.agent_auto_policy}
+function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled)n.agent_auto_policy={condition:{...newCondition(),op:'lte'}};else delete n.agent_auto_policy}
 async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
@@ -42,7 +44,7 @@ async function publish(t:any){busy.value=true;try{await post(`/workflows/${t.id}
 function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i))}
 function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}nodes.value.splice(i,1)}
 function targets(i:number){return [...nodes.value.slice(i+1).map(n=>({key:n.key,name:n.name})),{key:'end',name:'审批结束'}]}
-function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{condition:{field:'quantity',op:'gt',value:''},target:targets(i)[0].key}];n.default_target=targets(i)[0].key}else{delete n.routes;delete n.default_target}}
+function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{condition:newCondition(),target:targets(i)[0].key}];n.default_target=targets(i)[0].key}else{delete n.routes;delete n.default_target}}
 const nodeName=(target:string)=>routeName(target,nodes.value)
 async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(Object.entries(sample.value).filter(([,v])=>v!==''));simulation.value=await post('/workflows/simulate',{config:configuration(),snapshot})}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 </script>
@@ -97,11 +99,11 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
         </template>
         <p class="muted small">配置人员不会自动授予业务权限。会签人员失效时等待处理，不能减少签名人数后放行。</p>
         <div v-for="(r,j) in n.reject_rules" :key="j" class="surface form-stack"><strong>必须驳回条件 {{Number(j)+1}}</strong><RuleEditor v-model="r.condition"/><label>驳回原因<input v-model="r.reason" required/></label><button type="button" @click="n.reject_rules.splice(j,1)">删除驳回条件</button></div>
-        <button type="button" class="subtle" @click="n.reject_rules.push({condition:{field:'quantity',op:'gt',value:''},reason:''})">增加必须驳回条件</button>
+        <button type="button" class="subtle" @click="n.reject_rules.push({condition:newCondition(),reason:''})">增加必须驳回条件</button>
         <label class="check-label"><input type="checkbox" :checked="!!n.routes" @change="routing(n,i,($event.target as HTMLInputElement).checked)"/>按条件选择后续节点</label>
         <template v-if="n.routes">
           <div v-for="(r,j) in n.routes" :key="j" class="surface form-stack"><strong>条件分支 {{Number(j)+1}}</strong><RuleEditor v-model="r.condition"/><label>命中后前往<select v-model="r.target"><option v-for="t in targets(i)" :key="t.key" :value="t.key">{{t.name}}</option></select></label><button v-if="n.routes.length>1" type="button" @click="n.routes.splice(j,1)">删除分支</button></div>
-          <button type="button" @click="n.routes.push({condition:{field:'quantity',op:'gt',value:''},target:targets(i)[0].key})">增加条件分支</button>
+          <button type="button" @click="n.routes.push({condition:newCondition(),target:targets(i)[0].key})">增加条件分支</button>
           <label>全部条件未命中时前往<select v-model="n.default_target"><option v-for="t in targets(i)" :key="t.key" :value="t.key">{{t.name}}</option></select></label>
           <p class="muted small">多明细按“任一明细满足”判断；命中多个分支或缺少资料时阻塞，不走默认出口。金额条件请同时限定币种。</p>
         </template><p v-else class="muted small">全部通过后 → {{nodes[i+1]?.name || '审批结束'}}</p>
@@ -109,7 +111,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
     </template>
     <button type="button" @click="addNode">增加审批节点</button>
     <section class="surface form-stack" aria-label="路径模拟"><h3>保存前模拟</h3><p class="muted">填写测试值检查路径，不创建真实单据或待办。留空可验证资料不足时是否阻塞。</p>
-      <div class="form-grid"><label>测试数量<input v-model="sample.quantity"/></label><label>测试金额<input v-model="sample.amount"/></label><label>测试币种<select v-model="sample.currency"><option v-for="(label,code) in currencyNames" :key="code" :value="code">{{label}}</option></select></label><label>测试采购类别<select v-model="sample.category"><option value="">未提供</option><option v-for="(label,code) in categoryNames" :key="code" :value="code">{{label}}</option></select></label><label>测试项目标识<input v-model="sample.project_id"/></label><label>测试备注<input v-model="sample.remark"/></label></div>
+      <div class="form-grid"><label v-for="field in workflowUi.simulationFields" :key="field.key">{{field.label}}<select v-if="field.options" v-model="sample[field.key]"><option v-if="field.emptyLabel" value="">{{field.emptyLabel}}</option><option v-for="(label,code) in field.options" :key="code" :value="code">{{label}}</option></select><input v-else v-model="sample[field.key]"/></label></div>
       <button type="button" :disabled="busy" @click="simulate">模拟流转</button>
       <div v-if="simulation" role="status" class="form-stack"><strong>{{outcomes[simulation.outcome] || '需要检查流程配置'}}</strong><ol><li v-for="step in simulation.path" :key="step.key">{{step.name}}<span v-if="step.target"> → {{nodeName(step.target)}}</span><p v-for="r in step.rejection_reasons" :key="r">必须驳回：{{r}}</p><p v-for="r in step.missing_rules" :key="r">资料不足：{{r}}</p></li></ol><small class="muted">模拟不代表人员当前授权或实际业务前置已通过。</small></div>
     </section>

@@ -4,6 +4,7 @@ import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,M
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName,capabilityExample as domainCapabilityExample} from '@domain-pack/uiText'
+import {capabilityUi} from '@domain-pack/uiPolicy'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
@@ -63,7 +64,7 @@ function visibleCapabilityCategoryGroups(kind:'tools'|'skills',department:any){
 function toolUsageText(tool:any){
  return tool.mode==='human_confirmed_proposal'
   ? '用法：在对话里说清要办理的对象和目标，系统先生成操作建议，确认后才提交。'
-  : '用法：在对话里提供项目、单号、模号或关键词，系统只查询资料并返回依据。'
+  : capabilityUi.queryUsage
 }
 function skillUsageText(){
  return '用法：在对话里描述任务目标，系统会按当前授权工具组合处理。'
@@ -74,7 +75,8 @@ function capabilityUsageText(detail:{kind:'tool'|'skill';item:any}|null){
 }
 function escapePattern(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 function localizeCapabilityText(value:string){
- let text=value.replace(/\bAgent\b/g,'智能体').replace(/\bBOM\b/g,'物料清单')
+ let text=value
+ for(const [term,replacement] of Object.entries(capabilityUi.termReplacements||{}))text=text.replace(new RegExp(`\\b${escapePattern(term)}\\b`,'g'),String(replacement))
  for(const [key,name] of Object.entries(capabilityNames))text=text.replace(new RegExp(`\\b${escapePattern(key)}\\b`,'g'),name)
  text=text.replace(/\b[a-z][a-z0-9_]{2,}\b/gi,word=>capabilityName({key:word}))
  return text
@@ -401,7 +403,7 @@ async function clearAvatar(){
       <div class="agent-card-title"><span><ShieldCheck :size="18"/></span><div><h3>授权节点</h3><p class="muted">仅显示流程里已开启自动审批的低风险节点。</p></div></div>
       <div v-if="delegationOptions.length" class="agent-delegation-form">
        <label>可授权节点<select v-model="delegationNode"><option v-for="option in delegationOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版{{option.has_auto_policy?' · 已设安全条件':''}}）</option></select></label>
-       <label>授权原因<textarea v-model="delegationReason" rows="2" placeholder="例如：低风险辅材采购金额小、资料齐全时允许自动同意"/></label>
+       <label>授权原因<textarea v-model="delegationReason" rows="2" :placeholder="capabilityUi.delegationReasonPlaceholder"/></label>
        <label>有效期至<input v-model="delegationValidTo" type="datetime-local"/><small class="muted">留空表示长期有效，撤销后立即失效。</small></label>
        <button class="primary" :disabled="delegationSaving||!selectedDelegationOption" @click="saveAgentDelegation">{{delegationSaving?'正在保存…':'授权自动同意'}}</button>
       </div>
@@ -435,7 +437,7 @@ async function clearAvatar(){
    </div>
    </template>
    <template v-else-if="page==='capabilities'">
-    <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">当前账号可使用的业务能力，由管理员分配。使用时在对话里说“查询/准备 + 项目、单号、模号或关键词”；需确认的工具会先生成建议，不会直接提交。</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
+    <div class="capability-page-head"><div><h2>工具与技能</h2><p class="muted">{{capabilityUi.pageHelp}}</p></div><small class="muted">{{filteredTools.length}} 个工具 · {{filteredSkills.length}} 个技能</small></div>
     <div ref="capabilityToolbar" class="capability-toolbar capability-toolbar-v2">
      <div class="capability-tabs" role="tablist" aria-label="能力类型">
       <button role="tab" :class="{active:capabilityTab==='all'}" :aria-selected="capabilityTab==='all'" @click="capabilityTab='all'">全部<span>{{filteredTools.length+filteredSkills.length}}</span></button>
