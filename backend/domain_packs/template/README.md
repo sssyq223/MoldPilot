@@ -20,6 +20,8 @@ implement the stable components:
 - `workflow_policy.py`: business types, rule language and workflow applicability;
 - `file_policy.py`: visibility of files linked to domain objects;
 - `notification_policy.py`: event titles and revocation-aware visibility.
+- `workflow_assignment.py`: optional business-scoped workflow roles and
+  assignment context; the template exposes an empty neutral catalog.
 
 The template intentionally registers no models, domain permissions, scope
 dimensions, or approval resource types. Its metadata must remain sortable and

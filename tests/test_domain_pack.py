@@ -266,6 +266,7 @@ def test_generic_frontend_shell_has_no_mold_business_implementation():
         "/api/projects", "/api/purchases", "/api/contacts",
         "mold.agentPermissionMode", "mold.layout",
         "工程联络单", "采购申请明细", "测试采购类别", "测试项目标识",
+        "项目角色", "project_id", "PROJECT_OWNER",
     )
     assert not [term for term in forbidden if term in common_source]
     assert not (project_root / "web" / "src" / "components" / "WorkflowSubmit.vue").exists()
@@ -301,7 +302,7 @@ from app.authorization import PERMISSIONS, DIMENSIONS
 from app.erp_adapter import ERPClient
 from agent_core.harness import _tool_search_schema, permission_mode_instruction
 from agent_core.ollama_adapter import REACT_GUIDANCE
-from agent_core.domain_pack import manifest, resource_contract
+from agent_core.domain_pack import component, manifest, resource_contract
 from agent_core.domain_pack import migration_contract
 paths = {route.path for route in app.routes if hasattr(route, 'path')}
 sorted_tables = list(Base.metadata.sorted_tables)
@@ -319,6 +320,7 @@ print(json.dumps({
     'approval_resource_types': sorted(resource_contract().APPROVAL_RESOURCE_TYPES),
     'alembic_config': migration_contract().ALEMBIC_CONFIG,
     'version_table': migration_contract().VERSION_TABLE,
+    'workflow_assignment': component('workflow_assignment').catalog(None, None),
     'mold_modules': sorted(name for name in sys.modules if name.startswith('domain_packs.mold')),
     'policy_text': ' '.join([
         _tool_search_schema()['function']['description'],
@@ -360,12 +362,17 @@ print(json.dumps({
     assert payload["approval_resource_types"] == []
     assert payload["alembic_config"] == "alembic-core.ini"
     assert payload["version_table"] == "alembic_core_version"
+    assert payload["workflow_assignment"] == {
+        "kind": "", "label": "", "scope_label": "", "context_key": "",
+        "roles": [], "scopes": [],
+    }
     assert not ({
         "project", "material", "purchase_request", "purchase_request_line",
         "business_subject", "supplier", "customer", "mold", "project_mold",
         "project_profile", "warehouse", "purchase_order", "contact_case",
         "contact_task", "contact_record", "contact_resolution", "contact_attachment",
-        "logistics_route", "logistics_quote",
+        "logistics_route", "logistics_quote", "project_role_config",
+        "project_role_member",
     } & set(payload["tables"]))
     assert not any(term in payload["policy_text"] for term in (
         "项目", "模具", "工程联络", "合同", "采购", "审批席位",

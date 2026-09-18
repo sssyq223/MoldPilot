@@ -25,6 +25,7 @@ function pickEditCategory(value:string){categoryId.value=value;metaSelectOpen.va
 function pickEditMaterial(value:string){materialTemplateId.value=value;metaSelectOpen.value='';selectMaterial()}
 async function refreshCategories(){try{flowCategories.value=await api('/workflow-categories')}catch(e:any){emit('error',e.message)}}
 const assignmentGroups=ref<any[]>([])
+const assignmentDomain=ref<any>({roles:[],scopes:[]}),assignmentPreview=ref<any>(null),previewScopeId=ref(''),previewing=ref(false)
 const materialTemplates=ref<any[]>([]),materialTemplateId=ref('')
 const workflowCalendars=ref<any[]>([])
 const publishedCalendars=computed(()=>workflowCalendars.value.filter(item=>item.status==='PUBLISHED'))
@@ -103,7 +104,7 @@ function newCondition(){
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number):any=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
 function toggleAddSign(n:any,enabled:boolean){if(enabled)n.add_sign_policy={timings:['PRE','POST'],users:[]};else delete n.add_sign_policy}
-function selectCanvasNode(index:number){selectedNodeIndex.value=index;canvasPanel.value='add-sign';addSignQuery.value=''}
+function selectCanvasNode(index:number){selectedNodeIndex.value=index;canvasPanel.value='add-sign';addSignQuery.value='';assignmentPreview.value=null}
 function toggleCanvasPanel(panel:'simulation'|'add-sign'){canvasPanel.value=canvasPanel.value===panel?'':panel;if(panel==='add-sign')addSignQuery.value=''}
 function setAddSignTiming(n:any,timing:'PRE'|'POST'){
   const timings=n.add_sign_policy?.timings
@@ -113,6 +114,9 @@ function setAddSignTiming(n:any,timing:'PRE'|'POST'){
 }
 function addAddSignUser(n:any,userId:string){if(!n.add_sign_policy||n.add_sign_policy.users.includes(userId))return;n.add_sign_policy.users.push(userId);addSignQuery.value=''}
 function removeAddSignUser(n:any,userId:string){if(n.add_sign_policy)n.add_sign_policy.users=n.add_sign_policy.users.filter((id:string)=>id!==userId)}
+function toggleDynamicAssignment(n:any,enabled:boolean){if(enabled){n.users=[];n.assignment={roles:[],departments:[],department_heads_only:false,domain_roles:[]}}else{delete n.assignment;n.users=[]}assignmentPreview.value=null}
+function toggleAssignmentValue(n:any,key:'roles'|'departments'|'domain_roles',value:string,enabled:boolean){if(!n.assignment)return;const current:string[]=n.assignment[key]||[];n.assignment[key]=enabled?[...new Set([...current,value])]:current.filter(item=>item!==value);if(key==='departments'&&!n.assignment.departments.length)n.assignment.department_heads_only=false;assignmentPreview.value=null}
+async function previewAssignment(){if(!selectedNode.value?.assignment)return;const needsScope=selectedNode.value.assignment.domain_roles?.length;if(needsScope&&!previewScopeId.value)return emit('error',`请选择要预览的${assignmentDomain.value.scope_label||'业务范围'}`);const context=needsScope&&assignmentDomain.value.context_key?{[assignmentDomain.value.context_key]:previewScopeId.value}:{};previewing.value=true;try{assignmentPreview.value=await post('/workflows/assignment-preview',{assignment:selectedNode.value.assignment,context})}catch(e:any){emit('error',e.message);assignmentPreview.value=null}finally{previewing.value=false}}
 function toggleSla(n:any,enabled:boolean){if(enabled)n.sla={due_hours:24,remind_before_hours:2};else delete n.sla}
 function toggleSlaRecipient(n:any,key:'cc_user_ids'|'escalation_user_ids',userId:string,enabled:boolean){
   if(!n.sla)return
@@ -121,11 +125,11 @@ function toggleSlaRecipient(n:any,key:'cc_user_ids'|'escalation_user_ids',userId
   if(next.length)n.sla[key]=next
   else delete n.sla[key]
 }
-function normalizeReturnPolicy(n:any){if(!n.return_policy)n.return_policy={targets:['applicant']};return n}
+function normalizeReturnPolicy(n:any){if(!n.return_policy)n.return_policy={targets:['applicant']};if(n.assignment)n.assignment={roles:n.assignment.roles||[],departments:n.assignment.departments||[],department_heads_only:!!n.assignment.department_heads_only,domain_roles:n.assignment.domain_roles||[]};return n}
 async function refreshIncidents(){incidents.value=await api('/workflow-incidents')}
 async function retryIncident(item:any){const reason=(incidentReasons.value[item.id]||'').trim();if(!reason)return emit('error','请填写本次恢复原因');busy.value=true;try{const result=await post(`/workflow-incidents/${item.id}/retry`,{expected_version:item.version,reason});notice.value=result.incident?'重试完成，但阻塞原因仍未消除':item.incident==='TIMER_FAILED'?`已重新排队 ${result.requeued_timers} 个定时事件`:'流程节点已恢复并重新生成待办';incidentReasons.value[item.id]='';await refreshIncidents()}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function displayTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
-async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials();await refreshCalendars();await refreshIncidents()}
+async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;assignmentDomain.value=people.domain||{roles:[],scopes:[]};if(!assignmentDomain.value.scopes?.some((scope:any)=>scope.id===previewScopeId.value))previewScopeId.value=assignmentDomain.value.scopes?.[0]?.id||'';await refreshCategories();await refreshMaterials();await refreshCalendars();await refreshIncidents()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
 function create(){editId.value='';editHash.value='';selected.value=null;name.value='';key.value='flow_'+crypto.randomUUID().replaceAll('-','');categoryId.value='';legacyCopy.value=false;materialContract.value=null;materialTemplateId.value='';nodes.value=[freshNode(1)];selectedNodeIndex.value=0;canvasPanel.value='';editing.value=true}
@@ -198,6 +202,17 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
         </aside>
         <aside v-else-if="canvasPanel==='add-sign'&&selectedNode" class="workflow-canvas-overlay" aria-label="节点加签设置">
           <div class="workflow-overlay-head"><div><strong>{{selectedNode.name}}</strong><small>节点快捷设置</small></div><button type="button" aria-label="关闭节点快捷设置" @click="canvasPanel=''" ><X :size="14"/></button></div>
+          <label class="workflow-overlay-switch"><input type="checkbox" :checked="!!selectedNode.assignment" @change="toggleDynamicAssignment(selectedNode,($event.target as HTMLInputElement).checked)"/><span><b>动态人员规则</b><small>按组织和业务包领域角色解析候选人</small></span></label>
+          <template v-if="selectedNode.assignment">
+            <div class="workflow-assignment-rules">
+              <fieldset><legend>组织角色</legend><label v-for="group in assignmentGroups.filter((item:any)=>item.active&&item.kind==='ROLE')" :key="group.id" class="check-label"><input type="checkbox" :checked="selectedNode.assignment.roles.includes(group.id)" @change="toggleAssignmentValue(selectedNode,'roles',group.id,($event.target as HTMLInputElement).checked)"/>{{group.name}}<small>{{group.members.length}} 人</small></label><small v-if="!assignmentGroups.some((item:any)=>item.active&&item.kind==='ROLE')" class="muted">尚未维护组织角色</small></fieldset>
+              <fieldset><legend>部门</legend><label v-for="group in assignmentGroups.filter((item:any)=>item.active&&item.kind==='DEPARTMENT')" :key="group.id" class="check-label"><input type="checkbox" :checked="selectedNode.assignment.departments.includes(group.id)" @change="toggleAssignmentValue(selectedNode,'departments',group.id,($event.target as HTMLInputElement).checked)"/>{{group.name}}<small>{{group.members.length}} 人</small></label><label v-if="selectedNode.assignment.departments.length" class="check-label"><input v-model="selectedNode.assignment.department_heads_only" type="checkbox"/>仅部门负责人</label></fieldset>
+              <fieldset v-if="assignmentDomain.roles?.length"><legend>{{assignmentDomain.label}}</legend><label v-for="role in assignmentDomain.roles" :key="role.key" class="check-label"><input type="checkbox" :checked="selectedNode.assignment.domain_roles.includes(role.key)" @change="toggleAssignmentValue(selectedNode,'domain_roles',role.key,($event.target as HTMLInputElement).checked)"/>{{role.name}}</label></fieldset>
+            </div>
+            <p class="muted small">同一类中的多个选择取并集；同时选择组织角色、部门和{{assignmentDomain.label||'领域角色'}}时取交集。人员规则不授予业务权限。</p>
+            <div class="workflow-assignment-preview"><label v-if="selectedNode.assignment.domain_roles.length">{{assignmentDomain.scope_label}}<select v-model="previewScopeId" @change="assignmentPreview=null"><option v-for="scope in assignmentDomain.scopes" :key="scope.id" :value="scope.id">{{scope.code}} · {{scope.name}}</option></select></label><button type="button" :disabled="previewing" @click="previewAssignment">{{previewing?'正在解析…':'预览最终账号'}}</button></div>
+            <div v-if="assignmentPreview" class="workflow-assignment-preview-result" role="status"><strong>当前解析到 {{assignmentPreview.count}} 位有效账号</strong><span v-for="person in assignmentPreview.users" :key="person.id">{{person.display_name}} · {{person.department||person.username}}</span><small v-if="!assignmentPreview.count">当前规则为空；发布或运行时将阻断，不会按零人自动通过。</small></div>
+          </template>
           <label class="workflow-overlay-switch"><input type="checkbox" :checked="!!selectedNode.add_sign_policy" @change="toggleAddSign(selectedNode,($event.target as HTMLInputElement).checked)"/><span><b>允许加签</b><small>审批人办理时可增加复核人</small></span></label>
           <template v-if="selectedNode.add_sign_policy">
             <div class="workflow-add-sign-timings"><button type="button" :class="{active:selectedNode.add_sign_policy.timings.includes('PRE')}" @click="setAddSignTiming(selectedNode,'PRE')">前加签<small>新增人员先审</small></button><button type="button" :class="{active:selectedNode.add_sign_policy.timings.includes('POST')}" @click="setAddSignTiming(selectedNode,'POST')">后加签<small>本人同意后再审</small></button></div>

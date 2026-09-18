@@ -9,6 +9,7 @@ from .security import current_user,public_user
 from .errors import DomainError
 from .events import record
 from . import authorization as auth
+from agent_core.domain_pack import component
 
 router=APIRouter(prefix='/api')
 
@@ -25,6 +26,19 @@ class GroupInput(StrictModel):
 
 class GroupUpdate(GroupInput):
     expected_version:int=Field(ge=1)
+
+class DomainRoleEntry(StrictModel):
+    role_key:str=Field(min_length=1,max_length=60)
+    user_id:str=Field(min_length=1,max_length=36)
+
+class DomainRoleBindingsInput(StrictModel):
+    entries:list[DomainRoleEntry]=Field(default_factory=list,max_length=200)
+    expected_version:int=Field(ge=0)
+    reason:str=Field(min_length=1,max_length=500)
+
+class AssignmentPreviewInput(StrictModel):
+    assignment:dict
+    context:dict=Field(default_factory=dict)
 
 def admin(user):
     if not user.super_admin:raise DomainError('FORBIDDEN','部门和角色由超级管理员维护',403)
@@ -90,4 +104,32 @@ def catalog(user=Depends(current_user),db=Depends(get_db)):
     auth.require(db,user,'workflow.design')
     # Designer needs selection metadata, not user administration authority or credentials.
     return {'users':[public_user(u) for u in db.scalars(select(User).order_by(User.display_name))],
-            'groups':[group_data(db,g) for g in db.scalars(select(AssignmentGroup).order_by(AssignmentGroup.kind,AssignmentGroup.name))]}
+            'groups':[group_data(db,g) for g in db.scalars(select(AssignmentGroup).order_by(AssignmentGroup.kind,AssignmentGroup.name))],
+            'domain':component('workflow_assignment').catalog(db,user)}
+
+@router.post('/workflows/assignment-preview')
+def assignment_preview(data:AssignmentPreviewInput,user=Depends(current_user),db=Depends(get_db)):
+    auth.require(db,user,'workflow.design')
+    from agent_core.assignments import resolve_users
+    ids,sources=resolve_users(db,{'users':[],'assignment':data.assignment},data.context)
+    people=[]
+    for user_id in ids:
+        person=db.get(User,user_id)
+        if person and person.active:people.append(public_user(person))
+    return {'count':len(people),'users':people,'sources':sources}
+
+@router.get('/organization/domain-role-bindings/{scope_id}')
+def domain_role_bindings(scope_id:str,user=Depends(current_user),db=Depends(get_db)):
+    admin(user)
+    return component('workflow_assignment').binding_data(db,scope_id)
+
+@router.put('/organization/domain-role-bindings/{scope_id}')
+def update_domain_role_bindings(scope_id:str,data:DomainRoleBindingsInput,
+                                user=Depends(current_user),db=Depends(get_db)):
+    admin(user)
+    result=component('workflow_assignment').save_bindings(
+        db,user,scope_id,[entry.model_dump() for entry in data.entries],
+        data.expected_version,data.reason.strip(),
+    )
+    db.commit()
+    return result

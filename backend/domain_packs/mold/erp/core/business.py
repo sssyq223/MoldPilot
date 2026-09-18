@@ -82,7 +82,7 @@ def enter_stage(db, instance, definition, req):
     node = definition.config["nodes"][instance.stage_index]
     from domain_packs.mold.ports.assignments import resolve_users
     sources=[];candidates=[]
-    try:candidates,sources=resolve_users(db,node)
+    try:candidates,sources=resolve_users(db,node,{"project_id": req.project_id})
     except DomainError:
         instance.incident='ASSIGNMENT_BLOCKED'
     resolution={'node':node['key'],'mode':node['mode'],'resolved_at':now().isoformat(),'sources':sources,

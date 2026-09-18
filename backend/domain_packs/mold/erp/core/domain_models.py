@@ -62,6 +62,25 @@ class ProjectProfile(Base):
     __table_args__ = (CheckConstraint("execution_mode IN ('INTERNAL','FULL_OUTSOURCE')"),)
 
 
+class ProjectRoleConfig(Base):
+    """Version boundary for project-scoped workflow role membership."""
+    __tablename__ = 'project_role_config'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ProjectRoleMember(IdentityMixin, Base):
+    """A BPM selector only; membership never grants business permissions."""
+    __tablename__ = 'project_role_member'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    role_key: Mapped[str] = mapped_column(String(60), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'), index=True)
+    __table_args__ = (
+        UniqueConstraint('project_id', 'role_key', 'user_id'),
+        Index('ix_project_role_member_lookup', 'project_id', 'role_key'),
+    )
+
+
 class Warehouse(IdentityMixin, Base):
     __tablename__ = 'warehouse'
     code: Mapped[str] = mapped_column(String(80), unique=True)

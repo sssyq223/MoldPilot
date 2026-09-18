@@ -197,6 +197,8 @@ def install(app):
         if data.customer_id and not db.get(m.Customer,data.customer_id):raise DomainError('CUSTOMER_UNKNOWN','客户不存在')
         project=m.Project(code=data.code,name=data.name);db.add(project);db.flush()
         db.add(m.ProjectProfile(project_id=project.id,customer_id=data.customer_id,owner_user_id=data.owner_user_id,execution_mode=data.execution_mode))
+        db.add(m.ProjectRoleConfig(project_id=project.id,version=1))
+        db.add(m.ProjectRoleMember(project_id=project.id,role_key='PROJECT_OWNER',user_id=data.owner_user_id))
         record(db,user,'project.created',project.id);db.commit();return domains.values(project)
 
     @app.get('/api/master/{kind}')

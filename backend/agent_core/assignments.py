@@ -1,6 +1,7 @@
 """Generic approval assignment resolution through the host model contract."""
 from sqlalchemy import select
 
+from agent_core.domain_pack import component
 from agent_core.errors import DomainError
 from agent_core.host_ports import host_ports
 
@@ -15,26 +16,40 @@ def valid_ids(value, allow_empty=False):
     )
 
 
+def valid_keys(value, allow_empty=False):
+    return (
+        isinstance(value, list)
+        and (allow_empty or bool(value))
+        and len(value) <= 50
+        and all(isinstance(item, str) and 1 <= len(item) <= 60 for item in value)
+        and len(value) == len(set(value))
+    )
+
+
 def validate_assignment(node):
     if "assignment" not in node:
         if not valid_ids(node.get("users")):
             raise DomainError("ASSIGNMENT_BLOCKED", "必须配置有效且不重复的审批人员")
         return
     rule = node["assignment"]
+    allowed_fields = {"roles", "departments", "department_heads_only", "domain_roles"}
     if (
         ("users" in node and node["users"] != [])
         or not isinstance(rule, dict)
-        or set(rule) != {"roles", "departments", "department_heads_only"}
-        or not valid_ids(rule.get("roles"), True)
-        or not valid_ids(rule.get("departments"), True)
+        or set(rule) - allowed_fields
+        or not valid_ids(rule.get("roles", []), True)
+        or not valid_ids(rule.get("departments", []), True)
+        or not valid_keys(rule.get("domain_roles", []), True)
         or type(rule.get("department_heads_only")) is not bool
-        or not (rule["roles"] or rule["departments"])
-        or (rule["department_heads_only"] and not rule["departments"])
+        or not (rule.get("roles") or rule.get("departments") or rule.get("domain_roles"))
+        or (rule["department_heads_only"] and not rule.get("departments"))
     ):
         raise DomainError(
             "INVALID_WORKFLOW",
-            "人员规则须选择角色或部门；部门负责人须指定部门，不能混用指定用户",
+            "人员规则须选择角色、部门或业务包领域角色；部门负责人须指定部门，不能混用指定用户",
         )
+    if rule.get("domain_roles"):
+        component("workflow_assignment").validate_role_keys(rule["domain_roles"])
 
 
 def validate_add_sign_policy(node):
@@ -56,7 +71,7 @@ def validate_add_sign_policy(node):
         )
 
 
-def resolve_users(db, node):
+def resolve_users(db, node, context=None, publish=False):
     validate_assignment(node)
     if "assignment" not in node:
         return list(node["users"]), []
@@ -64,7 +79,7 @@ def resolve_users(db, node):
     rule = node["assignment"]
     selections, sources = [], []
     for field, kind in (("roles", "ROLE"), ("departments", "DEPARTMENT")):
-        if not rule[field]:
+        if not rule.get(field):
             continue
         groups = list(db.scalars(
             select(models.AssignmentGroup)
@@ -91,6 +106,15 @@ def resolve_users(db, node):
             "name": group.name,
             "version": group.version,
         } for group in groups)
+    if rule.get("domain_roles"):
+        extension = component("workflow_assignment")
+        domain_ids, domain_sources = (
+            extension.publish_candidates(db, rule["domain_roles"])
+            if publish and context is None
+            else extension.resolve(db, rule["domain_roles"], context)
+        )
+        selections.append(set(domain_ids))
+        sources.extend(domain_sources)
     ids = sorted(set.intersection(*selections))
     if len(ids) > 50:
         raise DomainError("ASSIGNMENT_BLOCKED", "节点候选人超过50位，请缩小人员范围")
@@ -100,7 +124,7 @@ def resolve_users(db, node):
 def check_publish(db, config):
     models = host_ports().models
     for node in config["nodes"]:
-        ids, _ = resolve_users(db, node)
+        ids, _ = resolve_users(db, node, publish=True)
         if not ids or any(
             not (user := db.get(models.User, user_id)) or not user.active
             for user_id in ids

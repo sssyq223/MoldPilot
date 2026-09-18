@@ -33,7 +33,7 @@ ToolSearch first narrows candidates to the matched directory (for example,
 The package-root modules (`manifest`, `models`, `authorization`,
 `harness_policy`, `tool_gateway`, `proposal_handlers`, `business`,
 `workflow_policy`, `file_policy`, `notification_policy`, `erp_adapter`,
-`resources`, and `migrations`) are the host-facing component contract. They
+`workflow_assignment`, `resources`, and `migrations`) are the host-facing component contract. They
 stay thin and assemble categorized implementations; business rules must not
 move back into `app` or `agent_core`.
 
