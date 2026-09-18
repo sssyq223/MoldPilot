@@ -31,7 +31,7 @@ const selectedNodeEntry=computed(()=>nodes.value[selectedNodeIndex.value]?[{node
 const sample=ref<Record<string,any>>(Object.fromEntries(workflowUi.simulationFields.map((field:any)=>[field.key,field.value])))
 const newCondition=()=>({field:workflowUi.defaultField,op:'gt',value:''})
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
-const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
+const freshNode=(i:number):any=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
 function modeName(mode:string){return mode==='ALL'?'全部人员同意（会签）':mode==='ANY'?'任一人员同意（或签）':'候选人领取后办理'}
 function setNodeMode(n:any,mode:string){n.mode=mode;if(mode==='CLAIM'){delete n.agent_auto_approval;delete n.agent_auto_policy}}
 function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
@@ -52,6 +52,15 @@ const configuration=()=>({business_type:'generic',nodes:nodes.value,...(material
 async function save(){busy.value=true;try{const r=editId.value?await api(`/workflows/${editId.value}`,{method:'PUT',body:JSON.stringify({name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null,expected_hash:editHash.value})}):await post('/workflows',{process_key:key.value,name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null});notice.value=`第 ${r.version} 版草稿已保存，尚未发布`;editing.value=false;await load();await openHistory({process_key:key.value});await view(r)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 async function publish(t:any){busy.value=true;try{await post(`/workflows/${t.id}/publish`);notice.value=`第 ${t.version} 版已发布，已有审批实例继续使用原版本`;await load();if(historyKey.value===t.process_key)await openHistory(t);if(selected.value?.id===t.id)await view(t)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i));selectedNodeIndex.value=nodes.value.length-1}
+function addPersonNode(userId:string){
+ let i=nodes.value.length+1
+ while(nodes.value.some(n=>n.key==='review_'+i))i++
+ const user=users.value.find(user=>user.id===userId),node:any=freshNode(i)
+ node.users=[userId]
+ if(user?.display_name)node.name=`${user.display_name}审批`
+ nodes.value.push(node)
+ selectedNodeIndex.value=nodes.value.length-1
+}
 function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}if(nodes.value.some((n,j)=>j>i&&n.return_policy?.targets?.includes(target))){emit('error','请先从后续节点的退回目标中移除此节点');return}nodes.value.splice(i,1);selectedNodeIndex.value=Math.max(0,Math.min(i,nodes.value.length-1))}
 function assignPerson(index:number,userId:string){const node=nodes.value[index];if(!node)return;if(node.assignment){emit('error','该节点正在按角色或部门选人，请先在节点属性中切换为指定人员');return}if(!node.users.includes(userId))node.users.push(userId);selectedNodeIndex.value=index}
 function unassignPerson(index:number,userId:string){const node=nodes.value[index];if(node)node.users=node.users.filter((id:string)=>id!==userId)}
@@ -92,7 +101,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
     <div class="form-grid"><label>模板名称<input v-model="name" required maxlength="150"/></label></div>
     <label>绑定资料模板版本<select v-model="materialTemplateId" @change="selectMaterial"><option value="">暂不绑定</option><option v-for="t in materialTemplates.filter(x=>x.status==='PUBLISHED')" :key="t.id" :value="t.id">{{t.name}} · 第 {{t.version}} 版</option></select></label>
     <p v-if="materialTemplateId" class="muted">已绑定明确的字段版本。资料上传、核对及动态条件页面正在补齐，当前这类模板尚不能正式发起。</p>
-    <WorkflowCanvas :nodes="nodes" :users="users" :selected-index="selectedNodeIndex" :storage-key="key" @select="selectedNodeIndex=$event" @add="addNode" @connect="connectNodes" @assign="assignPerson" @unassign="unassignPerson" @error="emit('error',$event)"/>
+    <WorkflowCanvas :nodes="nodes" :users="users" :selected-index="selectedNodeIndex" :storage-key="key" @select="selectedNodeIndex=$event" @add="addNode" @add-person="addPersonNode" @connect="connectNodes" @assign="assignPerson" @unassign="unassignPerson" @error="emit('error',$event)"/>
     <template v-for="{node:n,index:i} in selectedNodeEntry" :key="n.key">
       <section class="surface form-stack workflow-node-inspector" :aria-label="'审批节点 '+(i+1)">
         <div class="section-heading"><strong>审批节点 {{i+1}}</strong><button v-if="nodes.length>1" type="button" class="icon-button" aria-label="删除节点" @click="removeNode(i)"><Trash2 :size="16"/></button></div>
@@ -147,5 +156,5 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
     </section>
     <div class="actions"><button type="button" @click="editing=false">取消</button><button class="primary" :disabled="busy">{{editId?'保存当前草稿':'保存为新版本草稿'}}</button></div>
   </form>
-  <article v-for="t in groups" :key="t.id" class="surface"><div class="section-heading"><h3><GitBranch :size="17"/>{{t.name}}</h3><span class="status">{{t.status==='PUBLISHED'?'已发布':'草稿'}} · 第 {{t.version}} 版</span></div><div class="flow-preview"><span>发起</span><template v-for="n in t.config?.nodes" :key="n.key"><span class="muted">→</span><span>{{n.name}}{{n.routes?'（条件路由）':''}}</span></template></div><p class="muted">类别：{{categoryName(t.category_id)}}；已发布版本保持不变</p><div class="actions"><button @click="view(t)">查看流程</button><button @click="openHistory(t)">版本历史</button><button @click="copy(t,t.status==='DRAFT')">{{t.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="t.status==='DRAFT'" class="primary" :disabled="busy" @click="publish(t)">校验并发布</button></div></article>
+  <article v-for="t in groups" :key="t.id" class="surface workflow-summary-card"><div class="section-heading"><h3><GitBranch :size="15"/>{{t.name}}</h3><span class="status">{{t.status==='PUBLISHED'?'已发布':'草稿'}} · 第 {{t.version}} 版</span></div><div class="flow-preview"><span>发起</span><template v-for="n in t.config?.nodes" :key="n.key"><span class="muted">→</span><span>{{n.name}}{{n.routes?'（条件路由）':''}}</span></template></div><p class="muted">类别：{{categoryName(t.category_id)}}；已发布版本保持不变</p><div class="actions"><button @click="view(t)">查看流程</button><button @click="openHistory(t)">版本历史</button><button @click="copy(t,t.status==='DRAFT')">{{t.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="t.status==='DRAFT'" class="primary" :disabled="busy" @click="publish(t)">校验并发布</button></div></article>
 </template>
