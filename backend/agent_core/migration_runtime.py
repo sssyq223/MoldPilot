@@ -30,7 +30,7 @@ def alembic_config(repo_root: Path | None = None) -> Config:
     root = (repo_root or REPO_ROOT).resolve()
     contract = migration_contract()
     path = (root / contract.ALEMBIC_CONFIG).resolve()
-    if path.parent != root or not path.is_file():
+    if (path != root and root not in path.parents) or not path.is_file():
         raise RuntimeError("Active domain pack selected an unavailable Alembic config")
     config = Config(str(path))
     script_location = (root / config.get_main_option("script_location")).resolve()

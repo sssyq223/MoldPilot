@@ -1,4 +1,4 @@
-from domain_packs.mold.erp_design_mcp import TOOL_NAMES
+from domain_packs.mold.tools.erp.design.erp_design_mcp import TOOL_NAMES
 from app.tool_gateway import SKILLS, TOOLS, capability_descriptor
 
 

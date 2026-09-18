@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select, func
 from app import bpm
 from app.errors import DomainError
-from app.rules import evaluate, validate_rule
+from domain_packs.mold.erp.core.rules import evaluate, validate_rule
 from app.models import ApprovalInstance, ApprovalSeat, ApprovalAction, User, WorkflowDefinition
 from conftest import sign_in, draft, submit
 from test_core import confirm_decision, decision_payload

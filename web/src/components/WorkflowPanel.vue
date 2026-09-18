@@ -5,7 +5,7 @@ import { api, post } from '../api'
 import RuleEditor from './RuleEditor.vue'
 import WorkflowCategoryPanel from './WorkflowCategoryPanel.vue'
 import MaterialTemplatePanel from './MaterialTemplatePanel.vue'
-import {ruleText,routeName,categoryNames,currencyNames} from '../uiText'
+import {ruleText,routeName,categoryNames,currencyNames} from '@domain-pack/uiText'
 const emit = defineEmits<{error:[message:string]}>()
 const templates=ref<any[]>([]), users=ref<any[]>([])
 const editing=ref(false), busy=ref(false), name=ref(''), key=ref('')

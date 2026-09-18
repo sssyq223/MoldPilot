@@ -11,7 +11,7 @@ def aware(value):
 
 def make_engine(url: str):
     if url.startswith("sqlite"):
-        raise RuntimeError("SQLite is not allowed for MoldPilot runtime; configure MOLD_DATABASE_URL for PostgreSQL.")
+        raise RuntimeError("SQLite is not allowed for runtime; configure the PostgreSQL database URL.")
     engine = create_engine(url, pool_pre_ping=True)
     if engine.dialect.name == "postgresql":
         @event.listens_for(engine, "connect")

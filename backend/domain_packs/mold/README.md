@@ -1,75 +1,50 @@
 # Mold business pack
 
-This directory is the replaceable mold ERP/business layer for MoldPilot. It
-contains the mold system policy, all installed Skill documents, the registered
-tool catalog/dispatch gateway, proposal-handler mappings, and the existing ERP
-HTTP adapter. `manifest.py` owns MoldPilot's product metadata, conversation
-title rules and mold-only HTTP route registration; the generic host no longer
-imports those routers directly.
+This directory is the replaceable mold ERP layer installed on the generic
+LLM + Harness + Tool + Skill workbench. The host loads only the stable files
+at this package root; business implementations are categorized below them.
 
-The delivery-logistics application service is the first service relocated
-behind this pack boundary. Its schemas, read model, validation, proposal
-preparation and confirmed writes live in `delivery_logistics.py`; the similarly
-named module under `app` is a compatibility facade only. This is a migration
-step, not a fully independent vertical slice: logistics ORM, migrations,
-configuration and several upstream mold services still need to move. New mold
-slices should follow this direction until `app` contains host ports and
-transport concerns rather than industry rules.
+## Package layout
 
-The relocated service consumes generic infrastructure only through the
-validated `agent_core.host_ports` contract. Mold-wide project locator schemas
-and matching rules live in `contracts.py`. Remaining calls into the legacy
-plan/procurement/contact read services are deliberately isolated in
-`legacy_read_ports.py`; that adapter is migration debt and must shrink as those
-services move into the pack.
+- `erp/core/`: shared mold business records, commands, matching and HTTP API.
+- `erp/project/`: start, plans, pause/resume and project closure.
+- `erp/design/`: design uploads, drawings, BOM and design progress services.
+- `erp/procurement/`: purchasing, outsourcing and delivery logistics.
+- `erp/manufacturing/`: manufacturing quality, assembly and trial context.
+- `erp/commercial/`: bid intake, quotation and contract context.
+- `erp/finance/`: receipts, supplier payments and settlement evidence.
+- `erp/change/`: engineering contacts, change intake and attachments.
+- `erp/governance/`: permission, audit and source-governance context.
+- `ports/`: adapters to host identity, persistence, files, events, workflow
+  engine and confirmation infrastructure.
+- `tools/agent/<domain>/`: Agent-native executable tools by responsibility.
+- `tools/erp/<domain>/`: ERP-backed executable tools and MCP adapters by
+  business domain.
+- `skills/agent/<domain>/`: Agent-native skills by business responsibility.
+- `skills/erp/<domain>/`: ERP skills by business domain.
+- `alembic/`: this pack's complete deployed PostgreSQL migration history.
 
-`harness_policy.py` owns every mold-specific ToolSearch example and search
-term, the user-facing permission-mode instructions, and the Ollama structured
-ReAct guidance. The reusable harness consumes those fields without knowing
-project, contract, contact-case or mold vocabulary.
+Tool and Skill folders use the same `agent/erp -> domain` taxonomy. Skill
+folders are runtime retrieval boundaries, not cosmetic grouping. The
+pack exposes each Skill's `skill_layer`, `skill_domain`, and `route_terms`.
+ToolSearch first narrows candidates to the matched directory (for example,
+`erp/design`) and only then ranks Skills and tools inside that domain.
 
-`manifest.py` also owns proposal-card presentation metadata: action-title
-normalization, domain value labels, and receipt-to-workspace detail links. The
-generic `ProposalCard` renders that validated contract and emits a generic
-workspace target; it does not import the mold UI dictionary or assume every
-proposal opens a contact-case panel.
+The package-root modules (`manifest`, `models`, `authorization`,
+`harness_policy`, `tool_gateway`, `proposal_handlers`, `business`,
+`workflow_policy`, `file_policy`, `notification_policy`, `erp_adapter`,
+`resources`, and `migrations`) are the host-facing component contract. They
+stay thin and assemble categorized implementations; business rules must not
+move back into `app` or `agent_core`.
 
-`models.py` is the pack's ORM registry. Project, material and purchase models
-live there; the larger typed business-fact and collaboration model sets live
-in `domain_models.py` and `contact_models.py`, with contact/file relationships
-in `attachment_models.py`. The host re-exports these mapped classes from
-`app.models` while this pack is active so mature services remain compatible.
-Selecting the template pack does not import these modules or register their
-tables in the host metadata.
-
-`authorization.py` owns the mold permission vocabulary and scope dimensions;
-`resources.py` registers the resource types this pack can submit to the
-generic approval envelope. The host persists approvals as
-`resource_type/resource_id` and no longer has foreign keys or check constraints
-that name mold tables. Both contracts are empty in the template pack.
-
-`migrations.py` selects the existing `alembic.ini` history and
-`alembic_version` table. This preserves all deployed MoldPilot databases while
-the mixed historical chain is retired gradually; new migration commands go
-through `scripts/migrate.py` so another active pack cannot accidentally run
-the mold history.
-
-The ERP design-upload HTTP bridge, Agent tool adapter, and their nine Skill
-documents also live in this pack. The generic host reaches them only through
-the active-pack manifest and tool-gateway contracts; the ERP remains the
-system of record for design orders, drawings, BOM, changes, and approvals.
-
-The generic runtime loads it with:
+The browser presentation follows the same boundary under
+`web/src/domain-packs/mold`. Select both halves together:
 
 ```text
 AGENT_BUSINESS_PACK=mold
+VITE_BUSINESS_PACK=mold
 ```
 
-A vehicle or fixture product should provide the same component interface in a
-separate sibling folder and select that folder at startup. It must not add its
-business terms, ERP endpoints, tools, or card routing to `agent_core`.
-
-Some mature MoldPilot implementations still live under `app` and are imported
-by this pack through explicit adapters. They are migration debt, not the target
-architecture. New work should move behind this pack boundary instead of adding
-new industry branches to the harness.
+To build a vehicle, fixture, or other ERP workbench, copy the template pack,
+implement the same root components, add categorized ERP/Agent Skills and UI
+adapters, then change only these selectors. No Harness branch is needed.

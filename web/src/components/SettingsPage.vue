@@ -3,7 +3,7 @@ import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2,MessageSquare,RotateCcw} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
-import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName} from '../uiText'
+import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName,capabilityExample as domainCapabilityExample} from '@domain-pack/uiText'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
@@ -94,13 +94,7 @@ function dependencyNames(item:any,optional=false){
  return keys.map((key:string)=>capabilityName({key})).join('、')
 }
 function capabilityExample(detail:{kind:'tool'|'skill';item:any}|null){
- if(!detail)return ''
- const name=capabilityName(detail.item)
- const category=capabilityCategoryName(detail.item)
- if(detail.kind==='skill')return `请帮我做${name}，项目号 M250238，模具号 M250238-P4，重点核对当前状态、依据和风险。`
- return detail.item.mode==='human_confirmed_proposal'
-  ? `准备一份${category}相关建议，项目号 M250238，模具号 M250238-P4，先给我核对，不要直接提交。`
-  : `查询${category}，项目号 M250238，模具号 M250238-P4，返回当前状态、来源和需要注意的问题。`
+ return domainCapabilityExample(detail)
 }
 function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''

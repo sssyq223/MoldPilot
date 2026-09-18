@@ -2,13 +2,13 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, Folder, ShoppingCart, Settings, Bot, ChevronRight, LogOut, X, Square, ArrowRight, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
-import {capabilityName,auditName,numberText,fieldName,valueText} from './uiText'
+import {capabilityName,auditName,numberText,fieldName,valueText} from '@domain-pack/uiText'
 import SettingsPage from './components/SettingsPage.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
-import ContactPanel from './components/ContactPanel.vue'
+import ContactPanel from '@domain-pack/components/ContactPanel.vue'
 import ProposalCard from './components/ProposalCard.vue'
 import FileMaterial from './components/FileMaterial.vue'
-import BusinessFacts from './components/BusinessFacts.vue'
+import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}

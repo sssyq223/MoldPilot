@@ -1,5 +1,6 @@
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('mold_csrf='))?.split('=')[1] ?? ''
+  const cookies=document.cookie.split('; ')
+  const csrf=(cookies.find(c=>c.startsWith('agent_csrf='))??cookies.find(c=>c.startsWith('mold_csrf=')))?.split('=')[1]??''
   const response = await fetch(`/api${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, ...options.headers } })
   const raw=await response.text()
   let body:any={}

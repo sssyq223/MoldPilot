@@ -9,7 +9,7 @@ from app.models import Base
 from app.db import get_db, make_engine
 from app.api import app
 from app.bootstrap import create_admin
-from app.demo_seed import seed
+from domain_packs.mold.erp.core.demo_seed import seed
 
 PASSWORD = "OnlyForSyntheticTests-2026!"
 

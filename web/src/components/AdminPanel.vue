@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, post } from '../api'
-import {permissionName,scopeText,capabilityMeta,capabilityName,groupedCapabilities,categoryNames} from '../uiText'
+import {permissionName,scopeText,capabilityMeta,capabilityName,groupedCapabilities,categoryNames} from '@domain-pack/uiText'
 const emit=defineEmits<{error:[message:string]}>()
 const users=ref<any[]>([]),grants=ref<any[]>([]),catalog=ref<any>({permissions:{}}),selected=ref<any>(null),projects=ref<any[]>([]),groups=ref<any[]>([])
 const assignedCapabilities=ref<any[]>([]),capabilityReason=ref('')

@@ -10,6 +10,7 @@ from .proposal_registry import require_tool_handler
 from .security import current_user
 from .agent_resume import queue_after_proposal_decision
 from .run_events import publish_run_update
+from agent_core.domain_pack import component
 
 
 router = APIRouter(prefix="/api/proposals", tags=["agent-proposals"])
@@ -41,11 +42,9 @@ def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)
 
 @router.post("/{step_id}/intent")
 def proposal_intent(step_id: str, user=Depends(current_user), db=Depends(get_db)):
-    from .business import create_intent
-
     handler, proposal = proposal_source(db, user, step_id)
     payload = {"step_id": step_id, "proposal_hash": content_hash(proposal)}
-    result = create_intent(db, user, handler.action, step_id, payload)
+    result = component("business").create_intent(db, user, handler.action, step_id, payload)
     result["display"] = proposal["display"]
     result["confirmation_policy"] = proposal.get("confirmation_policy")
     db.commit()

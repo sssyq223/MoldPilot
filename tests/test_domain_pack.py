@@ -16,7 +16,9 @@ from agent_core.domain_pack import (
 from agent_core.host_ports import HostPorts, host_ports
 from agent_core.migration_runtime import resolve_migration_url
 from agent_core import tool_gateway as core_gateway
+from agent_core.harness import _route_skill_groups
 from app import tool_gateway as host_gateway
+from domain_packs.mold import tool_gateway as mold_gateway
 
 
 def test_migration_url_process_overrides_dotenv(monkeypatch):
@@ -57,23 +59,26 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
         "label": "查看材料",
     }
     assert model_catalog.Project.__module__ == "domain_packs.mold.models"
-    assert model_catalog.BusinessSubject.__module__ == "domain_packs.mold.domain_models"
-    assert model_catalog.ContactCase.__module__ == "domain_packs.mold.contact_models"
-    assert model_catalog.ContactAttachment.__module__ == "domain_packs.mold.attachment_models"
+    assert model_catalog.BusinessSubject.__module__ == "domain_packs.mold.erp.core.domain_models"
+    assert model_catalog.ContactCase.__module__ == "domain_packs.mold.erp.change.contact_models"
+    assert model_catalog.ContactAttachment.__module__ == "domain_packs.mold.erp.change.attachment_models"
     assert model_catalog.Base.__module__ == "app.model_base"
     assert "purchase.read" in authorization_contract().PERMISSIONS
     assert resource_contract().APPROVAL_RESOURCE_TYPES == {
         "purchase_request", "business_subject",
     }
-    assert component("migrations").ALEMBIC_CONFIG == "alembic.ini"
+    assert component("migrations").ALEMBIC_CONFIG == "backend/domain_packs/mold/alembic.ini"
     assert component("migrations").VERSION_TABLE == "alembic_version"
     assert "erp_design_query_bom" in core_gateway.TOOLS
     project_root = Path(__file__).resolve().parents[1]
     assert not (project_root / "backend" / "app" / "erp_design_mcp.py").exists()
     assert not (project_root / "backend" / "app" / "erp_design_upload.py").exists()
-    assert (project_root / "backend" / "domain_packs" / "mold" / "erp_design_mcp.py").is_file()
+    assert (project_root / "backend" / "domain_packs" / "mold" / "erp" /
+            "design" / "erp_design_upload.py").is_file()
+    assert (project_root / "backend" / "domain_packs" / "mold" / "tools" /
+            "erp" / "design" / "erp_design_mcp.py").is_file()
     assert (project_root / "backend" / "domain_packs" / "mold" / "skills" /
-            "erp_design_workspace_review" / "SKILL.md").is_file()
+            "erp" / "design" / "erp_design_workspace_review" / "SKILL.md").is_file()
     assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
     assert core_gateway.SKILLS is host_gateway.SKILLS
@@ -84,6 +89,35 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
         skill = core_gateway.SKILLS[key]
         assert all(name.startswith('query_') for name in skill['tools'])
         assert any(name.startswith('prepare_') for name in skill['optional_tools'])
+
+
+def test_skill_directory_hierarchy_is_a_retrieval_boundary():
+    paths = mold_gateway.skill_paths()
+    design = paths["erp_design_workspace_review"]
+    procurement = paths["purchase_request_review"]
+
+    assert (design["layer"], design["domain"]) == ("erp", "design")
+    assert (procurement["layer"], procurement["domain"]) == ("erp", "procurement")
+
+    groups = [
+        {"key": "design", "skill_layer": "erp", "skill_domain": "design",
+         "route_terms": design["route_terms"]},
+        {"key": "procurement", "skill_layer": "erp", "skill_domain": "procurement",
+         "route_terms": procurement["route_terms"]},
+    ]
+    assert [group["key"] for group in _route_skill_groups("帮我检查设计图纸", groups)] == ["design"]
+    assert [group["key"] for group in _route_skill_groups("查询采购订单", groups)] == ["procurement"]
+    assert _route_skill_groups("继续处理", groups) == groups
+
+
+def test_tool_implementations_are_categorized_beside_skills():
+    project_root = Path(__file__).resolve().parents[1]
+    tool_root = project_root / "backend" / "domain_packs" / "mold" / "tools"
+
+    assert (tool_root / "erp" / "design" / "design_tools.py").is_file()
+    assert (tool_root / "erp" / "project" / "plan_tools.py").is_file()
+    assert (tool_root / "erp" / "change" / "contact_tools.py").is_file()
+    assert (tool_root / "agent" / "operations" / "operations_readiness_tools.py").is_file()
 
 
 def test_agent_core_source_does_not_embed_mold_business_policy():
@@ -108,24 +142,22 @@ def test_delivery_logistics_implementation_lives_in_mold_pack_not_host():
     logistics = handlers.handler_for_tool("prepare_logistics_route")
 
     assert logistics is not None
-    assert logistics.module == "domain_packs.mold.delivery_logistics"
+    assert logistics.module == "domain_packs.mold.erp.procurement.delivery_logistics"
     assert logistics.implementation().__name__ == logistics.module
 
-    host_facade = (project_root / "backend" / "app" / "delivery_logistics_tools.py").read_text(encoding="utf-8")
-    pack_source = (project_root / "backend" / "domain_packs" / "mold" / "delivery_logistics.py").read_text(encoding="utf-8")
-    legacy_ports_source = (project_root / "backend" / "domain_packs" / "mold" / "legacy_read_ports.py").read_text(encoding="utf-8")
+    pack_source = (project_root / "backend" / "domain_packs" / "mold" / "erp" / "procurement" / "delivery_logistics.py").read_text(encoding="utf-8")
+    legacy_ports_source = (project_root / "backend" / "domain_packs" / "mold" / "erp" / "core" / "legacy_read_ports.py").read_text(encoding="utf-8")
     gateway_source = (project_root / "backend" / "domain_packs" / "mold" / "tool_gateway.py").read_text(encoding="utf-8")
-    plan_source = (project_root / "backend" / "app" / "plan_tools.py").read_text(encoding="utf-8")
+    plan_source = (project_root / "backend" / "domain_packs" / "mold" / "tools" / "erp" / "project" / "plan_tools.py").read_text(encoding="utf-8")
 
-    assert "class LogisticsRouteProposalInput" not in host_facade
-    assert "domain_packs.mold.delivery_logistics" in host_facade
+    assert not (project_root / "backend" / "app" / "delivery_logistics_tools.py").exists()
     assert "class LogisticsRouteProposalInput" in pack_source
     assert "from app" not in pack_source
-    assert "from app.domains" in legacy_ports_source
+    assert "domain_packs.mold.erp.core.domains" in legacy_ports_source
     assert "app.delivery_logistics_tools" not in gateway_source
-    assert "from .delivery_logistics" in gateway_source
+    assert "domain_packs.mold.erp.procurement.delivery_logistics" in gateway_source
     assert "from app.plan_tools import ProjectPlanContextInput" not in gateway_source
-    assert "domain_packs.mold" not in plan_source
+    assert "from app" not in plan_source
 
 
 def test_domain_pack_uses_validated_host_port_contract():
@@ -138,7 +170,8 @@ def test_domain_pack_uses_validated_host_port_contract():
         "content_hash", "proposal_confirmation_policy", "settings", "now",
     ):
         assert callable(getattr(ports, name))
-    assert component("contracts").ProjectPlanContextInput.__module__ == "domain_packs.mold.contracts"
+    from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput
+    assert ProjectPlanContextInput.__module__ == "domain_packs.mold.erp.core.contracts"
 
 
 def test_product_metadata_rejects_incomplete_proposal_detail_link():

@@ -7,7 +7,7 @@ from conftest import sign_in,draft
 
 def headers(context):
     return {**worker_headers(),'Accept':'application/json, text/event-stream',
-        'MCP-Protocol-Version':'2025-06-18','X-Mold-Run-Epoch':str(context['epoch'])}
+        'MCP-Protocol-Version':'2025-06-18','X-Agent-Run-Epoch':str(context['epoch'])}
 
 
 def rpc(client,c,method,params=None,**changes):
@@ -38,7 +38,7 @@ def test_mcp_transport_and_protocol_validation(client,data,monkeypatch):
     assert client.post(path,headers={**headers(c),'MCP-Protocol-Version':'unsupported'},json={}).status_code==400
     assert client.post(path,headers={**headers(c),'Accept':'application/json'},json={}).status_code==406
     assert rpc(client,c,'unknown').json()['error']['code']==-32601
-    assert rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{},'_meta':{'mold/sequence':True}}).json()['error']['code']==-32602
+    assert rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{},'_meta':{'agent/sequence':True}}).json()['error']['code']==-32602
     assert rpc(client,c,'initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'test','version':'1'}}).json()['result']['protocolVersion']=='2025-06-18'
     r=client.post(path,headers=headers(c),json={'jsonrpc':'2.0','method':'notifications/initialized'})
     assert r.status_code==202 and r.content==b''
@@ -46,8 +46,8 @@ def test_mcp_transport_and_protocol_validation(client,data,monkeypatch):
 
 def test_mcp_cannot_expand_actor_tools_and_reports_tool_errors(client,data,monkeypatch):
     _,c=start(client,monkeypatch)
-    assert rpc(client,c,'tools/call',{'name':'query_contact_cases','arguments':{},'_meta':{'mold/sequence':0}}).json()['error']['code']==-32602
-    r=rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{'user_id':data[0]['admin']},'_meta':{'mold/sequence':0}})
+    assert rpc(client,c,'tools/call',{'name':'query_contact_cases','arguments':{},'_meta':{'agent/sequence':0}}).json()['error']['code']==-32602
+    r=rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{'user_id':data[0]['admin']},'_meta':{'agent/sequence':0}})
     assert r.status_code==200 and r.json()['result']['isError'] is True
     error_result=r.json()['result']
     assert error_result['errorCode']=='INVALID_TOOL_INPUT'
@@ -61,7 +61,7 @@ def test_mcp_cannot_expand_actor_tools_and_reports_tool_errors(client,data,monke
 
 def test_mcp_revocation_and_cancel_fence_cached_receipts(client,data,monkeypatch):
     _,c=start(client,monkeypatch);ids,factory=data
-    args={'name':'query_purchase_requests','arguments':{},'_meta':{'mold/sequence':0}}
+    args={'name':'query_purchase_requests','arguments':{},'_meta':{'agent/sequence':0}}
     assert rpc(client,c,'tools/call',args).json()['result']['isError'] is False
     with factory.begin() as db:
         db.scalar(select(Grant).where(Grant.user_id==ids['buyer'],Grant.permission=='purchase.read')).active=False

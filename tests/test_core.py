@@ -5,7 +5,7 @@ from app.models import Grant, User, PurchaseRequest, ApprovalInstance, ApprovalA
 from app.authorization import access, PERMISSIONS
 from app.db import now
 from app import bpm
-from app.rules import evaluate
+from domain_packs.mold.erp.core.rules import evaluate
 from app.query_guard import validate_sql
 from app.errors import DomainError
 from conftest import sign_in, draft, submit, PASSWORD

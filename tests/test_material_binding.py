@@ -4,10 +4,11 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app import bpm, business, models as m, schemas as s
+from app import bpm, business, models as m
 from app.db import now
 from app.errors import DomainError
 from app.security import hasher
+from domain_packs.mold.erp.core.domain_api import LineInput, PurchaseInput
 from pg_db import factory as pg_factory
 
 
@@ -33,8 +34,8 @@ def fixture(db, *, review_status="CONFIRMED"):
     project = m.Project(code="MB-M001", name="资料绑定项目", status="ACTIVE")
     material = m.Material(code="MB-H001", name="核对物料", category="hardware", unit="件")
     db.add_all([user, project, material]); db.flush()
-    request = business.create_request(db, user, s.PurchaseInput(project_id=project.id, remark="资料绑定提交",
-        lines=[s.LineInput(material_id=material.id, quantity=Decimal("2"), due_date=date(2026, 9, 20))]))
+    request = business.create_request(db, user, PurchaseInput(project_id=project.id, remark="资料绑定提交",
+        lines=[LineInput(material_id=material.id, quantity=Decimal("2"), due_date=date(2026, 9, 20))]))
     template = m.MaterialTemplate(template_key="binding_sheet", version=1, name="绑定资料模板", status="PUBLISHED",
         contract=CONTRACT, package_hash=bpm.content_hash({"template_key":"binding_sheet","version":1,"contract":CONTRACT}))
     db.add(template); db.flush()

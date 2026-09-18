@@ -1,4 +1,4 @@
-"""Concrete MoldPilot host adapter for the stable Agent Core port contract."""
+"""Concrete application adapter for the stable Agent Core port contract."""
 from agent_core.host_ports import HostPorts
 
 from . import models

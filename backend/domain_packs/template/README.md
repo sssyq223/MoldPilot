@@ -17,6 +17,9 @@ implement the stable components:
 - `authorization.py`: domain permissions and data-scope dimensions;
 - `resources.py`: resource types accepted by generic approval persistence;
 - `migrations.py`: Alembic repository and version-table ownership.
+- `workflow_policy.py`: business types, rule language and workflow applicability;
+- `file_policy.py`: visibility of files linked to domain objects;
+- `notification_policy.py`: event titles and revocation-aware visibility.
 
 The template intentionally registers no models, domain permissions, scope
 dimensions, or approval resource types. Its metadata must remain sortable and
@@ -28,3 +31,6 @@ downgrades that chain in an isolated schema.
 
 Select the package with `AGENT_BUSINESS_PACK=<package_name>`. Industry code
 must remain in that package and must not add branches to `agent_core`.
+The browser build selects its matching presentation adapter with
+`VITE_BUSINESS_PACK=<package_name>`; domain wording and panels live under
+`web/src/domain-packs/<package_name>`.

@@ -1,13 +1,14 @@
 """Code-registered tools; no runtime imports, shell, arbitrary URL or write SQL."""
 from pathlib import Path
+from functools import lru_cache
 from sqlalchemy import select, or_
 from app.authorization import grants_for, predicate, require, select_fields
 from app.models import Project, PurchaseRequest, Capability
-from app.business import visible_requests, request_data
+from domain_packs.mold.erp.core.business import visible_requests, request_data
 from agent_core.errors import DomainError
 from app.db import now
 from app.bpm import content_hash
-from .contracts import ProjectPlanContextInput
+from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput
 
 
 def skill_agent_description(content: str) -> str:
@@ -37,7 +38,7 @@ TOOLS = {
     "query_projects": {"description": "查询当前用户有权查看的本项目项目，返回事实和来源。", "permission": "project.read"},
     "query_purchase_requests": {"description": "查询本项目采购申请及审批状态。不是正式订单发货记录，不能据此判断发货延期。", "permission": "purchase.read"},
 }
-from app.domain_schemas import CATALOG
+from domain_packs.mold.erp.core.domain_schemas import CATALOG
 TOOLS.update({f'query_{key}': {'description':f'查询当前人员授权范围内的{name["name"]}及真实审批、生效状态。',
                               'permission':f'{key}.read','business_kind':key} for key,name in CATALOG.items()})
 TOOLS['query_engineering_change']['description']='查询已有工程联络方案审批材料及生效状态；独立联络协作、责任部门和人员进度请使用工程联络协作查询工具。'
@@ -89,8 +90,8 @@ TOOLS.update({
     'prepare_project_normal_close':{'description':'准备正常关闭审批；仅在交付、验收、财务、异常和归档等适用清单全部完成后允许提交。','permission':'project_close.create'},
     'prepare_project_settlement_close':{'description':'准备终止结算关闭审批；不强制不适用的交付验收，但要求处置、结算、收付款和归档清单完成。','permission':'project_close.create'},
 })
-from app import contact_tools
-from . import erp_design_mcp
+from domain_packs.mold import contact_tools
+from domain_packs.mold import erp_design_mcp
 
 TOOLS.update(erp_design_mcp.TOOL_SPECS)
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
@@ -472,48 +473,48 @@ def tool_schema(key):
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         schema=contact_tools.ContextInput.model_json_schema() if key=='query_contact_context' else contact_tools.schema(key.removeprefix('prepare_contact_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema}}
-    from app.project_closure_tools import ACTION_BY_TOOL,ClosureContextInput,schema as closure_schema
+    from domain_packs.mold.tools.erp.project.project_closure_tools import ACTION_BY_TOOL,ClosureContextInput,schema as closure_schema
     if key in ACTION_BY_TOOL or key=='query_project_closure_context':
         parameters=ClosureContextInput.model_json_schema() if key=='query_project_closure_context' else closure_schema(ACTION_BY_TOOL[key])
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
-        from app.project_control_tools import ProjectContextInput,schema
+        from domain_packs.mold.tools.erp.project.project_control_tools import ProjectContextInput,schema
         parameters=ProjectContextInput.model_json_schema() if key=='query_project_control_context' else schema(key.removeprefix('prepare_project_'))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_project_dossier':
-        from app.project_dossier import ProjectDossierInput
+        from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
     if key=='query_business_object_candidates':
-        from app.business_matching import BusinessMatchInput
+        from domain_packs.mold.erp.core.business_matching import BusinessMatchInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':BusinessMatchInput.model_json_schema()}}
     if key in {'query_quote_acceptance_context','prepare_quote_acceptance_decision'}:
-        from app.quote_tools import QuoteContextInput, quote_decision_schema
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput, quote_decision_schema
         parameters=quote_decision_schema() if key=='prepare_quote_acceptance_decision' else QuoteContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_quote_evaluation_context':
-        from app.quote_tools import QuoteContextInput
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
     if key=='query_bid_intake_context':
-        from app.quote_tools import QuoteContextInput
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
     if key in {'query_contract_context','prepare_contract_record','prepare_contract_signing_record'}:
-        from app.contract_tools import ContractContextInput, contract_schema, contract_signing_record_schema
+        from domain_packs.mold.tools.erp.commercial.contract_tools import ContractContextInput, contract_schema, contract_signing_record_schema
         parameters=contract_schema() if key=='prepare_contract_record' else (
             contract_signing_record_schema() if key=='prepare_contract_signing_record' else ContractContextInput.model_json_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_internal_start_readiness','prepare_internal_start'}:
-        from app.start_tools import StartReadinessInput, start_schema
+        from domain_packs.mold.tools.erp.project.start_tools import StartReadinessInput, start_schema
         parameters=start_schema() if key=='prepare_internal_start' else StartReadinessInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_project_plan_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
-        from app.plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema
+        from domain_packs.mold.tools.erp.project.plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema
         parameters=department_confirmation_schema() if key=='prepare_plan_department_confirmation' else (
             plan_baseline_schema() if key=='prepare_project_plan_baseline' else plan_change_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_design_route_context':
-        from app.design_tools import DesignRouteContextInput
+        from domain_packs.mold.tools.erp.design.design_tools import DesignRouteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DesignRouteContextInput.model_json_schema()}}
     if key=='query_manufacturing_quality_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
@@ -521,26 +522,26 @@ def tool_schema(key):
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote'}:
         if key == 'prepare_logistics_route':
-            from .delivery_logistics import logistics_route_schema
+            from domain_packs.mold.erp.procurement.delivery_logistics import logistics_route_schema
             parameters = logistics_route_schema()
         elif key == 'prepare_logistics_quote':
-            from .delivery_logistics import logistics_quote_schema
+            from domain_packs.mold.erp.procurement.delivery_logistics import logistics_quote_schema
             parameters = logistics_quote_schema()
         else:
             parameters = ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         if key=='prepare_supplier_material_handoff':
-            from app.full_outsource_tools import supplier_material_handoff_schema
+            from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_material_handoff_schema
             parameters=supplier_material_handoff_schema()
         elif key=='prepare_supplier_material_verification':
-            from app.full_outsource_tools import supplier_material_verification_schema
+            from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_material_verification_schema
             parameters=supplier_material_verification_schema()
         elif key=='prepare_supplier_progress_report':
-            from app.full_outsource_tools import supplier_progress_report_schema
+            from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_progress_report_schema
             parameters=supplier_progress_report_schema()
         elif key=='prepare_supplier_progress_policy':
-            from app.full_outsource_tools import supplier_progress_policy_schema
+            from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_progress_policy_schema
             parameters=supplier_progress_policy_schema()
         else:
             parameters=ProjectPlanContextInput.model_json_schema()
@@ -548,24 +549,24 @@ def tool_schema(key):
     if key=='query_change_intake_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_finance_context':
-        from app.project_dossier import ProjectDossierInput
+        from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
     if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
-        from app.finance_context_tools import customer_receipt_schema, supplier_deduction_settlement_schema, supplier_payment_confirmation_schema
+        from domain_packs.mold.tools.erp.finance.finance_context_tools import customer_receipt_schema, supplier_deduction_settlement_schema, supplier_payment_confirmation_schema
         parameters=customer_receipt_schema() if key=='prepare_customer_receipt_confirmation' else (
             supplier_payment_confirmation_schema() if key=='prepare_supplier_payment_confirmation' else supplier_deduction_settlement_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_governance_context':
-        from app.governance_context_tools import GovernanceContextInput
+        from domain_packs.mold.tools.erp.governance.governance_context_tools import GovernanceContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':GovernanceContextInput.model_json_schema()}}
     if key=='query_operations_readiness_context':
-        from app.operations_readiness_tools import OperationsReadinessInput
+        from domain_packs.mold.tools.agent.operations.operations_readiness_tools import OperationsReadinessInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':OperationsReadinessInput.model_json_schema()}}
     if key=='query_procurement_price_context':
-        from app.procurement_tools import ProcurementPriceContextInput
+        from domain_packs.mold.tools.erp.procurement.procurement_tools import ProcurementPriceContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProcurementPriceContextInput.model_json_schema()}}
     if key=='analyze_delivery_risk':
-        from app.procurement import DeliveryRiskInput
+        from domain_packs.mold.erp.procurement.procurement import DeliveryRiskInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DeliveryRiskInput.model_json_schema()}}
     return {"type": "function", "function": {"name": key, "description": TOOLS[key]["description"],
              "parameters": {"type": "object", "properties": {}, "additionalProperties": False}, "strict": True}}
@@ -576,13 +577,51 @@ def skill_context(db, user):
     result = []
     for key, spec in SKILLS.items():
         if assigned(db, user, "SKILL", key) and set(spec["tools"]) <= allowed:
-            path = Path(__file__).resolve().parent / "skills" / key / "SKILL.md"
+            route = skill_paths()[key]
+            path = route["path"]
             content = path.read_text(encoding="utf-8")
             result.append({"key": key, "version": "1.0.0", "hash": content_hash(content), "instructions": content,
                            "agent_description": skill_agent_description(content),
                            "tools": spec["tools"], "optional_tools": spec.get("optional_tools", []),
-                           "activation_tools": spec.get("activation_tools")})
+                           "activation_tools": spec.get("activation_tools"),
+                           "skill_layer": route["layer"], "skill_domain": route["domain"],
+                           "route_terms": route["route_terms"]})
     return result
+
+
+@lru_cache
+def skill_paths():
+    """Index categorized Agent/ERP skills by their stable capability key."""
+    root = Path(__file__).resolve().parent / "skills"
+    route_terms = {
+        ("agent", "project"): ["候选匹配", "项目定位", "对象匹配"],
+        ("agent", "procurement"): ["业务状态", "审批状态", "执行状态"],
+        ("agent", "governance"): ["权限", "审计", "来源治理", "授权"],
+        ("agent", "operations"): ["部署", "容量", "备份", "恢复", "运行交付", "日志保留"],
+        ("erp", "project"): ["项目计划", "开工", "暂停", "恢复", "结项", "终止", "项目档案"],
+        ("erp", "design"): ["设计", "图纸", "BOM", "工艺", "修模", "改模"],
+        ("erp", "procurement"): ["采购", "供应商", "委外", "采购价格", "采购订单"],
+        ("erp", "manufacturing"): ["制造", "加工", "质检", "装配", "试模"],
+        ("erp", "commercial"): ["中标", "报价", "合同", "承接", "拒单"],
+        ("erp", "change"): ["设变", "工程变更", "工程联络", "联络单", "协作事项"],
+        ("erp", "delivery"): ["交付", "物流", "发货", "签收", "客户验收"],
+        ("erp", "finance"): ["财务", "回款", "付款", "发票", "结算", "扣款"],
+    }
+    paths = {}
+    for path in root.rglob("SKILL.md"):
+        key = path.parent.name
+        if key in paths:
+            raise RuntimeError(f"Duplicate skill key: {key}")
+        relative = path.relative_to(root)
+        if len(relative.parts) < 4:
+            raise RuntimeError(f"Skill must be categorized as layer/domain/key: {relative}")
+        layer, domain = relative.parts[0], relative.parts[1]
+        paths[key] = {"path": path, "layer": layer, "domain": domain,
+                      "route_terms": route_terms.get((layer, domain), [])}
+    missing = set(SKILLS) - set(paths)
+    if missing:
+        raise RuntimeError(f"Missing skill documents: {', '.join(sorted(missing))}")
+    return paths
 
 
 def execute(db, user, key, arguments, run=None):
@@ -591,148 +630,148 @@ def execute(db, user, key, arguments, run=None):
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         return contact_tools.execute_tool(db,user,key,arguments,run=run)
-    from app.project_closure_tools import ACTION_BY_TOOL
+    from domain_packs.mold.tools.erp.project.project_closure_tools import ACTION_BY_TOOL
     if key in ACTION_BY_TOOL or key=='query_project_closure_context':
-        from app.project_closure_tools import execute_tool
+        from domain_packs.mold.tools.erp.project.project_closure_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
-        from app.project_control_tools import execute_tool
+        from domain_packs.mold.tools.erp.project.project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
     if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
-        from app.plan_tools import execute_plan_tool
+        from domain_packs.mold.tools.erp.project.plan_tools import execute_plan_tool
         return execute_plan_tool(db,user,key,arguments,run=run)
     if key=='prepare_internal_start':
-        from app.start_tools import execute_start_tool
+        from domain_packs.mold.tools.erp.project.start_tools import execute_start_tool
         return execute_start_tool(db,user,key,arguments,run=run)
     if key=='prepare_quote_acceptance_decision':
-        from app.quote_tools import execute_quote_tool
+        from domain_packs.mold.tools.erp.commercial.quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
     if key in {'prepare_contract_record','prepare_contract_signing_record'}:
-        from app.contract_tools import execute_contract_tool
+        from domain_packs.mold.tools.erp.commercial.contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)
     if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
-        from app.finance_context_tools import execute_finance_tool
+        from domain_packs.mold.tools.erp.finance.finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
     if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
-        from app.full_outsource_tools import execute_full_outsource_tool
+        from domain_packs.mold.tools.erp.procurement.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
     if key in {'prepare_logistics_route','prepare_logistics_quote'}:
-        from .delivery_logistics import execute_delivery_logistics_tool
+        from domain_packs.mold.erp.procurement.delivery_logistics import execute_delivery_logistics_tool
         return execute_delivery_logistics_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':
         from pydantic import ValidationError
-        from app.project_dossier import ProjectDossierInput,query
+        from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput,query
         try:data=ProjectDossierInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目档案查询参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_business_object_candidates':
         from pydantic import ValidationError
-        from app.business_matching import BusinessMatchInput,query
+        from domain_packs.mold.erp.core.business_matching import BusinessMatchInput,query
         try:data=BusinessMatchInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','业务对象候选匹配参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_quote_acceptance_context':
         from pydantic import ValidationError
-        from app.quote_tools import QuoteContextInput,query
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput,query
         try:data=QuoteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','报价与承接上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_quote_evaluation_context':
         from pydantic import ValidationError
-        from app.quote_tools import QuoteContextInput
-        from app.quote_evaluation_tools import query
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
+        from domain_packs.mold.tools.erp.commercial.quote_evaluation_tools import query
         try:data=QuoteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','报价评估上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_bid_intake_context':
         from pydantic import ValidationError
-        from app.quote_tools import QuoteContextInput
-        from app.bid_intake_tools import query
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
+        from domain_packs.mold.tools.erp.commercial.bid_intake_tools import query
         try:data=QuoteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','中标接收上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_contract_context':
         from pydantic import ValidationError
-        from app.contract_tools import ContractContextInput,query
+        from domain_packs.mold.tools.erp.commercial.contract_tools import ContractContextInput,query
         try:data=ContractContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','合同上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_internal_start_readiness':
         from pydantic import ValidationError
-        from app.start_tools import StartReadinessInput,query
+        from domain_packs.mold.tools.erp.project.start_tools import StartReadinessInput,query
         try:data=StartReadinessInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','正式开工条件参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_project_plan_context':
         from pydantic import ValidationError
-        from app.plan_tools import query
+        from domain_packs.mold.tools.erp.project.plan_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目计划上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_design_route_context':
         from pydantic import ValidationError
-        from app.design_tools import DesignRouteContextInput,query
+        from domain_packs.mold.tools.erp.design.design_tools import DesignRouteContextInput,query
         try:data=DesignRouteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设计BOM与路线上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_manufacturing_quality_context':
         from pydantic import ValidationError
-        from app.manufacturing_quality_tools import query
+        from domain_packs.mold.tools.erp.manufacturing.manufacturing_quality_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','制造与质检上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_assembly_trial_context':
         from pydantic import ValidationError
-        from app.assembly_trial_tools import query
+        from domain_packs.mold.tools.erp.manufacturing.assembly_trial_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','装配试模上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_delivery_logistics_context':
         from pydantic import ValidationError
-        from .delivery_logistics import query
+        from domain_packs.mold.erp.procurement.delivery_logistics import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','交付物流上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_full_outsource_context':
         from pydantic import ValidationError
-        from app.full_outsource_tools import query
+        from domain_packs.mold.tools.erp.procurement.full_outsource_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','整套委外上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_change_intake_context':
         from pydantic import ValidationError
-        from app.change_intake_tools import query
+        from domain_packs.mold.tools.erp.change.change_intake_tools import query
         try:data=ProjectPlanContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设变承接上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_finance_context':
         from pydantic import ValidationError
-        from app.project_dossier import ProjectDossierInput
-        from app.finance_context_tools import query
+        from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
+        from domain_packs.mold.tools.erp.finance.finance_context_tools import query
         try:data=ProjectDossierInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','财务节点上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_governance_context':
         from pydantic import ValidationError
-        from app.governance_context_tools import GovernanceContextInput,query
+        from domain_packs.mold.tools.erp.governance.governance_context_tools import GovernanceContextInput,query
         try:data=GovernanceContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','治理上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_operations_readiness_context':
         from pydantic import ValidationError
-        from app.operations_readiness_tools import OperationsReadinessInput,query
+        from domain_packs.mold.tools.agent.operations.operations_readiness_tools import OperationsReadinessInput,query
         try:data=OperationsReadinessInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','运行交付核对参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data)
     if key=='query_procurement_price_context':
         from pydantic import ValidationError
-        from app.procurement_tools import ProcurementPriceContextInput,query
+        from domain_packs.mold.tools.erp.procurement.procurement_tools import ProcurementPriceContextInput,query
         try:data=ProcurementPriceContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','采购价格与订单上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
     if key=='analyze_delivery_risk':
         from pydantic import ValidationError
-        from app.procurement import DeliveryRiskInput,analyze_delivery_risk
+        from domain_packs.mold.erp.procurement.procurement import DeliveryRiskInput,analyze_delivery_risk
         try:data=DeliveryRiskInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','发货风险分析参数无效：'+error.errors()[0]['msg']) from None
         return analyze_delivery_risk(db,user,data)
@@ -752,7 +791,7 @@ def execute(db, user, key, arguments, run=None):
     elif key=='query_contact_cases':
         from sqlalchemy import func
         from app.models import ContactCase,ContactTask,AssignmentGroup,User
-        from app.contacts import permitted, progress_summary
+        from domain_packs.mold.erp.change.contacts import permitted, progress_summary
         q=select(ContactCase).where(predicate(db,user,'contact.read',{'project_id':ContactCase.project_id,'category':ContactCase.category})).order_by(ContactCase.created_at.desc(),ContactCase.id).limit(100)
         data=[]
         for c in db.scalars(q):
@@ -775,10 +814,10 @@ def execute(db, user, key, arguments, run=None):
             'limitations':['仅当前用户可见范围','最多最新100张联络单，每单最多展示最近20项协作事项，计数包含全部事项',
                 '反馈或历史补录不是正式审批，不据此认定整改验收或联络单关闭','本工具只查询，不分派、不审批、不执行业务动作']}
     elif key=='query_purchase_orders':
-        from app.procurement import visible_orders
+        from domain_packs.mold.erp.procurement.procurement import visible_orders
         data=visible_orders(db,user)
     elif 'business_kind' in TOOLS[key]:
-        from app.domains import visible
+        from domain_packs.mold.erp.core.domains import visible
         data=visible(db,user,TOOLS[key]['business_kind'])
     else:raise DomainError('TOOL_UNKNOWN','工具未实现',403)
     return {"data": data, "source": "agent_db", "as_of": now().isoformat(), "limit": 100,

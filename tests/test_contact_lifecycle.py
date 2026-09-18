@@ -1,6 +1,6 @@
 from sqlalchemy import select
 from app import business, models as m
-from app.contact_lifecycle import preview,CloseInput,ReviewInput,ReviewerInput
+from domain_packs.mold.erp.change.contact_lifecycle import preview,CloseInput,ReviewInput,ReviewerInput
 from app.errors import DomainError
 from uuid import uuid4
 import pytest
@@ -121,7 +121,7 @@ def test_designated_reviewer_requires_admin_and_current_grants(client,data,monke
     with factory.begin() as db:
         db.scalar(select(m.Grant).where(m.Grant.user_id==ids['reviewer'],m.Grant.permission=='contact.close')).active=False
     with factory() as db:
-        from app.contact_lifecycle import reviewer
+        from domain_packs.mold.erp.change.contact_lifecycle import reviewer
         with pytest.raises(DomainError):reviewer(db,db.get(m.User,ids['reviewer']),db.get(m.ContactCase,case['id']),'close')
 
 

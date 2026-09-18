@@ -40,18 +40,6 @@ class GrantInput(StrictModel):
         return value
 
 
-class LineInput(StrictModel):
-    material_id: str
-    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
-    due_date: date
-
-
-class PurchaseInput(StrictModel):
-    project_id: str
-    remark: str = Field(default="", max_length=4000)
-    lines: list[LineInput] = Field(min_length=1, max_length=100)
-
-
 class DefinitionInput(StrictModel):
     process_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
     name: str = Field(min_length=1, max_length=150)
@@ -111,17 +99,6 @@ class AgentApprovalDelegationRevokeInput(StrictModel):
 
 class ConfirmationInput(StrictModel):
     challenge: str = Field(min_length=32, max_length=200)
-
-
-class CommandIntentInput(StrictModel):
-    action: str = Field(min_length=1, max_length=100)
-    resource_id: str = Field(min_length=1, max_length=36)
-    payload: dict = Field(default_factory=dict)
-
-
-class PlanDepartmentConfirmationInput(StrictModel):
-    expected_version: int = Field(ge=1)
-    note: str = Field(min_length=1, max_length=1000)
 
 
 class RunInput(StrictModel):

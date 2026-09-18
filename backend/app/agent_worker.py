@@ -18,7 +18,7 @@ class Gateway:
         if not notification:body['id']=self.rpc_id
         response=self.client.post(f'/internal/runs/{self.run_id}/mcp',json=body,headers={
             'Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-06-18',
-            'X-Mold-Run-Epoch':str(self.epoch)})
+            'X-Agent-Run-Epoch':str(self.epoch)})
         response.raise_for_status()
         if notification:return None
         value=response.json()
@@ -47,7 +47,7 @@ class Gateway:
         return r.json()
     def check(self): return self.post("check")
     def execute(self, sequence, key, arguments):
-        result=self.rpc('tools/call',{'name':key,'arguments':arguments,'_meta':{'mold/sequence':sequence}})
+        result=self.rpc('tools/call',{'name':key,'arguments':arguments,'_meta':{'agent/sequence':sequence}})
         if result.get('isError'):
             structured=result.get('structuredContent')
             if isinstance(structured,dict) and isinstance(structured.get('tool_error'),dict):

@@ -3,8 +3,8 @@ import { ref } from 'vue'
 import { Check, Circle, FileText, ShieldCheck } from 'lucide-vue-next'
 import { api, post, shanghai } from '../api'
 import FileMaterial from './FileMaterial.vue'
-import BusinessFacts from './BusinessFacts.vue'
-import {statusName,numberText} from '../uiText'
+import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
+import {statusName,numberText} from '@domain-pack/uiText'
 const props = defineProps<{ detail: any }>()
 const emit = defineEmits<{ changed: []; error: [message: string] }>()
 const comment = ref(''), busy = ref(false), confirmation = ref<any>(null)

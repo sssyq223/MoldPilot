@@ -39,7 +39,7 @@ def install_mcp(app,worker_auth,fence,execute_step):
         if 'application/json' not in accept or 'text/event-stream' not in accept:
             return error(None,-32600,'须声明 JSON 和事件流响应类型',406)
         try:
-            epoch=int(request.headers['x-mold-run-epoch'])
+            epoch=int(request.headers['x-agent-run-epoch'])
             if epoch<1:raise ValueError()
         except (KeyError,ValueError):return error(None,-32600,'缺少有效的任务租约',400)
         run,user=fence(db,run_id,epoch)
@@ -56,7 +56,7 @@ def install_mcp(app,worker_auth,fence,execute_step):
             if not isinstance(params.get('protocolVersion'),str) or not isinstance(params.get('capabilities'),dict) or not isinstance(params.get('clientInfo'),dict):
                 return error(rid,-32602,'初始化参数不完整')
             result={'protocolVersion':VERSION,'capabilities':{'tools':{'listChanged':False}},
-                    'serverInfo':{'name':'mold-business-tools','version':'0.1.0'},
+                    'serverInfo':{'name':'agent-business-tools','version':'0.1.0'},
                     'instructions':'仅使用当前任务所有者授权的能力；记录和协作反馈不等于审批结果。'}
         elif method=='ping':result={}
         elif method=='tools/list':
@@ -69,7 +69,7 @@ def install_mcp(app,worker_auth,fence,execute_step):
             name=params.get('name');arguments=params.get('arguments',{});meta=params.get('_meta',{})
             if not isinstance(name,str) or not isinstance(arguments,dict) or not isinstance(meta,dict):
                 return error(rid,-32602,'工具调用参数无效')
-            seq=meta.get('mold/sequence')
+            seq=meta.get('agent/sequence')
             if type(seq) is not int or not 0<=seq<30:return error(rid,-32602,'缺少有效的执行步骤编号')
             if name not in tools.available_tools(db,user):return error(rid,-32602,'工具不存在或当前不可用')
             try:

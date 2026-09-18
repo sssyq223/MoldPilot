@@ -5,12 +5,13 @@ import pytest
 from sqlalchemy import select, func
 from fastapi.testclient import TestClient
 
-from app import bpm, business, models as m, schemas as s
+from app import bpm, business, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from app.db import now
 from app.db import get_db
 from app.api import app
 from app.security import hasher
+from domain_packs.mold.erp.core.domain_api import LineInput, PurchaseInput
 from pg_db import factory as pg_factory
 
 
@@ -60,10 +61,10 @@ def fixture_data(db, *, auto_node=True, auto_policy=None):
 
 
 def draft(db, buyer, project, material, quantity=Decimal("2")):
-    return business.create_request(db, buyer, s.PurchaseInput(
+    return business.create_request(db, buyer, PurchaseInput(
         project_id=project.id,
         remark="自动审批测试",
-        lines=[s.LineInput(material_id=material.id, quantity=quantity, due_date=date(2026, 9, 16))],
+        lines=[LineInput(material_id=material.id, quantity=quantity, due_date=date(2026, 9, 16))],
     ))
 
 

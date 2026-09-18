@@ -6,6 +6,15 @@ from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, Stri
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.model_base import Base, IdentityMixin
+from app import core_models as _core_models
+
+# Business services may reference host-owned identities, workflow records and
+# audit records through the pack model namespace.  The dependency points from
+# the pack to the stable host model port; the host model facade never leaks
+# mold types back into the framework implementation.
+for _name, _value in vars(_core_models).items():
+    if isinstance(_value, type) and hasattr(_value, "__table__"):
+        globals()[_name] = _value
 
 
 class Project(IdentityMixin, Base):
@@ -57,9 +66,9 @@ def _mapped_exports(module):
     }
 
 
-from . import attachment_models as _attachments  # noqa: E402
-from . import contact_models as _contacts  # noqa: E402
-from . import domain_models as _domain  # noqa: E402
+from domain_packs.mold import attachment_models as _attachments  # noqa: E402
+from domain_packs.mold import contact_models as _contacts  # noqa: E402
+from domain_packs.mold import domain_models as _domain  # noqa: E402
 
 _exports = {
     "Project": Project,

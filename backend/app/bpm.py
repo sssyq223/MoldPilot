@@ -9,7 +9,11 @@ from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow import TaskState
 from .errors import DomainError
-from .rules import validate_rule, evaluate
+from agent_core.domain_pack import component
+
+
+def _workflow_policy():
+    return component("workflow_policy")
 
 NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
 serializer = BpmnWorkflowSerializer()
@@ -20,15 +24,16 @@ def content_hash(value): return sha256(canonical(value).encode()).hexdigest()
 
 
 def validate(config):
-    from .domain_schemas import CATALOG
-    if not isinstance(config, dict) or not {'business_type','nodes'} <= set(config) or set(config) - {'business_type','nodes','applicability','material_contract'} or not isinstance(config['business_type'], str) or config["business_type"] not in {'generic','purchase_request', *CATALOG}:
+    policy = _workflow_policy()
+    CATALOG = policy.CATALOG
+    business_types = {"generic", *getattr(policy, "WORKFLOW_TYPES", CATALOG)}
+    if not isinstance(config, dict) or not {'business_type','nodes'} <= set(config) or set(config) - {'business_type','nodes','applicability','material_contract'} or not isinstance(config['business_type'], str) or config["business_type"] not in business_types:
         raise DomainError("INVALID_WORKFLOW", "流程业务类型尚未登记")
     contract=config.get('material_contract')
     if 'material_contract' in config:
         from .material_rules import validate_contract
         validate_contract(contract)
-    from .workflow_selection import validate_applicability
-    validate_applicability(config)
+    policy.validate_applicability(config)
     if not isinstance(config["nodes"], list) or not 1 <= len(config["nodes"]) <= 20:
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
@@ -83,7 +88,7 @@ def validate(config):
 
 def compile_bpmn(config):
     validate(config)
-    root = etree.Element(f"{{{NS}}}definitions", nsmap={None: NS}, targetNamespace="urn:mold-agent")
+    root = etree.Element(f"{{{NS}}}definitions", nsmap={None: NS}, targetNamespace="urn:agent-workbench")
     proc = etree.SubElement(root, f"{{{NS}}}process", id="approval", isExecutable="true")
     etree.SubElement(proc, f"{{{NS}}}startEvent", id="start")
     for node in config["nodes"]:
@@ -143,7 +148,7 @@ def route_target(config, stage_index, snapshot):
 
 
 def validate_condition(condition,contract=None):
-    if contract is None:return validate_rule(condition)
+    if contract is None:return _workflow_policy().validate_rule(condition)
     from .material_rules import validate_rule as validate_material_rule
     return validate_material_rule(condition,contract)
 
@@ -152,7 +157,7 @@ def evaluate_snapshot(condition, snapshot,contract=None):
     if contract is not None:
         from .material_rules import evaluate as evaluate_material_rule
         return evaluate_material_rule(condition,snapshot.get('material_data',{}),contract)['result']
-    outcomes = [evaluate(condition, {**snapshot, **line}) for line in (snapshot.get('lines') or [{}])]
+    outcomes = [_workflow_policy().evaluate(condition, {**snapshot, **line}) for line in (snapshot.get('lines') or [{}])]
     # Multi-line conditions explicitly mean any line; unknown lines must not silently route to default.
     return True if True in outcomes else None if None in outcomes else False
 

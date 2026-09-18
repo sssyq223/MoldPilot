@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import {labels,optionNames,resolve} from '../businessForms'
-import {fieldName,currencyNames} from '../uiText'
+import {labels,optionNames,resolve} from '@domain-pack/businessForms'
+import {fieldName,currencyNames} from '@domain-pack/uiText'
 const props=defineProps<{schema:any;root:any;options?:Record<string,any[]>}>()
 const model=defineModel<any>({required:true})
 function field(s:any){return resolve(s,props.root)}

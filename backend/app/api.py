@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import timedelta, datetime
 from functools import lru_cache
-from importlib import import_module
 import json
 import re
 import secrets
@@ -21,6 +20,7 @@ from .errors import DomainError
 from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
+from agent_core.domain_pack import component
 
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
@@ -29,14 +29,15 @@ domain_router = APIRouter()
 
 @lru_cache
 def _business():
-    """Load the optional business transaction service only when a route needs it."""
-    return import_module("app.business")
+    """Load the active pack's transaction service only when a route needs it."""
+    return component("business")
 
 
 @lru_cache
 def _bpm():
     """Load the business workflow compiler only for workflow operations."""
-    return import_module("app.bpm")
+    from . import bpm
+    return bpm
 from .organization_api import router as organization_router
 app.include_router(organization_router)
 from .workflow_categories import router as category_router, require_category
@@ -62,7 +63,7 @@ def ensure_conversation_flags(db):
         return
     dialect = db.bind.dialect.name
     if dialect != "postgresql":
-        raise RuntimeError("MoldPilot runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
+        raise RuntimeError("The runtime requires PostgreSQL; SQLite compatibility branches are not allowed.")
     db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false"))
     db.execute(text("ALTER TABLE ai_conversation ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false"))
     db.commit()
@@ -305,14 +306,15 @@ def sign_in(data: s.LoginInput, request: Request, response: Response, db=Depends
     user, token, csrf = login(db, data.username, data.password)
     record(db, user, "auth.login", user.id)
     db.commit()
-    response.set_cookie("mold_session", token, httponly=True, secure=settings().cookie_secure, samesite="strict", max_age=28800)
-    response.set_cookie("mold_csrf", csrf, httponly=False, secure=settings().cookie_secure, samesite="strict", max_age=28800)
+    response.set_cookie("agent_session", token, httponly=True, secure=settings().cookie_secure, samesite="strict", max_age=28800)
+    response.set_cookie("agent_csrf", csrf, httponly=False, secure=settings().cookie_secure, samesite="strict", max_age=28800)
     return {"user": public_user(user), "csrf": csrf}
 
 
 @app.post("/api/auth/logout")
 def sign_out(request: Request, response: Response, user=Depends(current_user), db=Depends(get_db)):
     db.delete(request.state.session); db.commit()
+    response.delete_cookie("agent_session"); response.delete_cookie("agent_csrf")
     response.delete_cookie("mold_session"); response.delete_cookie("mold_csrf")
     return {"ok": True}
 
@@ -405,11 +407,6 @@ def delete_model_profile_api(profile_id: str, user=Depends(current_user)):
         raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
 
 
-@domain_router.get("/api/catalog")
-def catalog(user=Depends(current_user)):
-    return {"permissions": auth.PERMISSIONS, "categories": [{"id": "hardware", "name": "五金"}, {"id": "raw_material", "name": "原材"}, {"id": "outsource", "name": "委外"}]}
-
-
 @app.get("/api/users")
 def users(user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "user.manage")
@@ -472,38 +469,6 @@ def revoke(user_id: str, grant_id: str, expected_security_version: int, user=Dep
     return {"security_version": target.security_version}
 
 
-@domain_router.get("/api/projects")
-def projects(user=Depends(current_user), db=Depends(get_db)):
-    p = auth.predicate(db, user, "project.read", {"project_id": m.Project.id})
-    return [auth.select_fields({"id": row.id, "code": row.code, "name": row.name, "status": row.status},
-                              auth.require(db, user, "project.read", {"project_id": row.id}))
-            for row in db.scalars(select(m.Project).where(p).limit(100))]
-
-
-@domain_router.get("/api/materials")
-def materials(project_id: str, user=Depends(current_user), db=Depends(get_db)):
-    p = auth.predicate(db, user, "purchase.create", {"project_id": literal(project_id), "category": m.Material.category})
-    return [{"id": m.id, "code": m.code, "name": m.name, "category": m.category, "unit": m.unit}
-            for m in db.scalars(select(m.Material).where(p).limit(100))]
-
-
-@domain_router.get("/api/purchases")
-def purchases(user=Depends(current_user), db=Depends(get_db)):
-    return [_business().request_data(db, user, req) for req in db.scalars(_business().visible_requests(db, user).order_by(m.PurchaseRequest.created_at.desc()).limit(100))]
-
-
-@domain_router.post("/api/purchases")
-def create_purchase(data: s.PurchaseInput, user=Depends(current_user), db=Depends(get_db)):
-    req = _business().create_request(db, user, data); db.commit()
-    return {"id": req.id, "number": req.number, "status": req.status}
-
-
-@domain_router.post("/api/purchases/{request_id}/submit-intent")
-def submit_intent(request_id: str, data: s.SubmitInput, user=Depends(current_user), db=Depends(get_db)):
-    result = _business().create_intent(db, user, "purchase.submit", request_id, data.model_dump())
-    db.commit(); return result
-
-
 def definition_data(d):
     return {"id": d.id, "process_key": d.process_key, "version": d.version, "name": d.name,
             "status": d.status, "business_type": d.config['business_type'], "config": d.config, "category_id":d.category_id,
@@ -546,12 +511,9 @@ def simulate_workflow(data: s.WorkflowSimulationInput, user=Depends(current_user
 
 @app.get('/api/workflows/available')
 def available_workflows(resource_type: str, resource_id: str, user=Depends(current_user), db=Depends(get_db)):
-    from .workflow_selection import available, metadata
-    if resource_type not in {'purchase_request', 'business_subject'}:
-        raise DomainError('RESOURCE_TYPE_INVALID', '审批业务对象类型无效')
-    resource = db.get(m.PurchaseRequest if resource_type == 'purchase_request' else m.BusinessSubject, resource_id)
-    if not resource: raise DomainError('NOT_FOUND', '业务对象不存在或无权访问', 404)
-    return [metadata(d,db) for d in available(db, user, resource)]
+    return component("workflow_policy").available_workflows(
+        db, user, resource_type, resource_id
+    )
 
 
 @app.get('/api/workflows/history/{process_key}')
@@ -735,22 +697,6 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     db.commit()
     if resumed_run:
         publish_run_update(resumed_run.conversation_id, resumed_run.id, resumed_run.status)
-    return result
-
-
-@domain_router.post("/api/business/command-intents")
-def command_intent(data: s.CommandIntentInput, user=Depends(current_user), db=Depends(get_db)):
-    result = _business().create_intent(db, user, "domain."+data.action, data.resource_id, data.payload)
-    db.commit()
-    return result
-
-
-@domain_router.post("/api/plan-department-confirmations/{confirmation_id}/confirm")
-def confirm_plan_department(confirmation_id: str, data: s.PlanDepartmentConfirmationInput,
-                            user=Depends(current_user), db=Depends(get_db)):
-    from . import plan_confirmations
-    result = plan_confirmations.confirm(db, user, confirmation_id, data.expected_version, data.note)
-    db.commit()
     return result
 
 

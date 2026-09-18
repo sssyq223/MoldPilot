@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {categoryNames,currencyNames} from '../uiText'
+import {categoryNames,currencyNames} from '@domain-pack/uiText'
 const props = defineProps<{ modelValue: any }>()
 const emit = defineEmits<{ 'update:modelValue': [value: any] }>()
 const fields = [

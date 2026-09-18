@@ -82,18 +82,18 @@ def install(app, domain_router) -> None:
     """Install only the mold product's HTTP surface into the generic host."""
     app.include_router(domain_router)
 
-    from app.contacts import router as contact_router
-    from .erp_design_upload import router as erp_design_upload_router
-    from app.domain_api import install as install_domain_api
-    from app.contact_tools import router as contact_proposal_router
-    from app.project_control_tools import router as project_control_proposal_router
-    from app.project_closure_tools import router as project_closure_proposal_router
-    from app.plan_tools import router as project_plan_proposal_router
-    from app.start_tools import router as internal_start_proposal_router
-    from app.quote_tools import router as quote_acceptance_proposal_router
-    from app.contract_tools import router as contract_proposal_router
-    from app.finance_context_tools import router as finance_proposal_router
-    from app.full_outsource_tools import router as full_outsource_proposal_router
+    from domain_packs.mold.erp.change.contacts import router as contact_router
+    from domain_packs.mold.erp.design.erp_design_upload import router as erp_design_upload_router
+    from domain_packs.mold.erp.core.domain_api import install as install_domain_api
+    from domain_packs.mold.tools.erp.change.contact_tools import router as contact_proposal_router
+    from domain_packs.mold.tools.erp.project.project_control_tools import router as project_control_proposal_router
+    from domain_packs.mold.tools.erp.project.project_closure_tools import router as project_closure_proposal_router
+    from domain_packs.mold.tools.erp.project.plan_tools import router as project_plan_proposal_router
+    from domain_packs.mold.tools.erp.project.start_tools import router as internal_start_proposal_router
+    from domain_packs.mold.tools.erp.commercial.quote_tools import router as quote_acceptance_proposal_router
+    from domain_packs.mold.tools.erp.commercial.contract_tools import router as contract_proposal_router
+    from domain_packs.mold.tools.erp.finance.finance_context_tools import router as finance_proposal_router
+    from domain_packs.mold.tools.erp.procurement.full_outsource_tools import router as full_outsource_proposal_router
 
     app.include_router(contact_router)
     app.include_router(erp_design_upload_router)

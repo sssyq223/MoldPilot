@@ -16,18 +16,10 @@ from . import models as m
 from .db import SessionLocal,now
 from .config import settings
 
-STREAM='mold:business-events:v1'
+STREAM='agent:business-events:v1'
 GROUP='notifications-v1'
 log=logging.getLogger(__name__)
-TITLES={'approval.pending':'有新的审批待办','approval.assignment.blocked':'审批人员配置需要处理',
-        'business.effective':'业务单据已生效','order.execution.draft.created':'采购执行草稿已生成',
-        'contact.created':'有新的工程联络单待协调','contact.task_created':'工程联络事项待分派',
-        'contact.assigned':'有新的工程联络事项待处理','contact.responded':'工程联络事项已有反馈',
-        'contact.attachment_added':'工程联络单有新附件待核对',
-        'contact.resolution_effective':'工程联络处理方案已批准，请按影响项落实',
-        'plan.change.effective':'项目计划变更已生效，请核对受影响节点',
-        'plan.department_confirmation.pending':'项目计划变更影响范围待部门确认',
-        'plan.department_confirmation.confirmed':'项目计划变更部门影响已确认'}
+from agent_core.domain_pack import component
 
 
 def claim(factory):
@@ -62,28 +54,7 @@ def publish_once(factory,redis):
 
 
 def permitted(db,user,event):
-    # Notifications carry no business details, yet revocation still removes their object references.
-    from .business import approval_detail,request_access
-    from .domains import authorize
-    from .procurement import order_access
-    from .errors import DomainError
-    if not user or not user.active:return False
-    try:
-        if event.kind.startswith('approval.'):
-            instance=db.get(m.ApprovalInstance,event.resource_id)
-            if not instance:return False
-            approval_detail(db,user,instance)
-        elif event.kind.startswith('contact.'):
-            from .contacts import require
-            case=db.get(m.ContactCase,event.resource_id)
-            if not case:return False
-            require(db,user,'read',case)
-        elif (subject:=db.get(m.BusinessSubject,event.resource_id)) is not None:authorize(db,user,subject,'read')
-        elif (order:=db.get(m.PurchaseOrder,event.resource_id)) is not None:order_access(db,user,order,'order.read')
-        elif (request:=db.get(m.PurchaseRequest,event.resource_id)) is not None:request_access(db,user,request,'purchase.read')
-        else:return False
-        return True
-    except DomainError:return False
+    return component("notification_policy").permitted(db, user, event)
 
 
 def deliver(factory,event_id):
@@ -96,7 +67,8 @@ def deliver(factory,event_id):
         for user_id in set(event.payload.get('recipients',[])):
             user=db.get(m.User,user_id)
             if permitted(db,user,event):
-                db.add(m.Notification(event_id=event.id,user_id=user.id,title=TITLES.get(event.kind,'业务处理状态已更新'),resource_id=event.resource_id))
+                title = component("notification_policy").title(event.kind)
+                db.add(m.Notification(event_id=event.id,user_id=user.id,title=title,resource_id=event.resource_id))
         return 'DELIVERED'
 
 

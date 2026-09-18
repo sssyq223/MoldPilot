@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import {ref} from 'vue'
 import {post} from '../api'
-import {clean,commandNames} from '../businessForms'
+import {clean,commandNames} from '@domain-pack/businessForms'
 import SchemaFields from './SchemaFields.vue'
-import BusinessFacts from './BusinessFacts.vue'
+import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
 const props=defineProps<{action:string;resourceId:string;schema:any;options?:Record<string,any[]>;initial?:any;context?:string}>()
 const emit=defineEmits<{changed:[];error:[message:string];close:[]}>()
 const value=ref<any>({...props.initial}),intent=ref<any>(null),busy=ref(false)

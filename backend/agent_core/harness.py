@@ -249,8 +249,28 @@ def _skill_tool_groups(skills, all_tools):
         result.append({"key": key, "name": spec.get("name", key), "description": description,
                        "tools": tool_names, "required": [name for name in required if name in all_tools],
                        "optional": [name for name in optional if name in all_tools],
-                       "activation_queries": skill.get("activation_queries") or spec.get("activation_queries", [])})
+                       "activation_queries": skill.get("activation_queries") or spec.get("activation_queries", []),
+                       "skill_layer": skill.get("skill_layer"), "skill_domain": skill.get("skill_domain"),
+                       "route_terms": skill.get("route_terms") or []})
     return result
+
+
+def _route_skill_groups(text, groups):
+    """Narrow retrieval to pack-provided layer/domain folders when possible."""
+    normalized = (text or "").lower()
+    matched = []
+    for group in groups:
+        hits = [str(term).lower() for term in group.get("route_terms", [])
+                if str(term).strip() and str(term).lower() in normalized]
+        if hits:
+            matched.append((max(map(len, hits)), group))
+    if not matched:
+        return groups
+    best = max(score for score, _ in matched)
+    routes = {(group.get("skill_layer"), group.get("skill_domain"))
+              for score, group in matched if score == best}
+    return [group for group in groups
+            if (group.get("skill_layer"), group.get("skill_domain")) in routes]
 
 
 def _score_search_candidate(query, terms, *fields):
@@ -376,7 +396,8 @@ def _group_prompt_relevance(current_prompt, group, deferred_tools):
 
 def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt=""):
     grouped_tools = {name for group in tool_groups for name in group["tools"]}
-    group_entries = [group for group in tool_groups if any(name in deferred_tools for name in group["tools"])]
+    group_entries = [group for group in _route_skill_groups(current_prompt, tool_groups)
+                     if any(name in deferred_tools for name in group["tools"])]
     loose_entries = [(name, _tool_description(tool)) for name, tool in deferred_tools.items() if name not in grouped_tools]
     if not group_entries and not loose_entries:
         return ""
@@ -432,8 +453,9 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         if normalized.startswith("prepare_") and not action_intent:
             return [], [], []
         return [normalized], [normalized], []
+    tool_groups = _route_skill_groups(" ".join([current_prompt, normalized]), tool_groups or [])
     alias_scores = []
-    for group in tool_groups or []:
+    for group in tool_groups:
         aliases = [str(alias).strip().lower() for alias in group.get("activation_queries", []) if str(alias).strip()]
         score = max((len(alias) for alias in aliases if alias in normalized), default=0)
         deferred_group_tools = [name for name in group["tools"] if name in deferred_tools]
