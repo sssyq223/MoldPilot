@@ -667,6 +667,13 @@ def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
                 m.WorkflowEscalationTask.stage_index == instance.stage_index,
             ).order_by(m.WorkflowEscalationTask.created_at, m.WorkflowEscalationTask.id)
         ))
+        failed_timers = list(db.scalars(
+            select(m.WorkflowTimer).where(
+                m.WorkflowTimer.instance_id == instance.id,
+                m.WorkflowTimer.stage_index == instance.stage_index,
+                m.WorkflowTimer.status == "FAILED",
+            ).order_by(m.WorkflowTimer.due_at, m.WorkflowTimer.id)
+        ))
         result.append({
             "id": instance.id,
             "version": instance.version,
@@ -688,7 +695,14 @@ def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
                 "closed_at": task.closed_at.isoformat() if task.closed_at else None,
                 "close_reason": task.close_reason,
             } for task in escalation_tasks],
-            "retryable": instance.incident == "ASSIGNMENT_BLOCKED",
+            "failed_timers": [{
+                "id": timer.id,
+                "timer_key": timer.timer_key,
+                "attempts": timer.attempts,
+                "last_error": timer.last_error,
+                "due_at": timer.due_at.isoformat(),
+            } for timer in failed_timers],
+            "retryable": instance.incident in {"ASSIGNMENT_BLOCKED", "TIMER_FAILED"},
             "created_at": instance.created_at.isoformat(),
         })
     return result
@@ -698,9 +712,16 @@ def workflow_incidents(user=Depends(current_user), db=Depends(get_db)):
 def retry_workflow_incident(instance_id: str, data: s.WorkflowIncidentRetryInput,
                             user=Depends(current_user), db=Depends(get_db)):
     auth.require(db, user, "workflow.design")
-    result = _business().retry_workflow_incident(
-        db, user, instance_id, data.expected_version, data.reason
-    )
+    instance = db.get(m.ApprovalInstance, instance_id)
+    if instance and instance.incident == "TIMER_FAILED":
+        from agent_core.workflow_timers import retry_failed_timers
+        result = retry_failed_timers(
+            db, user, instance_id, data.expected_version, data.reason
+        )
+    else:
+        result = _business().retry_workflow_incident(
+            db, user, instance_id, data.expected_version, data.reason
+        )
     db.commit()
     return result
 

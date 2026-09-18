@@ -210,6 +210,68 @@ def test_overdue_cc_and_escalation_create_follow_up_without_approval(client, dat
         assert task.close_reason == "STAGE_COMPLETED" and task.closed_at
 
 
+def test_failed_timer_requires_explicit_versioned_retry(client, data):
+    ids, factory = data
+    sign_in(client)
+    definition_id, _ = _sla_workflow(client, ids)
+    sign_in(client, "test_buyer")
+    instance_id = submit(client, {**ids, "definition": definition_id}, draft(client, ids))
+    with factory.begin() as db:
+        instance = db.get(ApprovalInstance, instance_id)
+        timer = db.scalar(select(WorkflowTimer).where(
+            WorkflowTimer.instance_id == instance_id,
+            WorkflowTimer.timer_key == "DUE",
+        ).with_for_update())
+        timer.status = "FAILED"
+        timer.attempts = 10
+        timer.last_error = "SyntheticTimerError"
+        timer.due_at = now() - timedelta(seconds=1)
+        instance.incident = "TIMER_FAILED"
+        instance.version += 1
+        failed_version = instance.version
+
+    sign_in(client)
+    incident = next(row for row in client.get("/api/workflow-incidents").json()
+                    if row["id"] == instance_id)
+    assert incident["retryable"] is True
+    assert incident["failed_timers"] == [{
+        "id": incident["failed_timers"][0]["id"],
+        "timer_key": "DUE",
+        "attempts": 10,
+        "last_error": "SyntheticTimerError",
+        "due_at": incident["failed_timers"][0]["due_at"],
+    }]
+    retry = client.post(f"/api/workflow-incidents/{instance_id}/retry", json={
+        "expected_version": failed_version,
+        "reason": "已修复外部通知适配器并人工复核",
+    })
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["requeued_timers"] == 1
+    stale = client.post(f"/api/workflow-incidents/{instance_id}/retry", json={
+        "expected_version": failed_version,
+        "reason": "重复旧请求",
+    })
+    assert stale.status_code == 409
+    with factory() as db:
+        timer = db.scalar(select(WorkflowTimer).where(
+            WorkflowTimer.instance_id == instance_id,
+            WorkflowTimer.timer_key == "DUE",
+        ))
+        assert timer.status == "SCHEDULED"
+        assert timer.attempts == 0 and timer.last_error is None
+        audit = db.scalar(select(AuditEvent).where(
+            AuditEvent.resource_id == instance_id,
+            AuditEvent.action == "approval.timer.retried",
+        ))
+        assert audit.detail["failures"][0]["error_type"] == "SyntheticTimerError"
+        assert audit.detail["reason"] == "已修复外部通知适配器并人工复核"
+    assert tick_due_timers(factory) == ["FIRED"]
+    with factory() as db:
+        instance = db.get(ApprovalInstance, instance_id)
+        assert instance.incident is None
+        assert db.scalar(select(func.count()).select_from(ApprovalAction)) == 0
+
+
 def test_assignment_incident_center_recovers_after_operator_fix(client, data):
     ids, factory = data
     sign_in(client)

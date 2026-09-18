@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy import func, or_, select, update
 
+from agent_core.errors import DomainError
 from agent_core.host_ports import host_ports
 from agent_core.workflow_calendars import add_working_hours
 
@@ -356,6 +357,71 @@ def _record_failure(factory, timer_id, lease_id, error):
                 },
                 _timer_recipients(db, instance),
             )
+
+
+def retry_failed_timers(db, actor, instance_id, expected_version, reason):
+    """Explicitly requeue failed current-stage timers without changing approval state."""
+    models = _models()
+    reason = reason.strip()
+    if not reason:
+        raise DomainError("INVALID_INPUT", "请填写恢复原因")
+    instance = db.scalar(
+        select(models.ApprovalInstance)
+        .where(models.ApprovalInstance.id == instance_id)
+        .with_for_update()
+    )
+    if not instance:
+        raise DomainError("NOT_FOUND", "流程实例不存在", 404)
+    if instance.version != expected_version:
+        raise DomainError("VERSION_CONFLICT", "流程实例已变化，请刷新事件中心", 409)
+    if instance.status != "RUNNING" or instance.incident != "TIMER_FAILED":
+        raise DomainError("INCIDENT_NOT_RECOVERABLE", "当前事件不是可重试的定时器失败", 409)
+    timers = list(db.scalars(
+        select(models.WorkflowTimer)
+        .where(
+            models.WorkflowTimer.instance_id == instance.id,
+            models.WorkflowTimer.stage_index == instance.stage_index,
+            models.WorkflowTimer.status == "FAILED",
+        )
+        .order_by(models.WorkflowTimer.due_at, models.WorkflowTimer.id)
+        .with_for_update()
+    ))
+    if not timers:
+        raise DomainError("ENGINE_STATE_CONFLICT", "失败计时器已变化，请刷新事件中心", 409)
+    failures = [{
+        "timer_id": timer.id,
+        "timer_key": timer.timer_key,
+        "attempts": timer.attempts,
+        "error_type": timer.last_error,
+    } for timer in timers]
+    for timer in timers:
+        timer.status = ACTIVE_STATUS
+        timer.attempts = 0
+        timer.last_error = None
+        timer.lease_id = None
+        timer.lease_until = None
+    instance.incident = None
+    instance.version += 1
+    host_ports().record(
+        db,
+        actor,
+        "approval.timer.retried",
+        instance.id,
+        {
+            "stage_index": instance.stage_index,
+            "reason": reason,
+            "failures": failures,
+            "version": instance.version,
+        },
+        _timer_recipients(db, instance),
+    )
+    return {
+        "instance_id": instance.id,
+        "status": instance.status,
+        "incident": instance.incident,
+        "version": instance.version,
+        "requeued_timers": len(timers),
+    }
 
 
 def tick_due_timers(factory, *, limit=25):
