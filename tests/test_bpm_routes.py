@@ -75,6 +75,15 @@ def test_unreachable_nodes_and_missing_default_rejected():
     cfg = config()
     del cfg['nodes'][0]['default_target']
     with pytest.raises(DomainError): bpm.validate(cfg)
+
+
+def test_transfer_flag_must_be_boolean():
+    cfg = config()
+    cfg["nodes"][0]["allow_transfer"] = "yes"
+    with pytest.raises(DomainError):
+        bpm.validate(cfg)
+    cfg["nodes"][0]["allow_transfer"] = True
+    bpm.validate(cfg)
     cfg = config()
     cfg['nodes'][0]['routes'][0]['target'] = 'finish'
     with pytest.raises(DomainError): bpm.validate(cfg)

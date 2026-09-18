@@ -592,6 +592,12 @@ def decision_intent(data: s.DecisionInput, user=Depends(current_user), db=Depend
     db.commit(); return result
 
 
+@app.post("/api/approval-seat-transfers/intent")
+def approval_seat_transfer_intent(data: s.ApprovalSeatTransferInput, user=Depends(current_user), db=Depends(get_db)):
+    result = _business().create_intent(db, user, "approval.seat.transfer", data.instance_id, data.model_dump())
+    db.commit(); return result
+
+
 def delegation_data(row: m.AgentApprovalDelegation):
     return {"id": row.id, "process_key": row.process_key, "node_key": row.node_key, "decision": row.decision,
             "active": row.active and row.revoked_at is None, "reason": row.reason,

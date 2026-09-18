@@ -72,6 +72,16 @@ class DecisionInput(StrictModel):
     comment: str = Field(min_length=1, max_length=2000)
 
 
+class ApprovalSeatTransferInput(StrictModel):
+    instance_id: str = Field(min_length=1, max_length=36)
+    seat_id: str = Field(min_length=1, max_length=36)
+    seat_version: int = Field(ge=1)
+    version: int = Field(ge=1)
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    target_user_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class AgentApprovalDelegationInput(StrictModel):
     process_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
     node_key: str = Field(min_length=1, max_length=80)

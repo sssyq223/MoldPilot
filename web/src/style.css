@@ -1520,3 +1520,6 @@ body.layout-resizing{cursor:col-resize!important;user-select:none!important}
 .panel-full .sidebar-resize-handle{display:none}
 @media(max-width:1200px){.workbench:not(.sidebar-collapsed)>.sidebar{width:220px}.sidebar-resize-handle{display:none}}
 @media(max-width:650px){.workbench:not(.sidebar-collapsed)>.sidebar{width:62px}}
+
+/* Approval seat transfer stays inside the existing approval workspace. */
+.transfer-box{border-style:dashed}.transfer-box .form-grid{align-items:end}.transfer-box .actions{margin-top:12px}

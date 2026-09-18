@@ -6,7 +6,7 @@ from domain_packs.mold import bpm
 from domain_packs.mold.ports.db import now,aware
 from domain_packs.mold.models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
                      ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation, HumanIntent,
-                     MaterialBinding)
+                     MaterialBinding, AuditEvent)
 from domain_packs.mold.models import BusinessSubject
 from domain_packs.mold.authorization import require, predicate, select_fields, access
 from domain_packs.mold.ports.errors import DomainError
@@ -274,6 +274,11 @@ def approval_detail(db, user, instance):
     elif '*' not in fields:
         for key in ('project_id','number','remark'):
             if key not in fields:snapshot.pop(key,None)
+    transfer_events = list(db.scalars(select(AuditEvent).where(
+        AuditEvent.resource_id == instance.id,
+        AuditEvent.action == "approval.seat.transferred",
+    ).order_by(AuditEvent.created_at)))
+    transfer_options = approval_transfer_options(db, user, instance, req, definition, current) if current else []
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
             "business_type": ('purchase_request' if instance.resource_type == 'purchase_request' else req.kind),
@@ -283,10 +288,116 @@ def approval_detail(db, user, instance):
             "stage_index": instance.stage_index, "incident": instance.incident,
             "assigned_people": [{"name":db.get(User,s.user_id).display_name,"stage_index":s.stage_index,"status":s.status} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
+            "transfer_allowed": bool(current and node_allows_transfer(definition, instance)),
+            "transfer_options": transfer_options,
             "allowed_actions": actions, "rejection_reasons": matched if complete else [],
             "missing_rules": missing if complete else [], "materials_complete": complete,
             "history": [{"user": a.user_snapshot, "decision": a.decision, "comment": a.comment,
-                         "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))]}
+                         "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))],
+            "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events]}
+
+
+def node_allows_transfer(definition, instance):
+    return (
+        instance.status == "RUNNING"
+        and instance.stage_index < len(definition.config["nodes"])
+        and definition.config["nodes"][instance.stage_index].get("allow_transfer") is True
+    )
+
+
+def _complete_approval_access(db, candidate, req):
+    try:
+        request_access(db, candidate, req, "purchase.approve")
+        fields = request_access(db, candidate, req, "purchase.read")
+        required = ({"project_id", "detail", "remark"} if isinstance(req, BusinessSubject)
+                    else {"project_id", "material_id", "quantity", "due_date", "remark"})
+        return "*" in fields or required <= fields
+    except DomainError:
+        return False
+
+
+def approval_transfer_options(db, user, instance, req=None, definition=None, current=None):
+    definition = definition or db.get(WorkflowDefinition, instance.definition_id)
+    if not node_allows_transfer(definition, instance):
+        return []
+    req = req or load_subject(db, instance)
+    current = current or db.scalar(select(ApprovalSeat).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+        ApprovalSeat.user_id == user.id,
+        ApprovalSeat.status == "PENDING",
+    ))
+    if not current:
+        return []
+    occupied = set(db.scalars(select(ApprovalSeat.user_id).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+    )))
+    candidates = list(db.scalars(select(User).where(
+        User.active.is_(True),
+        User.id.not_in(occupied),
+    ).order_by(User.display_name, User.id)))
+    return [{"id": candidate.id, "display_name": candidate.display_name, "department": candidate.department}
+            for candidate in candidates if _complete_approval_access(db, candidate, req)]
+
+
+def transfer_approval_seat(db, user, payload):
+    instance = db.scalar(select(ApprovalInstance).where(
+        ApprovalInstance.id == payload["instance_id"]
+    ).with_for_update())
+    if not instance:
+        raise DomainError("NOT_FOUND", "审批不存在", 404)
+    req = load_subject(db, instance, lock=True)
+    definition = db.get(WorkflowDefinition, instance.definition_id)
+    if not node_allows_transfer(definition, instance):
+        raise DomainError("TRANSFER_DISABLED", "当前审批节点未允许转交", 409)
+    if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
+        raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化", 409)
+    seat = db.scalar(select(ApprovalSeat).where(
+        ApprovalSeat.id == payload["seat_id"],
+        ApprovalSeat.instance_id == instance.id,
+    ).with_for_update())
+    if (not seat or seat.stage_index != instance.stage_index or seat.user_id != user.id
+            or seat.status != "PENDING" or seat.version != payload["seat_version"]):
+        raise DomainError("VERSION_CONFLICT", "审批席位已变化", 409)
+    options = {item["id"]: item for item in approval_transfer_options(
+        db, user, instance, req=req, definition=definition, current=seat
+    )}
+    target = options.get(payload["target_user_id"])
+    if not target:
+        raise DomainError("TRANSFER_TARGET_INVALID", "目标人员不具备本审批的完整权限或已占用席位", 409)
+    from_snapshot = {"id": user.id, "name": user.display_name, "department": user.department}
+    previous_seat_version = seat.version
+    seat.user_id = target["id"]
+    seat.version += 1
+    instance.version += 1
+    snapshot_key = str(instance.stage_index)
+    assignment_snapshot = dict((instance.assignment_snapshots or {}).get(snapshot_key, {}))
+    transfers = list(assignment_snapshot.get("transfers", []))
+    transfers.append({
+        "seat_id": seat.id,
+        "from_user": from_snapshot,
+        "to_user": target,
+        "reason": payload["reason"],
+        "previous_seat_version": previous_seat_version,
+        "seat_version": seat.version,
+        "at": now().isoformat(),
+    })
+    assignment_snapshot["transfers"] = transfers
+    instance.assignment_snapshots = {**(instance.assignment_snapshots or {}), snapshot_key: assignment_snapshot}
+    detail = {
+        "stage_index": instance.stage_index,
+        "seat_id": seat.id,
+        "from_user": from_snapshot,
+        "to_user": target,
+        "reason": payload["reason"],
+        "previous_seat_version": previous_seat_version,
+        "seat_version": seat.version,
+        "instance_version": instance.version,
+    }
+    record(db, user, "approval.seat.transferred", instance.id, detail, [user.id, target["id"]])
+    return {"instance_id": instance.id, "seat_id": seat.id, "status": instance.status,
+            "transferred_to": target, "seat_version": seat.version, "version": instance.version}
 
 
 def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
@@ -360,6 +471,13 @@ def create_intent(db, user, action, resource_id, payload):
         if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
         detail = approval_detail(db, user, instance)
         if payload["decision"] not in detail["allowed_actions"]: raise DomainError("RULE_BLOCKED", "当前任务不允许此决定", 409)
+    elif action == "approval.seat.transfer":
+        instance = db.get(ApprovalInstance, resource_id)
+        if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
+        detail = approval_detail(db, user, instance)
+        if (not detail["transfer_allowed"] or payload["target_user_id"] not in
+                {item["id"] for item in detail["transfer_options"]}):
+            raise DomainError("TRANSFER_TARGET_INVALID", "当前审批不能转交给该人员", 409)
     elif action == "purchase.submit":
         req = db.get(PurchaseRequest, resource_id)
         if not req: raise DomainError("NOT_FOUND", "申请不存在", 404)
@@ -394,6 +512,7 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     if aware(intent.expires_at) <= now(): raise DomainError("CONFIRMATION_EXPIRED", "请重新核对并确认", 409)
     if intent.payload_hash != bpm.content_hash(intent.payload): raise DomainError("CONFIRMATION_INVALID", "确认内容不一致", 409)
     if intent.action == "approval.decide": result = decide(db, user, intent.payload, agent_permission_mode=agent_permission_mode)
+    elif intent.action == "approval.seat.transfer": result = transfer_approval_seat(db, user, intent.payload)
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
     elif (handler := handler_for_action(intent.action)) is not None:
