@@ -78,11 +78,26 @@ def create_request(db, user, data):
     return req
 
 
+def assignment_context(db, req):
+    """Expose only authoritative subject scope facts to generic assignment resolution."""
+    context = {"project_id": req.project_id}
+    if isinstance(req, BusinessSubject):
+        if req.category:
+            context["category"] = req.category
+        if req.warehouse_id:
+            context["warehouse_id"] = req.warehouse_id
+        return context
+    categories = sorted({material.category for _, material in request_lines(db, req)})
+    if categories:
+        context["category"] = categories
+    return context
+
+
 def enter_stage(db, instance, definition, req):
     node = definition.config["nodes"][instance.stage_index]
     from domain_packs.mold.ports.assignments import resolve_users
     sources=[];candidates=[]
-    try:candidates,sources=resolve_users(db,node,{"project_id": req.project_id})
+    try:candidates,sources=resolve_users(db,node,assignment_context(db, req))
     except DomainError:
         instance.incident='ASSIGNMENT_BLOCKED'
     resolution={'node':node['key'],'mode':node['mode'],'resolved_at':now().isoformat(),'sources':sources,

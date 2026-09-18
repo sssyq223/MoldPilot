@@ -1,4 +1,6 @@
 """Generic approval assignment resolution through the host model contract."""
+from itertools import product
+
 from sqlalchemy import select
 
 from agent_core.domain_pack import authorization_contract, component
@@ -67,21 +69,39 @@ def validate_assignment(node):
             raise DomainError("INVALID_WORKFLOW", "人员规则引用了业务包未发布的责任域")
 
 
-def _scope_value(value):
+def _scope_values(value):
     if isinstance(value, str) and value:
-        return value
-    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str) and value[0]:
-        return value[0]
+        return [value]
+    if (
+        isinstance(value, list)
+        and value
+        and len(value) <= 50
+        and all(isinstance(item, str) and item for item in value)
+    ):
+        return list(dict.fromkeys(value))
     return None
 
 
-def _grant_covers(grant_scope, responsibility):
+def _grant_matches(grant_scope, point):
     if grant_scope == {"all": True}:
         return True
     return bool(grant_scope) and all(
         key in grant_scope and value in grant_scope[key]
-        for key, value in responsibility.items()
+        for key, value in point.items()
     )
+
+
+def _responsibility_points(responsibility):
+    size = 1
+    for values in responsibility.values():
+        size *= len(values)
+    if size > 500:
+        raise DomainError(
+            "ASSIGNMENT_SCOPE_TOO_BROAD",
+            "责任域组合超过500项，请缩小本次业务材料范围",
+        )
+    keys = list(responsibility)
+    return [dict(zip(keys, values)) for values in product(*(responsibility[key] for key in keys))]
 
 
 def _capability_candidates(db, permissions, scope_keys, context, publish):
@@ -89,9 +109,10 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
     models = ports.models
     if publish:
         responsibility = None
+        responsibility_points = []
     else:
         responsibility = {
-            key: _scope_value((context or {}).get(key))
+            key: _scope_values((context or {}).get(key))
             for key in scope_keys
         }
         if any(value is None for value in responsibility.values()):
@@ -99,6 +120,7 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
                 "ASSIGNMENT_CONTEXT_REQUIRED",
                 "业务能力选人缺少流程配置要求的责任域上下文",
             )
+        responsibility_points = _responsibility_points(responsibility)
     candidates = []
     versions = []
     gaps = {}
@@ -116,18 +138,22 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
             if publish:
                 permission_ok = bool(allows) and not any(grant.scope == {"all": True} for grant in denies)
             else:
-                matching_allow = any(
-                    _grant_covers(grant.scope, responsibility) for grant in allows
-                )
                 matching_deny = any(
-                    grant.scope == {"all": True}
-                    or (
-                        set(grant.scope).issubset(responsibility)
-                        and _grant_covers(grant.scope, responsibility)
+                    (
+                        grant.scope == {"all": True}
+                        or (
+                            set(grant.scope).issubset(point)
+                            and _grant_matches(grant.scope, point)
+                        )
                     )
+                    for point in responsibility_points
                     for grant in denies
                 )
-                permission_ok = matching_allow and not matching_deny
+                all_points_allowed = all(
+                    any(_grant_matches(grant.scope, point) for grant in allows)
+                    for point in responsibility_points
+                )
+                permission_ok = all_points_allowed and not matching_deny
                 if not permission_ok:
                     if matching_deny:
                         code, message = "DENIED", "命中当前责任域的明确拒绝授权"
@@ -149,7 +175,14 @@ def _capability_candidates(db, permissions, scope_keys, context, publish):
             gaps[user.id] = reasons
     source_scope = (
         {"keys": list(scope_keys), "resolved": False}
-        if publish else {"keys": list(scope_keys), "values": responsibility, "resolved": True}
+        if publish else {
+            "keys": list(scope_keys),
+            "values": {
+                key: values[0] if len(values) == 1 else values
+                for key, values in responsibility.items()
+            },
+            "resolved": True,
+        }
     )
     sources = [{
         "id": permission,

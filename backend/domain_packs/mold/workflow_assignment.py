@@ -59,6 +59,27 @@ def catalog(db, user):
     query = select(m.Project).order_by(m.Project.code)
     if not user.super_admin:
         query = query.where(predicate(db, user, "project.read", {"project_id": m.Project.id}))
+    projects = [
+        {"id": project.id, "code": project.code, "name": project.name, "status": project.status}
+        for project in db.scalars(query.limit(500))
+    ]
+    categories = sorted({
+        value
+        for value in (
+            *db.scalars(select(m.Material.category).distinct()),
+            *db.scalars(select(m.BusinessSubject.category).where(m.BusinessSubject.category.is_not(None)).distinct()),
+        )
+        if value
+    })
+    warehouse_query = select(m.Warehouse).where(m.Warehouse.active.is_(True)).order_by(m.Warehouse.code)
+    if not user.super_admin:
+        warehouse_query = warehouse_query.where(
+            predicate(db, user, "warehouse.read", {"warehouse_id": m.Warehouse.id})
+        )
+    warehouses = [
+        {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name}
+        for warehouse in db.scalars(warehouse_query.limit(500))
+    ]
     return {
         "kind": "project",
         "label": "项目角色",
@@ -73,12 +94,16 @@ def catalog(db, user):
             }
             for key, value in PROJECT_ROLES.items()
         ],
-        "scopes": [
-            {"id": project.id, "code": project.code, "name": project.name, "status": project.status}
-            for project in db.scalars(query.limit(500))
-        ],
+        "scopes": projects,
         "capabilities": [{"key": key} for key in sorted(PERMISSIONS)],
-        "responsibility_dimensions": [{"key": "project_id", "name": "当前项目"}],
+        "responsibility_dimensions": [
+            {"key": "project_id", "name": "当前项目", "default": True, "values": projects},
+            {"key": "category", "name": "业务品类", "default": False, "values": [
+                {"id": category, "code": category, "name": category}
+                for category in categories
+            ]},
+            {"key": "warehouse_id", "name": "仓库", "default": False, "values": warehouses},
+        ],
     }
 
 

@@ -2,6 +2,8 @@ from sqlalchemy import select
 
 from app.models import ApprovalInstance, ApprovalSeat, Grant, User
 from conftest import draft, sign_in, submit
+from domain_packs.mold.authorization import PERMISSIONS
+from domain_packs.mold.models import Warehouse
 from test_core import confirm_decision
 
 
@@ -16,7 +18,7 @@ def group(client, user_ids):
     return response.json()["id"]
 
 
-def capability_node(role_id, key="capability_review"):
+def capability_node(role_id, key="capability_review", dimensions=None):
     return {
         "key": key,
         "name": "业务能力与责任域审批",
@@ -27,7 +29,7 @@ def capability_node(role_id, key="capability_review"):
             "department_heads_only": False,
             "domain_roles": [],
             "business_permissions": ["purchase.approve"],
-            "responsibility_scope": ["project_id"],
+            "responsibility_scope": dimensions or ["project_id"],
         },
         "mode": "ALL",
         "reject_rules": [],
@@ -54,7 +56,12 @@ def test_catalog_and_preview_intersect_role_capability_and_project_scope(client,
     assert catalog.status_code == 200, catalog.text
     domain = catalog.json()["domain"]
     assert "purchase.approve" in {item["key"] for item in domain["capabilities"]}
-    assert domain["responsibility_dimensions"] == [{"key": "project_id", "name": "当前项目"}]
+    dimensions = {item["key"]: item for item in domain["responsibility_dimensions"]}
+    assert set(dimensions) == {"project_id", "category", "warehouse_id"}
+    assert dimensions["project_id"]["default"] is True
+    assert dimensions["category"]["default"] is False
+    assert {item["id"] for item in dimensions["category"]["values"]} == {"hardware", "raw_material"}
+    assert dimensions["warehouse_id"]["values"] == []
 
     response = client.post("/api/workflows/assignment-preview", json={
         "assignment": capability_node(role_id)["assignment"],
@@ -112,6 +119,158 @@ def test_catalog_and_preview_intersect_role_capability_and_project_scope(client,
         assert capability_source["scope"]["values"]["project_id"] == ids["project"]
 
 
+def test_catalog_and_preview_support_category_and_warehouse_dimensions(client, data):
+    ids, factory = data
+    with factory.begin() as db:
+        warehouse = Warehouse(code="WF-W1", name="流程选人测试仓库", active=True)
+        db.add(warehouse)
+        db.flush()
+        warehouse_id = warehouse.id
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+
+    catalog = client.get("/api/workflows/assignment-catalog").json()["domain"]
+    dimensions = {item["key"]: item for item in catalog["responsibility_dimensions"]}
+    assert dimensions["warehouse_id"]["values"] == [{
+        "id": warehouse_id,
+        "code": "WF-W1",
+        "name": "流程选人测试仓库",
+    }]
+
+    assignment = capability_node(
+        role_id, dimensions=["project_id", "category"],
+    )["assignment"]
+    hardware = client.post("/api/workflows/assignment-preview", json={
+        "assignment": assignment,
+        "context": {"project_id": ids["project"], "category": "hardware"},
+    })
+    assert hardware.status_code == 200, hardware.text
+    assert [person["id"] for person in hardware.json()["users"]] == [ids["reviewer"]]
+    source = next(
+        item for item in hardware.json()["sources"]
+        if item["kind"] == "BUSINESS_CAPABILITY"
+    )
+    assert source["scope"]["values"] == {
+        "project_id": ids["project"],
+        "category": "hardware",
+    }
+
+    raw_material = client.post("/api/workflows/assignment-preview", json={
+        "assignment": assignment,
+        "context": {"project_id": ids["project"], "category": "raw_material"},
+    })
+    assert raw_material.status_code == 200, raw_material.text
+    assert raw_material.json()["count"] == 0
+    assert raw_material.json()["eligibility_gaps"][0]["reasons"][0]["code"] == "SCOPE_MISMATCH"
+
+
+def test_multivalue_scope_can_be_covered_by_separate_grants(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    with factory.begin() as db:
+        db.add(Grant(
+            user_id=ids["reviewer"],
+            permission="purchase.approve",
+            effect="ALLOW",
+            scope={"project_id": [ids["project"]], "category": ["raw_material"]},
+            fields=["*"],
+            active=True,
+            reason="合成多品类责任域测试",
+            granted_by=ids["admin"],
+        ))
+
+    assignment = capability_node(
+        role_id, dimensions=["project_id", "category"],
+    )["assignment"]
+    response = client.post("/api/workflows/assignment-preview", json={
+        "assignment": assignment,
+        "context": {
+            "project_id": ids["project"],
+            "category": ["hardware", "raw_material"],
+        },
+    })
+    assert response.status_code == 200, response.text
+    assert [person["id"] for person in response.json()["users"]] == [ids["reviewer"]]
+    source = next(
+        item for item in response.json()["sources"]
+        if item["kind"] == "BUSINESS_CAPABILITY"
+    )
+    assert source["scope"]["values"]["category"] == ["hardware", "raw_material"]
+
+
+def test_runtime_resolves_every_purchase_category_in_responsibility_scope(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    with factory.begin() as db:
+        for permission in ("purchase.approve", "purchase.read"):
+            db.add(Grant(
+                user_id=ids["reviewer"],
+                permission=permission,
+                effect="ALLOW",
+                scope={"project_id": [ids["project"]], "category": ["raw_material"]},
+                fields=PERMISSIONS[permission],
+                active=True,
+                reason="合成运行时多品类责任域测试",
+                granted_by=ids["admin"],
+            ))
+
+    definition_id, published = publish(client, [capability_node(
+        role_id, dimensions=["project_id", "category"],
+    )], "capability_multicategory_runtime")
+    assert published.status_code == 200, published.text
+    request = client.post("/api/purchases", json={
+        "project_id": ids["project"],
+        "remark": "合成多品类采购责任域",
+        "lines": [
+            {"material_id": ids["hardware"], "quantity": "2", "due_date": "2026-09-26"},
+            {"material_id": ids["steel"], "quantity": "3", "due_date": "2026-09-26"},
+        ],
+    })
+    assert request.status_code == 200, request.text
+    instance_id = submit(
+        client, {**ids, "definition": definition_id}, request.json()["id"],
+    )
+    with factory() as db:
+        instance = db.get(ApprovalInstance, instance_id)
+        assert instance.incident is None
+        assert list(db.scalars(select(ApprovalSeat.user_id).where(
+            ApprovalSeat.instance_id == instance_id,
+            ApprovalSeat.stage_index == 0,
+        ))) == [ids["reviewer"]]
+        source = next(
+            item for item in instance.assignment_snapshots["0"]["sources"]
+            if item["kind"] == "BUSINESS_CAPABILITY"
+        )
+        assert source["scope"]["values"] == {
+            "project_id": ids["project"],
+            "category": ["hardware", "raw_material"],
+        }
+
+
+def test_runtime_blocks_when_selected_dimension_has_no_subject_context(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    definition_id, published = publish(client, [capability_node(
+        role_id, dimensions=["project_id", "warehouse_id"],
+    )], "capability_missing_warehouse_runtime")
+    assert published.status_code == 200, published.text
+
+    instance_id = submit(
+        client, {**ids, "definition": definition_id}, draft(client, ids),
+    )
+    with factory() as db:
+        instance = db.get(ApprovalInstance, instance_id)
+        assert instance.incident == "ASSIGNMENT_BLOCKED"
+        assert instance.assignment_snapshots["0"]["candidates"] == []
+        assert not list(db.scalars(select(ApprovalSeat).where(
+            ApprovalSeat.instance_id == instance_id,
+            ApprovalSeat.stage_index == 0,
+        )))
+
+
 def test_capability_preview_explains_matching_deny(client, data):
     ids, factory = data
     sign_in(client)
@@ -121,7 +280,7 @@ def test_capability_preview_explains_matching_deny(client, data):
             user_id=ids["reviewer"],
             permission="purchase.approve",
             effect="DENY",
-            scope={"project_id": [ids["project"]]},
+            scope={"project_id": [ids["project"]], "category": ["hardware"]},
             fields=["*"],
             active=True,
             reason="合成责任域拒绝测试",
@@ -129,8 +288,10 @@ def test_capability_preview_explains_matching_deny(client, data):
         ))
 
     response = client.post("/api/workflows/assignment-preview", json={
-        "assignment": capability_node(role_id)["assignment"],
-        "context": {"project_id": ids["project"]},
+        "assignment": capability_node(
+            role_id, dimensions=["project_id", "category"],
+        )["assignment"],
+        "context": {"project_id": ids["project"], "category": "hardware"},
     })
     assert response.status_code == 200, response.text
     result = response.json()
@@ -142,6 +303,30 @@ def test_capability_preview_explains_matching_deny(client, data):
         "code": "DENIED",
         "message": "命中当前责任域的明确拒绝授权",
     }]
+
+
+def test_unselected_narrower_deny_is_left_for_material_recheck(client, data):
+    ids, factory = data
+    sign_in(client)
+    role_id = group(client, [ids["reviewer"]])
+    with factory.begin() as db:
+        db.add(Grant(
+            user_id=ids["reviewer"],
+            permission="purchase.approve",
+            effect="DENY",
+            scope={"project_id": [ids["project"]], "category": ["raw_material"]},
+            fields=["*"],
+            active=True,
+            reason="合成未选品类维度拒绝测试",
+            granted_by=ids["admin"],
+        ))
+
+    response = client.post("/api/workflows/assignment-preview", json={
+        "assignment": capability_node(role_id)["assignment"],
+        "context": {"project_id": ids["project"]},
+    })
+    assert response.status_code == 200, response.text
+    assert [person["id"] for person in response.json()["users"]] == [ids["reviewer"]]
 
 
 def test_capability_preview_explains_inactive_configured_candidate(client, data):
