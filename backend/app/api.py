@@ -7,7 +7,7 @@ import secrets
 from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, func, text, delete, literal
+from sqlalchemy import select, func, text, delete, literal, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
@@ -571,11 +571,28 @@ def publish(definition_id: str, user=Depends(current_user), db=Depends(get_db)):
 
 @app.get("/api/approvals")
 def approvals(user=Depends(current_user), db=Depends(get_db)):
-    q = select(m.ApprovalInstance).join(m.ApprovalSeat).where(m.ApprovalSeat.user_id == user.id, m.ApprovalSeat.status == "PENDING").distinct()
+    current = now()
+    proxy_principals = list(db.scalars(select(m.ApprovalProxyDelegation.principal_user_id).where(
+        m.ApprovalProxyDelegation.proxy_user_id == user.id,
+        m.ApprovalProxyDelegation.active.is_(True),
+        m.ApprovalProxyDelegation.revoked_at.is_(None),
+        or_(m.ApprovalProxyDelegation.valid_from.is_(None), m.ApprovalProxyDelegation.valid_from <= current),
+        or_(m.ApprovalProxyDelegation.valid_to.is_(None), m.ApprovalProxyDelegation.valid_to > current),
+    ).distinct()))
+    seat_owner = m.ApprovalSeat.user_id == user.id
+    if proxy_principals:
+        seat_owner = or_(seat_owner, m.ApprovalSeat.user_id.in_(proxy_principals))
+    q = select(m.ApprovalInstance).join(m.ApprovalSeat).where(
+        seat_owner, m.ApprovalSeat.status == "PENDING").distinct()
     results = []
-    for instance in db.scalars(q.limit(100)):
-        try: results.append(_business().approval_detail(db, user, instance))
+    for instance in db.scalars(q.limit(300)):
+        try:
+            detail = _business().approval_detail(db, user, instance)
+            if detail["seat_id"]:
+                results.append(detail)
         except DomainError: continue
+        if len(results) == 100:
+            break
     return results
 
 
@@ -690,6 +707,154 @@ def revoke_approval_delegation(delegation_id: str, data: s.AgentApprovalDelegati
                {"process_key": row.process_key, "node_key": row.node_key, "reason": data.reason})
     db.commit()
     return delegation_data(row)
+
+
+def approval_proxy_node_options(db):
+    rows = db.scalars(select(m.WorkflowDefinition).where(
+        m.WorkflowDefinition.status == "PUBLISHED"
+    ).order_by(m.WorkflowDefinition.process_key, m.WorkflowDefinition.version.desc()))
+    options, seen = [], set()
+    for definition in rows:
+        for node in definition.config.get("nodes", []):
+            if not node.get("allow_proxy"):
+                continue
+            key = (definition.process_key, node["key"])
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append({"process_key": definition.process_key, "process_name": definition.name,
+                            "definition_id": definition.id, "version": definition.version,
+                            "business_type": definition.config.get("business_type"),
+                            "node_key": node["key"], "node_name": node.get("name", node["key"])})
+    return options
+
+
+def require_approval_proxy_node(db, process_key, node_key):
+    if not any(option["process_key"] == process_key and option["node_key"] == node_key
+               for option in approval_proxy_node_options(db)):
+        raise DomainError("APPROVAL_PROXY_NODE_DISABLED", "该流程节点未发布或未允许人工代理", 400)
+
+
+def approval_proxy_data(db, row):
+    principal, proxy = db.get(m.User, row.principal_user_id), db.get(m.User, row.proxy_user_id)
+    return {"id": row.id, "principal_user": public_user(principal), "proxy_user": public_user(proxy),
+            "process_key": row.process_key, "node_key": row.node_key,
+            "allowed_decisions": row.allowed_decisions,
+            "active": row.active and row.revoked_at is None,
+            "reason": row.reason,
+            "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+            "valid_to": row.valid_to.isoformat() if row.valid_to else None,
+            "created_at": row.created_at.isoformat(),
+            "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+            "revoke_reason": row.revoke_reason}
+
+
+def _approval_proxy_would_cycle(db, *, row_id, principal_user_id, proxy_user_id, process_key, node_key):
+    rows = db.scalars(select(m.ApprovalProxyDelegation).where(
+        m.ApprovalProxyDelegation.process_key == process_key,
+        m.ApprovalProxyDelegation.node_key == node_key,
+        m.ApprovalProxyDelegation.active.is_(True),
+        m.ApprovalProxyDelegation.revoked_at.is_(None),
+    ))
+    graph = {}
+    for item in rows:
+        if item.id == row_id:
+            continue
+        graph.setdefault(item.principal_user_id, set()).add(item.proxy_user_id)
+    graph.setdefault(principal_user_id, set()).add(proxy_user_id)
+    stack, visited = [proxy_user_id], set()
+    while stack:
+        current = stack.pop()
+        if current == principal_user_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        stack.extend(graph.get(current, ()))
+    return False
+
+
+@app.get("/api/approval-proxies/options")
+def approval_proxy_options(user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "user.manage")
+    return {"nodes": approval_proxy_node_options(db),
+            "users": [public_user(item) for item in db.scalars(select(m.User).where(
+                m.User.active.is_(True)).order_by(m.User.display_name, m.User.id))]}
+
+
+@app.get("/api/approval-proxies")
+def approval_proxies(user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "user.manage")
+    rows = db.scalars(select(m.ApprovalProxyDelegation).order_by(
+        m.ApprovalProxyDelegation.created_at.desc(), m.ApprovalProxyDelegation.id))
+    return [approval_proxy_data(db, row) for row in rows]
+
+
+@app.post("/api/approval-proxies")
+def create_approval_proxy(data: s.ApprovalProxyDelegationInput, user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "user.manage")
+    if data.principal_user_id == data.proxy_user_id:
+        raise DomainError("APPROVAL_PROXY_SELF", "委托人与代理人不能是同一人", 400)
+    if data.valid_from and data.valid_to and data.valid_to <= data.valid_from:
+        raise DomainError("DATE_INVALID", "代理结束时间必须晚于开始时间", 400)
+    if data.valid_to and data.valid_to <= now():
+        raise DomainError("DATE_INVALID", "代理结束时间必须晚于当前时间", 400)
+    require_approval_proxy_node(db, data.process_key, data.node_key)
+    principal = db.scalar(select(m.User).where(m.User.id == data.principal_user_id).with_for_update())
+    proxy = db.scalar(select(m.User).where(m.User.id == data.proxy_user_id).with_for_update())
+    if not principal or not proxy or not principal.active or not proxy.active:
+        raise DomainError("APPROVAL_PROXY_USER_INVALID", "委托人或代理人不存在或已停用", 400)
+    row = db.scalar(select(m.ApprovalProxyDelegation).where(
+        m.ApprovalProxyDelegation.principal_user_id == principal.id,
+        m.ApprovalProxyDelegation.proxy_user_id == proxy.id,
+        m.ApprovalProxyDelegation.process_key == data.process_key,
+        m.ApprovalProxyDelegation.node_key == data.node_key,
+    ).with_for_update())
+    if _approval_proxy_would_cycle(db, row_id=row.id if row else None,
+                                   principal_user_id=principal.id, proxy_user_id=proxy.id,
+                                   process_key=data.process_key, node_key=data.node_key):
+        raise DomainError("APPROVAL_PROXY_CYCLE", "该代理关系会形成循环，不能启用", 409)
+    decisions = [item for item in ("APPROVE", "REJECT", "RETURN") if item in data.allowed_decisions]
+    if not row:
+        row = m.ApprovalProxyDelegation(
+            principal_user_id=principal.id, proxy_user_id=proxy.id,
+            process_key=data.process_key, node_key=data.node_key,
+            allowed_decisions=decisions, reason=data.reason,
+            valid_from=data.valid_from, valid_to=data.valid_to, created_by=user.id,
+        )
+        db.add(row)
+    else:
+        row.allowed_decisions = decisions; row.reason = data.reason
+        row.valid_from = data.valid_from; row.valid_to = data.valid_to
+        row.active = True; row.revoked_at = None; row.revoked_by = None; row.revoke_reason = None
+    principal.security_version += 1; proxy.security_version += 1
+    db.flush()
+    record(db, user, "approval.proxy.enabled", row.id,
+           {"principal_user_id": principal.id, "proxy_user_id": proxy.id,
+            "process_key": row.process_key, "node_key": row.node_key,
+            "allowed_decisions": row.allowed_decisions}, [principal.id, proxy.id])
+    db.commit()
+    return approval_proxy_data(db, row)
+
+
+@app.post("/api/approval-proxies/{delegation_id}/revoke")
+def revoke_approval_proxy(delegation_id: str, data: s.AgentApprovalDelegationRevokeInput,
+                          user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "user.manage")
+    row = db.scalar(select(m.ApprovalProxyDelegation).where(
+        m.ApprovalProxyDelegation.id == delegation_id).with_for_update())
+    if not row:
+        raise DomainError("NOT_FOUND", "人工审批代理不存在", 404)
+    if row.revoked_at is None:
+        row.active = False; row.revoked_at = now(); row.revoked_by = user.id; row.revoke_reason = data.reason
+        principal, proxy = db.get(m.User, row.principal_user_id), db.get(m.User, row.proxy_user_id)
+        principal.security_version += 1; proxy.security_version += 1
+        record(db, user, "approval.proxy.revoked", row.id,
+               {"principal_user_id": principal.id, "proxy_user_id": proxy.id,
+                "process_key": row.process_key, "node_key": row.node_key,
+                "reason": data.reason}, [principal.id, proxy.id])
+    db.commit()
+    return approval_proxy_data(db, row)
 
 
 @app.post("/api/human-actions/{intent_id}/confirm")

@@ -217,6 +217,28 @@ class AgentApprovalDelegation(IdentityMixin, Base):
     )
 
 
+class ApprovalProxyDelegation(IdentityMixin, Base):
+    __tablename__ = "approval_proxy_delegation"
+    principal_user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    proxy_user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    process_key: Mapped[str] = mapped_column(String(80))
+    node_key: Mapped[str] = mapped_column(String(80))
+    allowed_decisions: Mapped[list] = mapped_column(J)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    reason: Mapped[str] = mapped_column(Text)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"))
+    revoke_reason: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        UniqueConstraint("principal_user_id", "proxy_user_id", "process_key", "node_key"),
+        CheckConstraint("principal_user_id <> proxy_user_id", name="approval_proxy_distinct_users"),
+        Index("ix_approval_proxy_lookup", "proxy_user_id", "process_key", "node_key", "active"),
+    )
+
+
 class HumanIntent(IdentityMixin, Base):
     __tablename__ = "human_action_intent"
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))

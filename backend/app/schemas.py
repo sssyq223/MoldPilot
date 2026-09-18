@@ -101,6 +101,29 @@ class AgentApprovalDelegationInput(StrictModel):
         return value
 
 
+class ApprovalProxyDelegationInput(StrictModel):
+    principal_user_id: str = Field(min_length=1, max_length=36)
+    proxy_user_id: str = Field(min_length=1, max_length=36)
+    process_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
+    node_key: str = Field(min_length=1, max_length=80)
+    allowed_decisions: list[Literal["APPROVE", "REJECT", "RETURN"]] = Field(min_length=1, max_length=3)
+    reason: str = Field(min_length=1, max_length=500)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+
+    @field_validator("allowed_decisions")
+    @classmethod
+    def unique_decisions(cls, value):
+        if len(value) != len(set(value)): raise ValueError("代理决定不能重复")
+        return value
+
+    @field_validator("valid_from", "valid_to")
+    @classmethod
+    def proxy_dates_are_aware(cls, value):
+        if value is not None and value.tzinfo is None: raise ValueError("时间必须携带时区偏移")
+        return value
+
+
 class AgentApprovalDelegationRevokeInput(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
 

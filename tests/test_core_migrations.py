@@ -50,7 +50,7 @@ def test_template_pack_migrates_real_postgres_without_mold_tables():
 
     try:
         migrate("upgrade", "head")
-        assert "a10c0e000002 (head)" in migrate("current")
+        assert "a10c0e000003 (head)" in migrate("current")
         assert "No new upgrade operations detected" in migrate("check")
 
         probe = create_engine(probe_url)
@@ -60,13 +60,19 @@ def test_template_pack_migrates_real_postgres_without_mold_tables():
             ), {"schema": schema}).scalars())
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_core_version"
-            )) == "a10c0e000002"
+            )) == "a10c0e000003"
             seat_columns = set(connection.execute(text(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema=:schema AND table_name='approval_seat'"
             ), {"schema": schema}).scalars())
             assert {"parent_seat_id", "countersign_timing", "countersign_initiated_by",
                     "countersign_reason", "countersign_sequence"} <= seat_columns
+            proxy_columns = set(connection.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=:schema AND table_name='approval_proxy_delegation'"
+            ), {"schema": schema}).scalars())
+            assert {"principal_user_id", "proxy_user_id", "process_key", "node_key",
+                    "allowed_decisions", "valid_from", "valid_to"} <= proxy_columns
         assert "alembic_core_version" in tables
         assert not ({
             "project", "purchase_request", "business_subject", "contact_case",

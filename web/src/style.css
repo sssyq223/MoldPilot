@@ -744,6 +744,7 @@ html[data-theme="light"] .profile-menu button:hover{background:#edf3f8!important
 .agent-approval-head p{margin:5px 0 0;font-size:13px;line-height:1.55}
 .agent-approval-head>span{height:28px;display:inline-flex;align-items:center;white-space:nowrap;border:1px solid color-mix(in srgb,var(--border) 72%,transparent);border-radius:9px;padding:0 10px;color:var(--muted);font-size:12px;background:color-mix(in srgb,var(--surface) 82%,var(--bg))}
 .agent-approval-grid{display:grid;grid-template-columns:minmax(340px,.88fr) minmax(420px,1.12fr);gap:16px;align-items:start}
+.approval-subheading{margin-top:30px;padding-top:24px;border-top:1px solid var(--border)}
 .agent-approval-card{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px;border-radius:16px}
 .agent-card-title{display:flex;align-items:center;gap:12px}
 .agent-card-title>span{width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:#172334;color:#fff;flex:0 0 auto}
@@ -1524,3 +1525,4 @@ body.layout-resizing{cursor:col-resize!important;user-select:none!important}
 /* Approval seat transfer stays inside the existing approval workspace. */
 .transfer-box{border-style:dashed}.transfer-box .form-grid{align-items:end}.transfer-box .actions{margin-top:12px}
 .add-sign-box{border-style:dashed}.add-sign-box .form-grid{align-items:end}.add-sign-box .actions{margin-top:12px}
+.proxy-notice{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;margin:14px 0;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--surface) 82%,var(--accent))}.proxy-notice p{margin:4px 0}.proxy-notice small{color:var(--muted)}

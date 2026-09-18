@@ -89,6 +89,13 @@ def test_transfer_flag_must_be_boolean():
     with pytest.raises(DomainError): bpm.validate(cfg)
 
 
+def test_proxy_flag_must_be_boolean():
+    cfg = config()
+    cfg["nodes"][0]["allow_proxy"] = "yes"
+    with pytest.raises(DomainError):
+        bpm.validate(cfg)
+
+
 def test_add_sign_policy_requires_timing_and_unique_pool():
     cfg = config()
     cfg["nodes"][0]["add_sign_policy"] = {"timings": ["PRE", "POST"], "users": ["reviewer"]}

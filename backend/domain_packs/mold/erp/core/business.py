@@ -5,7 +5,8 @@ from sqlalchemy import select, exists, and_, or_, func
 from domain_packs.mold import bpm
 from domain_packs.mold.ports.db import now,aware
 from domain_packs.mold.models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
-                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation, HumanIntent,
+                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation,
+                     ApprovalProxyDelegation, HumanIntent,
                      MaterialBinding, AuditEvent)
 from domain_packs.mold.models import BusinessSubject
 from domain_packs.mold.authorization import require, predicate, select_fields, access
@@ -246,6 +247,18 @@ def approval_detail(db, user, instance):
     definition = db.get(WorkflowDefinition, instance.definition_id)
     seats = list(db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id)))
     current = next((s for s in seats if s.user_id == user.id and s.status == "PENDING" and s.stage_index == instance.stage_index), None)
+    proxy_delegation = None
+    if not current and instance.status == "RUNNING" and instance.stage_index < len(definition.config["nodes"]):
+        node = definition.config["nodes"][instance.stage_index]
+        for candidate_seat in sorted(seats, key=lambda item: (item.created_at, item.id)):
+            if candidate_seat.status != "PENDING" or candidate_seat.stage_index != instance.stage_index:
+                continue
+            proxy_delegation = active_approval_proxy(
+                db, user, candidate_seat.user_id, definition, node, req
+            )
+            if proxy_delegation:
+                current = candidate_seat
+                break
     matched, missing = bpm.reject_findings(definition.config["nodes"][min(instance.stage_index, len(definition.config["nodes"])-1)], instance.snapshot,definition.config.get('material_contract'))
     actions = []
     if current and instance.status == "RUNNING":
@@ -253,6 +266,8 @@ def approval_detail(db, user, instance):
             request_access(db, user, req, "purchase.approve")
             actions = ["REJECT"] if matched else ["REJECT", "RETURN"] if missing else ["APPROVE", "REJECT", "RETURN"]
         except DomainError: pass
+    if proxy_delegation:
+        actions = [action for action in actions if action in proxy_delegation.allowed_decisions]
     # Approval requires a complete, authorized material snapshot, not merely an assigned seat.
     required = ({"project_id", "material_id", "quantity", "due_date", "remark"}
                 if instance.resource_type == "purchase_request" else {'project_id','detail','remark'})
@@ -283,9 +298,9 @@ def approval_detail(db, user, instance):
         AuditEvent.resource_id == instance.id,
         AuditEvent.action == "approval.seat.added",
     ).order_by(AuditEvent.created_at)))
-    transfer_options = approval_transfer_options(db, user, instance, req, definition, current) if current else []
+    transfer_options = approval_transfer_options(db, user, instance, req, definition, current) if current and not proxy_delegation else []
     add_sign_policy = node_add_sign_policy(definition, instance)
-    add_sign_allowed = bool(current and "APPROVE" in actions and add_sign_policy)
+    add_sign_allowed = bool(current and not proxy_delegation and "APPROVE" in actions and add_sign_policy)
     add_sign_options = approval_add_sign_options(db, user, instance, req, definition, current) if add_sign_allowed else []
     return {"id": instance.id, "status": instance.status, "revision": instance.revision,
             "version": instance.version, "snapshot": snapshot, "snapshot_hash": instance.snapshot_hash,
@@ -298,7 +313,8 @@ def approval_detail(db, user, instance):
                                  "status":s.status,"seat_id":s.id,"parent_seat_id":s.parent_seat_id,
                                  "countersign_timing":s.countersign_timing} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
-            "transfer_allowed": bool(current and node_allows_transfer(definition, instance)),
+            "proxy_delegation": approval_proxy_context(db, proxy_delegation) if proxy_delegation else None,
+            "transfer_allowed": bool(current and not proxy_delegation and node_allows_transfer(definition, instance)),
             "transfer_options": transfer_options,
             "add_sign_allowed": add_sign_allowed,
             "add_sign_timings": add_sign_policy["timings"] if add_sign_allowed else [],
@@ -309,6 +325,36 @@ def approval_detail(db, user, instance):
                          "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))],
             "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events],
             "add_sign_history": [{**event.detail, "at": event.created_at.isoformat()} for event in add_sign_events]}
+
+
+def active_approval_proxy(db, actor, principal_user_id, definition, node, req):
+    if not node.get("allow_proxy") or actor.id == principal_user_id or req.created_by == actor.id:
+        return None
+    principal = db.get(User, principal_user_id)
+    if not principal or not principal.active or not actor.active:
+        return None
+    current = now()
+    return db.scalar(select(ApprovalProxyDelegation).where(
+        ApprovalProxyDelegation.principal_user_id == principal_user_id,
+        ApprovalProxyDelegation.proxy_user_id == actor.id,
+        ApprovalProxyDelegation.process_key == definition.process_key,
+        ApprovalProxyDelegation.node_key == node["key"],
+        ApprovalProxyDelegation.active.is_(True),
+        ApprovalProxyDelegation.revoked_at.is_(None),
+        or_(ApprovalProxyDelegation.valid_from.is_(None), ApprovalProxyDelegation.valid_from <= current),
+        or_(ApprovalProxyDelegation.valid_to.is_(None), ApprovalProxyDelegation.valid_to > current),
+    ).order_by(ApprovalProxyDelegation.created_at.desc()))
+
+
+def approval_proxy_context(db, delegation):
+    principal = db.get(User, delegation.principal_user_id)
+    return {"id": delegation.id,
+            "principal_user": {"id": principal.id, "display_name": principal.display_name,
+                               "department": principal.department},
+            "allowed_decisions": delegation.allowed_decisions,
+            "reason": delegation.reason,
+            "valid_from": delegation.valid_from.isoformat() if delegation.valid_from else None,
+            "valid_to": delegation.valid_to.isoformat() if delegation.valid_to else None}
 
 
 def node_allows_transfer(definition, instance):
@@ -565,7 +611,14 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     if seat.id != payload["seat_id"] or seat.version != payload["seat_version"]:
         raise DomainError("VERSION_CONFLICT", "审批席位已变化", 409)
     seat.status, seat.version = payload["decision"], seat.version + 1
+    proxy = detail.get("proxy_delegation")
+    if proxy and actor_type == "HUMAN":
+        actor_type = "HUMAN_PROXY"
+        delegation_id = proxy["id"]
     user_snapshot = {"name": user.display_name, "username": user.username, "department": user.department, "actor_type": actor_type}
+    if proxy:
+        user_snapshot["principal_user"] = proxy["principal_user"]
+        user_snapshot["proxy_reason"] = proxy["reason"]
     if delegation_id:
         user_snapshot["delegation_id"] = delegation_id
     db.add(ApprovalAction(instance_id=instance.id, seat_id=seat.id, user_id=user.id,
@@ -611,6 +664,9 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
         else: enter_stage(db, instance, definition, req)
     instance.version += 1
     detail = {"decision": payload["decision"], "business_status": req.status, "actor_type": actor_type}
+    if proxy:
+        detail["principal_user_id"] = proxy["principal_user"]["id"]
+        detail["actor_user_id"] = user.id
     if delegation_id:
         detail["delegation_id"] = delegation_id
     record(db, user, "approval.decided", instance.id, detail, [req.created_by])

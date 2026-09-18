@@ -18,6 +18,8 @@ const modelConfig=ref<any|null>(null),modelProfiles=ref<any[]>([]),activeModelPr
 const modelLoading=ref(false),modelSaving=ref(false),modelApiKey=ref(''),clearModelApiKey=ref(false),modelSaved=ref(''),modelDetailsOpen=ref(false)
 const delegationOptions=ref<any[]>([]),delegations=ref<any[]>([]),delegationsLoading=ref(false),delegationSaving=ref(false),delegationNotice=ref('')
 const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
+const proxyOptions=ref<any[]>([]),proxyUsers=ref<any[]>([]),proxyDelegations=ref<any[]>([]),proxyLoading=ref(false),proxySaving=ref(false),proxyNotice=ref('')
+const proxyNode=ref(''),proxyPrincipal=ref(''),proxyAgent=ref(''),proxyReason=ref(''),proxyValidFrom=ref(''),proxyValidTo=ref(''),proxyDecisions=ref<string[]>(['APPROVE'])
 const avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
 const selectedCapability=ref<{kind:'tool'|'skill';item:any}|null>(null)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
@@ -128,6 +130,10 @@ async function loadAudit(nextPage=auditPage.value){
 const filteredArchived=computed(()=>archived.value.filter(c=>c.title.toLowerCase().includes(archivedSearch.value.trim().toLowerCase())))
 const delegationOptionMap=computed(()=>Object.fromEntries(delegationOptions.value.map((item:any)=>[item.process_key+'::'+item.node_key,item])))
 const selectedDelegationOption=computed(()=>delegationOptionMap.value[delegationNode.value])
+const proxyOptionMap=computed(()=>Object.fromEntries(proxyOptions.value.map((item:any)=>[item.process_key+'::'+item.node_key,item])))
+const selectedProxyOption=computed(()=>proxyOptionMap.value[proxyNode.value])
+const proxyAgentOptions=computed(()=>proxyUsers.value.filter((item:any)=>item.id!==proxyPrincipal.value))
+watch(proxyPrincipal,value=>{if(proxyAgent.value===value)proxyAgent.value=proxyAgentOptions.value[0]?.id||''})
 function modelProviderLabel(profile:any){return profile?.provider==='ollama'?'本机 Ollama':'OpenAI 兼容接口'}
 function modelProfileCredential(profile:any){
  if(profile?.provider==='ollama')return '本机服务'
@@ -146,7 +152,7 @@ function applyModelConfig(result:any,preferredId?:string){
 const navigation=computed(()=>[
  {key:'account',name:'账号信息',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
- {key:'agent-approvals',name:'自动审批',icon:ShieldCheck,allow:true},
+ {key:'agent-approvals',name:'审批授权',icon:ShieldCheck,allow:true},
  {key:'archived',name:'已归档的聊天',icon:Archive,allow:true},
  {key:'capabilities',name:'工具与技能',icon:Wrench,allow:true},
  {key:'admin',name:'人员与权限',icon:Users,allow:props.permissions.includes('user.manage')},
@@ -162,7 +168,10 @@ async function select(key:string){
  }
  if(key==='archived')await loadArchived()
  if(key==='model')await loadModelConfig()
- if(key==='agent-approvals')await loadAgentDelegations()
+ if(key==='agent-approvals'){
+  await loadAgentDelegations()
+  if(props.permissions.includes('user.manage'))await loadApprovalProxies()
+ }
 }
 watch(()=>props.initialPage,key=>{if(key)select(key)},{immediate:true})
 async function loadModelConfig(){
@@ -256,6 +265,38 @@ function delegationLabel(row:any){
  const option=delegationOptionMap.value[row.process_key+'::'+row.node_key]
  return option?`${option.process_name} · ${option.node_name}`:`${row.process_key} · ${row.node_key}`
 }
+async function loadApprovalProxies(){
+ proxyLoading.value=true;proxyNotice.value=''
+ try{
+  const [options,rows]=await Promise.all([api('/approval-proxies/options'),api('/approval-proxies')])
+  proxyOptions.value=options.nodes||[];proxyUsers.value=options.users||[];proxyDelegations.value=rows||[]
+  if(!proxyNode.value&&proxyOptions.value.length)proxyNode.value=proxyOptions.value[0].process_key+'::'+proxyOptions.value[0].node_key
+  if(!proxyPrincipal.value&&proxyUsers.value.length)proxyPrincipal.value=proxyUsers.value[0].id
+  if(!proxyAgent.value&&proxyUsers.value.length>1)proxyAgent.value=proxyUsers.value.find((item:any)=>item.id!==proxyPrincipal.value)?.id||''
+ }catch(e:any){emit('error',e.message)}finally{proxyLoading.value=false}
+}
+async function saveApprovalProxy(){
+ const option=selectedProxyOption.value
+ if(!option||!proxyPrincipal.value||!proxyAgent.value||!proxyDecisions.value.length||!proxyReason.value.trim()||proxySaving.value)return
+ proxySaving.value=true;proxyNotice.value=''
+ try{
+  await post('/approval-proxies',{principal_user_id:proxyPrincipal.value,proxy_user_id:proxyAgent.value,
+   process_key:option.process_key,node_key:option.node_key,allowed_decisions:proxyDecisions.value,
+   reason:proxyReason.value,valid_from:apiDate(proxyValidFrom.value),valid_to:apiDate(proxyValidTo.value)})
+  await loadApprovalProxies()
+  proxyReason.value='';proxyValidFrom.value='';proxyValidTo.value='';proxyNotice.value='人工审批代理已保存。'
+ }catch(e:any){emit('error',e.message)}finally{proxySaving.value=false}
+}
+async function revokeApprovalProxy(row:any){
+ if(proxySaving.value)return
+ proxySaving.value=true;proxyNotice.value=''
+ try{await post(`/approval-proxies/${row.id}/revoke`,{reason:'管理员在审批授权设置中撤销人工代理'});await loadApprovalProxies();proxyNotice.value='人工审批代理已撤销。'}catch(e:any){emit('error',e.message)}finally{proxySaving.value=false}
+}
+function proxyLabel(row:any){
+ const option=proxyOptionMap.value[row.process_key+'::'+row.node_key]
+ return option?`${option.process_name} · ${option.node_name}`:`${row.process_key} · ${row.node_key}`
+}
+function decisionNames(values:string[]){const labels:Record<string,string>={APPROVE:'同意',REJECT:'驳回',RETURN:'退回修改'};return values.map(value=>labels[value]||value).join('、')}
 async function avatarDataUrl(file:File){
  if(!/^image\/(png|jpeg|webp)$/.test(file.type))throw new Error('头像只支持 PNG、JPG 或 WebP 图片')
  if(file.size>5*1024*1024)throw new Error('头像图片不能超过 5MB')
@@ -395,7 +436,7 @@ async function clearAvatar(){
    </form>
    </template>
    <template v-else-if="page==='agent-approvals'">
-    <div class="agent-approval-head"><div><h2>智能体自动审批</h2><p class="muted">把低风险审批节点交给智能体自动同意；高风险节点仍由人工处理。</p></div><span>{{delegations.filter(d=>d.active).length}} 个有效授权</span></div>
+    <div class="agent-approval-head"><div><h2>审批授权</h2><p class="muted">分别维护本人授予 Agent 的自动审批，以及管理员配置的人工审批代理。</p></div><span>{{delegations.filter(d=>d.active).length+(permissions.includes('user.manage')?proxyDelegations.filter(d=>d.active).length:0)}} 个有效授权</span></div>
     <p v-if="delegationsLoading" role="status">正在读取自动审批授权…</p>
     <template v-else>
      <div class="agent-approval-grid">
@@ -421,6 +462,35 @@ async function clearAvatar(){
       <div v-if="!delegations.length" class="agent-empty-state record"><ShieldOff :size="20"/><strong>还没有授权记录</strong><p class="muted">授权后会显示节点、有效期和撤销状态。</p></div>
      </section>
      </div>
+     <template v-if="permissions.includes('user.manage')">
+      <div class="section-heading approval-subheading"><div><h2>人工审批代理</h2><p class="muted">代理人以本人身份办理委托人的既有席位；不改变席位负责人、不增加票数，也不会形成多级代办。</p></div><small class="muted">{{proxyDelegations.filter(d=>d.active).length}} 个有效代理</small></div>
+      <p v-if="proxyLoading" role="status">正在读取人工审批代理…</p>
+      <div v-else class="agent-approval-grid">
+       <section class="surface agent-approval-card">
+        <div class="agent-card-title"><span><Users :size="18"/></span><div><h3>配置代理范围</h3><p class="muted">只显示流程模板中明确允许人工代理的节点。</p></div></div>
+        <div v-if="proxyOptions.length&&proxyUsers.length>1" class="agent-delegation-form">
+         <label>流程节点<select v-model="proxyNode"><option v-for="option in proxyOptions" :key="option.process_key+'::'+option.node_key" :value="option.process_key+'::'+option.node_key">{{option.process_name}} · {{option.node_name}}（第 {{option.version}} 版）</option></select></label>
+         <label>原审批责任人<select v-model="proxyPrincipal"><option v-for="person in proxyUsers" :key="person.id" :value="person.id">{{person.display_name}} · {{person.department||'未设置部门'}}</option></select></label>
+         <label>代理审批人<select v-model="proxyAgent"><option value="" disabled>请选择不同人员</option><option v-for="person in proxyAgentOptions" :key="person.id" :value="person.id">{{person.display_name}} · {{person.department||'未设置部门'}}</option></select></label>
+         <fieldset><legend>允许决定</legend><label class="check-label"><input v-model="proxyDecisions" type="checkbox" value="APPROVE"/>同意</label><label class="check-label"><input v-model="proxyDecisions" type="checkbox" value="REJECT"/>驳回</label><label class="check-label"><input v-model="proxyDecisions" type="checkbox" value="RETURN"/>退回修改</label></fieldset>
+         <label>代理原因<textarea v-model="proxyReason" rows="2" placeholder="说明请假、职责覆盖或临时代理依据"/></label>
+         <div class="form-grid"><label>生效时间<input v-model="proxyValidFrom" type="datetime-local"/><small class="muted">留空表示立即生效。</small></label><label>有效期至<input v-model="proxyValidTo" type="datetime-local"/><small class="muted">留空表示撤销前有效。</small></label></div>
+         <button class="primary" :disabled="proxySaving||!selectedProxyOption||!proxyPrincipal||!proxyAgent||proxyPrincipal===proxyAgent||!proxyDecisions.length||!proxyReason.trim()" @click="saveApprovalProxy">{{proxySaving?'正在保存…':'保存人工代理'}}</button>
+        </div>
+        <div v-else class="agent-empty-state"><ShieldOff :size="22"/><strong>暂无可配置节点</strong><p class="muted">先在审批流程节点开启人工代理，并确保至少有两名有效用户。</p><button v-if="permissions.includes('workflow.design')" type="button" @click="select('workflows')">去配置流程</button></div>
+       </section>
+       <section class="surface agent-delegation-list" aria-label="人工审批代理记录">
+        <div class="section-heading"><h3>代理记录</h3><small class="muted">{{proxyDelegations.length}} 条记录</small></div>
+        <p v-if="proxyNotice" class="muted small">{{proxyNotice}}</p>
+        <article v-for="row in proxyDelegations" :key="row.id" class="agent-delegation-row" :class="{inactive:!row.active}">
+         <div><strong>{{row.principal_user.display_name}} → {{row.proxy_user.display_name}}</strong><p class="muted small">{{proxyLabel(row)}} · {{decisionNames(row.allowed_decisions)}}</p><p class="muted small">{{row.reason}}</p><small class="muted">创建于 {{shanghai(row.created_at)}}<span v-if="row.valid_from"> · 生效于 {{shanghai(row.valid_from)}}</span><span v-if="row.valid_to"> · 有效期至 {{shanghai(row.valid_to)}}</span><span v-if="row.revoked_at"> · 已于 {{shanghai(row.revoked_at)}} 撤销</span></small></div>
+         <span v-if="row.active" class="status-pill ok"><ShieldCheck :size="14"/>有效</span><span v-else class="status-pill muted-pill"><ShieldOff :size="14"/>已撤销</span>
+         <button v-if="row.active" class="danger-outline" :disabled="proxySaving" @click="revokeApprovalProxy(row)">撤销代理</button>
+        </article>
+        <div v-if="!proxyDelegations.length" class="agent-empty-state record"><ShieldOff :size="20"/><strong>还没有人工代理记录</strong><p class="muted">代理启用、到期和撤销都会保留审计。</p></div>
+       </section>
+      </div>
+     </template>
     </template>
    </template>
    <template v-else-if="page==='archived'">

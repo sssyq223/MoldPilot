@@ -60,6 +60,7 @@ const auditNames:Record<string,string>={'auth.login':'用户登录','user.create
 Object.assign(auditNames,{'user.avatar.updated':'更新用户头像'})
 Object.assign(auditNames,{'approval.seat.transferred':'转交审批席位'})
 Object.assign(auditNames,{'approval.seat.added':'增加审批复核人'})
+Object.assign(auditNames,{'approval.proxy.enabled':'启用人工审批代理','approval.proxy.revoked':'撤销人工审批代理'})
 export function auditName(value:string){return auditNames[value]||commandNames[value]||'业务操作记录'}
 Object.assign(auditNames,{'contact.created':'创建工程联络单','contact.note':'追加联络过程记录','contact.task_created':'新增联络协作事项','contact.assigned':'分派联络事项','contact.responded':'提交联络处理反馈'})
 export function statusName(value:string){return stateLabels[value]||({ACTIVE:'进行中',COMPLETED:'已完成',PENDING:'待处理',PUBLISHED:'已发布',BLOCKED:'等待处理',APPROVE:'同意',REJECT:'驳回',RETURN:'退回修改',WAITING:'等待处理',SKIPPED:'未经过此节点'} as Record<string,string>)[value]||'待核实状态'}
