@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } f
 import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, ArrowRight, Settings, Bot, ChevronRight, LogOut, X, Square, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from '@domain-pack/uiText'
+import {initialProduct} from '@domain-pack/product'
 import SettingsPage from './components/SettingsPage.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
 import WelcomePanel from '@domain-pack/components/WelcomePanel.vue'
@@ -15,12 +16,13 @@ import {legacyStorageKeys,notificationWorkspaceTarget,toolEvidenceLinks} from '@
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
-const product=ref<any>({id:'agent',product_name:'Agent Workbench',display_name:'智能体工作台',tagline:'',workspace_tabs:[],proposal_presentation:{action_prefixes:[],action_suffixes:[],detail_links:{},value_names:{}}})
+const product=ref<any>(initialProduct)
 const modelName=ref('未配置模型')
 const modelLimits=ref<any>({context_window:8192,max_output_tokens:2048})
 const modelProfiles=ref<any[]>([]),activeModelProfileId=ref(''),modelSwitchingId=ref('')
 const DEFAULT_SIDEBAR_WIDTH=248
 const DEFAULT_WORKSPACE_WIDTH=650
+const MIN_WORKSPACE_WIDTH=420
 type WorkspaceTarget={target:string;id:string}
 const workspaceTargets=ref<Record<string,string>>({})
 const selectedEvidence=ref<any|null>(null)
@@ -296,8 +298,10 @@ function evidenceTitle(item:any){return item?.proposal?'操作建议':capability
 function fail(message:string){error.value=message}
 async function refresh(){ [conversations.value,notices.value,approvals.value,capabilities.value]=await Promise.all([api('/conversations'),api('/notifications'),api('/approvals'),api('/capabilities')]) }
 async function loadProduct(){
- product.value=await api('/product')
- if(product.value.id!==__DOMAIN_PACK_ID__)throw new Error(`业务包配置不一致：前端 ${__DOMAIN_PACK_ID__}，后端 ${product.value.id||'unknown'}`)
+ const loaded=await api('/product')
+ if(loaded.id!==__DOMAIN_PACK_ID__)throw new Error(`业务包配置不一致：前端 ${__DOMAIN_PACK_ID__}，后端 ${loaded.id||'unknown'}`)
+ const installedTabs=new Set(initialProduct.workspace_tabs.map((tab:any)=>tab.key))
+ product.value={...loaded,workspace_tabs:Array.isArray(loaded.workspace_tabs)?loaded.workspace_tabs.filter((tab:any)=>installedTabs.has(tab.key)):[]}
  document.title=`${product.value.product_name} · ${product.value.display_name}`
 }
 async function loadModelProfiles(){
@@ -334,7 +338,7 @@ async function handleCurrentProposalDecision(dismissed=false){
  if(dismissed)await handleProposalDismissed(context.item.id,context.run.id)
  else await handleProposalConfirmed(context.item.id,context.run.id)
 }
-async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(560,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
+async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch(e:any){fail(e.message||'工作台初始化失败')}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
 function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];runs.value=[];detail.value=null;approvals.value=[];initiatedApprovals.value=[];notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
@@ -370,8 +374,8 @@ async function uploadFiles(event:Event){
 }
 async function notice(n:any){try{await post('/notifications/'+n.id+'/read');showNotices.value=false;await refresh();if(n.kind?.startsWith('approval.'))await openApproval(n.resource_id);else{const target=notificationWorkspaceTarget(n);if(target)await openWorkspaceTarget(target);else await openNotices()}}catch(e:any){fail(e.message)}}
 function resizeSession(move:(event:PointerEvent)=>void){document.body.classList.add('layout-resizing');const end=()=>{document.body.classList.remove('layout-resizing');window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);saveLayout()};window.addEventListener('pointermove',move);window.addEventListener('pointerup',end);window.addEventListener('pointercancel',end)}
-function beginResize(e:PointerEvent){if(e.button!==0)return;const x=e.clientX,start=width.value;resizeSession((ev)=>{width.value=Math.max(560,Math.min(window.innerWidth-480,start+x-ev.clientX))})}
-function resizeBy(delta:number){width.value=Math.max(560,Math.min(window.innerWidth-480,width.value+delta));saveLayout()}
+function beginResize(e:PointerEvent){if(e.button!==0)return;const x=e.clientX,start=width.value;resizeSession((ev)=>{width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(window.innerWidth-480,start+x-ev.clientX))})}
+function resizeBy(delta:number){width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(window.innerWidth-480,width.value+delta));saveLayout()}
 function resetWorkspaceWidth(){width.value=DEFAULT_WORKSPACE_WIDTH;saveLayout()}
 function beginSidebarResize(e:PointerEvent){if(e.button!==0||sidebarCollapsed.value)return;const x=e.clientX,start=sidebarWidth.value;resizeSession((ev)=>{sidebarWidth.value=Math.max(190,Math.min(420,start+ev.clientX-x))})}
 function resizeSidebarBy(delta:number){sidebarWidth.value=Math.max(190,Math.min(420,sidebarWidth.value+delta));saveLayout()}
@@ -542,17 +546,17 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
   <small class="composer-note">结论需要业务证据，正式操作以系统回执为准。按当前权限执行。</small>
 </section>
   <div v-if="workspaceOpen&&!full" class="resize-handle" role="separator" tabindex="0" aria-label="调整工作区宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginResize" @dblclick="resetWorkspaceWidth" @keydown.left.prevent="resizeBy(20)" @keydown.right.prevent="resizeBy(-20)"/>
-  <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs" aria-label="工作区页签"><button v-for="tab in workspaceTabs" :key="tab.key" :class="{active:panel===tab.key}" :aria-current="panel===tab.key?'page':undefined" :title="tab.hint" @click="openPanel(tab.key)">{{tab.name}}</button><button v-if="detail&&panel==='approvals'" class="object-tab">{{numberText(detail.snapshot.number)}}</button></nav><div class="workspace-content">
-    <template v-if="panel==='approvals'&&detail"><button class="back-button" @click.stop="collapse();openNotices()">← 返回消息通知</button><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
+  <section :key="me.id+me.authorization_hash" class="workspace" :class="{'workspace-collapsed':!workspaceOpen}" :aria-hidden="!workspaceOpen" :style="workspaceOpen?(full?{}:{width:width+'px'}):{}"><template v-if="workspaceOpen"><header class="workspace-header"><strong>工作区</strong><div><button class="icon-button" title="关闭工作区" aria-label="关闭工作区" @click="collapse"><X :size="15"/></button><button class="icon-button" :aria-label="full?'返回对话':'全屏工作区'" @click="full=!full"><Minimize2 v-if="full" :size="15"/><Maximize2 v-else :size="15"/></button></div></header><nav class="workspace-tabs" aria-label="工作区页签"><div class="workspace-tab-list"><button v-for="tab in workspaceTabs" :key="tab.key" class="workspace-tab" :class="{active:panel===tab.key}" :aria-current="panel===tab.key?'page':undefined" :title="tab.hint" @click="openPanel(tab.key)">{{tab.name}}</button></div><span v-if="detail&&panel==='approvals'" class="object-tab" title="当前审批材料编号">{{numberText(detail.snapshot.number)}}</span></nav><div class="workspace-content">
+    <template v-if="panel==='approvals'&&detail"><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/>
 </template>
     <DomainWorkspacePanel v-else :panel="panel" :target-id="workspaceTargets[panel]||''" @approval="openApproval" @error="fail" @open="openPanel"/>
   </div></template></section>
   <aside v-if="showNotices" class="notification-popover" :style="notificationPopoverStyle" aria-label="待处理"><div class="section-heading notification-head"><div><h2>待处理</h2><small class="muted">{{noticeCount?noticeCount+' 项需要查看':'暂无需要处理'}}</small></div><button class="icon-button" aria-label="关闭待处理" @click="showNotices=false"><X :size="16"/></button></div>
     <p v-if="noticeLoading" role="status" class="muted small">正在读取待处理事项…</p>
     <h3>待我审批</h3><p v-if="!approvals.length" class="muted notification-empty">当前没有待审批。</p>
-    <button v-for="a in approvals" :key="a.id" class="task-row" @click="openApproval(a.id)"><span><strong>{{numberText(a.snapshot.number)||a.definition.name}}</strong><small>{{a.snapshot.submitter?.name||'提交人待核对'}} · {{a.nodes[a.stage_index]?.name}}</small><small>{{a.snapshot.submitted_at?shanghai(a.snapshot.submitted_at):''}}</small></span><ChevronRight :size="16"/></button>
-    <h3>我发起的审批</h3><p v-if="!initiatedApprovals.length" class="muted notification-empty">尚未发起审批。</p><button v-for="a in initiatedApprovals" :key="'initiated:'+a.id" class="task-row" @click="openApproval(a.id)"><span><strong>{{numberText(a.snapshot.number)||a.definition.name}}</strong><small>{{a.status==='RUNNING'?'审批中':a.status==='COMPLETED'?'审批已完成':a.status==='CANCELLED'?'已撤回':a.status==='RETURNED'?'退回修改':'已结束'}} · 第 {{a.revision}} 版</small><small>{{a.snapshot.submitted_at?shanghai(a.snapshot.submitted_at):''}}</small></span><ChevronRight :size="16"/></button>
-    <h3>通知记录</h3><p v-if="!notices.length" class="muted notification-empty">暂无通知。</p><button v-for="n in notices" :key="n.id" class="task-row" @click="notice(n)"><span><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small>{{shanghai(n.created_at)}}</small></span><span v-if="!n.read" class="unread-dot"/></button>
+    <button v-for="a in approvals" :key="a.id" class="task-row" @click="openApproval(a.id)"><span class="notification-item-copy"><strong>{{numberText(a.snapshot.number)||a.definition.name}}</strong><small class="notification-item-meta"><span>{{a.snapshot.submitter?.name||'提交人待核对'}} · {{a.nodes[a.stage_index]?.name}}{{a.claim_allowed?' · 待领取':''}}</span><time>{{a.snapshot.submitted_at?shanghai(a.snapshot.submitted_at):''}}</time></small></span><ChevronRight :size="15"/></button>
+    <h3>我发起的审批</h3><p v-if="!initiatedApprovals.length" class="muted notification-empty">尚未发起审批。</p><button v-for="a in initiatedApprovals" :key="'initiated:'+a.id" class="task-row" @click="openApproval(a.id)"><span class="notification-item-copy"><strong>{{numberText(a.snapshot.number)||a.definition.name}}</strong><small class="notification-item-meta"><span>{{a.status==='RUNNING'?'审批中':a.status==='COMPLETED'?'审批已完成':a.status==='CANCELLED'?'已撤回':a.status==='RETURNED'?'退回修改':'已结束'}} · 第 {{a.revision}} 版</span><time>{{a.snapshot.submitted_at?shanghai(a.snapshot.submitted_at):''}}</time></small></span><ChevronRight :size="15"/></button>
+    <h3>通知记录</h3><p v-if="!notices.length" class="muted notification-empty">暂无通知。</p><button v-for="n in notices" :key="n.id" class="task-row" @click="notice(n)"><span class="notification-item-copy"><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small class="notification-item-meta"><time>{{shanghai(n.created_at)}}</time></small></span><span v-if="!n.read" class="unread-dot"/></button>
   </aside>
 </main>
 

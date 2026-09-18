@@ -8,7 +8,6 @@ PUBLIC_METADATA = {
     "display_name": "模具项目智能工作台",
     "tagline": "从一个任务开始，让业务能力协同工作。",
     "workspace_tabs": [
-        {"key": "materials", "name": "材料总览", "hint": "说明工作区会展示哪些业务材料"},
         {"key": "approvals", "name": "审批材料", "hint": "查看待审批事项、节点和依据"},
         {"key": "contacts", "name": "联络单材料", "hint": "查看工程联络单、附件和协作进度"},
     ],

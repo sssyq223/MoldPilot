@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Plus, ArrowDown, Trash2, GitBranch } from 'lucide-vue-next'
+import { Plus, Trash2, GitBranch } from 'lucide-vue-next'
 import { api, post } from '../api'
 import RuleEditor from './RuleEditor.vue'
 import WorkflowCategoryPanel from './WorkflowCategoryPanel.vue'
 import MaterialTemplatePanel from './MaterialTemplatePanel.vue'
+import WorkflowCanvas from './WorkflowCanvas.vue'
 import {ruleText,routeName} from '@domain-pack/uiText'
 import {workflowUi} from '@domain-pack/uiPolicy'
 const emit = defineEmits<{error:[message:string]}>()
 const templates=ref<any[]>([]), users=ref<any[]>([])
 const editing=ref(false), busy=ref(false), name=ref(''), key=ref('')
 const nodes=ref<any[]>([]), simulation=ref<any>(null), materialContract=ref<any>(null)
+const selectedNodeIndex=ref(0)
 const editId=ref(''), editHash=ref(''), selected=ref<any>(null), historyKey=ref(''), history=ref<any[]>([]), historyNext=ref<number|null>(null), notice=ref('')
 const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false)
 const categoryName=(id:string)=>flowCategories.value.find(c=>c.id===id)?.name||'待整理'
@@ -25,10 +27,13 @@ function assignmentMode(n:any,dynamic:boolean){n.users=[];if(dynamic)n.assignmen
 function assignmentNames(n:any){if(!n.assignment)return (n.users||[]).map((id:string)=>users.value.find(u=>u.id===id)?.display_name||'人员信息暂不可用').join('、');const names=(ids:string[])=>ids.map(id=>assignmentGroups.value.find(g=>g.id===id)?.name||'人员规则暂不可用').join('、');return [n.assignment.roles.length?'角色：'+names(n.assignment.roles):'',n.assignment.departments.length?(n.assignment.department_heads_only?'部门负责人：':'部门：')+names(n.assignment.departments):''].filter(Boolean).join('；同时满足')}
 function candidateNames(n:any){if(!n.assignment)return assignmentNames(n);const r=n.assignment;let ids:string[]|null=null;for(const [field,head] of [['roles',false],['departments',r.department_heads_only]] as const){if(!r[field].length)continue;const selected=assignmentGroups.value.filter(g=>g.active&&r[field].includes(g.id));const list:string[]=selected.flatMap(g=>g.members.filter((m:any)=>!head||m.is_head).map((m:any)=>m.user_id));ids=ids===null?list:ids.filter(id=>list.includes(id))}return [...new Set(ids||[])].filter(id=>users.value.find(u=>u.id===id)?.active).map(id=>users.value.find(u=>u.id===id)?.display_name).join('、')||'暂无有效候选人员'}
 const groups=computed(()=>Object.values(templates.value.filter(t=>!categoryFilter.value||t.category_id===categoryFilter.value).reduce((all:Record<string,any>,t:any)=>{if(!all[t.process_key])all[t.process_key]=t;return all},{})))
+const selectedNodeEntry=computed(()=>nodes.value[selectedNodeIndex.value]?[{node:nodes.value[selectedNodeIndex.value],index:selectedNodeIndex.value}]:[])
 const sample=ref<Record<string,any>>(Object.fromEntries(workflowUi.simulationFields.map((field:any)=>[field.key,field.value])))
 const newCondition=()=>({field:workflowUi.defaultField,op:'gt',value:''})
 const outcomes:Record<string,string>={ROUTE_VALID:'路径校验通过',MUST_REJECT:'命中必须驳回条件',RULE_DATA_MISSING:'驳回判断资料不足',ROUTE_DATA_MISSING:'分支判断资料不足',ROUTE_AMBIGUOUS:'同时命中多个分支'}
 const freshNode=(i:number)=>({key:'review_'+i,name:'审批节点 '+i,users:[],mode:'ALL',reject_rules:[],allow_transfer:false,allow_proxy:false,return_policy:{targets:['applicant']}})
+function modeName(mode:string){return mode==='ALL'?'全部人员同意（会签）':mode==='ANY'?'任一人员同意（或签）':'候选人领取后办理'}
+function setNodeMode(n:any,mode:string){n.mode=mode;if(mode==='CLAIM'){delete n.agent_auto_approval;delete n.agent_auto_policy}}
 function toggleAgentAuto(n:any,enabled:boolean){n.agent_auto_approval=enabled;if(!enabled)delete n.agent_auto_policy}
 function setAgentAutoPolicy(n:any,enabled:boolean){if(enabled)n.agent_auto_policy={condition:{...newCondition(),op:'lte'}};else delete n.agent_auto_policy}
 function toggleAddSign(n:any,enabled:boolean){if(enabled)n.add_sign_policy={timings:['PRE','POST'],users:[]};else delete n.add_sign_policy}
@@ -39,15 +44,18 @@ function returnTargetNames(n:any,i:number){const options=Object.fromEntries(retu
 async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
-function create(){editId.value='';editHash.value='';selected.value=null;name.value='';key.value='flow_'+crypto.randomUUID().replaceAll('-','');categoryId.value='';legacyCopy.value=false;materialContract.value=null;materialTemplateId.value='';nodes.value=[freshNode(1)];editing.value=true}
+function create(){editId.value='';editHash.value='';selected.value=null;name.value='';key.value='flow_'+crypto.randomUUID().replaceAll('-','');categoryId.value='';legacyCopy.value=false;materialContract.value=null;materialTemplateId.value='';nodes.value=[freshNode(1)];selectedNodeIndex.value=0;editing.value=true}
 async function view(t:any){try{selected.value=await api(`/workflows/${t.id}`);editing.value=false}catch(e:any){emit('error',e.message)}}
 async function openHistory(t:any,more=false){try{const r=await api(`/workflows/history/${encodeURIComponent(t.process_key)}${more?'?before_version='+historyNext.value:''}`);historyKey.value=t.process_key;history.value=more?[...history.value,...r.items]:r.items;historyNext.value=r.next_before}catch(e:any){emit('error',e.message)}}
-async function copy(t:any,edit=false){try{const d=await api(`/workflows/${t.id}`);editId.value=edit?d.id:'';editHash.value=d.edit_hash;categoryId.value=d.category_id||'';legacyCopy.value=d.business_type!=='generic';name.value=d.name;key.value=d.process_key;materialTemplateId.value=d.material_template_id||'';nodes.value=JSON.parse(JSON.stringify(d.config.nodes)).map(normalizeReturnPolicy);materialContract.value=d.config.material_contract?JSON.parse(JSON.stringify(d.config.material_contract)):null;selected.value=null;editing.value=true}catch(e:any){emit('error',e.message)}}
+async function copy(t:any,edit=false){try{const d=await api(`/workflows/${t.id}`);editId.value=edit?d.id:'';editHash.value=d.edit_hash;categoryId.value=d.category_id||'';legacyCopy.value=d.business_type!=='generic';name.value=d.name;key.value=d.process_key;materialTemplateId.value=d.material_template_id||'';nodes.value=JSON.parse(JSON.stringify(d.config.nodes)).map(normalizeReturnPolicy);materialContract.value=d.config.material_contract?JSON.parse(JSON.stringify(d.config.material_contract)):null;selected.value=null;selectedNodeIndex.value=0;editing.value=true}catch(e:any){emit('error',e.message)}}
 const configuration=()=>({business_type:'generic',nodes:nodes.value,...(materialContract.value?{material_contract:materialContract.value}:{})})
 async function save(){busy.value=true;try{const r=editId.value?await api(`/workflows/${editId.value}`,{method:'PUT',body:JSON.stringify({name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null,expected_hash:editHash.value})}):await post('/workflows',{process_key:key.value,name:name.value,config:configuration(),category_id:categoryId.value,material_template_id:materialTemplateId.value||null});notice.value=`第 ${r.version} 版草稿已保存，尚未发布`;editing.value=false;await load();await openHistory({process_key:key.value});await view(r)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 async function publish(t:any){busy.value=true;try{await post(`/workflows/${t.id}/publish`);notice.value=`第 ${t.version} 版已发布，已有审批实例继续使用原版本`;await load();if(historyKey.value===t.process_key)await openHistory(t);if(selected.value?.id===t.id)await view(t)}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
-function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i))}
-function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}if(nodes.value.some((n,j)=>j>i&&n.return_policy?.targets?.includes(target))){emit('error','请先从后续节点的退回目标中移除此节点');return}nodes.value.splice(i,1)}
+function addNode(){let i=nodes.value.length+1;while(nodes.value.some(n=>n.key==='review_'+i))i++;nodes.value.push(freshNode(i));selectedNodeIndex.value=nodes.value.length-1}
+function removeNode(i:number){const target=nodes.value[i].key;if(nodes.value.some((n,j)=>j!==i&&(n.default_target===target||n.routes?.some((r:any)=>r.target===target)))){emit('error','请先修改指向该节点的分支，再删除节点');return}if(nodes.value.some((n,j)=>j>i&&n.return_policy?.targets?.includes(target))){emit('error','请先从后续节点的退回目标中移除此节点');return}nodes.value.splice(i,1);selectedNodeIndex.value=Math.max(0,Math.min(i,nodes.value.length-1))}
+function assignPerson(index:number,userId:string){const node=nodes.value[index];if(!node)return;if(node.assignment){emit('error','该节点正在按角色或部门选人，请先在节点属性中切换为指定人员');return}if(!node.users.includes(userId))node.users.push(userId);selectedNodeIndex.value=index}
+function unassignPerson(index:number,userId:string){const node=nodes.value[index];if(node)node.users=node.users.filter((id:string)=>id!==userId)}
+function connectNodes(sourceIndex:number,targetKey:string){const node=nodes.value[sourceIndex],allowed=targets(sourceIndex);if(!node||!allowed.some(target=>target.key===targetKey)){emit('error','线路只能连接到当前节点之后的节点或结束');return}const sequential=nodes.value[sourceIndex+1]?.key||'end';if((!node.routes&&targetKey===sequential)||node.default_target===targetKey||node.routes?.some((route:any)=>route.target===targetKey)){emit('error','这条线路已经存在');return}if(!node.routes){node.routes=[{condition:newCondition(),target:targetKey}];node.default_target=sequential}else node.routes.push({condition:newCondition(),target:targetKey});selectedNodeIndex.value=sourceIndex}
 function targets(i:number){return [...nodes.value.slice(i+1).map(n=>({key:n.key,name:n.name})),{key:'end',name:'审批结束'}]}
 function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{condition:newCondition(),target:targets(i)[0].key}];n.default_target=targets(i)[0].key}else{delete n.routes;delete n.default_target}}
 const nodeName=(target:string)=>routeName(target,nodes.value)
@@ -64,7 +72,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
   <section v-if="selected" class="surface form-stack" aria-label="流程详情">
     <div class="section-heading"><h3>{{selected.name}} · 第 {{selected.version}} 版 · {{selected.status==='PUBLISHED'?'已发布':'草稿'}}</h3><button @click="selected=null">关闭详情</button></div>
     <p class="muted">已关联 {{selected.instance_count}} 个审批实例</p><p>流程类别：{{categoryName(selected.category_id)}}</p>
-    <ol><li v-for="(n,i) in selected.config.nodes" :key="n.key" class="form-stack surface"><strong>{{n.name}} · {{n.mode==='ALL'?'全部人员同意（会签）':'任一人员同意（或签）'}}</strong>
+    <ol><li v-for="(n,i) in selected.config.nodes" :key="n.key" class="form-stack surface"><strong>{{n.name}} · {{modeName(n.mode)}}</strong>
       <p>审批人员：{{assignmentNames(n)}}</p><p v-if="n.assignment" class="muted">当前候选人员：{{candidateNames(n)}}。实际进入节点时校验业务与材料读取权限。</p>
       <p v-if="n.agent_auto_approval" class="muted">Agent 自动审批：允许审批人本人授权后自动同意该节点；未授权时仍人工处理。</p>
       <p v-if="n.allow_transfer" class="muted">审批转交：当前席位负责人可转交给重新校验权限后合格的人员。</p>
@@ -84,12 +92,13 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
     <div class="form-grid"><label>模板名称<input v-model="name" required maxlength="150"/></label></div>
     <label>绑定资料模板版本<select v-model="materialTemplateId" @change="selectMaterial"><option value="">暂不绑定</option><option v-for="t in materialTemplates.filter(x=>x.status==='PUBLISHED')" :key="t.id" :value="t.id">{{t.name}} · 第 {{t.version}} 版</option></select></label>
     <p v-if="materialTemplateId" class="muted">已绑定明确的字段版本。资料上传、核对及动态条件页面正在补齐，当前这类模板尚不能正式发起。</p>
-    <div class="flow-start">申请提交</div>
-    <template v-for="(n,i) in nodes" :key="i"><ArrowDown class="flow-arrow" :size="18"/>
-      <section class="surface form-stack" :aria-label="'审批节点 '+(i+1)">
+    <WorkflowCanvas :nodes="nodes" :users="users" :selected-index="selectedNodeIndex" :storage-key="key" @select="selectedNodeIndex=$event" @add="addNode" @connect="connectNodes" @assign="assignPerson" @unassign="unassignPerson" @error="emit('error',$event)"/>
+    <template v-for="{node:n,index:i} in selectedNodeEntry" :key="n.key">
+      <section class="surface form-stack workflow-node-inspector" :aria-label="'审批节点 '+(i+1)">
         <div class="section-heading"><strong>审批节点 {{i+1}}</strong><button v-if="nodes.length>1" type="button" class="icon-button" aria-label="删除节点" @click="removeNode(i)"><Trash2 :size="16"/></button></div>
         <div class="form-grid"><label>节点名称<input v-model="n.name" required/></label></div>
-        <label>审批方式<select v-model="n.mode"><option value="ALL">全部人员同意（会签）</option><option value="ANY">任一人员同意（或签）</option></select></label>
+        <label>审批方式<select :value="n.mode" @change="setNodeMode(n,($event.target as HTMLSelectElement).value)"><option value="ALL">全部人员同意（会签）</option><option value="ANY">任一人员同意（或签）</option><option value="CLAIM">候选人领取后办理</option></select></label>
+        <p v-if="n.mode==='CLAIM'" class="muted small">进入节点时只生成一个候选任务，不会为每位候选人建立审批票；首位成功领取者取得唯一责任席位，其他候选人的入口立即关闭。</p>
         <label class="check-label"><input v-model="n.allow_transfer" type="checkbox"/>允许当前审批人转交本人的审批席位</label>
         <p class="muted small">转交只更换当前席位负责人；系统会在准备和确认时重新校验目标人员的业务读取与审批权限。</p>
         <label class="check-label"><input v-model="n.allow_proxy" type="checkbox"/>允许管理员为此节点配置人工审批代理</label>
@@ -101,7 +110,7 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
           <fieldset><legend>合格人员池</legend><label class="check-label" v-for="u in users.filter(x=>x.active)" :key="u.id"><input v-model="n.add_sign_policy.users" type="checkbox" :value="u.id"/>{{u.display_name}}</label></fieldset>
           <p class="muted small">这里只定义候选池，不授予权限。发起和本人确认时都会重新校验目标人员的账号、业务审批权限和完整材料读取范围。</p>
         </div>
-        <label class="check-label"><input type="checkbox" :checked="!!n.agent_auto_approval" @change="toggleAgentAuto(n,($event.target as HTMLInputElement).checked)"/>允许审批人本人授权后由 Agent 自动同意该节点</label>
+        <label class="check-label"><input type="checkbox" :checked="!!n.agent_auto_approval" :disabled="n.mode==='CLAIM'" @change="toggleAgentAuto(n,($event.target as HTMLInputElement).checked)"/>允许审批人本人授权后由 Agent 自动同意该节点</label>
         <p class="muted small">只建议用于低风险、资料齐全时可例行同意的节点。Agent 不会自动驳回，也不能绕过审批人员、业务权限、资料版本或必须驳回条件。</p>
         <div v-if="n.agent_auto_approval" class="surface form-stack">
           <strong>自动审批安全条件</strong>
@@ -131,7 +140,6 @@ async function simulate(){busy.value=true;try{const snapshot=Object.fromEntries(
         </template><p v-else class="muted small">全部通过后 → {{nodes[i+1]?.name || '审批结束'}}</p>
       </section>
     </template>
-    <button type="button" @click="addNode">增加审批节点</button>
     <section class="surface form-stack" aria-label="路径模拟"><h3>保存前模拟</h3><p class="muted">填写测试值检查路径，不创建真实单据或待办。留空可验证资料不足时是否阻塞。</p>
       <div class="form-grid"><label v-for="field in workflowUi.simulationFields" :key="field.key">{{field.label}}<select v-if="field.options" v-model="sample[field.key]"><option v-if="field.emptyLabel" value="">{{field.emptyLabel}}</option><option v-for="(label,code) in field.options" :key="code" :value="code">{{label}}</option></select><input v-else v-model="sample[field.key]"/></label></div>
       <button type="button" :disabled="busy" @click="simulate">模拟流转</button>

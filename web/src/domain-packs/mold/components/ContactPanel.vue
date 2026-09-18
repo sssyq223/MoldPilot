@@ -26,7 +26,6 @@ async function load(){
 watch(()=>props.initialId,load,{immediate:true})
 </script>
 <template>
-<h2>联络单材料</h2>
 <p v-if="loading" role="status">正在读取当前联络单…</p>
 <p v-else-if="!initialId" class="empty">从会话结果选择需要查看的联络单。</p>
 <button v-if="failed" @click="load">重新读取材料</button>
@@ -76,6 +75,8 @@ watch(()=>props.initialId,load,{immediate:true})
 <style scoped>
 .contact-material{display:flex;flex-direction:column;gap:12px}
 .contact-material h3,.contact-material p{margin:0}
+.contact-material>header h3{font-size:16px;line-height:1.4;margin:0}
+.contact-material>h3{margin-top:8px;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--border) 58%,transparent);font-size:12px;line-height:1.35;color:var(--muted);letter-spacing:.02em}
 .contact-material .surface{padding:16px;display:grid;gap:10px}
 .contact-material .audit-row p{margin-top:8px}
 .contact-facts{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin:0}.contact-facts div{display:flex;gap:8px}.contact-facts dt{color:var(--muted);font-size:12px}.contact-facts dd{margin:0;font-size:12px}

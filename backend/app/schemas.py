@@ -80,6 +80,11 @@ class ApprovalWithdrawInput(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class ApprovalClaimInput(StrictModel):
+    version: int = Field(ge=1)
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+
+
 class ApprovalSeatTransferInput(StrictModel):
     instance_id: str = Field(min_length=1, max_length=36)
     seat_id: str = Field(min_length=1, max_length=36)

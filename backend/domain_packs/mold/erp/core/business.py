@@ -5,7 +5,7 @@ from sqlalchemy import select, exists, and_, or_, func
 from domain_packs.mold import bpm
 from domain_packs.mold.ports.db import now,aware
 from domain_packs.mold.models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
-                     ApprovalInstance, ApprovalSeat, ApprovalAction, AgentApprovalDelegation,
+                     ApprovalInstance, ApprovalSeat, ApprovalCandidate, ApprovalAction, AgentApprovalDelegation,
                      ApprovalProxyDelegation, HumanIntent,
                      MaterialBinding, AuditEvent)
 from domain_packs.mold.models import BusinessSubject
@@ -80,7 +80,7 @@ def enter_stage(db, instance, definition, req):
     try:candidates,sources=resolve_users(db,node)
     except DomainError:
         instance.incident='ASSIGNMENT_BLOCKED'
-    resolution={'node':node['key'],'resolved_at':now().isoformat(),'sources':sources,
+    resolution={'node':node['key'],'mode':node['mode'],'resolved_at':now().isoformat(),'sources':sources,
                 'rule':node.get('assignment',{'users':node.get('users',[])}),'candidates':candidates}
     eligible = []
     for user_id in candidates:
@@ -95,12 +95,21 @@ def enter_stage(db, instance, definition, req):
         except DomainError: continue
     resolution['eligible']=eligible
     resolution['blocked']=not eligible or (node['mode']=='ALL' and len(eligible)!=len(candidates))
+    if node['mode'] == 'CLAIM':
+        resolution['claim_status'] = 'AVAILABLE' if not resolution['blocked'] else 'BLOCKED'
     instance.assignment_snapshots={**(instance.assignment_snapshots or {}),str(instance.stage_index):resolution}
     if resolution['blocked']:
         instance.incident = "ASSIGNMENT_BLOCKED"
         record(db, None, "approval.assignment.blocked", instance.id)
         return
     instance.incident=None
+    if node['mode'] == 'CLAIM':
+        for user_id in eligible:
+            db.add(ApprovalCandidate(instance_id=instance.id, stage_index=instance.stage_index,
+                                     user_id=user_id))
+        record(db, None, "approval.claim.available", instance.id,
+               {"stage_index": instance.stage_index, "candidate_count": len(eligible)}, eligible)
+        return
     for user_id in eligible:
         db.add(ApprovalSeat(instance_id=instance.id, stage_index=instance.stage_index, user_id=user_id))
     record(db, None, "approval.pending", instance.id, recipients=eligible)
@@ -246,6 +255,16 @@ def approval_detail(db, user, instance):
     fields = request_access(db, user, req, "purchase.read")
     definition = db.get(WorkflowDefinition, instance.definition_id)
     seats = list(db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id)))
+    current_node = (definition.config["nodes"][instance.stage_index]
+                    if instance.stage_index < len(definition.config["nodes"]) else None)
+    claim_candidates = list(db.scalars(select(ApprovalCandidate).where(
+        ApprovalCandidate.instance_id == instance.id,
+        ApprovalCandidate.stage_index == instance.stage_index,
+    ))) if current_node and current_node["mode"] == "CLAIM" else []
+    claim_candidate = next((candidate for candidate in claim_candidates
+                            if candidate.user_id == user.id and candidate.status == "AVAILABLE"), None)
+    claimed_candidate = next((candidate for candidate in claim_candidates
+                              if candidate.status == "CLAIMED"), None)
     current = next((s for s in seats if s.user_id == user.id and s.status == "PENDING" and s.stage_index == instance.stage_index), None)
     proxy_delegation = None
     if not current and instance.status == "RUNNING" and instance.stage_index < len(definition.config["nodes"]):
@@ -272,6 +291,14 @@ def approval_detail(db, user, instance):
     required = ({"project_id", "material_id", "quantity", "due_date", "remark"}
                 if instance.resource_type == "purchase_request" else {'project_id','detail','remark'})
     complete = "*" in fields or required <= fields
+    claim_allowed = False
+    if (claim_candidate and instance.status == "RUNNING" and not instance.incident
+            and req.created_by != user.id and complete):
+        try:
+            request_access(db, user, req, "purchase.approve")
+            claim_allowed = True
+        except DomainError:
+            pass
     material_notice=None
     if isinstance(req,BusinessSubject) and req.kind=='contact_resolution' and instance.status=='RUNNING':
         from domain_packs.mold.erp.change.contact_lifecycle import ensure_materials
@@ -298,6 +325,10 @@ def approval_detail(db, user, instance):
         AuditEvent.resource_id == instance.id,
         AuditEvent.action == "approval.seat.added",
     ).order_by(AuditEvent.created_at)))
+    claim_events = list(db.scalars(select(AuditEvent).where(
+        AuditEvent.resource_id == instance.id,
+        AuditEvent.action == "approval.seat.claimed",
+    ).order_by(AuditEvent.created_at)))
     withdrawal_event = db.scalar(select(AuditEvent).where(
         AuditEvent.resource_id == instance.id,
         AuditEvent.action == "approval.withdrawn",
@@ -319,6 +350,15 @@ def approval_detail(db, user, instance):
                                  "countersign_timing":s.countersign_timing} for s in seats],
             "seat_id": current.id if current else None, "seat_version": current.version if current else None,
             "proxy_delegation": approval_proxy_context(db, proxy_delegation) if proxy_delegation else None,
+            "claim_allowed": claim_allowed,
+            "claim_status": ("CLAIMED" if claimed_candidate else "AVAILABLE"
+                             if claim_candidates else None),
+            "claim_candidate_count": len(claim_candidates),
+            "claimed_by": ({"id": claimed_candidate.user_id,
+                            "display_name": db.get(User, claimed_candidate.user_id).display_name,
+                            "department": db.get(User, claimed_candidate.user_id).department,
+                            "at": claimed_candidate.claimed_at.isoformat()}
+                           if claimed_candidate else None),
             "withdraw_allowed": bool(instance.status == "RUNNING" and req.status == "SUBMITTED"
                                      and req.created_by == user.id),
             "withdrawal": ({**withdrawal_event.detail, "at": withdrawal_event.created_at.isoformat()}
@@ -335,7 +375,8 @@ def approval_detail(db, user, instance):
                          "decision_context": a.decision_context or {},
                          "at": a.created_at.isoformat()} for a in db.scalars(select(ApprovalAction).where(ApprovalAction.instance_id == instance.id).order_by(ApprovalAction.created_at))],
             "transfer_history": [{**event.detail, "at": event.created_at.isoformat()} for event in transfer_events],
-            "add_sign_history": [{**event.detail, "at": event.created_at.isoformat()} for event in add_sign_events]}
+            "add_sign_history": [{**event.detail, "at": event.created_at.isoformat()} for event in add_sign_events],
+            "claim_history": [{**event.detail, "at": event.created_at.isoformat()} for event in claim_events]}
 
 
 def node_return_options(definition, instance):
@@ -618,6 +659,74 @@ def _stage_is_approved(node, peers):
             else bool(base) and all(seat.status == "APPROVE" for seat in base))
 
 
+def claim_approval(db, user, instance_id, payload):
+    instance = db.scalar(select(ApprovalInstance).where(
+        ApprovalInstance.id == instance_id,
+    ).with_for_update())
+    if not instance:
+        raise DomainError("NOT_FOUND", "审批不存在", 404)
+    req = load_subject(db, instance, lock=True)
+    request_access(db, user, req, "purchase.approve")
+    fields = request_access(db, user, req, "purchase.read")
+    required = ({"project_id", "material_id", "quantity", "due_date", "remark"}
+                if instance.resource_type == "purchase_request" else {"project_id", "detail", "remark"})
+    if "*" not in fields and not required <= fields:
+        raise DomainError("CLAIM_FORBIDDEN", "当前账号不能读取完整审批材料，无法领取", 403)
+    if instance.status != "RUNNING" or instance.incident:
+        raise DomainError("CLAIM_NOT_ALLOWED", "当前审批不处于可领取状态", 409)
+    definition = db.get(WorkflowDefinition, instance.definition_id)
+    if instance.stage_index >= len(definition.config["nodes"]):
+        raise DomainError("CLAIM_NOT_ALLOWED", "当前审批节点已经结束", 409)
+    node = definition.config["nodes"][instance.stage_index]
+    if node["mode"] != "CLAIM":
+        raise DomainError("CLAIM_NOT_ALLOWED", "当前节点不是候选领取任务", 409)
+    if req.created_by == user.id:
+        raise DomainError("CLAIM_SELF_FORBIDDEN", "申请人不能领取本人发起的审批任务", 409)
+    if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
+        raise DomainError("VERSION_CONFLICT", "审批任务已变化，请刷新后重新领取", 409)
+    candidates = list(db.scalars(select(ApprovalCandidate).where(
+        ApprovalCandidate.instance_id == instance.id,
+        ApprovalCandidate.stage_index == instance.stage_index,
+    ).with_for_update()))
+    candidate = next((item for item in candidates if item.user_id == user.id), None)
+    if not candidate or candidate.status != "AVAILABLE":
+        raise DomainError("CLAIM_CONFLICT", "你不在本轮冻结候选池中，或任务已被领取", 409)
+    existing = db.scalar(select(ApprovalSeat.id).where(
+        ApprovalSeat.instance_id == instance.id,
+        ApprovalSeat.stage_index == instance.stage_index,
+    ))
+    if existing or any(item.status == "CLAIMED" for item in candidates):
+        raise DomainError("CLAIM_CONFLICT", "该任务已被其他候选人领取", 409)
+    seat = ApprovalSeat(instance_id=instance.id, stage_index=instance.stage_index, user_id=user.id)
+    db.add(seat)
+    db.flush()
+    claimed_at = now()
+    for item in candidates:
+        item.version += 1
+        if item.id == candidate.id:
+            item.status = "CLAIMED"
+            item.seat_id = seat.id
+            item.claimed_at = claimed_at
+        else:
+            item.status = "CLOSED"
+    instance.version += 1
+    snapshot_key = str(instance.stage_index)
+    assignment_snapshot = dict((instance.assignment_snapshots or {}).get(snapshot_key, {}))
+    claimant = {"id": user.id, "display_name": user.display_name,
+                "department": user.department}
+    assignment_snapshot.update({"claim_status": "CLAIMED", "claimed_by": claimant,
+                                "claimed_at": claimed_at.isoformat(), "seat_id": seat.id})
+    instance.assignment_snapshots = {**(instance.assignment_snapshots or {}),
+                                     snapshot_key: assignment_snapshot}
+    recipients = sorted(({item.user_id for item in candidates} | {req.created_by}) - {user.id})
+    detail = {"stage_index": instance.stage_index, "node_key": node["key"],
+              "candidate_count": len(candidates), "claimed_by": claimant,
+              "seat_id": seat.id, "instance_version": instance.version}
+    record(db, user, "approval.seat.claimed", instance.id, detail, recipients)
+    return {"instance_id": instance.id, "seat_id": seat.id, "status": instance.status,
+            "version": instance.version, "claimed_by": claimant}
+
+
 def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     instance = db.scalar(select(ApprovalInstance).where(ApprovalInstance.id == payload["instance_id"]).with_for_update())
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
@@ -727,6 +836,7 @@ def withdraw_approval(db, user, payload):
     if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
         raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化，请重新核对", 409)
     cancelled = 0
+    closed_candidates = 0
     recipients = set()
     for seat in db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id)):
         if seat.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}:
@@ -734,6 +844,13 @@ def withdraw_approval(db, user, payload):
             seat.status = "CANCELLED"
             seat.version += 1
             cancelled += 1
+    for candidate in db.scalars(select(ApprovalCandidate).where(
+            ApprovalCandidate.instance_id == instance.id,
+            ApprovalCandidate.status == "AVAILABLE")):
+        recipients.add(candidate.user_id)
+        candidate.status = "CLOSED"
+        candidate.version += 1
+        closed_candidates += 1
     if isinstance(req, BusinessSubject):
         from domain_packs.mold.erp.core.domains import release_reservation
         release_reservation(db, req)
@@ -743,6 +860,7 @@ def withdraw_approval(db, user, payload):
     req.revision += 1
     req.status = "DRAFT"
     detail = {"reason": payload["reason"], "cancelled_seats": cancelled,
+              "closed_candidates": closed_candidates,
               "business_status": req.status, "withdrawn_revision": instance.revision,
               "draft_revision": req.revision,
               "round_no": instance.round_no,

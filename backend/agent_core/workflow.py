@@ -40,10 +40,12 @@ def validate(config):
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
             raise DomainError("INVALID_WORKFLOW", "节点标识不合法或重复")
         keys.add(key)
-        if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
-            raise DomainError("INVALID_WORKFLOW", "必须设置节点名称和会签模式")
+        if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY", "CLAIM"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
+            raise DomainError("INVALID_WORKFLOW", "必须设置节点名称和审批办理方式")
         if "agent_auto_approval" in node and not isinstance(node["agent_auto_approval"], bool):
             raise DomainError("INVALID_WORKFLOW", "Agent 自动审批节点标记必须为布尔值")
+        if node.get("mode") == "CLAIM" and node.get("agent_auto_approval"):
+            raise DomainError("INVALID_WORKFLOW", "候选领取节点必须由候选人本人先领取，不能配置 Agent 自动审批")
         if "allow_transfer" in node and not isinstance(node["allow_transfer"], bool):
             raise DomainError("INVALID_WORKFLOW", "审批转交节点标记必须为布尔值")
         if "allow_proxy" in node and not isinstance(node["allow_proxy"], bool):

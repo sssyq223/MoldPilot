@@ -185,6 +185,33 @@ class ApprovalSeat(IdentityMixin, Base):
     )
 
 
+class ApprovalCandidate(IdentityMixin, Base):
+    """Frozen candidate pool for a single claim-mode approval task.
+
+    Candidates are not approval seats.  A seat is created only for the one
+    candidate who wins the atomic claim, so a claim node remains one task
+    instead of being misrepresented as an ANY vote with one task per person.
+    """
+    __tablename__ = "approval_candidate"
+    instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"), index=True)
+    stage_index: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="AVAILABLE")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    seat_id: Mapped[str | None] = mapped_column(ForeignKey("approval_seat.id"), unique=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("instance_id", "stage_index", "user_id"),
+        CheckConstraint(
+            "(status = 'AVAILABLE' AND seat_id IS NULL AND claimed_at IS NULL) OR "
+            "(status = 'CLAIMED' AND seat_id IS NOT NULL AND claimed_at IS NOT NULL) OR "
+            "(status = 'CLOSED' AND seat_id IS NULL AND claimed_at IS NULL)",
+            name="approval_candidate_state_shape",
+        ),
+        Index("ix_approval_candidate_user_status", "user_id", "status"),
+    )
+
+
 class ApprovalAction(IdentityMixin, Base):
     __tablename__ = "approval_action"
     instance_id: Mapped[str] = mapped_column(ForeignKey("approval_instance.id"))

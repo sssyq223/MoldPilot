@@ -582,13 +582,21 @@ def approvals(user=Depends(current_user), db=Depends(get_db)):
     seat_owner = m.ApprovalSeat.user_id == user.id
     if proxy_principals:
         seat_owner = or_(seat_owner, m.ApprovalSeat.user_id.in_(proxy_principals))
-    q = select(m.ApprovalInstance).join(m.ApprovalSeat).where(
-        seat_owner, m.ApprovalSeat.status == "PENDING").distinct()
+    seat_instances = select(m.ApprovalSeat.instance_id).where(
+        seat_owner, m.ApprovalSeat.status == "PENDING")
+    claim_instances = select(m.ApprovalCandidate.instance_id).where(
+        m.ApprovalCandidate.user_id == user.id,
+        m.ApprovalCandidate.status == "AVAILABLE",
+    )
+    q = select(m.ApprovalInstance).where(or_(
+        m.ApprovalInstance.id.in_(seat_instances),
+        m.ApprovalInstance.id.in_(claim_instances),
+    )).order_by(m.ApprovalInstance.created_at.desc())
     results = []
     for instance in db.scalars(q.limit(300)):
         try:
             detail = _business().approval_detail(db, user, instance)
-            if detail["seat_id"]:
+            if detail["seat_id"] or detail["claim_allowed"]:
                 results.append(detail)
         except DomainError: continue
         if len(results) == 100:
@@ -620,6 +628,14 @@ def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
     instance = db.get(m.ApprovalInstance, instance_id)
     if not instance: raise DomainError("NOT_FOUND", "审批不存在", 404)
     return _business().approval_detail(db, user, instance)
+
+
+@app.post("/api/approvals/{instance_id}/claim")
+def claim_approval(instance_id: str, data: s.ApprovalClaimInput,
+                   user=Depends(current_user), db=Depends(get_db)):
+    result = _business().claim_approval(db, user, instance_id, data.model_dump())
+    db.commit()
+    return result
 
 
 @app.post("/api/approvals/decision-intent")
