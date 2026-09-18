@@ -3,7 +3,11 @@ from agent_core.errors import DomainError
 
 
 def catalog(db, user):
-    return {"kind": "", "label": "", "scope_label": "", "context_key": "", "roles": [], "scopes": []}
+    return {
+        "kind": "", "label": "", "scope_label": "", "context_key": "",
+        "roles": [], "scopes": [], "capabilities": [],
+        "responsibility_dimensions": [],
+    }
 
 
 def validate_role_keys(role_keys):

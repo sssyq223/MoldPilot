@@ -4,7 +4,7 @@ from sqlalchemy import delete, select
 
 from agent_core.errors import DomainError
 from domain_packs.mold import models as m
-from domain_packs.mold.authorization import predicate
+from domain_packs.mold.authorization import PERMISSIONS, predicate
 from domain_packs.mold.ports.events import record
 
 
@@ -77,6 +77,8 @@ def catalog(db, user):
             {"id": project.id, "code": project.code, "name": project.name, "status": project.status}
             for project in db.scalars(query.limit(500))
         ],
+        "capabilities": [{"key": key} for key in sorted(PERMISSIONS)],
+        "responsibility_dimensions": [{"key": "project_id", "name": "当前项目"}],
     }
 
 

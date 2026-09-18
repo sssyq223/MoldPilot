@@ -364,7 +364,8 @@ print(json.dumps({
     assert payload["version_table"] == "alembic_core_version"
     assert payload["workflow_assignment"] == {
         "kind": "", "label": "", "scope_label": "", "context_key": "",
-        "roles": [], "scopes": [],
+        "roles": [], "scopes": [], "capabilities": [],
+        "responsibility_dimensions": [],
     }
     assert not ({
         "project", "material", "purchase_request", "purchase_request_line",
