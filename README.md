@@ -68,8 +68,8 @@ flowchart LR
 MoldPilot/
 ├─ backend/             # FastAPI、Agent Worker 与业务服务
 ├─ web/                 # Vue 3 前端
-├─ alembic/             # MoldPilot 现有兼容迁移链
 ├─ alembic_core/        # 通用智能体宿主迁移链
+├─ backend/domain_packs/mold/alembic_domain/ # 模具领域独立迁移链
 ├─ backend/domain_packs/# 可替换业务包（含各自 ERP、Tool、Skill、MCP）
 ├─ tests/               # 后端测试
 ├─ scripts/             # 开发与运维辅助脚本
@@ -127,9 +127,11 @@ $env:PYTHONPATH='backend'
 .\.venv\Scripts\python.exe -m app.bootstrap --username admin --name 管理员
 ```
 
-迁移命令会根据 `AGENT_BUSINESS_PACK` 选择数据库版本链：默认 `mold`
-继续使用现有 MoldPilot 历史迁移，`template` 使用不包含项目、采购、工程联络
-或物流表的通用宿主迁移。不要在切换业务包后直接运行固定的 Alembic 配置。
+迁移命令会根据 `AGENT_BUSINESS_PACK` 按顺序执行版本链：默认 `mold`
+先运行通用 Core，再运行模具领域仓库；`template` 只运行不包含项目、采购、
+工程联络或物流表的 Core。现有 MoldPilot 历史库会先升级并校验旧链，再原地
+登记两个新版本 head，业务数据不复制、不重写。不要绕过 `scripts/migrate.py`
+直接运行固定 Alembic 配置；定位单层问题时才显式使用 `--stage`。
 
 创建管理员时，命令行会提示输入初始密码，密码长度至少为 12 个字符。
 

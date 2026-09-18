@@ -69,10 +69,24 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
         "purchase_request", "business_subject",
     }
     assert callable(resource_contract().initiated_approval_ids)
-    assert component("migrations").ALEMBIC_CONFIG == "backend/domain_packs/mold/alembic.ini"
-    assert component("migrations").VERSION_TABLE == "alembic_version"
-    assert "erp_design_query_bom" in core_gateway.TOOLS
+    assert component("migrations").STAGES == (
+        {"name": "core", "config": "alembic-core.ini",
+         "version_table": "alembic_core_version"},
+        {"name": "mold", "config": "backend/domain_packs/mold/alembic-domain.ini",
+         "version_table": "alembic_mold_version"},
+    )
+    assert component("migrations").LEGACY == {
+        "config": "backend/domain_packs/mold/alembic.ini",
+        "version_table": "alembic_version",
+    }
+    assert {
+        "erp_design_query_bom",
+        "erp_design_query_drawing_versions",
+        "erp_design_query_densities",
+        "erp_design_query_standard_hardware",
+    }.issubset(core_gateway.TOOLS)
     project_root = Path(__file__).resolve().parents[1]
+    assert not list((project_root / "alembic" / "versions").glob("*.py"))
     assert not (project_root / "backend" / "app" / "erp_design_mcp.py").exists()
     assert not (project_root / "backend" / "app" / "erp_design_upload.py").exists()
     assert (project_root / "backend" / "domain_packs" / "mold" / "erp" /
@@ -272,6 +286,14 @@ def test_generic_frontend_shell_has_no_mold_business_implementation():
     )
     assert not [term for term in forbidden if term in common_source]
     assert not (project_root / "web" / "src" / "components" / "WorkflowSubmit.vue").exists()
+    assert not (project_root / "web" / "src" / "components" / "ErpDesignWorkbench.vue").exists()
+    assert "ERP 设计管理" not in common_source
+
+    from app.api import app
+    assert not any(
+        getattr(route, "path", "").startswith("/api/erp-design-workspace")
+        for route in app.routes
+    )
 
     for pack in ("mold", "template"):
         pack_root = project_root / "web" / "src" / "domain-packs" / pack
@@ -331,8 +353,7 @@ print(json.dumps({
     'permissions': sorted(PERMISSIONS),
     'dimensions': sorted(DIMENSIONS),
     'approval_resource_types': sorted(resource_contract().APPROVAL_RESOURCE_TYPES),
-    'alembic_config': migration_contract().ALEMBIC_CONFIG,
-    'version_table': migration_contract().VERSION_TABLE,
+    'migration_stages': migration_contract().STAGES,
     'workflow_assignment': component('workflow_assignment').catalog(None, None),
     'mold_modules': sorted(name for name in sys.modules if name.startswith('domain_packs.mold')),
     'policy_text': ' '.join([
@@ -373,8 +394,11 @@ print(json.dumps({
     ]
     assert payload["dimensions"] == []
     assert payload["approval_resource_types"] == []
-    assert payload["alembic_config"] == "alembic-core.ini"
-    assert payload["version_table"] == "alembic_core_version"
+    assert payload["migration_stages"] == [{
+        "name": "core",
+        "config": "alembic-core.ini",
+        "version_table": "alembic_core_version",
+    }]
     assert payload["workflow_assignment"] == {
         "kind": "", "label": "", "scope_label": "", "context_key": "",
         "roles": [], "scopes": [], "capabilities": [],

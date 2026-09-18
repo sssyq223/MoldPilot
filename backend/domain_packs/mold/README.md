@@ -22,7 +22,9 @@ at this package root; business implementations are categorized below them.
   business domain.
 - `skills/agent/<domain>/`: Agent-native skills by business responsibility.
 - `skills/erp/<domain>/`: ERP skills by business domain.
-- `alembic/`: this pack's complete deployed PostgreSQL migration history.
+- `alembic_domain/`: the independently versioned mold-only PostgreSQL schema.
+- `alembic/`: frozen compatibility history used only to adopt existing
+  MoldPilot databases into the split Core + domain migration stages.
 
 Tool and Skill folders use the same `agent/erp -> domain` taxonomy. Skill
 folders are runtime retrieval boundaries, not cosmetic grouping. The
@@ -52,3 +54,7 @@ VITE_BUSINESS_PACK=mold
 To build a vehicle, fixture, or other ERP workbench, copy the template pack,
 implement the same root components, add categorized ERP/Agent Skills and UI
 adapters, then change only these selectors. No Harness branch is needed.
+
+Migration installation is ordered by `migrations.STAGES`: generic Core first,
+then the selected pack. A new pack owns its domain repository and version table;
+it never appends industry tables to the Core chain.

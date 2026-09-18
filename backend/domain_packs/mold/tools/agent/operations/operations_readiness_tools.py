@@ -225,17 +225,22 @@ def _db_status(db) -> dict:
 def _migration_repository_status() -> dict:
     try:
         from alembic.script import ScriptDirectory
-        from agent_core.migration_runtime import alembic_config, version_table
+        from agent_core.migration_runtime import alembic_configs
 
-        config = alembic_config(REPO_ROOT)
-        script = ScriptDirectory.from_config(config)
-        heads = sorted(script.get_heads())
+        stages = []
+        for descriptor, config in alembic_configs(REPO_ROOT):
+            script = ScriptDirectory.from_config(config)
+            stages.append({
+                "name": descriptor.name,
+                "script_location": config.get_main_option("script_location"),
+                "version_table": descriptor.version_table,
+                "heads": sorted(script.get_heads()),
+            })
         return {
             "available": True,
-            "script_location": config.get_main_option("script_location"),
-            "version_table": version_table(),
-            "heads": heads,
-            "head_count": len(heads),
+            "stages": stages,
+            "heads": [head for stage in stages for head in stage["heads"]],
+            "head_count": sum(len(stage["heads"]) for stage in stages),
         }
     except Exception as error:  # pragma: no cover - defensive status path
         return {
@@ -246,34 +251,45 @@ def _migration_repository_status() -> dict:
 
 def _migration_status(db) -> dict:
     repository = _migration_repository_status()
-    status: dict = {"repository": repository}
-    try:
-        version_table = repository.get("version_table", "alembic_version")
-        if not version_table.replace("_", "").isalnum():
-            raise RuntimeError("Invalid migration version table")
-        versions = sorted(str(row[0]) for row in db.execute(
-            text(f'SELECT version_num FROM "{version_table}"')
-        ).all())
-    except Exception as error:  # pragma: no cover - defensive status path
-        status.update(
-            {
-                "database_versions_available": False,
-                "error_type": type(error).__name__,
-                "matches_repository_heads": False,
-            }
-        )
+    status: dict = {"repository": repository, "stages": []}
+    if not repository.get("available"):
+        status.update({"database_versions_available": False,
+                       "matches_repository_heads": False})
         return status
-    heads = repository.get("heads") if repository.get("available") else []
-    status.update(
-        {
-            "database_versions_available": True,
-            "database_versions": versions,
-            "database_version_count": len(versions),
-            "matches_repository_heads": bool(heads) and set(versions) == set(heads),
-            "status": "MIGRATIONS_MATCH_REPOSITORY_HEADS" if bool(heads) and set(versions) == set(heads) else "MIGRATIONS_OUT_OF_SYNC",
-            "note": f"只读比较数据库 {version_table} 与活动业务包的 Alembic head；不会执行迁移。",
-        }
+    for stage in repository["stages"]:
+        try:
+            version_table = stage["version_table"]
+            if not version_table.replace("_", "").isalnum():
+                raise RuntimeError("Invalid migration version table")
+            versions = sorted(str(row[0]) for row in db.execute(
+                text(f'SELECT version_num FROM "{version_table}"')
+            ).all())
+            matches = bool(stage["heads"]) and set(versions) == set(stage["heads"])
+            status["stages"].append({
+                **stage,
+                "database_versions_available": True,
+                "database_versions": versions,
+                "matches_repository_heads": matches,
+            })
+        except Exception as error:  # pragma: no cover - defensive status path
+            status["stages"].append({
+                **stage,
+                "database_versions_available": False,
+                "matches_repository_heads": False,
+                "error_type": type(error).__name__,
+            })
+    matches_all = bool(status["stages"]) and all(
+        stage["matches_repository_heads"] for stage in status["stages"]
     )
+    status.update({
+        "database_versions_available": all(
+            stage["database_versions_available"] for stage in status["stages"]
+        ),
+        "matches_repository_heads": matches_all,
+        "status": ("MIGRATIONS_MATCH_REPOSITORY_HEADS" if matches_all
+                   else "MIGRATIONS_OUT_OF_SYNC"),
+        "note": "只读逐层比较 Core 与活动业务包版本表和各自 Alembic head；不会执行迁移。",
+    })
     return status
 
 
@@ -686,7 +702,7 @@ def _readiness_summary(
     if migration_status.get("matches_repository_heads"):
         ready_items.append("alembic_migration_head")
     else:
-        block("migrations", "数据库迁移版本", migration_status.get("status"), "用迁移账号核对或执行 alembic upgrade head，确认 alembic_version 等于仓库 head。")
+        block("migrations", "数据库迁移版本", migration_status.get("status"), "用迁移账号执行 scripts/migrate.py upgrade head，并逐层确认 Core 与业务包版本表等于各自仓库 head。")
 
     if redis_status.get("status") == "REDIS_REACHABLE_STREAM_GROUP_READY":
         ready_items.append("redis_stream_group")

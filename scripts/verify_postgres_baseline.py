@@ -9,12 +9,15 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 from urllib.parse import urlsplit
 
-from alembic.config import Config
 from alembic.script import ScriptDirectory
 from dotenv import dotenv_values
 from sqlalchemy import create_engine, text
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from agent_core.migration_runtime import alembic_configs
 
 
 def _statements(path: Path) -> list[str]:
@@ -28,7 +31,6 @@ def main() -> int:
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL", help="Dotenv key containing PostgreSQL DSN.")
     parser.add_argument("--expected-db", default="moldpilot", help="Expected database name. Defaults to moldpilot.")
     parser.add_argument("--sql", default="database/verify_moldpilot_navicat.sql", help="Verification SQL file.")
-    parser.add_argument("--alembic-ini", default="alembic.ini", help="Alembic config used to resolve repository heads.")
     args = parser.parse_args()
 
     config = dotenv_values(args.env_file)
@@ -50,19 +52,26 @@ def main() -> int:
 
     engine = create_engine(url)
     statements = _statements(Path(args.sql))
-    if len(statements) < 4:
+    if len(statements) < 3:
         raise SystemExit("Verification SQL is incomplete.")
 
-    alembic_config = Config(args.alembic_ini)
-    heads = sorted(ScriptDirectory.from_config(alembic_config).get_heads())
-    if not heads:
-        raise SystemExit("No Alembic repository heads found.")
+    repositories = []
+    for stage, alembic_config in alembic_configs():
+        heads = sorted(ScriptDirectory.from_config(alembic_config).get_heads())
+        if not heads:
+            raise SystemExit(f"No Alembic repository heads found for {stage.name}.")
+        repositories.append((stage, heads))
 
     with engine.connect() as connection:
         database_row = connection.execute(text(statements[0])).one()
         admin_rows = connection.execute(text(statements[1])).mappings().all()
         count_rows = connection.execute(text(statements[2])).mappings().all()
-        migration_rows = connection.execute(text(statements[3])).mappings().all()
+        migrations = []
+        for stage, heads in repositories:
+            versions = sorted(str(row[0]) for row in connection.execute(text(
+                f'SELECT version_num FROM "{stage.version_table}"'
+            )).all())
+            migrations.append((stage, versions, heads))
 
     actual_db = database_row[0]
     if actual_db != args.expected_db:
@@ -72,9 +81,12 @@ def main() -> int:
     admin = admin_rows[0]
     if not admin["super_admin"] or not admin["active"]:
         raise SystemExit("Admin account exists but is not an active super administrator.")
-    versions = sorted(str(row["alembic_version"]) for row in migration_rows)
-    if set(versions) != set(heads):
-        raise SystemExit(f"Database migrations out of sync: database={versions!r}, repository_heads={heads!r}.")
+    for stage, versions, heads in migrations:
+        if set(versions) != set(heads):
+            raise SystemExit(
+                f"Database migration stage {stage.name} out of sync: "
+                f"database={versions!r}, repository_heads={heads!r}."
+            )
 
     print(f"database={actual_db}")
     print(f"host={parsed.hostname}")
@@ -82,8 +94,9 @@ def main() -> int:
     print(f"admin={admin['username']} active={admin['active']} super_admin={admin['super_admin']}")
     for row in count_rows:
         print(f"{row['table_name']}={row['row_count']}")
-    print(f"alembic_versions={','.join(versions)}")
-    print(f"alembic_heads={','.join(heads)}")
+    for stage, versions, heads in migrations:
+        print(f"{stage.name}_alembic_versions={','.join(versions)}")
+        print(f"{stage.name}_alembic_heads={','.join(heads)}")
     print("migration_baseline=OK")
     print("postgres_baseline=OK")
     return 0

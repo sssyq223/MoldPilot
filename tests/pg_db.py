@@ -1,7 +1,6 @@
 import os
 
 import pytest
-from alembic import command
 from dotenv import dotenv_values
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -9,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import make_engine
 from app.models import Base
-from agent_core.migration_runtime import alembic_config
+from agent_core.migration_runtime import upgrade_all
 
 
 _MIGRATED_URLS: set[str] = set()
@@ -50,7 +49,7 @@ def _migrate(url: str) -> None:
     previous = os.environ.get("AGENT_MIGRATION_URL")
     os.environ["AGENT_MIGRATION_URL"] = url
     try:
-        command.upgrade(alembic_config(), "head")
+        upgrade_all("head")
     finally:
         if previous is None:
             os.environ.pop("AGENT_MIGRATION_URL", None)

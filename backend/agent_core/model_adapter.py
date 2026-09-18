@@ -53,19 +53,36 @@ class ModelAdapter:
         self.proxy = proxy or None
         self.ssl_context = tls_context(tls_max_version, tls_key_exchange)
         self.timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=15, pool=5)
-        self.transport = transport
+        self._transport = transport
         self.last_metrics = {}
         # The worker owns one adapter for many model turns. Reusing the client
         # also reuses healthy HTTP/TLS connections instead of handshaking for
         # ToolSearch, the business tool call, and the final answer separately.
-        self.client = httpx.Client(
+        self.client = self._build_client()
+
+    def _build_client(self):
+        return httpx.Client(
             verify=self.ssl_context,
             timeout=self.timeout,
             proxy=self.proxy,
             trust_env=False,
             follow_redirects=False,
-            transport=self.transport,
+            transport=self._transport,
         )
+
+    @property
+    def transport(self):
+        return self._transport
+
+    @transport.setter
+    def transport(self, value):
+        """Replace the transport without leaving the reusable client stale."""
+        if value is self._transport:
+            return
+        self._transport = value
+        if hasattr(self, "client"):
+            self.client.close()
+            self.client = self._build_client()
 
     def close(self):
         self.client.close()

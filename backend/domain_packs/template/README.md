@@ -16,7 +16,7 @@ implement the stable components:
 - `models.py`: pack-owned ORM exports; the template intentionally exports none;
 - `authorization.py`: domain permissions and data-scope dimensions;
 - `resources.py`: resource types accepted by generic approval persistence;
-- `migrations.py`: Alembic repository and version-table ownership.
+- `migrations.py`: ordered Core plus optional pack-owned Alembic stages.
 - `workflow_policy.py`: business types, rule language and workflow applicability;
 - `file_policy.py`: visibility of files linked to domain objects;
 - `notification_policy.py`: event titles and revocation-aware visibility.
@@ -26,10 +26,12 @@ implement the stable components:
 The template intentionally registers no models, domain permissions, scope
 dimensions, or approval resource types. Its metadata must remain sortable and
 compilable as PostgreSQL DDL so a new pack starts from a valid host schema.
-`scripts/migrate.py` selects `alembic-core.ini` for this pack; its frozen SQL
-baseline creates only the host-owned tables plus `alembic_core_version` and has a
-reviewed checksum. A real PostgreSQL integration test upgrades, checks and
-downgrades that chain in an isolated schema.
+`scripts/migrate.py` executes the stages declared by the active pack. This empty
+template declares only `alembic-core.ini`; its frozen SQL baseline creates only
+host-owned tables plus `alembic_core_version` and has a reviewed checksum. A
+non-empty vehicle or fixture pack adds a second repository and its own version
+table without modifying Core. Real PostgreSQL integration tests upgrade, check
+and downgrade the chain in an isolated schema.
 
 Select the package with `AGENT_BUSINESS_PACK=<package_name>`. Industry code
 must remain in that package and must not add branches to `agent_core`.

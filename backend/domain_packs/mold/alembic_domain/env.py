@@ -3,37 +3,31 @@ from dotenv import dotenv_values
 from sqlalchemy import create_engine
 
 from agent_core.model_base import Base
-from agent_core import models as core_models
 from agent_core.domain_pack import migration_contract
 from agent_core.migration_runtime import resolve_migration_url
+from domain_packs.mold import models as mold_models
 
-if "alembic-core.ini" not in {
-    stage["config"] for stage in migration_contract().STAGES
-}:
-    raise RuntimeError(
-        "The active pack does not install the generic Core migration stage"
-    )
 
+config_file = "backend/domain_packs/mold/alembic-domain.ini"
+if config_file not in {stage["config"] for stage in migration_contract().STAGES}:
+    raise RuntimeError("The active pack does not install the mold domain migration stage")
 
 target_metadata = Base.metadata
-core_tables = {
-    value.__table__.name
-    for value in vars(core_models).values()
-    if isinstance(value, type)
-    and getattr(value, "__module__", None) == core_models.__name__
-    and hasattr(value, "__table__")
+domain_tables = {
+    getattr(mold_models, name).__table__.name
+    for name in mold_models.EXPORTED_MODELS
 }
 environment = dotenv_values(".env")
 url = resolve_migration_url(environment)
-
-version_table = context.config.attributes.get("version_table", "alembic_core_version")
+version_table = context.config.attributes.get("version_table", "alembic_mold_version")
 
 
 def include_object(obj, name, type_, reflected, compare_to):
     if type_ == "table":
-        return name in core_tables
+        return name in domain_tables
     table = getattr(obj, "table", None)
-    return table is None or table.name in core_tables
+    return table is None or table.name in domain_tables
+
 
 if context.is_offline_mode():
     context.configure(

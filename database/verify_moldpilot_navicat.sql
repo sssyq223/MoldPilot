@@ -86,6 +86,12 @@ FROM supplier_deduction_settlement
 ORDER BY table_name;
 
 SELECT
+    'core' AS migration_stage,
     version_num AS alembic_version
-FROM alembic_version
-ORDER BY version_num;
+FROM alembic_core_version
+UNION ALL
+SELECT
+    'mold',
+    version_num
+FROM alembic_mold_version
+ORDER BY migration_stage, alembic_version;

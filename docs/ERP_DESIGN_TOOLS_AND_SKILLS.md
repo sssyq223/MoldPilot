@@ -33,18 +33,9 @@ flowchart LR
 
 实现上，通用入口在 [`backend/app/tool_gateway.py`](../backend/app/tool_gateway.py)，业务注册、严格参数模型、文件校验和 ERP 调用均归属于 [`backend/domain_packs/mold`](../backend/domain_packs/mold)。适配层只把请求转发到固定的 MCP 工具，不在 MoldPilot 数据库复制 ERP 订单、BOM 或审批数据；每次返回都带 ERP 来源、时间和限制说明，并记录审计事件。
 
-## 可视化 ERP 设计管理
+## 工作台呈现边界
 
-拥有 `design_route.read` 权限的用户可从左侧栏进入“ERP 设计管理”，无需通过对话即可使用四个独立数据页：
-
-| 页面 | 可视化能力 | 写入能力 |
-|---|---|---|
-| 设计订单 | 分页、关键词/状态筛选、订单详情和明细 | 按 ERP 返回的可操作标记审批、重新提交或删除 |
-| 图纸版本 | 按模号、零件号、版本和证据状态筛选，查看详情、预览、下载、双版本对比 | 只读 |
-| 材质密度 | 分页、材质筛选 | 新增、编辑、删除 |
-| 标准件 | 目录表、关键词筛选、预览和目录下载 | 上传严格配对的 `R-BZ-*` PRT/DWG 文件夹、重命名、删除 |
-
-页面通过 [`backend/domain_packs/mold/erp/design/erp_design_workspace.py`](../backend/domain_packs/mold/erp/design/erp_design_workspace.py) 调用同一组 ERP MCP 能力。查询需要 `design_route.read`，写入需要 `design_route.execute`；删除、审批和主数据修改均在页面二次确认并记录审计。表格中的设计订单、图纸版本、密度和标准件不落入 MoldPilot 本地数据库，刷新时重新读取 D 盘 ERP。
+MoldPilot 不提供独立的“ERP 设计管理”菜单或表格页面。设计订单随审批材料和附件上下文查看；图纸版本、材质密度和标准件由 Agent 按本轮任务检索下列封装工具，并以工具证据返回。所有写入仍必须经过权限校验和确认流程，不能从旁路页面直接执行。
 
 ## 设计工具逐项索引（56 个）
 

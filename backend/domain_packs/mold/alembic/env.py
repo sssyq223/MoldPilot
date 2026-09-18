@@ -6,9 +6,10 @@ from domain_packs.mold import models as _mold_models  # noqa: F401
 from agent_core.domain_pack import migration_contract
 from agent_core.migration_runtime import resolve_migration_url
 
-if migration_contract().ALEMBIC_CONFIG != "backend/domain_packs/mold/alembic.ini":
+legacy = getattr(migration_contract(), "LEGACY", {})
+if legacy.get("config") != "backend/domain_packs/mold/alembic.ini":
     raise RuntimeError(
-        "This pack does not use the legacy MoldPilot migration chain; run scripts/migrate.py"
+        "This compatibility repository is available only to the mold legacy adopter"
     )
 
 target_metadata = Base.metadata

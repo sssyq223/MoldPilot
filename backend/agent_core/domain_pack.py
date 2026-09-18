@@ -123,15 +123,44 @@ def resource_contract():
 
 @lru_cache
 def migration_contract():
-    """Return the Alembic repository selected by the active business pack."""
+    """Return the ordered Core + domain migration contract for the active pack."""
     value = component("migrations")
-    config_file = getattr(value, "ALEMBIC_CONFIG", None)
-    version_table = getattr(value, "VERSION_TABLE", None)
-    if not isinstance(config_file, str) or not config_file.endswith(".ini"):
-        raise RuntimeError("Domain-pack migrations.ALEMBIC_CONFIG must name an ini file")
-    if not isinstance(version_table, str) or not _PACK_NAME.fullmatch(version_table):
+    stages = getattr(value, "STAGES", None)
+    if not isinstance(stages, tuple) or not stages:
+        raise RuntimeError("Domain-pack migrations.STAGES must be a non-empty tuple")
+    names = set()
+    configs = set()
+    tables = set()
+    for stage in stages:
+        if not isinstance(stage, dict) or set(stage) != {"name", "config", "version_table"}:
+            raise RuntimeError("Each migration stage requires name, config and version_table")
+        name, config_file, version_table = (
+            stage["name"], stage["config"], stage["version_table"]
+        )
+        if not isinstance(name, str) or not _PACK_NAME.fullmatch(name) or name in names:
+            raise RuntimeError("Migration stage names must be unique lowercase identifiers")
+        if (not isinstance(config_file, str) or not config_file.endswith(".ini")
+                or config_file in configs):
+            raise RuntimeError("Migration stage configs must name unique ini files")
+        if (not isinstance(version_table, str) or not _PACK_NAME.fullmatch(version_table)
+                or version_table in tables):
+            raise RuntimeError("Migration version tables must be unique lowercase identifiers")
+        names.add(name)
+        configs.add(config_file)
+        tables.add(version_table)
+    legacy = getattr(value, "LEGACY", None)
+    if legacy is not None and (
+        not isinstance(legacy, dict)
+        or set(legacy) != {"config", "version_table"}
+        or not isinstance(legacy["config"], str)
+        or not legacy["config"].endswith(".ini")
+        or not isinstance(legacy["version_table"], str)
+        or not _PACK_NAME.fullmatch(legacy["version_table"])
+        or legacy["config"] in configs
+        or legacy["version_table"] in tables
+    ):
         raise RuntimeError(
-            "Domain-pack migrations.VERSION_TABLE must be a simple lowercase identifier"
+            "Domain-pack migrations.LEGACY must name a distinct config and version table"
         )
     return value
 

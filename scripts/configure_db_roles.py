@@ -3,14 +3,17 @@ import os
 from pathlib import Path
 import sys
 from dotenv import dotenv_values
-from sqlalchemy import create_engine,text
+from sqlalchemy import create_engine, inspect, text
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'))
 from app.models import Base
+from agent_core.migration_runtime import version_tables
 
 
 def main():
-    url=os.environ.get('MOLD_MIGRATION_URL') or dotenv_values('.env').get('MOLD_MIGRATION_URL')
+    environment=dotenv_values('.env')
+    url=(os.environ.get('AGENT_MIGRATION_URL') or os.environ.get('MOLD_MIGRATION_URL')
+         or environment.get('AGENT_MIGRATION_URL') or environment.get('MOLD_MIGRATION_URL'))
     if not url:raise SystemExit('Explicit migration DSN required')
     engine=create_engine(url)
     if engine.url.database not in {'agent_db','agent_test','moldpilot','moldpilot_restore','moldpilot_test'}:
@@ -23,7 +26,12 @@ def main():
         for table in Base.metadata.tables:
             connection.execute(text(f'GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE {quote(table)} TO agent_app'))
             if table in immutable:connection.execute(text(f'REVOKE UPDATE,DELETE ON TABLE {quote(table)} FROM agent_app'))
-        connection.execute(text('GRANT SELECT ON TABLE alembic_version TO agent_app'))
+        installed=set(inspect(connection).get_table_names())
+        for version_table in version_tables():
+            if version_table in installed:
+                connection.execute(text(
+                    f'GRANT SELECT ON TABLE {quote(version_table)} TO agent_app'
+                ))
     print('Application table grants updated; immutable facts remain insert/select only.')
 
 
