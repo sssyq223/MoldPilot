@@ -628,6 +628,89 @@ def initiated_approvals(user=Depends(current_user), db=Depends(get_db)):
     return results
 
 
+@app.get("/api/approval-work-items")
+def approval_work_items(user=Depends(current_user), db=Depends(get_db)):
+    """Return current copied and overdue attention items without approval powers."""
+    latest_due_version = select(func.max(m.WorkflowTimer.schedule_version)).where(
+        m.WorkflowTimer.instance_id == m.ApprovalInstance.id,
+        m.WorkflowTimer.stage_index == m.ApprovalInstance.stage_index,
+        m.WorkflowTimer.timer_key == "DUE",
+    ).correlate(m.ApprovalInstance).scalar_subquery()
+    overdue = exists(select(m.WorkflowTimer.id).where(
+        m.WorkflowTimer.instance_id == m.ApprovalInstance.id,
+        m.WorkflowTimer.stage_index == m.ApprovalInstance.stage_index,
+        m.WorkflowTimer.timer_key == "DUE",
+        m.WorkflowTimer.schedule_version == latest_due_version,
+        m.WorkflowTimer.status == "FIRED",
+    ))
+    instances = list(db.scalars(select(m.ApprovalInstance).where(
+        m.ApprovalInstance.status == "RUNNING", overdue,
+    ).order_by(m.ApprovalInstance.created_at.desc()).limit(300)))
+    instance_ids = [instance.id for instance in instances]
+    due_at_by_instance = {}
+    if instance_ids:
+        for timer in db.scalars(select(m.WorkflowTimer).where(
+            m.WorkflowTimer.instance_id.in_(instance_ids),
+            m.WorkflowTimer.timer_key == "DUE",
+            m.WorkflowTimer.status == "FIRED",
+        ).order_by(m.WorkflowTimer.schedule_version.desc())):
+            due_at_by_instance.setdefault(timer.instance_id, timer.due_at.isoformat())
+    escalation_by_instance: dict[str, list[str]] = {}
+    if instance_ids:
+        for task in db.scalars(select(m.WorkflowEscalationTask).where(
+            m.WorkflowEscalationTask.instance_id.in_(instance_ids),
+            m.WorkflowEscalationTask.user_id == user.id,
+            m.WorkflowEscalationTask.status == "OPEN",
+        )):
+            escalation_by_instance.setdefault(task.instance_id, []).append(task.id)
+    seat_ids = set(db.scalars(select(m.ApprovalSeat.instance_id).where(
+        m.ApprovalSeat.instance_id.in_(instance_ids),
+        m.ApprovalSeat.user_id == user.id,
+        m.ApprovalSeat.status == "PENDING",
+    ))) if instance_ids else set()
+    candidate_ids = set(db.scalars(select(m.ApprovalCandidate.instance_id).where(
+        m.ApprovalCandidate.instance_id.in_(instance_ids),
+        m.ApprovalCandidate.user_id == user.id,
+        m.ApprovalCandidate.status == "AVAILABLE",
+    ))) if instance_ids else set()
+    copied, attention = [], []
+    for instance in instances:
+        definition = db.get(m.WorkflowDefinition, instance.definition_id)
+        if not definition or instance.stage_index >= len(definition.config["nodes"]):
+            continue
+        node = definition.config["nodes"][instance.stage_index]
+        is_copied = user.id in node.get("sla", {}).get("cc_user_ids", [])
+        roles = []
+        if instance.id in seat_ids:
+            roles.append("APPROVER")
+        if instance.id in candidate_ids:
+            roles.append("CLAIM_CANDIDATE")
+        if instance.id in escalation_by_instance:
+            roles.append("ESCALATION")
+        if not is_copied and not roles:
+            continue
+        try:
+            detail = _business().approval_detail(db, user, instance)
+        except DomainError:
+            continue
+        summary = {
+            "id": instance.id,
+            "definition": {"name": definition.name, "version": definition.version},
+            "node": {"key": node["key"], "name": node["name"]},
+            "number": detail.get("snapshot", {}).get("number"),
+            "submitter": detail.get("snapshot", {}).get("submitter"),
+            "submitted_at": detail.get("snapshot", {}).get("submitted_at"),
+            "due_at": due_at_by_instance.get(instance.id),
+            "roles": roles,
+            "escalation_task_ids": escalation_by_instance.get(instance.id, []),
+        }
+        if is_copied:
+            copied.append(summary)
+        if roles:
+            attention.append(summary)
+    return {"copied": copied[:100], "overdue": attention[:100]}
+
+
 @app.get("/api/approvals/{instance_id}")
 def approval(instance_id: str, user=Depends(current_user), db=Depends(get_db)):
     instance = db.get(m.ApprovalInstance, instance_id)

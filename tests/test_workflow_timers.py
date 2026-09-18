@@ -169,6 +169,7 @@ def test_overdue_cc_and_escalation_create_follow_up_without_approval(client, dat
             WorkflowTimer.timer_key == "DUE",
         ).with_for_update())
         due.due_at = now() - timedelta(seconds=1)
+        expected_due_at = due.due_at.isoformat()
     assert tick_due_timers(factory) == ["FIRED"]
     assert tick_due_timers(factory) == []
 
@@ -200,6 +201,15 @@ def test_overdue_cc_and_escalation_create_follow_up_without_approval(client, dat
                     if row["id"] == instance_id)
     assert incident["escalations"][0]["status"] == "OPEN"
     assert incident["escalations"][0]["user"]["id"] == ids["reviewer"]
+    sign_in(client, "test_reviewer")
+    work_items = client.get("/api/approval-work-items")
+    assert work_items.status_code == 200, work_items.text
+    assert [item["id"] for item in work_items.json()["copied"]] == [instance_id]
+    assert [item["id"] for item in work_items.json()["overdue"]] == [instance_id]
+    assert work_items.json()["overdue"][0]["roles"] == ["ESCALATION"]
+    assert work_items.json()["overdue"][0]["due_at"] == expected_due_at
+    assert len(work_items.json()["overdue"][0]["escalation_task_ids"]) == 1
+    sign_in(client)
     _, response = confirm_decision(client, instance_id)
     assert response.status_code == 200, response.text
     with factory() as db:
@@ -208,6 +218,8 @@ def test_overdue_cc_and_escalation_create_follow_up_without_approval(client, dat
         ))
         assert task.status == "CLOSED"
         assert task.close_reason == "STAGE_COMPLETED" and task.closed_at
+    sign_in(client, "test_reviewer")
+    assert client.get("/api/approval-work-items").json() == {"copied": [], "overdue": []}
 
 
 def test_failed_timer_requires_explicit_versioned_retry(client, data):
