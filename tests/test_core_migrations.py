@@ -50,7 +50,7 @@ def test_template_pack_migrates_real_postgres_without_mold_tables():
 
     try:
         migrate("upgrade", "head")
-        assert "a10c0e000006 (head)" in migrate("current")
+        assert "a10c0e000007 (head)" in migrate("current")
         assert "No new upgrade operations detected" in migrate("check")
 
         probe = create_engine(probe_url)
@@ -60,7 +60,7 @@ def test_template_pack_migrates_real_postgres_without_mold_tables():
             ), {"schema": schema}).scalars())
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_core_version"
-            )) == "a10c0e000006"
+            )) == "a10c0e000007"
             seat_columns = set(connection.execute(text(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema=:schema AND table_name='approval_seat'"
@@ -91,6 +91,12 @@ def test_template_pack_migrates_real_postgres_without_mold_tables():
             assert {"instance_id", "stage_index", "node_key", "timer_key", "due_at",
                     "status", "schedule_version", "lease_id", "lease_until", "attempts",
                     "fired_at", "last_error"} <= timer_columns
+            calendar_columns = set(connection.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=:schema AND table_name='workflow_calendar'"
+            ), {"schema": schema}).scalars())
+            assert {"calendar_key", "version", "name", "status", "timezone", "config",
+                    "package_hash", "created_by", "published_by", "published_at"} <= calendar_columns
         assert "alembic_core_version" in tables
         assert not ({
             "project", "purchase_request", "business_subject", "contact_case",

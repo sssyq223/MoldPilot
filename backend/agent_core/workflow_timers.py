@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import func, or_, select, update
 
 from agent_core.host_ports import host_ports
+from agent_core.workflow_calendars import add_working_hours
 
 
 ACTIVE_STATUS = "SCHEDULED"
@@ -27,6 +28,11 @@ def schedule_stage_timers(db, instance, node, *, started_at=None):
     if not sla:
         return None
     models = _models()
+    calendar = None
+    if sla.get("calendar_id"):
+        calendar = db.get(models.WorkflowCalendar, sla["calendar_id"])
+        if not calendar or calendar.status != "PUBLISHED":
+            raise ValueError("published workflow calendar is unavailable")
     existing = db.scalar(
         select(models.WorkflowTimer)
         .where(
@@ -48,7 +54,7 @@ def schedule_stage_timers(db, instance, node, *, started_at=None):
                 models.WorkflowTimer.schedule_version == existing.schedule_version,
             )
         )
-        return _deadline_metadata(existing, reminder)
+        return _deadline_metadata(existing, reminder, calendar)
 
     schedule_version = (
         db.scalar(
@@ -59,7 +65,11 @@ def schedule_stage_timers(db, instance, node, *, started_at=None):
         )
         or 0
     ) + 1
-    due_at = (started_at or _now()) + timedelta(hours=sla["due_hours"])
+    origin = started_at or _now()
+    due_at = (
+        add_working_hours(origin, sla["due_hours"], calendar.timezone, calendar.config)
+        if calendar else origin + timedelta(hours=sla["due_hours"])
+    )
     due = models.WorkflowTimer(
         instance_id=instance.id,
         stage_index=instance.stage_index,
@@ -76,20 +86,36 @@ def schedule_stage_timers(db, instance, node, *, started_at=None):
             stage_index=instance.stage_index,
             node_key=node["key"],
             timer_key="REMINDER",
-            due_at=due_at - timedelta(hours=sla["remind_before_hours"]),
+            due_at=(
+                add_working_hours(
+                    origin,
+                    sla["due_hours"] - sla["remind_before_hours"],
+                    calendar.timezone,
+                    calendar.config,
+                )
+                if calendar else due_at - timedelta(hours=sla["remind_before_hours"])
+            ),
             schedule_version=schedule_version,
         )
         db.add(reminder)
     db.flush()
-    return _deadline_metadata(due, reminder)
+    return _deadline_metadata(due, reminder, calendar)
 
 
-def _deadline_metadata(due, reminder=None):
+def _deadline_metadata(due, reminder=None, calendar=None):
     return {
         "due_at": due.due_at.isoformat(),
         "schedule_version": due.schedule_version,
         "status": "OVERDUE" if due.status == "FIRED" else "WAITING",
         "reminder_at": reminder.due_at.isoformat() if reminder else None,
+        "calendar": ({
+            "id": calendar.id,
+            "key": calendar.calendar_key,
+            "version": calendar.version,
+            "name": calendar.name,
+            "timezone": calendar.timezone,
+            "package_hash": calendar.package_hash,
+        } if calendar else None),
     }
 
 

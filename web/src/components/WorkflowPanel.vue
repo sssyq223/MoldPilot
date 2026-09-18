@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Plus, Trash2, GitBranch, Play, UserPlus, X } from 'lucide-vue-next'
+import { Plus, Trash2, GitBranch, Play, UserPlus, X, Search } from 'lucide-vue-next'
 import { api, post } from '../api'
 import RuleEditor from './RuleEditor.vue'
 import WorkflowCategoryPanel from './WorkflowCategoryPanel.vue'
 import MaterialTemplatePanel from './MaterialTemplatePanel.vue'
+import WorkflowCalendarPanel from './WorkflowCalendarPanel.vue'
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import {workflowUi} from '@domain-pack/uiPolicy'
 const emit = defineEmits<{error:[message:string]}>()
@@ -15,19 +16,22 @@ const selectedNodeIndex=ref(0)
 const canvasPanel=ref<'simulation'|'add-sign'|''>(''),addSignQuery=ref('')
 const editId=ref(''), editHash=ref(''), selected=ref<any>(null), historyKey=ref(''), history=ref<any[]>([]), historyNext=ref<number|null>(null), notice=ref('')
 const incidents=ref<any[]>([]),incidentsOpen=ref(false),incidentReasons=ref<Record<string,string>>({})
-const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false)
+const flowCategories=ref<any[]>([]),categoryId=ref(''),categoryFilter=ref(''),templateQuery=ref(''),legacyCopy=ref(false),categoryFilterOpen=ref(false)
 const categoryName=(id:string)=>flowCategories.value.find(c=>c.id===id)?.name||'待整理'
 const categoryFilterLabel=computed(()=>categoryFilter.value?categoryName(categoryFilter.value):'全部类别')
 function pickCategoryFilter(value:string){categoryFilter.value=value;categoryFilterOpen.value=false}
 async function refreshCategories(){try{flowCategories.value=await api('/workflow-categories')}catch(e:any){emit('error',e.message)}}
 const assignmentGroups=ref<any[]>([])
 const materialTemplates=ref<any[]>([]),materialTemplateId=ref('')
+const workflowCalendars=ref<any[]>([])
+const publishedCalendars=computed(()=>workflowCalendars.value.filter(item=>item.status==='PUBLISHED'))
 async function refreshMaterials(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/material-templates?offset=${offset}`);all.push(...page);if(page.length<100)break}materialTemplates.value=all}
+async function refreshCalendars(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflow-calendars?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}workflowCalendars.value=all}
 function selectMaterial(){const t=materialTemplates.value.find(t=>t.id===materialTemplateId.value);materialContract.value=t?JSON.parse(JSON.stringify(t.contract)):null;simulation.value=null}
 function assignmentMode(n:any,dynamic:boolean){n.users=[];if(dynamic)n.assignment={roles:[],departments:[],department_heads_only:false};else delete n.assignment}
 function assignmentNames(n:any){if(!n.assignment)return (n.users||[]).map((id:string)=>users.value.find(u=>u.id===id)?.display_name||'人员信息暂不可用').join('、');const names=(ids:string[])=>ids.map(id=>assignmentGroups.value.find(g=>g.id===id)?.name||'人员规则暂不可用').join('、');return [n.assignment.roles.length?'角色：'+names(n.assignment.roles):'',n.assignment.departments.length?(n.assignment.department_heads_only?'部门负责人：':'部门：')+names(n.assignment.departments):''].filter(Boolean).join('；同时满足')}
 function candidateNames(n:any){if(!n.assignment)return assignmentNames(n);const r=n.assignment;let ids:string[]|null=null;for(const [field,head] of [['roles',false],['departments',r.department_heads_only]] as const){if(!r[field].length)continue;const selected=assignmentGroups.value.filter(g=>g.active&&r[field].includes(g.id));const list:string[]=selected.flatMap(g=>g.members.filter((m:any)=>!head||m.is_head).map((m:any)=>m.user_id));ids=ids===null?list:ids.filter(id=>list.includes(id))}return [...new Set(ids||[])].filter(id=>users.value.find(u=>u.id===id)?.active).map(id=>users.value.find(u=>u.id===id)?.display_name).join('、')||'暂无有效候选人员'}
-const groups=computed(()=>Object.values(templates.value.filter(t=>!categoryFilter.value||t.category_id===categoryFilter.value).reduce((all:Record<string,any>,t:any)=>{if(!all[t.process_key])all[t.process_key]=t;return all},{})))
+const groups=computed(()=>{const query=templateQuery.value.trim().toLocaleLowerCase();return Object.values(templates.value.filter(t=>(!categoryFilter.value||t.category_id===categoryFilter.value)&&(!query||[t.name,t.process_key,categoryName(t.category_id),...(t.config?.nodes||[]).map((node:any)=>node.name)].some(value=>String(value||'').toLocaleLowerCase().includes(query)))).reduce((all:Record<string,any>,t:any)=>{if(!all[t.process_key])all[t.process_key]=t;return all},{}))})
 const selectedNodeEntry=computed(()=>nodes.value[selectedNodeIndex.value]?[{node:nodes.value[selectedNodeIndex.value],index:selectedNodeIndex.value}]:[])
 const selectedNode=computed(()=>nodes.value[selectedNodeIndex.value]||null)
 const addSignCandidates=computed(()=>{
@@ -121,7 +125,7 @@ function returnTargetNames(n:any,i:number){const options=Object.fromEntries(retu
 async function refreshIncidents(){incidents.value=await api('/workflow-incidents')}
 async function retryIncident(item:any){const reason=(incidentReasons.value[item.id]||'').trim();if(!reason)return emit('error','请填写本次恢复原因');busy.value=true;try{const result=await post(`/workflow-incidents/${item.id}/retry`,{expected_version:item.version,reason});notice.value=result.incident?'重试完成，但阻塞原因仍未消除':'流程节点已恢复并重新生成待办';incidentReasons.value[item.id]='';await refreshIncidents()}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 function displayTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
-async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials();await refreshIncidents()}
+async function load(){const all:any[]=[];for(let offset=0;;offset+=100){const page=await api(`/workflows?offset=${offset}&limit=100`);all.push(...page);if(page.length<100)break}templates.value=all;const people=await api('/workflows/assignment-catalog');users.value=people.users;assignmentGroups.value=people.groups;await refreshCategories();await refreshMaterials();await refreshCalendars();await refreshIncidents()}
 onMounted(async()=>{try{await load()}catch(e:any){emit('error',e.message)}})
 watch([nodes,sample,categoryId],()=>{simulation.value=null},{deep:true})
 function create(){editId.value='';editHash.value='';selected.value=null;name.value='';key.value='flow_'+crypto.randomUUID().replaceAll('-','');categoryId.value='';legacyCopy.value=false;materialContract.value=null;materialTemplateId.value='';nodes.value=[freshNode(1)];selectedNodeIndex.value=0;canvasPanel.value='';editing.value=true}
@@ -150,11 +154,13 @@ function routing(n:any,i:number,enabled:boolean){if(enabled){n.routes=[{conditio
 async function simulate(){busy.value=true;try{simulation.value=await post('/workflows/simulate',{config:configuration(),snapshot:simulationSnapshot()})}catch(e:any){emit('error',e.message)}finally{busy.value=false}}
 </script>
 <template>
-  <div class="section-heading"><div><h2>审批流程配置</h2><p class="muted">配置人员、条件、办理时限和路线，保存版本并重复使用。</p></div><div class="actions"><button type="button" @click="incidentsOpen=!incidentsOpen">流程事件{{incidents.length?' · '+incidents.length:''}}</button><button class="workflow-create-button" @click="create"><Plus :size="16"/>新建模板</button></div></div>
+  <div class="section-heading"><div><h2>审批流程配置</h2><p class="muted">配置人员、条件、办理时限和路线，保存版本并重复使用。</p></div><div class="actions"><button type="button" class="workflow-incident-button" @click="incidentsOpen=!incidentsOpen">流程事件{{incidents.length?' · '+incidents.length:''}}</button><button class="workflow-create-button" @click="create"><Plus :size="16"/>新建模板</button></div></div>
   <div class="workflow-topbar">
     <MaterialTemplatePanel @changed="refreshMaterials" @error="emit('error',$event)"/>
     <WorkflowCategoryPanel :categories="flowCategories" @changed="refreshCategories" @error="emit('error',$event)"/>
-    <label class="workflow-category-filter"><span>按类别查看</span><div class="workflow-filter-select" :class="{open:categoryFilterOpen}"><button type="button" class="workflow-filter-select-button" @click="categoryFilterOpen=!categoryFilterOpen"><span>{{categoryFilterLabel}}</span><i aria-hidden="true"></i></button><div v-if="categoryFilterOpen" class="workflow-filter-select-menu"><button type="button" :class="{active:!categoryFilter}" @click="pickCategoryFilter('')">全部类别</button><button v-for="c in flowCategories" :key="c.id" type="button" :class="{active:categoryFilter===c.id}" @click="pickCategoryFilter(c.id)">{{c.name}}</button></div></div></label>
+    <WorkflowCalendarPanel :calendars="workflowCalendars" @changed="refreshCalendars" @error="emit('error',$event)"/>
+    <div class="workflow-template-search"><Search :size="15"/><input v-model="templateQuery" type="search" aria-label="搜索审批流程模板" placeholder="搜索模板名称或流程节点"/></div>
+    <div class="workflow-category-filter"><div class="workflow-filter-select" :class="{open:categoryFilterOpen}"><button type="button" class="workflow-filter-select-button" aria-label="按类别查看" @click="categoryFilterOpen=!categoryFilterOpen"><span>{{categoryFilterLabel}}</span><i aria-hidden="true"></i></button><div v-if="categoryFilterOpen" class="workflow-filter-select-menu"><button type="button" :class="{active:!categoryFilter}" @click="pickCategoryFilter('')">全部类别</button><button v-for="c in flowCategories" :key="c.id" type="button" :class="{active:categoryFilter===c.id}" @click="pickCategoryFilter(c.id)">{{c.name}}</button></div></div></div>
   </div>
   <section v-if="incidentsOpen" class="surface form-stack workflow-incident-center" aria-label="流程事件中心">
     <div class="section-heading"><div><h3>流程事件中心</h3><p class="muted">超时只会提醒，不会自动同意；人员配置修复后可重新解析当前节点。</p></div><button type="button" :disabled="busy" @click="refreshIncidents">刷新</button></div>
@@ -210,8 +216,8 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
         <label>审批方式<select :value="n.mode" @change="setNodeMode(n,($event.target as HTMLSelectElement).value)"><option value="ALL">全部人员同意（会签）</option><option value="ANY">任一人员同意（或签）</option><option value="CLAIM">候选人领取后办理</option></select></label>
         <p v-if="n.mode==='CLAIM'" class="muted small">进入节点时只生成一个候选任务，不会为每位候选人建立审批票；首位成功领取者取得唯一责任席位，其他候选人的入口立即关闭。</p>
         <label class="check-label"><input type="checkbox" :checked="!!n.sla" @change="toggleSla(n,($event.target as HTMLInputElement).checked)"/>设置节点办理时限与提前提醒</label>
-        <div v-if="n.sla" class="form-grid"><label>办理时限（小时）<input v-model.number="n.sla.due_hours" type="number" min="1" max="8760" required/></label><label>提前提醒（小时）<input v-model.number="n.sla.remind_before_hours" type="number" min="0" :max="Math.max(0,n.sla.due_hours-1)" required/></label></div>
-        <p v-if="n.sla" class="muted small">时间记录持久化在 PostgreSQL，服务重启后会补扫遗漏事件。填 0 表示不提前提醒；到期仅提醒和进入事件中心，不会自动同意或替用户提交决定。</p>
+        <div v-if="n.sla" class="form-grid"><label>办理时限（小时）<input v-model.number="n.sla.due_hours" type="number" min="1" max="8760" required/></label><label>提前提醒（小时）<input v-model.number="n.sla.remind_before_hours" type="number" min="0" :max="Math.max(0,n.sla.due_hours-1)" required/></label><label>计时日历<select v-model="n.sla.calendar_id"><option :value="undefined">连续自然小时</option><option v-for="calendar in publishedCalendars" :key="calendar.id" :value="calendar.id">{{calendar.name}} · 第 {{calendar.version}} 版</option></select></label></div>
+        <p v-if="n.sla" class="muted small">选择工作日历后只累计已发布版本中的工作时段；未选择则按连续自然小时。时间和日历版本会冻结在实例快照，服务重启后补扫遗漏事件。到期只提醒和进入事件中心，不会自动同意。</p>
         <label class="check-label"><input v-model="n.allow_transfer" type="checkbox"/>允许当前审批人转交本人的审批席位</label>
         <p class="muted small">转交只更换当前席位负责人；系统会在准备和确认时重新校验目标人员的业务读取与审批权限。</p>
         <label class="check-label"><input v-model="n.allow_proxy" type="checkbox"/>允许管理员为此节点配置人工审批代理</label>
@@ -249,5 +255,8 @@ async function simulate(){busy.value=true;try{simulation.value=await post('/work
     </template>
     <div class="actions"><button type="button" @click="editing=false">取消</button><button class="primary" :disabled="busy">{{editId?'保存当前草稿':'保存为新版本草稿'}}</button></div>
   </form>
-  <article v-for="t in groups" :key="t.id" class="surface workflow-summary-card"><div class="section-heading"><h3><GitBranch :size="15"/>{{t.name}}</h3><span class="status">{{t.status==='PUBLISHED'?'已发布':'草稿'}} · 第 {{t.version}} 版</span></div><div class="flow-preview"><span>发起</span><template v-for="n in t.config?.nodes" :key="n.key"><span class="muted">→</span><span>{{n.name}}{{n.routes?'（条件路由）':''}}</span></template></div><p class="muted">类别：{{categoryName(t.category_id)}}；已发布版本保持不变</p><div class="actions"><button @click="view(t)">查看流程</button><button @click="openHistory(t)">版本历史</button><button @click="copy(t,t.status==='DRAFT')">{{t.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="t.status==='DRAFT'" class="primary" :disabled="busy" @click="publish(t)">校验并发布</button></div></article>
+  <p v-if="!groups.length" class="workflow-template-empty">没有匹配的审批流程模板</p>
+  <div v-else class="workflow-summary-grid">
+    <article v-for="t in groups" :key="t.id" class="surface workflow-summary-card"><div class="section-heading"><h3><GitBranch :size="15"/>{{t.name}}</h3><span class="status">{{t.status==='PUBLISHED'?'已发布':'草稿'}} · 第 {{t.version}} 版</span></div><div class="flow-preview"><span>发起</span><template v-for="n in t.config?.nodes" :key="n.key"><span class="muted">→</span><span>{{n.name}}{{n.routes?'（条件路由）':''}}</span></template></div><p class="muted">类别：{{categoryName(t.category_id)}}；已发布版本保持不变</p><div class="actions"><button @click="view(t)">查看流程</button><button @click="openHistory(t)">版本历史</button><button @click="copy(t,t.status==='DRAFT')">{{t.status==='DRAFT'?'修改当前草稿':'修改并另存新版本'}}</button><button v-if="t.status==='DRAFT'" class="primary" :disabled="busy" @click="publish(t)">校验并发布</button></div></article>
+  </div>
 </template>

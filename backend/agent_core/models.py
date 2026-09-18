@@ -71,6 +71,25 @@ class WorkflowCategory(IdentityMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class WorkflowCalendar(IdentityMixin, Base):
+    """Immutable-on-publish business calendar used by generic workflow SLAs."""
+    __tablename__ = "workflow_calendar"
+    calendar_key: Mapped[str] = mapped_column(String(80))
+    version: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(150))
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    timezone: Mapped[str] = mapped_column(String(64))
+    config: Mapped[dict] = mapped_column(J)
+    package_hash: Mapped[str] = mapped_column(String(64), default="")
+    created_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    published_by: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("calendar_key", "version"),
+        CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED')", name="workflow_calendar_status"),
+    )
+
+
 class MaterialTemplate(IdentityMixin, Base):
     __tablename__ = 'material_template'
     template_key: Mapped[str] = mapped_column(String(80))

@@ -56,6 +56,20 @@ class DefinitionEditInput(StrictModel):
     material_template_id: str | None = Field(default=None,max_length=36)
 
 
+class WorkflowCalendarInput(StrictModel):
+    calendar_key: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
+    name: str = Field(min_length=1, max_length=150)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    config: dict
+
+
+class WorkflowCalendarEditInput(StrictModel):
+    name: str = Field(min_length=1, max_length=150)
+    timezone: str = Field(min_length=1, max_length=64)
+    config: dict
+    expected_hash: str = Field(min_length=64, max_length=64)
+
+
 class WorkflowSimulationInput(StrictModel):
     config: dict
     snapshot: dict

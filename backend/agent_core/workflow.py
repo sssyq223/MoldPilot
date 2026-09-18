@@ -71,11 +71,12 @@ def validate(config):
             sla = node["sla"]
             if (
                 not isinstance(sla, dict)
-                or set(sla) != {"due_hours", "remind_before_hours"}
+                or set(sla) not in ({"due_hours", "remind_before_hours"}, {"due_hours", "remind_before_hours", "calendar_id"})
                 or type(sla.get("due_hours")) is not int
                 or type(sla.get("remind_before_hours")) is not int
                 or not 1 <= sla["due_hours"] <= 24 * 365
                 or not 0 <= sla["remind_before_hours"] < sla["due_hours"]
+                or ("calendar_id" in sla and (not isinstance(sla["calendar_id"], str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sla["calendar_id"])))
             ):
                 raise DomainError(
                     "INVALID_WORKFLOW",

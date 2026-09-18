@@ -44,6 +44,8 @@ from .workflow_categories import router as category_router, require_category
 app.include_router(category_router)
 from .material_templates import router as material_template_router,bind_contract
 app.include_router(material_template_router)
+from .workflow_calendars import router as workflow_calendar_router, require_workflow_calendars
+app.include_router(workflow_calendar_router)
 from .files import router as file_router
 app.include_router(file_router)
 from .proposal_api import router as proposal_router
@@ -492,6 +494,7 @@ def create_workflow(data: s.DefinitionInput, user=Depends(current_user), db=Depe
     auth.require(db, user, "workflow.design")
     data.config=bind_contract(db,data.config,data.material_template_id)
     _bpm().validate(data.config)
+    require_workflow_calendars(db, data.config)
     require_category(db,data.config,data.category_id)
     # Serialize version allocation per process key; concurrent drafts must not race max(version).
     db.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'workflow:'+data.process_key})
@@ -544,6 +547,7 @@ def edit_workflow(definition_id: str, data: s.DefinitionEditInput, user=Depends(
     material_id=data.material_template_id if 'material_template_id' in data.model_fields_set else d.material_template_id
     data.config=bind_contract(db,data.config,material_id)
     _bpm().validate(data.config)
+    require_workflow_calendars(db, data.config)
     require_category(db,data.config,data.category_id)
     d.name = data.name; d.config = data.config; d.category_id=data.category_id; d.material_template_id=material_id
     record(db, user, 'workflow.draft.updated', d.id, {'previous_hash': data.expected_hash})
@@ -559,6 +563,7 @@ def publish(definition_id: str, user=Depends(current_user), db=Depends(get_db)):
     if d.status == "PUBLISHED": return {"status": d.status, "hash": d.package_hash}
     bind_contract(db,d.config,d.material_template_id)
     _bpm().validate(d.config)
+    require_workflow_calendars(db, d.config)
     require_category(db,d.config,d.category_id)
     from .assignments import check_publish
     check_publish(db,d.config)
