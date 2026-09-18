@@ -10,7 +10,7 @@ ACTION_INTENT_TERMS = (
 # out of this list so a status question does not require an operation receipt.
 FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
-    "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
+    "维护", "修改", "删除", "启用", "停用", "更新", "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
     "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算",
     "prepare", "submit", "create", "record", "sign", "execute action",
 )
@@ -33,7 +33,7 @@ READ_ONLY_INTENT_TERMS = (
 )
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
-    "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
+    "维护", "修改", "删除", "启用", "停用", "更新", "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
     "确认回款", "确认付款", "扣款结算",
     "prepare", "submit", "create", "record", "execute action",
 )
@@ -54,6 +54,48 @@ BUSINESS_ACTION_HINTS = (
     "查询", "核对", "办理", "准备", "创建", "提交", "审批", "确认", "分析", "查看",
     "看看", "看下", "查一下", "查下", "继续", "处理", "了解", "怎么样", "情况", "状态", "进度",
     "风险", "是否", "生成", "调整", "变更", "关闭", "暂停", "恢复", "承接", "开工",
+)
+# Design ERP uses terms which may not literally contain the generic "设计" or
+# "模具" object words.  Keep this vocabulary separate from the cross-domain
+# policy: an operation is eligible only when a design object and a design
+# action both occur in the current request (or the object is supplied by the
+# immediately preceding request).  The terms mirror the design-upload,
+# design-order, change, repair and BOM routes in management-system.
+DESIGN_BUSINESS_OBJECT_HINTS = (
+    # New-mold design upload: steel, hardware and stock-material lists.
+    "新模", "新模开发", "新模钢料", "新模五金", "新模清单", "新模料单",
+    "设计上传", "设计上传会话", "上传会话", "钢料", "钢材", "模具钢", "五金", "五金件",
+    "备料", "备料清单", "方料", "附图", "料单", "物料清单", "时效处理", "喷漆",
+    # Drawing recognition and design-order handling.
+    "图纸", "图号", "图纸版本", "图纸匹配", "历史无图", "无图", "设计订单", "设计订单明细",
+    "设计草稿", "闲置料", "闲置库存",
+    # Design master data and standard hardware.
+    "材质密度", "设计密度", "设计分组", "分组规则", "分组关键词", "厂内标准件",
+    "标准件图纸", "标准件目录", "标准件编号",
+    # Design changes, repair/modify-mold drawing exceptions, and BOM.
+    "设变", "设计变更", "变更请购", "变更申请", "设变明细", "修模", "改模", "修模改模",
+    "图纸异常", "修改图纸", "加工商响应", "bom", "工艺清单", "BOM缺料", "缺料", "采购进度",
+)
+DESIGN_BUSINESS_ACTION_HINTS = (
+    "解析", "上传", "导入", "校验", "核价", "重新核价", "核算价格", "价格核算", "重算", "重新核算", "自动修正", "修正参数", "修正尺寸", "修正数量", "修正长宽厚", "按图纸修正", "匹配", "重新匹配",
+    "轮询", "预览", "图纸预览", "预览图纸", "下载", "查询", "查看", "查看订单明细", "读取", "分析", "对比", "比对", "维护", "新增",
+    "修改", "删除", "重命名", "启用", "停用", "保存", "释放", "审批", "评审", "确认", "重提",
+    "提交", "执行",
+)
+# Follow-up turns such as "重新匹配" need the preceding design-upload object
+# to be carried over.  They are deliberately narrower than the full action
+# vocabulary so an unrelated one-word conversation cannot activate tools.
+DESIGN_ELLIPTICAL_ACTION_TERMS = (
+    "解析", "上传", "导入", "校验", "核价", "重新核价", "核算价格", "价格核算", "自动修正", "修正参数", "修正尺寸", "修正数量", "修正长宽厚", "按图纸修正", "匹配", "重新匹配", "轮询", "预览", "图纸预览", "预览图纸", "下载",
+    "维护", "重命名", "删除", "启用", "停用", "保存", "释放", "审批", "评审", "重提", "提交", "执行",
+)
+# A file-only utterance such as “解析当前附件” is intentionally accepted only
+# for the authorized new-mold XLSX/XLS/CSV workflow. It is a visibility fallback, not
+# a file parser: the ERP tool remains responsible for validating file ownership,
+# file type and all import/confirmation preconditions.
+DESIGN_UPLOAD_SKILL_KEYS = ("erp_new_mold_design_upload",)
+DESIGN_ATTACHMENT_ACTION_HINTS = (
+    "解析", "上传", "导入", "校验", "核价", "重新核价", "核算价格", "价格核算", "重算", "重新核算", "自动修正", "修正参数", "修正尺寸", "修正数量", "修正长宽厚", "按图纸修正", "匹配", "重新匹配", "图纸预览", "预览图纸",
 )
 PURE_CONVERSATION_TERMS = (
     "你好", "您好", "哈喽", "嗨", "hello", "hi", "谢谢", "感谢", "辛苦了", "好的", "好", "收到",

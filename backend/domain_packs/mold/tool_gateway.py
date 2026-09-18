@@ -1,6 +1,7 @@
 """Code-registered tools; no runtime imports, shell, arbitrary URL or write SQL."""
 from pathlib import Path
 from functools import lru_cache
+import re
 from sqlalchemy import select, or_
 from domain_packs.mold.erp.core.business import visible_requests, request_data
 from agent_core.errors import DomainError
@@ -181,8 +182,57 @@ SKILLS.update({
                   'erp_design_get_upload_result', 'erp_design_validate_rows'],
         'optional_tools': ['erp_design_reprice_rows', 'erp_design_get_approval_config',
                            'erp_design_rematch_no_drawing', 'erp_design_import_new_mold',
-                           'erp_design_submit_upload_change'],
-        'activation_queries': ['上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入'],
+                           'erp_design_submit_upload_change', 'erp_design_download_file',
+                           'erp_design_preview_drawing', 'erp_design_auto_correct_rows',
+                           'erp_design_evaluate_tolerances'],
+        # An attachment-parse request starts with exactly one capability. The
+        # status/result tools remain discoverable later by exact ToolSearch,
+        # but a generic “五金清单” search cannot fan out into BOM readers.
+        'activation_tools': ['erp_design_parse_new_mold_upload'],
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入',
+                               '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
+                               '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
+    },
+    'erp_design_modify_mold_upload': {
+        'name': 'ERP 修模改模清单上传流程（类型：改模）',
+        'tools': ['erp_design_parse_modify_mold_upload', 'erp_design_get_drawing_status',
+                  'erp_design_get_upload_result', 'erp_design_validate_rows'],
+        'optional_tools': ['erp_design_reprice_rows', 'erp_design_get_modify_mold_approval_config',
+                           'erp_design_rematch_no_drawing', 'erp_design_import_modify_mold',
+                           'erp_design_download_file', 'erp_design_preview_drawing',
+                           'erp_design_auto_correct_rows', 'erp_design_evaluate_tolerances'],
+        # The upload parser is the single initial capability. Follow-up tools
+        # are enabled after ERP returns the owned repair_other session.
+        'activation_tools': ['erp_design_parse_modify_mold_upload'],
+        'activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
+                               '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
+                               '修模改模清单上传', '解析改模清单附件'],
+    },
+    'erp_design_tolerance_evaluation': {
+        'name': 'ERP 新模钢料公差判断',
+        'tools': ['erp_design_evaluate_tolerances'],
+        'activation_tools': ['erp_design_evaluate_tolerances'],
+        'activation_queries': ['判断公差', '公差判断', '公差档位', '公差范围',
+                               '长度允许范围', '宽度允许范围', '厚度允许范围', '对角公差'],
+    },
+    'erp_design_price_calculation': {
+        'name': 'ERP 新模钢料价格核算',
+        'tools': ['erp_design_get_upload_result', 'erp_design_reprice_rows'],
+        'activation_tools': ['erp_design_get_upload_result', 'erp_design_reprice_rows'],
+        'activation_queries': ['算价格', '核算价格', '价格核算', '重新核价', '钢料核价', '核算单价'],
+    },
+    'erp_design_drawing_preview': {
+        'name': 'ERP 新模图纸预览',
+        'tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
+        'activation_tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
+        'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸'],
+    },
+    'erp_design_drawing_auto_correction': {
+        'name': 'ERP 新模图纸参数自动修正',
+        'tools': ['erp_design_get_upload_result', 'erp_design_auto_correct_rows'],
+        'optional_tools': ['erp_design_reprice_rows'],
+        'activation_tools': ['erp_design_get_upload_result', 'erp_design_auto_correct_rows', 'erp_design_reprice_rows'],
+        'activation_queries': ['自动修正', '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚', '修正料型', '图纸回填'],
     },
     'erp_design_workspace_review': {
         'name': 'ERP 设计资料核对',
@@ -195,7 +245,12 @@ SKILLS.update({
                            'erp_design_analyze_change', 'erp_design_get_mold_repair_approval',
                            'erp_design_get_mold_repair_outsource_approval',
                            'erp_design_get_mold_repair_processor_response'],
-        'activation_queries': ['ERP设计订单', 'ERP图纸版本', 'ERP BOM', 'ERP设变', 'ERP设计资料'],
+        'activation_queries': ['ERP设计订单', 'ERP图纸版本', 'ERP BOM', 'ERP设变', 'ERP设计资料',
+                               '设计与物料清单', '钢料清单', '五金清单', '模具物料'],
+        # management-system uses this mold-number shape as its stable design
+        # order lookup key. The Harness treats the matching ERP workspace as
+        # authoritative before considering the local design-route context.
+        'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
     },
     'erp_design_order_adjustment': {
         'name': 'ERP 设计订单明细调整',
@@ -206,15 +261,19 @@ SKILLS.update({
     },
     'erp_design_master_data_maintenance': {
         'name': 'ERP 设计基础资料维护',
-        'tools': ['erp_design_query_densities', 'erp_design_query_group_rules',
-                  'erp_design_query_group_keywords'],
-        'optional_tools': ['erp_design_get_record', 'erp_design_create_density',
-                           'erp_design_update_density', 'erp_design_delete_density',
-                           'erp_design_create_group_rule', 'erp_design_update_group_rule',
-                           'erp_design_toggle_group_rule', 'erp_design_delete_group_rule',
-                           'erp_design_create_group_keyword', 'erp_design_update_group_keyword',
-                           'erp_design_delete_group_keyword'],
-        'activation_queries': ['设计材质密度', '设计分组规则', '设计分组关键词'],
+        'tools': ['erp_design_query_master_data'],
+        'optional_tools': ['erp_design_get_record', 'erp_design_manage_density',
+                           'erp_design_manage_group_rule', 'erp_design_manage_group_keyword'],
+        # A normal lookup exposes one read-only aggregation.  Individual write
+        # operations stay searchable only when the current user request itself
+        # has formal action intent; the Harness ranks them by resource.
+        'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_density', 'erp_design_manage_group_rule',
+                             'erp_design_manage_group_keyword'],
+        'activation_queries': ['ERP设计基础资料', '设计基础资料', '材质密度', '分组规则', '分组关键词'],
+        # These aliases identify this small read boundary without another
+        # model round trip through ToolSearch.
+        'auto_activation_queries': ['材质密度', '设计分组规则', '设计分组关键词'],
+        'suppress_tool_search_on_auto_activation': True,
     },
     'erp_design_standard_hardware_maintenance': {
         'name': 'ERP 厂内标准件图纸维护',
@@ -241,13 +300,29 @@ SKILLS.update({
         'activation_queries': ['设计订单审批', '设计订单删除', '设计订单重提', '设计订单生命周期'],
     },
     'erp_design_mold_repair': {
-        'name': 'ERP 修模改模图纸异常办理',
-        'tools': ['erp_design_get_mold_repair_approval',
-                  'erp_design_get_mold_repair_outsource_approval',
-                  'erp_design_get_mold_repair_processor_response'],
-        'optional_tools': ['erp_design_upload_mold_repair_drawing',
-                           'erp_design_manage_mold_repair'],
-        'activation_queries': ['修模改模图纸', '修模审批', '改模审批', '加工商响应'],
+        'name': 'ERP 设计修模改模图纸办理',
+        'tools': ['erp_design_get_mold_repair_approval'],
+        'optional_tools': ['erp_design_get_mold_repair_outsource_approval',
+                           'erp_design_get_mold_repair_processor_response',
+                           'erp_design_upload_mold_repair_drawing',
+                           'erp_design_confirm_mold_repair_quantity',
+                           'erp_design_submit_mold_repair_approval_batches',
+                           'erp_design_confirm_mold_repair_order_link',
+                           'erp_design_respond_mold_repair_processor',
+                           'erp_design_download_file'],
+        'activation_tools': ['erp_design_get_mold_repair_approval',
+                             'erp_design_get_mold_repair_outsource_approval',
+                             'erp_design_get_mold_repair_processor_response',
+                             'erp_design_upload_mold_repair_drawing',
+                             'erp_design_confirm_mold_repair_quantity',
+                             'erp_design_submit_mold_repair_approval_batches',
+                             'erp_design_confirm_mold_repair_order_link',
+                             'erp_design_respond_mold_repair_processor',
+                             'erp_design_download_file'],
+        'activation_queries': ['设计修模', '设计改模', '修模改模图纸', '修改图纸异常',
+                               '确认新图数量', '修模审批', '改模审批', '修改图纸审批',
+                               '修模订单关联', '改模订单关联', '加工商响应', '同意改图',
+                               '已加工反馈', '下载修模图纸'],
     },
     'erp_design_bom_maintenance': {
         'name': 'ERP BOM 维护与导入',
@@ -392,6 +467,15 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
     'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
 }
+# ERP design skills are the guided entry points for the same design capabilities
+# as the registered ERP design tools.  They do not carry a permission field of
+# their own, so the generic descriptor cannot infer their department from a
+# permission prefix.  Keep them with the design tools in Settings instead of
+# falling back to the generic "agent" department.
+CAPABILITY_DEPARTMENTS.update({
+    key: 'design' for key in SKILLS
+    if key == 'erp_new_mold_design_upload' or key.startswith('erp_design_')
+})
 
 CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
@@ -471,8 +555,21 @@ def assigned(db, user, kind, key):
 
 
 def available_tools(db, user):
-    return [key for key, tool in TOOLS.items() if assigned(db, user, "TOOL", key) and
-            (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"])))]
+    allowed = [key for key, tool in TOOLS.items() if assigned(db, user, "TOOL", key) and
+               (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"])))]
+    # Existing accounts can already have the three read-only master-data
+    # catalogues assigned.  Treat that exact prior grant as authorization for
+    # the new aggregate reader, so this display/selection simplification does
+    # not require a disruptive permission migration.
+    legacy_master_reads = {
+        "erp_design_query_densities",
+        "erp_design_query_group_rules",
+        "erp_design_query_group_keywords",
+    }
+    if ("erp_design_query_master_data" not in allowed
+            and legacy_master_reads <= set(allowed)):
+        allowed.append("erp_design_query_master_data")
+    return allowed
 
 
 def tool_schema(key):
@@ -632,6 +729,89 @@ def skill_paths():
     return paths
 
 
+_ERP_MOLD_NUMBER = re.compile(r"(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])")
+
+
+def _local_design_context_is_empty(result):
+    if not isinstance(result, dict):
+        return True
+    if result.get("resolution") in {"NOT_FOUND", "NOT_FOUND_OR_FORBIDDEN"}:
+        return True
+    rows = result.get("data")
+    if not isinstance(rows, list) or not rows:
+        return True
+    if result.get("resolution") != "RESOLVED":
+        return False
+    return all(not isinstance(row, dict) or not row.get("design_routes") for row in rows)
+
+
+def _erp_result_rows(result):
+    payload = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        return []
+    for key in ("rows", "records", "list"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def _fallback_empty_design_context_to_erp(db, user, data, allowed, local_result, run=None):
+    """Use ERP design orders when an ERP-shaped mold number has no local facts."""
+    identifier = str(data.identifier or "").strip()
+    match = _ERP_MOLD_NUMBER.search(identifier)
+    if not match or not _local_design_context_is_empty(local_result):
+        return local_result
+    mold_number = match.group(0).upper()
+    limitations = list(local_result.get("limitations") or [])
+    if "erp_design_query_orders" not in allowed:
+        limitations.append("当前会话未分配 ERP 设计订单查询工具，不能自动回退到 ERP。")
+        return {**local_result, "limitations": limitations}
+
+    order_result = erp_design_mcp.execute_tool(
+        db, user, "erp_design_query_orders", {"query": {"moldNo": mold_number}}, run=run)
+    rows = _erp_result_rows(order_result)
+    fallback = {
+        "attempted": True,
+        "from": "agent_db",
+        "reason": "LOCAL_DESIGN_CONTEXT_EMPTY",
+        "identifier": identifier,
+        "mold_number": mold_number,
+        "matched": bool(rows),
+    }
+    if not rows:
+        limitations.append("本地设计上下文为空，已按模具号自动查询 ERP，但 ERP 也未返回设计订单。")
+        return {**local_result, "limitations": limitations, "erp_fallback": fallback}
+
+    exact = next((row for row in rows if isinstance(row, dict)
+                  and str(row.get("moldNo") or "").casefold() == mold_number.casefold()), None)
+    detail = None
+    detail_error = False
+    record_id = (exact or {}).get("id") or (exact or {}).get("requestId")
+    if record_id and "erp_design_get_record" in allowed:
+        try:
+            record_result = erp_design_mcp.execute_tool(
+                db, user, "erp_design_get_record",
+                {"resource": "design_order", "id": int(record_id)}, run=run)
+            detail = record_result.get("data") if isinstance(record_result, dict) else None
+        except (DomainError, TypeError, ValueError):
+            detail_error = True
+
+    limitations.extend(order_result.get("limitations") or [])
+    limitations.append("本地设计上下文为空，结果已自动回退到 management-system ERP。")
+    if detail_error:
+        limitations.append("已找到 ERP 设计订单，但订单详情读取失败；当前仅返回订单列表事实。")
+    return {
+        "resolution": "RESOLVED",
+        "data": [{"mold_number": mold_number, "erp_design_orders": rows,
+                  "erp_design_order_detail": detail}],
+        "source": order_result.get("source") or "management-system ERP via erp-design-upload MCP",
+        "as_of": order_result.get("as_of") or now().isoformat(),
+        "limitations": list(dict.fromkeys(limitations)),
+        "erp_fallback": fallback,
+    }
+
+
 def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
     if key in erp_design_mcp.TOOL_SPECS:
@@ -721,7 +901,9 @@ def execute(db, user, key, arguments, run=None):
         from domain_packs.mold.tools.erp.design.design_tools import DesignRouteContextInput,query
         try:data=DesignRouteContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','设计BOM与路线上下文参数无效：'+error.errors()[0]['msg']) from None
-        return query(db,user,data,set(available_tools(db,user)))
+        allowed=set(available_tools(db,user))
+        local_result=query(db,user,data,allowed)
+        return _fallback_empty_design_context_to_erp(db,user,data,allowed,local_result,run=run)
     if key=='query_manufacturing_quality_context':
         from pydantic import ValidationError
         from domain_packs.mold.tools.erp.manufacturing.manufacturing_quality_tools import query

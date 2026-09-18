@@ -85,8 +85,12 @@ def main():
             try:
                 runtime_config = model_settings()
                 if runtime_config.config_version != model_config_version:
+                    previous_model = model
                     model = create_model(runtime_config)
                     model_config_version = runtime_config.config_version
+                    close = getattr(previous_model, "close", None)
+                    if callable(close):
+                        close()
                 response = client.post("/internal/runs/claim"); response.raise_for_status()
                 context = response.json()["run"]
                 if not context: time.sleep(0.5); continue

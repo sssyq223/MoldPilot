@@ -55,6 +55,28 @@ class ModelAdapter:
         self.timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=15, pool=5)
         self.transport = transport
         self.last_metrics = {}
+        # The worker owns one adapter for many model turns. Reusing the client
+        # also reuses healthy HTTP/TLS connections instead of handshaking for
+        # ToolSearch, the business tool call, and the final answer separately.
+        self.client = httpx.Client(
+            verify=self.ssl_context,
+            timeout=self.timeout,
+            proxy=self.proxy,
+            trust_env=False,
+            follow_redirects=False,
+            transport=self.transport,
+        )
+
+    def close(self):
+        self.client.close()
+
+    def _record_retry(self, reason, attempt_started):
+        self.last_metrics['retry_count'] = self.last_metrics.get('retry_count', 0) + 1
+        self.last_metrics['retry_reason'] = reason
+        self.last_metrics['retry_wait_ms'] = round(
+            self.last_metrics.get('retry_wait_ms', 0)
+            + (time.perf_counter() - attempt_started) * 1000
+        )
 
     def _payload(self, messages, tools, stream=False):
         payload = {"model": self.model, "messages": messages, "max_tokens": self.max_tokens,
@@ -106,21 +128,32 @@ class ModelAdapter:
         payload = self._payload(messages, tools)
         self.last_metrics = {'tool_count':len(tools), 'request_bytes':len(json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode('utf-8'))}
         try:
-            # No automatic redirects, implicit environment proxy, insecure TLS or repeated POST.
-            with httpx.Client(verify=self.ssl_context, timeout=self.timeout, proxy=self.proxy,
-                              trust_env=False, follow_redirects=False, transport=self.transport) as client:
-                headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
-                response = client.post(self.url, headers=headers, json=payload, extensions={'trace':self._trace(started)})
-                self._check_status(response)
-                data = response.json()
-                self._record_usage(data.get("usage") if isinstance(data, dict) else {})
-                choice = data["choices"][0]
-                if choice.get("finish_reason") == "length":
-                    raise ModelError("MODEL_OUTPUT_TRUNCATED")
-                message = choice["message"]
-                if not isinstance(message, dict) or message.get("role") != "assistant":
-                    raise ModelError("MODEL_OUTPUT_INVALID")
-                return message
+            headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
+            for attempt in range(2):
+                attempt_started = time.perf_counter()
+                try:
+                    response = self.client.post(
+                        self.url, headers=headers, json=payload,
+                        extensions={'trace': self._trace(started)},
+                    )
+                except httpx.ConnectTimeout:
+                    if attempt == 0:
+                        # No response or model delta exists yet, so one retry
+                        # cannot duplicate a business tool side effect.
+                        self._record_retry('connect_timeout_before_response', attempt_started)
+                        continue
+                    raise
+                break
+            self._check_status(response)
+            data = response.json()
+            self._record_usage(data.get("usage") if isinstance(data, dict) else {})
+            choice = data["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise ModelError("MODEL_OUTPUT_TRUNCATED")
+            message = choice["message"]
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                raise ModelError("MODEL_OUTPUT_INVALID")
+            return message
         except httpx.ConnectTimeout:
             raise ModelError("MODEL_CONNECT_TIMEOUT") from None
         except httpx.ReadTimeout:
@@ -169,79 +202,71 @@ class ModelAdapter:
             }
 
         try:
-            with httpx.Client(verify=self.ssl_context, timeout=self.timeout, proxy=self.proxy,
-                              trust_env=False, follow_redirects=False, transport=self.transport) as client:
-                headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
-                # Some hosted OpenAI-compatible gateways occasionally return a
-                # 5xx before opening the SSE stream. One retry is safe here:
-                # no model delta was accepted, shown or executed yet. Never
-                # retry authentication, rate-limit, validation, redirect, or a
-                # stream that already emitted data.
-                for attempt in range(2):
-                    attempt_started = time.perf_counter()
-                    try:
-                        with client.stream("POST", self.url, headers=headers, json=payload,
-                                           extensions={'trace': self._trace(started)}) as response:
-                            self.last_metrics['http_status'] = response.status_code
-                            if response.status_code in {500, 502, 503, 504} and attempt == 0:
-                                response.read()
-                                self.last_metrics['retry_count'] = 1
-                                self.last_metrics['retry_reason'] = 'upstream_5xx'
-                                self.last_metrics['retry_wait_ms'] = round(
-                                    self.last_metrics.get('retry_wait_ms', 0)
-                                    + (time.perf_counter() - attempt_started) * 1000)
-                                continue
-                            self._check_status(response)
-                            for line in response.iter_lines():
-                                if not line or not line.startswith("data:"):
-                                    continue
-                                raw = line[5:].strip()
-                                if raw == "[DONE]":
-                                    break
-                                data = json.loads(raw)
-                                self._record_usage(data.get("usage"))
-                                choices = data.get("choices")
-                                if not isinstance(choices, list) or not choices:
-                                    continue
-                                choice = choices[0]
-                                finish_reason = choice.get("finish_reason") or finish_reason
-                                delta = choice.get("delta")
-                                if not isinstance(delta, dict):
-                                    continue
-                                if not first_chunk:
-                                    self.last_metrics['first_chunk_ms'] = round((time.perf_counter()-started)*1000)
-                                    first_chunk = True
-                                if isinstance(delta.get("content"), str):
-                                    content += delta["content"]
-                                if isinstance(delta.get("reasoning_content"), str):
-                                    reasoning += delta["reasoning_content"]
-                                for position, fragment in enumerate(delta.get("tool_calls") or []):
-                                    if not isinstance(fragment, dict):
-                                        continue
-                                    index = fragment.get("index") if isinstance(fragment.get("index"), int) else position
-                                    call = calls.setdefault(index, {"id": "", "type": "function",
-                                                                    "function": {"name": "", "arguments": ""}})
-                                    if isinstance(fragment.get("id"), str) and fragment["id"]:
-                                        call["id"] = fragment["id"]
-                                    if isinstance(fragment.get("type"), str) and fragment["type"]:
-                                        call["type"] = fragment["type"]
-                                    function = fragment.get("function")
-                                    if isinstance(function, dict):
-                                        if isinstance(function.get("name"), str):
-                                            call["function"]["name"] += function["name"]
-                                        if isinstance(function.get("arguments"), str):
-                                            call["function"]["arguments"] += function["arguments"]
-                                on_update(snapshot())
-                    except httpx.ReadTimeout:
-                        if attempt == 0 and not first_chunk:
-                            self.last_metrics['retry_count'] = 1
-                            self.last_metrics['retry_reason'] = 'read_timeout_before_first_chunk'
-                            self.last_metrics['retry_wait_ms'] = round(
-                                self.last_metrics.get('retry_wait_ms', 0)
-                                + (time.perf_counter() - attempt_started) * 1000)
+            headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
+            # Retry only before the provider emits a delta. At that point no
+            # tool has run and nothing user-visible needs deduplication.
+            for attempt in range(2):
+                attempt_started = time.perf_counter()
+                try:
+                    with self.client.stream("POST", self.url, headers=headers, json=payload,
+                                            extensions={'trace': self._trace(started)}) as response:
+                        self.last_metrics['http_status'] = response.status_code
+                        if response.status_code in {500, 502, 503, 504} and attempt == 0:
+                            response.read()
+                            self._record_retry('upstream_5xx', attempt_started)
                             continue
-                        raise
-                    break
+                        self._check_status(response)
+                        for line in response.iter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            raw = line[5:].strip()
+                            if raw == "[DONE]":
+                                break
+                            data = json.loads(raw)
+                            self._record_usage(data.get("usage"))
+                            choices = data.get("choices")
+                            if not isinstance(choices, list) or not choices:
+                                continue
+                            choice = choices[0]
+                            finish_reason = choice.get("finish_reason") or finish_reason
+                            delta = choice.get("delta")
+                            if not isinstance(delta, dict):
+                                continue
+                            if not first_chunk:
+                                self.last_metrics['first_chunk_ms'] = round((time.perf_counter()-started)*1000)
+                                first_chunk = True
+                            if isinstance(delta.get("content"), str):
+                                content += delta["content"]
+                            if isinstance(delta.get("reasoning_content"), str):
+                                reasoning += delta["reasoning_content"]
+                            for position, fragment in enumerate(delta.get("tool_calls") or []):
+                                if not isinstance(fragment, dict):
+                                    continue
+                                index = fragment.get("index") if isinstance(fragment.get("index"), int) else position
+                                call = calls.setdefault(index, {"id": "", "type": "function",
+                                                                "function": {"name": "", "arguments": ""}})
+                                if isinstance(fragment.get("id"), str) and fragment["id"]:
+                                    call["id"] = fragment["id"]
+                                if isinstance(fragment.get("type"), str) and fragment["type"]:
+                                    call["type"] = fragment["type"]
+                                function = fragment.get("function")
+                                if isinstance(function, dict):
+                                    if isinstance(function.get("name"), str):
+                                        call["function"]["name"] += function["name"]
+                                    if isinstance(function.get("arguments"), str):
+                                        call["function"]["arguments"] += function["arguments"]
+                            on_update(snapshot())
+                except httpx.ConnectTimeout:
+                    if attempt == 0 and not first_chunk:
+                        self._record_retry('connect_timeout_before_first_chunk', attempt_started)
+                        continue
+                    raise
+                except httpx.ReadTimeout:
+                    if attempt == 0 and not first_chunk:
+                        self._record_retry('read_timeout_before_first_chunk', attempt_started)
+                        continue
+                    raise
+                break
             if finish_reason == "length":
                 raise ModelError("MODEL_OUTPUT_TRUNCATED")
             message = snapshot()

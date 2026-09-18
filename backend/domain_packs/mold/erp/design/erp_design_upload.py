@@ -6,6 +6,8 @@ credentials to the browser or wiring it into the Agent tool gateway.
 """
 from __future__ import annotations
 
+from base64 import b64decode
+from binascii import Error as BinasciiError
 import json
 from pathlib import Path
 from queue import Empty, Queue
@@ -16,7 +18,7 @@ from threading import Thread
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import Field
 from sqlalchemy import select
 
@@ -25,6 +27,7 @@ from agent_core.errors import DomainError
 from agent_core.host_ports import host_ports
 from agent_core.schemas import StrictModel
 from domain_packs.mold.mcp_runtime import erp_design_upload_runtime
+from domain_packs.mold.tools.erp.design import erp_design_mcp
 
 
 router = APIRouter(prefix="/api/erp-design-uploads", tags=["ERP new-mold design uploads"])
@@ -39,12 +42,16 @@ _RUNTIME_ROOT = erp_design_upload_runtime()
 _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"
 _PARSE_ACTION = "erp_design_upload.parsed"
+_IMPORT_ACTION = "erp_design_upload.imported"
+_OWNED_SESSION_ACTIONS = (_PARSE_ACTION, erp_design_mcp._SESSION_ACTION)
 _SHEET_TYPES = Literal["steel", "hardware"]
+_PARSE_SHEET_TYPES = Literal["auto", "steel", "hardware"]
+_DESIGN_FILE_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 
 
 class ParseInput(StrictModel):
     file_id: UUID
-    sheet_type: _SHEET_TYPES
+    sheet_type: _PARSE_SHEET_TYPES = "auto"
     design_order_sub_type: str | None = Field(default=None, max_length=100)
 
 
@@ -73,6 +80,10 @@ class ImportInput(RowsInput):
     purchase_reason: str | None = Field(default=None, max_length=200)
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = False
+
+
+class ImportStatusesInput(StrictModel):
+    session_ids: list[int] = Field(min_length=1, max_length=200)
 
 
 def _mcp_failure(message: str, status: int = 502):
@@ -175,7 +186,7 @@ def call_mcp(name: str, arguments: dict):
 def _owned_session(db, user, session_id: int):
     event = db.scalar(select(m.AuditEvent).where(
         m.AuditEvent.user_id == user.id,
-        m.AuditEvent.action == _PARSE_ACTION,
+        m.AuditEvent.action.in_(_OWNED_SESSION_ACTIONS),
         m.AuditEvent.resource_id == str(session_id),
     ).order_by(m.AuditEvent.created_at.desc()))
     if not event:
@@ -194,17 +205,65 @@ def _validation_allows_import(value):
     return isinstance(value, dict) and value.get("canImport") is not False and value.get("valid") is not False and not value.get("errors")
 
 
+def _import_result(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    nested = value.get("data")
+    return nested if isinstance(nested, dict) else value
+
+
+def _import_receipt_detail(value, row_count: int) -> dict:
+    result = _import_result(value)
+    return {
+        "row_count": row_count,
+        "request_no": str(result.get("requestNo") or result.get("request_no") or "").strip(),
+        "message": str(result.get("message") or result.get("successMessage") or result.get("success_message") or "").strip()[:500],
+    }
+
+
+def _drawing_rows(value) -> list[dict]:
+    if not isinstance(value, dict):
+        return []
+    source = value.get("data") if isinstance(value.get("data"), dict) else value
+    rows = source.get("previewRows") if isinstance(source.get("previewRows"), list) else source.get("preview_rows")
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _drawing_ids(value) -> set[int]:
+    result = set()
+    for row in _drawing_rows(value):
+        raw_id = row.get("drawing_resource_id") or row.get("drawingResourceId") or row.get("drawing_id") or row.get("drawingId")
+        try:
+            drawing_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if drawing_id > 0:
+            result.add(drawing_id)
+    return result
+
+
+def _drawing_row(value, drawing_id: int) -> dict | None:
+    for row in _drawing_rows(value):
+        raw_id = row.get("drawing_resource_id") or row.get("drawingResourceId") or row.get("drawing_id") or row.get("drawingId")
+        try:
+            if int(raw_id) == drawing_id:
+                return row
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 @router.post("/parse")
 def parse_design(data: ParseInput, user=Depends(current_user), db=Depends(get_db)):
     require(db, user, "design_route.create")
     source = files.uploaded_file(db, user, str(data.file_id))
-    if Path(source.filename).suffix.lower() != ".xlsx":
-        raise DomainError("ERP_DESIGN_FILE_TYPE", "新模设计上传仅支持 XLSX 文件")
+    if Path(source.filename).suffix.lower() not in _DESIGN_FILE_EXTENSIONS:
+        raise DomainError("ERP_DESIGN_FILE_TYPE", "新模设计上传仅支持 XLSX、XLS 或 CSV 文件")
     file_data = object_storage.read(source)
     filename, _ = files.validate_file(source.filename, file_data)
     directory, path = _temp_design_file(filename, file_data)
     try:
-        result = call_mcp("parse_new_mold_design_file", {
+        result = erp_design_mcp.call_design_control_mcp("parse_new_mold_design_file_auto", {
             "filePath": str(path), "sheetType": data.sheet_type, "designOrderSubType": data.design_order_sub_type,
         })
     finally:
@@ -212,8 +271,11 @@ def parse_design(data: ParseInput, user=Depends(current_user), db=Depends(get_db
     session_id = result.get("sessionId") if isinstance(result, dict) else None
     if not isinstance(session_id, int) or session_id < 1:
         _mcp_failure("ERP 未返回有效上传会话编号")
+    detected_sheet_type = result.get("sheetType") if isinstance(result, dict) else None
+    if detected_sheet_type not in {"steel", "hardware"}:
+        _mcp_failure("ERP 未返回有效的清单类型")
     record(db, user, _PARSE_ACTION, str(session_id), {
-        "file_id": str(source.id), "filename": filename, "sheet_type": data.sheet_type,
+        "file_id": str(source.id), "filename": filename, "sheet_type": detected_sheet_type,
     })
     db.commit()
     return result
@@ -231,6 +293,36 @@ def upload_result(data: SessionInput, user=Depends(current_user), db=Depends(get
     require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
     return call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
+
+
+@router.get("/{session_id}/drawings/{drawing_id}/preview")
+def drawing_preview(session_id: int, drawing_id: int, user=Depends(current_user), db=Depends(get_db)):
+    require(db, user, "design_route.read")
+    _owned_session(db, user, session_id)
+    status = call_mcp("get_new_mold_upload_status", {"sessionId": session_id, "includeResult": True})
+    row = _drawing_row(status, drawing_id)
+    if row is None:
+        raise DomainError("ERP_DRAWING_NOT_IN_SESSION", "该图纸不属于当前上传会话", 404)
+    preview_url = row.get("drawing_preview_url") or row.get("drawingPreviewUrl")
+    value = erp_design_mcp.call_design_control_mcp("download_erp_design_file", {
+        "artifact": "drawing_preview", "drawingId": drawing_id, "previewUrl": preview_url,
+    })
+    if not isinstance(value, dict) or not isinstance(value.get("base64"), str):
+        _mcp_failure("ERP 图纸预览未返回有效文件")
+    try:
+        content = b64decode(value["base64"], validate=True)
+    except (ValueError, BinasciiError):
+        _mcp_failure("ERP 图纸预览内容无效")
+    if len(content) < 64 or len(content) > 20 * 1024 * 1024:
+        _mcp_failure("ERP 图纸预览为空、不完整或超过 20 MB 限制", 413)
+    media_type = str(value.get("mediaType") or "application/octet-stream").split(";", 1)[0].strip()
+    if media_type.lower() == "application/json":
+        _mcp_failure("ERP 返回了错误信息而不是图纸预览")
+    filename = Path(str(value.get("fileName") or f"drawing-{drawing_id}-preview")).name.replace('"', "_")
+    return Response(content=content, media_type=media_type, headers={
+        "Cache-Control": "private, max-age=300",
+        "Content-Disposition": f'inline; filename="{filename}"',
+    })
 
 
 @router.post("/validate")
@@ -262,6 +354,32 @@ def approval_config(data: SessionInput, user=Depends(current_user), db=Depends(g
     return call_mcp("get_new_mold_approval_launch_config", {"sessionId": data.session_id})
 
 
+@router.post("/import-statuses")
+def import_statuses(data: ImportStatusesInput, user=Depends(current_user), db=Depends(get_db)):
+    """Restore completed import receipts for order actions shown in a conversation."""
+    require(db, user, "design_route.read")
+    requested = {str(session_id) for session_id in data.session_ids}
+    events = db.scalars(select(m.AuditEvent).where(
+        m.AuditEvent.user_id == user.id,
+        m.AuditEvent.action == _IMPORT_ACTION,
+        m.AuditEvent.resource_id.in_(requested),
+    ).order_by(m.AuditEvent.created_at.desc())).all()
+    receipts = []
+    seen = set()
+    for event in events:
+        if event.resource_id in seen:
+            continue
+        seen.add(event.resource_id)
+        detail = event.detail if isinstance(event.detail, dict) else {}
+        receipts.append({
+            "sessionId": int(event.resource_id),
+            "requestNo": str(detail.get("request_no") or ""),
+            "message": str(detail.get("message") or ""),
+            "importedAt": event.created_at.isoformat(),
+        })
+    return {"receipts": receipts}
+
+
 @router.post("/import")
 def import_design(data: ImportInput, user=Depends(current_user), db=Depends(get_db)):
     require(db, user, "design_route.execute")
@@ -277,6 +395,6 @@ def import_design(data: ImportInput, user=Depends(current_user), db=Depends(get_
         "previewRows": data.preview_rows, "urgencyLevel": data.urgency_level, "expectedDate": data.expected_date,
         "purchaseReason": data.purchase_reason, "remark": data.remark, "allowDuplicate": data.allow_duplicate,
     })
-    record(db, user, "erp_design_upload.imported", str(data.session_id), {"row_count": len(data.preview_rows)})
+    record(db, user, _IMPORT_ACTION, str(data.session_id), _import_receipt_detail(result, len(data.preview_rows)))
     db.commit()
     return result

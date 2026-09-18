@@ -37,6 +37,7 @@ class HostPorts:
     conversation_files: Callable[..., Any]
     uploaded_file: Callable[..., Any]
     file_metadata: Callable[..., dict]
+    validate_file: Callable[..., tuple[str, str]]
 
 
 @lru_cache

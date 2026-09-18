@@ -83,6 +83,7 @@ def install(app, domain_router) -> None:
 
     from domain_packs.mold.erp.change.contacts import router as contact_router
     from domain_packs.mold.erp.design.erp_design_upload import router as erp_design_upload_router
+    from domain_packs.mold.erp.design.erp_design_workspace import router as erp_design_workspace_router
     from domain_packs.mold.erp.core.domain_api import install as install_domain_api
     from domain_packs.mold.tools.erp.change.contact_tools import router as contact_proposal_router
     from domain_packs.mold.tools.erp.project.project_control_tools import router as project_control_proposal_router
@@ -96,6 +97,7 @@ def install(app, domain_router) -> None:
 
     app.include_router(contact_router)
     app.include_router(erp_design_upload_router)
+    app.include_router(erp_design_workspace_router)
     install_domain_api(app)
     for router in (
         contact_proposal_router,

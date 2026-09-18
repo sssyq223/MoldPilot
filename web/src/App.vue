@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
-import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, ArrowRight, Settings, Bot, ChevronRight, LogOut, X, Square, Pin, Archive, Copy, Check, ShieldCheck, Wrench } from 'lucide-vue-next'
+import { MessageSquare, Plus, Search, Bell, Paperclip, PanelRight, Maximize2, Minimize2, ArrowUp, ArrowRight, Settings, Bot, ChevronRight, LogOut, X, Square, Pin, Archive, Copy, Check, ShieldCheck, Wrench, TableProperties } from 'lucide-vue-next'
 import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from '@domain-pack/uiText'
 import {initialProduct} from '@domain-pack/product'
@@ -11,9 +11,12 @@ import DomainWorkspacePanel from '@domain-pack/components/DomainWorkspacePanel.v
 import ProposalCard from './components/ProposalCard.vue'
 import FileMaterial from './components/FileMaterial.vue'
 import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
-import {compactRecordTitle,evidenceBriefTitle,evidenceBriefSummary,evidenceSummary,evidenceSections,evidenceCardTitle,hasBusinessFactHighlights,isRecord,readableEntries} from '@domain-pack/evidence'
 import {legacyStorageKeys,notificationWorkspaceTarget,toolEvidenceLinks} from '@domain-pack/uiPolicy'
+import ErpDesignTable from './components/ErpDesignTable.vue'
+import ErpDrawingPreview from './components/ErpDrawingPreview.vue'
+import ErpDesignWorkbench from './components/ErpDesignWorkbench.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
+import {erpDesignSessionFromRun,erpDesignSessionFromTool,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,shouldOpenErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
 const product=ref<any>(initialProduct)
@@ -26,6 +29,21 @@ const MIN_WORKSPACE_WIDTH=420
 type WorkspaceTarget={target:string;id:string}
 const workspaceTargets=ref<Record<string,string>>({})
 const selectedEvidence=ref<any|null>(null)
+const erpDesignPreview=ref<ErpDesignPreviewSession|null>(null)
+const erpDesignPreviewLoading=ref(false)
+const erpDesignPreviewError=ref('')
+const erpDesignRepricing=ref(false)
+const erpDesignImporting=ref(false)
+const erpDesignPreviewNotice=ref('')
+const erpDesignDuplicateNotice=ref<{message:string;requestNo:string}|null>(null)
+const erpDesignImportReceipts=ref<Record<string,ErpDesignImportReceipt>>({})
+const erpDrawingPreviewRow=ref<ErpDesignRow|null>(null)
+const erpDesignDrafts=new Map<number,{expectedDate:string;remark:string}>()
+const erpDesignRowRepriceTokens=new Map<string,number>()
+let erpDesignPreviewPoll:number|null=null
+let erpDesignPreviewRequest=0
+const openedErpDesignRunIds=new Set<string>()
+const loadedErpDesignImportStatuses=new Set<number>()
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
 let conversationEpoch=0
 const me=ref<any>(null),permissions=ref<string[]>([]),loading=ref(true),conversationLoading=ref(false),error=ref(''),busy=ref(false),username=ref(''),password=ref('')
@@ -44,7 +62,7 @@ const confirmedProposalSteps=ref<Record<string,boolean>>({})
 const sidebarCollapsed=ref(false)
 const copiedMessage=ref('')
 const workspaceTabs=computed(()=>Array.isArray(product.value?.workspace_tabs)?product.value.workspace_tabs:[])
-const settingsOpen=ref(false),settingsInitialPage=ref('account'),showProfile=ref(false),noticeLoading=ref(false),showSidebarSearch=ref(false)
+const settingsOpen=ref(false),erpDesignWorkspaceOpen=ref(false),settingsInitialPage=ref('account'),showProfile=ref(false),noticeLoading=ref(false),showSidebarSearch=ref(false)
 const contextPopoverOpen=ref(false),modelPopoverOpen=ref(false),approvalModePopoverOpen=ref(false)
 const approvalPermissionMode=ref<'ask'|'delegated_auto'>('ask')
 const approvalPermissionLabel=computed(()=>approvalPermissionMode.value==='delegated_auto'?'按授权自动审批':'每次询问')
@@ -52,6 +70,7 @@ function productStoragePrefix(){return String(product.value?.id||'agent')}
 function approvalModeStorageKey(){return productStoragePrefix()+'.agentPermissionMode.'+(me.value?.id||'anonymous')}
 function setApprovalPermissionMode(mode:'ask'|'delegated_auto'){approvalPermissionMode.value=mode;if(me.value)localStorage.setItem(approvalModeStorageKey(),mode);approvalModePopoverOpen.value=false}
 const profileButton=ref<HTMLButtonElement|null>(null),noticeButton=ref<HTMLButtonElement|null>(null),sidebarSearchInput=ref<HTMLInputElement|null>(null)
+const chatScroll=ref<HTMLElement|null>(null)
 const notificationPopoverStyle=ref<Record<string,string>>({left:'96px',top:'44px'})
 const workspaceOpen=computed(()=>expanded.value)
 const noticeCount=computed(()=>new Set(notices.value.filter(n=>!n.read).map(n=>n.kind?.startsWith('approval.')&&n.resource_id?'approval:'+n.resource_id:'notice:'+n.id)).size)
@@ -71,7 +90,8 @@ function connectRunEvents(id:string){
  source.addEventListener('transport',()=>{if(runEvents===source)runEventsReady.value=false})
 }
 watch([()=>me.value?.id,conversation],([userId,id])=>connectRunEvents(userId?String(id||''):''))
-function openSettings(page:any='account'){settingsInitialPage.value=typeof page==='string'?page:'account';showProfile.value=false;showNotices.value=false;settingsOpen.value=true}
+function openSettings(page:any='account'){settingsInitialPage.value=typeof page==='string'?page:'account';showProfile.value=false;showNotices.value=false;erpDesignWorkspaceOpen.value=false;settingsOpen.value=true}
+function openErpDesignWorkspace(){showProfile.value=false;showNotices.value=false;settingsOpen.value=false;erpDesignWorkspaceOpen.value=true}
 function toggleSidebarSearch(){
  if(showSidebarSearch.value||search.value){showSidebarSearch.value=false;search.value='';return}
  showSidebarSearch.value=true;nextTick(()=>sidebarSearchInput.value?.focus())
@@ -84,7 +104,7 @@ function updateNotificationPosition(){
  left=Math.max(10,Math.min(left,window.innerWidth-width-10))
  notificationPopoverStyle.value={left:left+'px',top:Math.round(rect.bottom+gap)+'px'}
 }
-function escapeMenu(e:KeyboardEvent){if(e.key==='Escape'){if(showProfile.value)closeProfile();showNotices.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false}}
+function escapeMenu(e:KeyboardEvent){if(e.key==='Escape'){if(showProfile.value)closeProfile();showNotices.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;if(erpDrawingPreviewRow.value)erpDrawingPreviewRow.value=null;else closeErpDesignPreview()}}
 function closeFloatingPanels(e:MouseEvent){
  const target=e.target as Element|null
  if(showNotices.value&&!target?.closest('.notification-popover')&&!(target&&noticeButton.value?.contains(target)))showNotices.value=false
@@ -93,7 +113,7 @@ function closeFloatingPanels(e:MouseEvent){
  if(approvalModePopoverOpen.value&&!target?.closest('.approval-mode-wrap'))approvalModePopoverOpen.value=false
 }
 onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',updateNotificationPosition)})
-onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);for(const frame of streamedTextFrames.values())window.cancelAnimationFrame(frame);streamedTextFrames.clear()})
+onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);stopErpDesignPreviewPolling();for(const frame of streamedTextFrames.values())window.cancelAnimationFrame(frame);streamedTextFrames.clear()})
 async function openNotices(){showProfile.value=false;showNotices.value=true;await nextTick();updateNotificationPosition();noticeLoading.value=true;try{[notices.value,approvals.value,initiatedApprovals.value,approvalWorkItems.value]=await Promise.all([api('/notifications'),api('/approvals'),api('/approvals/initiated'),api('/approval-work-items')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
 const currentTitle=computed(()=>conversations.value.find(c=>c.id===conversation.value)?.title || activeConversationTitle.value || '新对话')
 const filteredConversations=computed(()=>conversations.value.filter(c=>c.title.includes(search.value)))
@@ -122,6 +142,112 @@ const runErrorMessages:Record<string,string>={
  BUDGET_EXCEEDED:'本轮执行已达到时间、回合或工具预算上限。',
 }
 function runFailureReason(code:any){return runErrorMessages[String(code||'')]||'执行链路发生未分类异常，请按错误码核对服务日志。'}
+const compactHidden=new Set(['id','subject_id','plan_id','created_at','updated_at','analysis','detail','snapshot','project','subject','lines','history','tasks','attachments'])
+const titleKeys=['number','code','internal_number','project_code','name','title','project_name','status','project_status']
+const compactKeys=['execution_mode','customer_due_date','due_date','drawing_revision','revision','version','scope_confirmed','business_status','remark','description']
+function firstValue(row:any,key:string){return row?.[key]??row?.detail?.[key]??row?.snapshot?.[key]??row?.project?.[key]??row?.subject?.[key]}
+function compactRecordTitle(row:any){
+ const code=firstValue(row,'number')??firstValue(row,'code')??firstValue(row,'internal_number')??firstValue(row,'project_code')
+ const name=firstValue(row,'name')??firstValue(row,'title')??firstValue(row,'project_name')
+ return [code&&valueText('number',code),name&&valueText('name',name)].filter(Boolean).join(' · ')
+}
+function compactRecordFields(row:any){
+ const used=new Set(titleKeys.map(key=>firstValue(row,key)).filter(v=>v!==undefined&&v!==null&&v!=='').map(v=>String(v)))
+ const pairs:{key:string;label:string;value:string}[]=[]
+ const status=firstValue(row,'project_status')??firstValue(row,'status')
+ if(status!==undefined&&status!==null&&status!=='')pairs.push({key:'project_status',label:'项目状态',value:valueText('status',status)})
+ for(const key of compactKeys){
+  const raw=firstValue(row,key)
+  if(raw===undefined||raw===null||raw===''||typeof raw==='object'||used.has(String(raw)))continue
+  pairs.push({key,label:fieldName(key),value:valueText(key,raw)})
+  if(pairs.length>=3)return pairs
+ }
+ for(const [key,raw] of Object.entries(row||{})){
+  if(pairs.length>=3)break
+  if(compactHidden.has(key)||titleKeys.includes(key)||raw===undefined||raw===null||raw===''||typeof raw==='object'||used.has(String(raw)))continue
+  pairs.push({key,label:fieldName(key),value:valueText(key,raw)})
+ }
+ return pairs
+}
+const evidenceHidden=new Set([...compactHidden,'analysis','raw','payload','material_snapshot','system_facts'])
+const evidencePriority=['number','code','internal_number','project_code','project_name','name','title','status','project_status','customer_due_date','execution_mode','business_status','plan_number','active_plan_number','expected_ship_date','due_date','remark','description','reason','source_ref']
+function isRecord(value:any){return value&&typeof value==='object'&&!Array.isArray(value)}
+function readableEntries(obj:any,limit=12){
+ if(!isRecord(obj))return []
+ const entries=Object.entries(obj).filter(([key,value])=>!evidenceHidden.has(key)&&value!==undefined&&value!==null&&value!==''&&typeof value!=='object')
+ entries.sort(([a],[b])=>{
+  const ia=evidencePriority.indexOf(a),ib=evidencePriority.indexOf(b)
+  return (ia<0?999:ia)-(ib<0?999:ib)
+ })
+ return entries.slice(0,limit).map(([key,value])=>({key,label:fieldName(key),value:valueText(key,value)}))
+}
+function evidenceSummary(row:any){
+ const seen=new Set<string>(),pairs:{key:string;label:string;value:string}[]=[]
+ for(const source of [row?.project,row?.subject,row,row?.detail,row?.snapshot]){
+  for(const item of readableEntries(source,16)){
+   const sig=item.label+':'+item.value
+   if(seen.has(sig))continue
+   seen.add(sig);pairs.push(item)
+   if(pairs.length>=12)return pairs
+  }
+ }
+ return pairs
+}
+function evidenceSections(row:any){
+ const sections:any[]=[]
+ const visited=new WeakSet<object>()
+ for(const source of [row,row?.detail,row?.snapshot]){
+  if(!isRecord(source)||visited.has(source))continue
+  visited.add(source)
+  for(const [key,value] of Object.entries(source)){
+   if(evidenceHidden.has(key)||value===undefined||value===null||value==='')continue
+   if(Array.isArray(value)){
+    const rows=value.slice(0,12)
+    sections.push({key,title:fieldName(key),kind:'array',count:value.length,rows})
+   }else if(isRecord(value)&&!visited.has(value)){
+    visited.add(value)
+    const pairs=readableEntries(value,10)
+    if(pairs.length)sections.push({key,title:fieldName(key),kind:'object',pairs})
+   }
+   if(sections.length>=8)return sections
+  }
+ }
+ return sections
+}
+function evidenceCardTitle(row:any,index:number,title:string){
+ return isRecord(row)?(compactRecordTitle(row)||`${title} ${Number(index)+1}`):`${title} ${Number(index)+1}`
+}
+function evidenceBriefTitle(item:any){
+ const rows=toolEvidenceRows(item)
+ if(!rows.length)return '暂无可见记录'
+ const title=compactRecordTitle(rows[0])||'业务记录'
+ return rows.length>1?`${title} 等 ${rows.length} 条记录`:title
+}
+function evidenceBriefSummary(item:any){
+ const rows=toolEvidenceRows(item)
+ if(!rows.length)return '本次查询未返回当前权限范围内的业务记录。'
+ const facts=compactRecordFields(rows[0]).map(fact=>`${fact.label} ${fact.value}`)
+ return facts.length?facts.join(' · '):`${rows.length} 条记录 · 按当前权限返回`
+}
+function toolEvidenceRows(item:any){
+ const data=item?.data
+ if(Array.isArray(data))return data
+ if(!isRecord(data))return []
+ if(Array.isArray(data.rows))return data.rows
+ return Object.values(data).flatMap((value:any)=>isRecord(value)&&Array.isArray(value.rows)?value.rows:[])
+}
+function toolEvidenceCount(item:any){return toolEvidenceRows(item).length}
+function firstToolEvidenceRow(item:any){return toolEvidenceRows(item)[0]}
+function openToolEvidence(item:any){selectedEvidence.value={...item,data:toolEvidenceRows(item)}}
+function toolSearchStatus(item:any){
+ if(item?.activated?.length)return {label:'本轮已启用',summary:item.activated.map((name:string)=>capabilityName(name)).join('、')}
+ if(item?.matches?.length)return {label:'能力已就绪',summary:'匹配能力已处于启用状态'}
+ return {label:'能力匹配',summary:'未找到匹配能力'}
+}
+function hasBusinessFactHighlights(row:any){
+ const analysis=row?.analysis
+ return Boolean(analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
+}
 function runTrace(run:any){
  if(Array.isArray(run.trace)&&run.trace.length)return run.trace
  const items:any[]=[]
@@ -210,6 +336,17 @@ watch(runs,(currentRuns)=>{
   streamedTextTargets.delete(key);streamedTextLiveKeys.delete(key);streamedTextCompletedKeys.delete(key);stopStreamedTextAnimation(key)
  }
 },{deep:true})
+watch(runs,(currentRuns,previousRuns=[])=>{
+ const previousById=new Map(previousRuns.map((run:any)=>[run.id,run]))
+ for(const run of currentRuns){
+  if(openedErpDesignRunIds.has(run.id)||!shouldOpenErpDesignPreview(previousById.get(run.id),run))continue
+  const session=erpDesignSessionFromRun(run)
+  if(!session)continue
+  openedErpDesignRunIds.add(run.id)
+  openErpDesignPreview(session)
+ }
+},{deep:true})
+watch(runs,currentRuns=>{void loadErpDesignImportStatuses(currentRuns)},{deep:true,immediate:true})
 function runFinalTrace(run:any){
  const trace=runTrace(run)
  for(let i=trace.length-1;i>=0;i--)if(trace[i]?.type==='final')return trace[i]
@@ -295,8 +432,215 @@ async function copyMessage(text:string,key:string){
  window.setTimeout(()=>{if(copiedMessage.value===key)copiedMessage.value=''},1400)
 }
 function evidenceTitle(item:any){return item?.proposal?'操作建议':capabilityName(item?.tool||'')}
+function stopErpDesignPreviewPolling(){if(erpDesignPreviewPoll!=null){window.clearTimeout(erpDesignPreviewPoll);erpDesignPreviewPoll=null}}
+function closeErpDesignPreview(){erpDesignPreviewRequest++;stopErpDesignPreviewPolling();erpDrawingPreviewRow.value=null;erpDesignPreview.value=null;erpDesignPreviewLoading.value=false;erpDesignPreviewError.value='';erpDesignPreviewNotice.value='';erpDesignRepricing.value=false;erpDesignImporting.value=false;erpDesignDuplicateNotice.value=null}
+function erpDesignImportReceipt(session:ErpDesignPreviewSession|null|undefined){return session?erpDesignImportReceipts.value[String(session.sessionId)]||null:null}
+function setErpDesignImportReceipt(receipt:ErpDesignImportReceipt){erpDesignImportReceipts.value={...erpDesignImportReceipts.value,[String(receipt.sessionId)]:receipt}}
+async function loadErpDesignImportStatuses(currentRuns:any[]){
+ const sessionIds=[...new Set(currentRuns.flatMap(run=>runTrace(run).map((item:any)=>erpDesignSessionFromTool(item)?.sessionId)).filter((value):value is number=>Boolean(value)))]
+ const pending=sessionIds.filter(sessionId=>!loadedErpDesignImportStatuses.has(sessionId))
+ if(!pending.length)return
+ pending.forEach(sessionId=>loadedErpDesignImportStatuses.add(sessionId))
+ try{
+  const result=await post('/erp-design-uploads/import-statuses',{session_ids:pending})
+  for(const value of Array.isArray(result?.receipts)?result.receipts:[]){
+   const receipt=normalizeErpDesignImportReceipt(value)
+   if(receipt)setErpDesignImportReceipt(receipt)
+  }
+ }catch{
+  // Import status restoration is supplementary; the order remains usable if it cannot be read.
+ }
+}
+async function loadErpDesignPreview(){
+ const current=erpDesignPreview.value
+ if(!current)return
+ stopErpDesignPreviewPolling()
+ const request=++erpDesignPreviewRequest
+ erpDesignPreviewLoading.value=!current.previewRows.length
+ erpDesignPreviewError.value=''
+ try{
+  const result=await post('/erp-design-uploads/status',{session_id:current.sessionId,include_result:true})
+  if(request!==erpDesignPreviewRequest||erpDesignPreview.value?.sessionId!==current.sessionId)return
+  const merged=normalizeErpDesignPreview(result,erpDesignPreview.value)
+  if(!merged)throw new Error('ERP 未返回可读取的清单数据')
+  erpDesignPreview.value=merged
+  if(merged.drawingProcessing){
+   erpDesignPreviewPoll=window.setTimeout(()=>void loadErpDesignPreview(),1500)
+  }
+ }catch(e:any){
+  if(request===erpDesignPreviewRequest)erpDesignPreviewError.value=e?.message||'读取 ERP 清单失败'
+ }finally{
+  if(request===erpDesignPreviewRequest)erpDesignPreviewLoading.value=false
+ }
+}
+function openErpDesignPreview(session:ErpDesignPreviewSession|null){
+ if(!session)return
+ erpDesignPreviewRequest++
+ stopErpDesignPreviewPolling()
+ erpDrawingPreviewRow.value=null
+ erpDesignPreviewNotice.value=''
+ erpDesignDuplicateNotice.value=null
+ const draft=erpDesignDrafts.get(session.sessionId)
+ erpDesignPreview.value=draft?{...session,...draft}:session
+ erpDesignPreviewError.value=''
+ void loadErpDesignPreview()
+}
+function openErpDesignPreviewFromTool(item:any){openErpDesignPreview(erpDesignSessionFromTool(item))}
+function updateErpDesignDraft(draft:{expectedDate:string;remark:string}){
+ const current=erpDesignPreview.value
+ if(!current)return
+ erpDesignDrafts.set(current.sessionId,draft)
+ erpDesignPreview.value={...current,...draft}
+}
+function updateErpDesignRows(rows:ErpDesignRow[]){
+ const current=erpDesignPreview.value
+ if(!current)return
+ erpDesignDuplicateNotice.value=null
+ erpDesignPreview.value={...current,previewRows:rows,rowCount:rows.length}
+}
+async function repriceErpDesignRows(rows:ErpDesignRow[]){
+ const current=erpDesignPreview.value
+ if(!current||erpDesignRepricing.value)return
+ erpDesignRepricing.value=true
+ erpDesignPreviewNotice.value=''
+ erpDesignDuplicateNotice.value=null
+ try{
+  const result=await post('/erp-design-uploads/reprice',{
+   session_id:current.sessionId,
+   sheet_type:current.sheetType,
+   mold_code:current.moldCode||null,
+   preview_rows:rows,
+  })
+  const normalized=normalizeErpDesignPreview(result,{...current,previewRows:rows,rowCount:rows.length})
+  if(!normalized)throw new Error('ERP 未返回有效核算结果')
+  erpDesignPreview.value=normalized
+  erpDesignPreviewNotice.value='已按 ERP 当前规则重新核算价格。'
+ }catch(e:any){erpDesignPreviewError.value=e?.message||'重新核算价格失败'}
+ finally{erpDesignRepricing.value=false}
+}
+function erpDesignRowKey(row:ErpDesignRow,index=-1){return String(row.drawing_row_key??row.drawingRowKey??row.rowIndex??row.row_index??row.item_code_full??row.itemCodeFull??index)}
+async function repriceErpDesignRow(row:ErpDesignRow){
+ const current=erpDesignPreview.value
+ if(!current)return
+ const rows=current.previewRows.map(item=>({...item}))
+ let index=rows.findIndex((item,rowIndex)=>erpDesignRowKey(item,rowIndex)===erpDesignRowKey(row,rowIndex))
+ if(index<0)index=rows.findIndex(item=>String(item.item_code_full??item.itemCodeFull??'')===String(row.item_code_full??row.itemCodeFull??''))
+ if(index<0)return
+ const key=`${current.sessionId}:${erpDesignRowKey(rows[index],index)}`
+ const token=(erpDesignRowRepriceTokens.get(key)||0)+1
+ erpDesignRowRepriceTokens.set(key,token)
+ rows[index]={...rows[index],...row,_erp_reprice_loading:true}
+ erpDesignPreview.value={...current,previewRows:rows}
+ erpDesignPreviewError.value=''
+ erpDesignDuplicateNotice.value=null
+ try{
+  const result=await post('/erp-design-uploads/reprice',{
+   session_id:current.sessionId,
+   sheet_type:current.sheetType,
+   mold_code:current.moldCode||null,
+   preview_rows:[rows[index]],
+  })
+  if(erpDesignRowRepriceTokens.get(key)!==token||erpDesignPreview.value?.sessionId!==current.sessionId)return
+  const normalized=normalizeErpDesignPreview(result,{...current,previewRows:[rows[index]],rowCount:1})
+  const priced=normalized?.previewRows?.[0]
+  if(!priced)throw new Error('ERP 未返回有效核价结果')
+  const latest=erpDesignPreview.value
+  if(!latest)return
+  const mergedRows=latest.previewRows.map((item,rowIndex)=>rowIndex===index?{...item,...priced,_erp_reprice_loading:false}:item)
+  erpDesignPreview.value={...latest,previewRows:mergedRows,rowCount:mergedRows.length}
+  erpDesignPreviewNotice.value='已按 ERP 当前规则更新该行的规格、重量和价格。'
+ }catch(e:any){
+  if(erpDesignRowRepriceTokens.get(key)!==token)return
+  const latest=erpDesignPreview.value
+  if(latest)erpDesignPreview.value={...latest,previewRows:latest.previewRows.map((item,rowIndex)=>rowIndex===index?{...item,_erp_reprice_loading:false}:item)}
+ erpDesignPreviewError.value=e?.message||'该行重新核算失败'
+ }
+}
+function erpDesignImportResult(value:any):Record<string,any>{
+ const data=value?.data
+ return data&&typeof data==='object'&&!Array.isArray(data)?data:(value&&typeof value==='object'?value:{})
+}
+function erpDesignDuplicateRequestNo(message:string):string{
+ return String(message||'').match(/重复上传[：:]\s*([^，,\s]+)/)?.[1]||''
+}
+function erpDesignDisplayMessage(message:unknown,fallback:string):string{
+ const value=String(message||'').trim()
+ return value.replace(/^ERP\s+(?:GET|POST|PUT|PATCH|DELETE)\s+\S+\s+failed\s*\(\d+\)\s*:\s*/i,'').trim()||fallback
+}
+function erpDesignDuplicateFromError(error:any):{message:string;requestNo:string}|null{
+ const rawMessage=String(error?.message||'')
+ const duplicate=error?.code==='ERP_DUPLICATE_CONFIRMATION_REQUIRED'||/检测到同类型、同模号且明细相同的重复上传|重复上传/.test(rawMessage)
+ const message=erpDesignDisplayMessage(rawMessage,'检测到同类型、同模号且明细相同的重复上传。')
+ return duplicate?{message,requestNo:erpDesignDuplicateRequestNo(message)}:null
+}
+function erpDesignDuplicateFromResult(value:any):{message:string;requestNo:string}|null{
+ const result=erpDesignImportResult(value)
+ if(result.duplicateUpload!==true&&result.duplicate_upload!==true)return null
+ const message=erpDesignDisplayMessage(result.message||result.errorMessage||result.error_message,'检测到同类型、同模号且明细相同的重复上传。')
+ return {message,requestNo:String(result.requestNo||result.request_no||erpDesignDuplicateRequestNo(message)||'')}
+}
+async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:string;remark:string;allowDuplicate:boolean}){
+ const current=erpDesignPreview.value
+ if(!current||erpDesignImporting.value)return
+ if(!payload.expectedDate){erpDesignPreviewError.value='请先填写交期后再确认导入';return}
+ erpDesignImporting.value=true
+ erpDesignPreviewError.value=''
+ erpDesignPreviewNotice.value=''
+ try{
+  const result=await post('/erp-design-uploads/import',{
+   session_id:current.sessionId,
+   sheet_type:current.sheetType,
+   mold_code:current.moldCode||null,
+   preview_rows:payload.previewRows,
+   confirm_import:true,
+   urgency_level:'normal',
+   expected_date:payload.expectedDate,
+   remark:payload.remark||null,
+   allow_duplicate:payload.allowDuplicate,
+  })
+  const duplicate=erpDesignDuplicateFromResult(result)
+  if(duplicate&&!payload.allowDuplicate){
+   erpDesignDuplicateNotice.value=duplicate
+   erpDesignPreviewNotice.value='检测到重复上传，请核对后决定是否继续导入。'
+   return
+  }
+  const response=erpDesignImportResult(result)
+  const requestNo=String(response.requestNo??response.request_no??'').trim()
+  erpDesignDuplicateNotice.value=null
+  erpDesignDrafts.delete(current.sessionId)
+  setErpDesignImportReceipt({
+   sessionId:current.sessionId,
+   requestNo,
+   message:requestNo?`已成功导入 ERP，回执单号：${requestNo}`:'已成功导入 ERP，并收到导入回执。',
+   importedAt:new Date().toISOString(),
+  })
+  closeErpDesignPreview()
+  await nextTick()
+  chatScroll.value?.scrollTo({top:chatScroll.value.scrollHeight,behavior:'smooth'})
+ }catch(e:any){
+  const duplicate=payload.allowDuplicate?null:erpDesignDuplicateFromError(e)
+  if(duplicate){
+   erpDesignDuplicateNotice.value=duplicate
+   erpDesignPreviewNotice.value='检测到重复上传，请核对后决定是否继续导入。'
+   return
+  }
+  erpDesignPreviewError.value=e?.message||'确认导入失败'
+ }finally{erpDesignImporting.value=false}
+}
+function openErpDrawingPreview(row:ErpDesignRow){erpDrawingPreviewRow.value=row}
 function fail(message:string){error.value=message}
-async function refresh(){ [conversations.value,notices.value,approvals.value,approvalWorkItems.value,capabilities.value]=await Promise.all([api('/conversations'),api('/notifications'),api('/approvals'),api('/approval-work-items'),api('/capabilities')]) }
+async function refresh(){
+ const [conversationResult,noticeResult,approvalResult,approvalWorkItemResult,capabilityResult]=await Promise.allSettled([
+  api('/conversations'),api('/notifications'),api('/approvals'),api('/approval-work-items'),api('/capabilities')
+ ])
+ if(conversationResult.status==='fulfilled') conversations.value=conversationResult.value
+ if(noticeResult.status==='fulfilled') notices.value=noticeResult.value
+ if(approvalResult.status==='fulfilled') approvals.value=approvalResult.value
+ if(approvalWorkItemResult.status==='fulfilled') approvalWorkItems.value=approvalWorkItemResult.value
+ if(capabilityResult.status==='fulfilled') capabilities.value=capabilityResult.value
+ const failed=[conversationResult,noticeResult,approvalResult,approvalWorkItemResult,capabilityResult].find(result=>result.status==='rejected')
+ if(failed?.status==='rejected') throw failed.reason
+}
 async function loadProduct(){
  const loaded=await api('/product')
  if(loaded.id!==__DOMAIN_PACK_ID__)throw new Error(`业务包配置不一致：前端 ${__DOMAIN_PACK_ID__}，后端 ${loaded.id||'unknown'}`)
@@ -341,7 +685,7 @@ async function handleCurrentProposalDecision(dismissed=false){
 async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch(e:any){fail(e.message||'工作台初始化失败')}finally{loading.value=false}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
-function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];runs.value=[];conversationLoading.value=false;detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';search.value=''}
+function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];runs.value=[];conversationLoading.value=false;detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;erpDesignWorkspaceOpen.value=false;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';closeErpDesignPreview();openedErpDesignRunIds.clear();loadedErpDesignImportStatuses.clear();erpDesignImportReceipts.value={};search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem(productStoragePrefix()+'.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
 async function openPanel(key:string){if(!workspaceTabs.value.some((tab:any)=>tab.key===key))return;panel.value=key;expanded.value=true;saveLayout()}
@@ -363,8 +707,9 @@ async function markApprovalNotificationsRead(id:string){
 async function openApproval(id:string){try{showNotices.value=false;detail.value=await api('/approvals/'+id);await openPanel('approvals');await markApprovalNotificationsRead(id)}catch(e:any){fail(e.message)}}
 async function changed(){try{await refresh();if(detail.value)detail.value=await api('/approvals/'+detail.value.id)}catch(e:any){fail(e.message)}}
 async function selectConversation(id:string,title='',archived=false){
+ erpDesignWorkspaceOpen.value=false
  const changed=conversation.value!==id
- if(changed){conversationEpoch++;selectedFiles.value=[];runs.value=[];collapse()}
+ if(changed){conversationEpoch++;selectedFiles.value=[];runs.value=[];closeErpDesignPreview();collapse()}
  const epoch=conversationEpoch
  conversation.value=id;activeConversationTitle.value=title;activeConversationArchived.value=archived;prompt.value='';conversationLoading.value=true
  try{
@@ -379,7 +724,7 @@ async function selectConversation(id:string,title='',archived=false){
 async function toggleConversationPin(c:any,event?:Event){event?.stopPropagation();try{await post(`/conversations/${c.id}/pin`);await refresh()}catch(e:any){fail(e.message)}}
 async function archiveConversation(c:any,event?:Event){event?.stopPropagation();try{await post(`/conversations/${c.id}/archive`);if(conversation.value===c.id)newConversation();await refresh()}catch(e:any){fail(e.message)}}
 async function openArchivedConversation(c:any){settingsOpen.value=false;showNotices.value=false;await selectConversation(c.id,c.title,true)}
-function newConversation(){conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];conversationLoading.value=false;prompt.value='';detail.value=null;collapse()}
+function newConversation(){erpDesignWorkspaceOpen.value=false;conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];conversationLoading.value=false;prompt.value='';detail.value=null;closeErpDesignPreview();collapse()}
 async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function stopActiveRun(){const run=activeRun.value;if(!run||busy.value)return;busy.value=true;error.value='';try{await post('/runs/'+run.id+'/cancel');if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function uploadFiles(event:Event){
@@ -409,12 +754,13 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 <div v-if="loading" class="loading-screen">正在连接工作台…</div>
 <main v-else-if="!me" class="login-screen"><form class="login-box" @submit.prevent="login"><div class="brand-symbol"><Bot :size="30"/></div><h1>{{product.product_name}}</h1><p>{{product.display_name}} · {{product.tagline}}</p><label>用户名<input v-model="username" autocomplete="username" required autofocus/></label><label>密码<input v-model="password" type="password" autocomplete="current-password" required/></label><p v-if="error" class="error" role="alert">{{error}}</p><button class="primary" :disabled="busy">{{busy?'正在登录…':'登录工作台'}}<ArrowRight :size="16"/></button><small>统一智能体入口 · 你的权限决定可用能力</small></form></main>
 <SettingsPage v-else-if="settingsOpen" :me="me" :permissions="permissions" :capabilities="capabilities" :model-name="modelName" :color-theme="colorTheme" :initial-page="settingsInitialPage" @theme-change="changeTheme" @model-updated="modelName=$event" @open-conversation="openArchivedConversation" @close="settingsOpen=false;restore().catch(e=>fail(e.message))" @error="fail"/>
+<ErpDesignWorkbench v-else-if="erpDesignWorkspaceOpen" :permissions="permissions" @close="erpDesignWorkspaceOpen=false"/>
 <main v-else class="workbench" :class="{'panel-full':full&&workspaceOpen,'sidebar-collapsed':sidebarCollapsed,'workspace-open':workspaceOpen&&!full}" :style="{'--sidebar-width':sidebarWidth+'px'}">
-  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>{{product.product_name}}</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button ref="noticeButton" class="brand-action" title="待处理" aria-label="待处理" :aria-expanded="showNotices" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" :aria-current="conversation===c.id?'page':undefined" @click="selectConversation(c.id,c.title)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><span v-if="c.status==='WAITING_APPROVAL'" class="conversation-status">等待批准</span><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
+  <aside class="sidebar"><div class="brand"><div class="brand-title"><strong>{{product.product_name}}</strong></div><div class="brand-actions"><button class="brand-action" title="搜索历史对话" aria-label="搜索历史对话" :aria-expanded="showSidebarSearch||!!search" @click="toggleSidebarSearch"><Search :size="15"/></button><button ref="noticeButton" class="brand-action" title="待处理" aria-label="待处理" :aria-expanded="showNotices" @click="showNotices?showNotices=false:openNotices()"><Bell :size="15"/><span v-if="noticeCount" class="brand-dot"/></button><button class="brand-action sidebar-toggle-button" :title="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-label="sidebarCollapsed?'展开左侧会话':'折叠左侧会话'" :aria-pressed="sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><PanelRight :size="15"/></button></div></div><label v-if="showSidebarSearch||search" class="search sidebar-search"><Search :size="16"/><input ref="sidebarSearchInput" v-model="search" placeholder="搜索历史对话" aria-label="搜索历史对话"/></label><button class="new-chat" @click="newConversation"><Plus :size="18"/><span>新对话</span></button><button v-if="permissions.includes('design_route.read')" class="new-chat" @click="openErpDesignWorkspace"><TableProperties :size="18"/><span>ERP 设计管理</span></button><small class="sidebar-label">最近对话</small><div class="conversation-list"><div v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{active:conversation===c.id,pinned:c.pinned}"><button class="conversation-main" :aria-current="conversation===c.id?'page':undefined" @click="selectConversation(c.id,c.title)"><MessageSquare :size="15"/><span>{{c.title}}</span></button><span v-if="c.status==='WAITING_APPROVAL'" class="conversation-status">等待批准</span><div class="conversation-actions"><button type="button" class="conversation-action" :title="c.pinned?'取消置顶':'置顶聊天'" :aria-label="c.pinned?'取消置顶：'+c.title:'置顶聊天：'+c.title" @click.stop="toggleConversationPin(c,$event)"><Pin :size="13"/></button><button type="button" class="conversation-action" :title="'归档聊天'" :aria-label="'归档聊天：'+c.title" @click.stop="archiveConversation(c,$event)"><Archive :size="13"/></button></div></div><p v-if="!conversations.length" class="muted small">开始一个任务，对话会保存在这里。</p><p v-else-if="!filteredConversations.length" class="muted small">没有匹配的对话。</p></div><div class="profile-area"><button ref="profileButton" class="profile-entry" aria-label="账号菜单" aria-haspopup="menu" :aria-expanded="showProfile" @click="showProfile=!showProfile;showNotices=false"><span class="avatar"><img v-if="me.avatar_url" :src="me.avatar_url" alt=""/><template v-else>{{me.display_name[0]}}</template></span><span class="profile-info"><strong>{{me.display_name}}</strong><small>{{me.department||'未设置部门'}}</small></span></button>
 <div v-if="showProfile" class="profile-dismiss" @click="closeProfile"/>
 <div v-if="showProfile" class="profile-menu" role="menu" aria-label="账号选项"><p><strong>{{me.display_name}}</strong><small class="muted">{{me.username}}</small></p><button role="menuitem" @click="openSettings"><Settings :size="17"/>设置</button><button role="menuitem" @click="logout"><LogOut :size="17"/>退出登录</button></div></div></aside>
   <div v-if="!sidebarCollapsed" class="sidebar-resize-handle" role="separator" tabindex="0" aria-label="调整左侧边栏宽度" aria-orientation="vertical" title="拖拽调整宽度，双击恢复默认宽度" @pointerdown="beginSidebarResize" @dblclick="resetSidebarWidth" @keydown.left.prevent="resizeSidebarBy(-10)" @keydown.right.prevent="resizeSidebarBy(10)"/>
-  <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><button v-if="workspaceTabs.length&&!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div class="chat-scroll" aria-live="polite">
+  <section class="chat"><header class="chat-header"><div class="chat-title"><button v-if="sidebarCollapsed" class="icon-button chat-sidebar-toggle" aria-label="展开左侧会话" title="展开左侧会话" @click="sidebarCollapsed=false"><PanelRight :size="15"/></button><strong>{{currentTitle}}</strong></div><div class="chat-header-actions"><button v-if="workspaceTabs.length&&!workspaceOpen" class="icon-button" aria-label="展开工作区" title="展开工作区" :aria-expanded="workspaceOpen" @click="toggleWorkspace"><PanelRight :size="15"/></button></div></header><div ref="chatScroll" class="chat-scroll" aria-live="polite">
     <div v-if="conversationLoading" class="conversation-loading" role="status"><span class="pulse"/>正在打开会话…</div>
     <section v-else-if="!runs.length&&selectedFiles.length&&conversation" class="draft-conversation" aria-label="待发送附件会话">
       <div class="draft-conversation-card">
@@ -448,24 +794,32 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                   </div>
                   <div v-else-if="item.type==='tool_search'" class="agent-tool-row tool-search-row">
                     <span class="agent-tool-icon"><Wrench :size="13"/></span>
-                    <span class="agent-tool-name">本轮已启用</span>
-                    <span class="agent-tool-summary">{{item.activated?.length?item.activated.map((name:string)=>capabilityName(name)).join('、'):'未找到匹配能力'}}</span>
+                    <span class="agent-tool-name">{{toolSearchStatus(item).label}}</span>
+                    <span class="agent-tool-summary">{{toolSearchStatus(item).summary}}</span>
                   </div>
                   <details v-else-if="item.type==='tool'" class="agent-tool-row">
                     <summary class="agent-tool-head">
                       <span class="agent-tool-icon"><Search :size="13"/></span>
                       <span class="agent-tool-name">{{item.proposal?'已准备':'已查询'}} {{capabilityName(item.tool)}}</span>
-                      <span class="agent-tool-summary">{{item.proposal?'操作建议':((item.data?.length??0)+' 条记录')}}<template v-if="!item.proposal&&item.data?.[0]"> · {{compactRecordTitle(item.data[0])}}</template></span>
+                      <span class="agent-tool-summary">{{item.proposal?'操作建议':(erpDesignSessionFromTool(item)?`ERP 会话 ${erpDesignSessionFromTool(item)?.sessionId} · ${erpDesignSessionFromTool(item)?.rowCount} 行`:(toolEvidenceCount(item)+' 条记录'))}}<template v-if="!item.proposal&&firstToolEvidenceRow(item)"> · {{compactRecordTitle(firstToolEvidenceRow(item))}}</template></span>
                       <span class="agent-tool-caret"><ChevronRight :size="12"/></span>
                     </summary>
                     <div class="agent-tool-body">
                       <p v-if="item.proposal" class="agent-tool-meta">已生成待确认卡，请在下方正文区域处理。</p>
+                      <div v-else-if="erpDesignSessionFromTool(item)" class="agent-tool-main agent-evidence-brief">
+                        <span>
+                          <strong>{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?'ERP 清单已成功导入':(erpDesignSessionFromTool(item)?.moldCode||erpDesignSessionFromTool(item)?.fileName||'ERP 设计上传清单')}}</strong>
+                          <small v-if="erpDesignImportReceipt(erpDesignSessionFromTool(item))">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo:'ERP 已返回成功回执'}}</small>
+                          <small v-else>ERP 上传会话 {{erpDesignSessionFromTool(item)?.sessionId}} · {{erpDesignSessionFromTool(item)?.rowCount}} 行解析明细</small>
+                        </span>
+                        <button :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromTool(item)))" :title="erpDesignImportReceipt(erpDesignSessionFromTool(item))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreviewFromTool(item)">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?'已导入':'查看订单'}}</button>
+                      </div>
                       <div v-else class="agent-tool-main agent-evidence-brief">
                         <span>
                           <strong>{{evidenceBriefTitle(item)}}</strong>
                           <small>{{evidenceBriefSummary(item)}}</small>
                         </span>
-                        <button v-if="item.data?.length" @click="selectedEvidence=item">查看详情</button>
+                        <button v-if="toolEvidenceCount(item)" @click="openToolEvidence(item)">查看详情</button>
                       </div>
                       <div v-if="toolEvidenceLinks(item).length" class="actions">
                         <button v-for="link in toolEvidenceLinks(item)" :key="link.target+':'+link.id" @click="openWorkspaceTarget(link)">{{link.label}}</button>
@@ -502,6 +856,14 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                 <li v-for="s in finalItem.suggestions" :key="s">{{s}}</li>
               </ul>
             </div>
+            <div v-if="erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
+              <span>
+                <strong>{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?'ERP 清单已成功导入':'ERP 清单已就绪'}}</strong>
+                <small v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo:'ERP 已返回成功回执'}} · 上传会话 {{erpDesignSessionFromRun(run)?.sessionId}}</small>
+                <small v-else>上传会话 {{erpDesignSessionFromRun(run)?.sessionId}} · {{erpDesignSessionFromRun(run)?.rowCount}} 行解析明细</small>
+              </span>
+              <button type="button" :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))" :title="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreview(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?'已导入':'查看订单'}}</button>
+            </div>
             <template v-if="!runFinalTraces(run).length&&!runProcessTrace(run).length" v-for="(item,index) in runTrace(run)" :key="item.id||item.call_id||index">
               <div v-if="item.type==='message'" class="assistant-prose">
                 <p class="preserve">{{item.text}}</p>
@@ -523,7 +885,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
     <textarea v-model="prompt" placeholder="输入任务或问题…" aria-label="输入任务或问题" rows="3" @keydown.enter.exact.prevent="send"/>
     <div class="composer-toolbar">
-      <input ref="fileInput" hidden type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx" multiple aria-label="选择上传附件" @change="uploadFiles"/>
+      <input ref="fileInput" hidden type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.xls,.csv,.dxf,.dwg,.prt" multiple aria-label="选择上传附件" @change="uploadFiles"/>
       <button v-if="permissions.includes('file.upload')" type="button" class="icon-button" aria-label="上传附件" title="上传附件" :disabled="uploading||busy" @click="fileInput?.click()"><Paperclip :size="17"/></button>
       <div class="approval-mode-wrap">
         <button type="button" class="approval-mode-button" title="Agent 权限模式" :aria-expanded="approvalModePopoverOpen" aria-haspopup="menu" @click="approvalModePopoverOpen=!approvalModePopoverOpen;contextPopoverOpen=false;modelPopoverOpen=false"><ShieldCheck :size="15"/><span>{{approvalPermissionLabel}}</span></button>
@@ -588,6 +950,42 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
     <h3>通知记录</h3><p v-if="!notices.length" class="muted notification-empty">暂无通知。</p><button v-for="n in notices" :key="n.id" class="task-row" @click="notice(n)"><span class="notification-item-copy"><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small class="notification-item-meta"><time>{{shanghai(n.created_at)}}</time></small></span><span v-if="!n.read" class="unread-dot"/></button>
   </aside>
 </main>
+
+  <div v-if="erpDesignPreview" class="modal-shade erp-design-modal-shade" @click.self="closeErpDesignPreview">
+    <section class="modal erp-design-modal" role="dialog" aria-modal="true" aria-label="查看订单明细">
+      <header class="erp-design-modal-head">
+        <div>
+          <h2>查看订单明细</h2>
+          <p><template v-if="erpDesignPreview.moldCode">{{erpDesignPreview.moldCode}} · </template>ERP 会话 {{erpDesignPreview.sessionId}}<template v-if="erpDesignPreview.fileName"> · {{erpDesignPreview.fileName}}</template></p>
+        </div>
+        <div class="erp-design-modal-actions">
+          <button class="icon-button" aria-label="关闭订单明细" @click="closeErpDesignPreview"><X :size="17"/></button>
+        </div>
+      </header>
+      <ErpDesignTable
+        :preview="erpDesignPreview"
+        :loading="erpDesignPreviewLoading"
+        :error="erpDesignPreviewError"
+        :repricing="erpDesignRepricing"
+        :importing="erpDesignImporting"
+        :notice="erpDesignPreviewNotice"
+        :duplicate-notice="erpDesignDuplicateNotice"
+        @retry="loadErpDesignPreview"
+        @reprice="repriceErpDesignRows"
+        @reprice-row="repriceErpDesignRow"
+        @preview-drawing="openErpDrawingPreview"
+        @update-draft="updateErpDesignDraft"
+        @update-rows="updateErpDesignRows"
+        @import="importErpDesign"
+      />
+    </section>
+    <ErpDrawingPreview
+      v-if="erpDrawingPreviewRow"
+      :session-id="erpDesignPreview.sessionId"
+      :row="erpDrawingPreviewRow"
+      @close="erpDrawingPreviewRow=null"
+    />
+  </div>
 
   <div v-if="selectedEvidence" class="modal-shade evidence-modal-shade" @click.self="selectedEvidence=null">
     <section class="modal evidence-modal" role="dialog" aria-modal="true" aria-label="工具完整依据">

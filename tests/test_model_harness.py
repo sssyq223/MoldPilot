@@ -129,6 +129,28 @@ def test_model_stream_retries_read_timeout_before_first_sse_delta():
     assert model.last_metrics['http_status'] == 200
 
 
+def test_model_stream_retries_connect_timeout_before_first_sse_delta():
+    calls = []
+    body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '连接恢复'},
+                                                  'finish_reason': 'stop'}]})+'\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ConnectTimeout('TLS handshake stalled', request=request)
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([{'role': 'user', 'content': 'query'}], [], lambda _: None)
+
+    assert message['content'] == '连接恢复'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_count'] == 1
+    assert model.last_metrics['retry_reason'] == 'connect_timeout_before_first_chunk'
+    assert model.last_metrics['retry_wait_ms'] >= 0
+
+
 def test_model_stream_does_not_retry_non_transient_http_error():
     calls = []
 
@@ -283,6 +305,24 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_invalid_tool_arguments_request_one_repair_instead_of_failing_the_run():
+    malformed = {'role': 'assistant', 'tool_calls': [{
+        'id': 'bad-arguments', 'type': 'function',
+        'function': {'name': 'query_projects',
+                     'arguments': '{"query":"DEMO"}, "include":["items"]}'},
+    }]}
+    gateway = Gateway()
+    model = TranscriptModel([malformed, PROPOSAL, FINAL])
+
+    result = run_loop(context(), model, gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
+    assert model.calls == 3
+    assert 'arguments 不是有效 JSON 对象' in model.transcripts[1][0]['content']
+    assert gateway.saved['protocol_repairs'] == 1
 
 
 def test_streaming_model_progress_is_checkpointed_then_cleared_after_completion():
@@ -885,6 +925,82 @@ def test_read_only_logistics_query_never_activates_route_or_quote_prepare_tools(
     assert candidates == ['query_delivery_logistics_context']
 
 
+def test_master_data_lookup_exposes_one_reader_and_hides_maintenance_until_requested():
+    master = {'type': 'function', 'function': {
+        'name': 'erp_design_query_master_data',
+        'description': '一次查询 ERP 设计基础资料：材质密度、设计分组规则和分组关键词；只读。'}}
+    density = {'type': 'function', 'function': {
+        'name': 'erp_design_manage_density',
+        'description': '新增、修改或删除 ERP 设计材质密度。'}}
+    rule = {'type': 'function', 'function': {
+        'name': 'erp_design_manage_group_rule',
+        'description': '新增、修改、删除、启用或停用 ERP 设计分组规则。'}}
+    keyword = {'type': 'function', 'function': {
+        'name': 'erp_design_manage_group_keyword',
+        'description': '新增、修改或删除 ERP 设计分组关键词。'}}
+    deferred = {tool['function']['name']: tool for tool in [master, density, rule, keyword]}
+    groups = harness_module._skill_tool_groups([
+        {'key': 'erp_design_master_data_maintenance',
+         'tools': ['erp_design_query_master_data'],
+         'optional_tools': ['erp_design_manage_density', 'erp_design_manage_group_rule',
+                            'erp_design_manage_group_keyword'],
+         'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_density',
+                              'erp_design_manage_group_rule', 'erp_design_manage_group_keyword'],
+         'activation_queries': ['材质密度', '分组规则', '分组关键词']},
+    ], deferred)
+    annotations = {name: {'readOnlyHint': False} for name in [
+        'erp_design_manage_density', 'erp_design_manage_group_rule',
+        'erp_design_manage_group_keyword',
+    ]}
+
+    _, read_candidates, _ = harness_module._find_deferred_tools(
+        'ERP 材质密度', deferred, groups, current_prompt='查询 CR12MOV 的 ERP 材质密度',
+        tool_annotations=annotations)
+    _, write_candidates, _ = harness_module._find_deferred_tools(
+        '维护 ERP 材质密度', deferred, groups, action_intent=True,
+        current_prompt='维护 CR12MOV 的 ERP 材质密度', tool_annotations=annotations)
+
+    assert read_candidates == ['erp_design_query_master_data']
+    assert write_candidates == ['erp_design_query_master_data', 'erp_design_manage_density']
+
+
+def test_unambiguous_master_data_lookup_auto_activates_the_single_reader():
+    master = {'type': 'function', 'function': {
+        'name': 'erp_design_query_master_data',
+        'description': '一次查询 ERP 设计基础资料；只读。'}}
+    unrelated = {'type': 'function', 'function': {
+        'name': 'query_unrelated_business_data',
+        'description': '查询无关业务资料。'}}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'master-1', 'type': 'function',
+        'function': {'name': 'erp_design_query_master_data', 'arguments': json.dumps({
+            'material_mark': 'CR12MOV', 'include': ['densities'],
+        })},
+    }]}
+    gateway = Gateway()
+    model = InspectingRepliesModel([call, FINAL])
+
+    result = run_loop(context(
+        prompt='查询 CR12MOV 的 ERP 材质密度',
+        core_tool_names=[],
+        tools=[master, unrelated],
+        skills=[{
+            'key': 'erp_design_master_data_maintenance',
+            'tools': ['erp_design_query_master_data'],
+            'activation_tools': ['erp_design_query_master_data'],
+            'activation_queries': ['材质密度'],
+            'auto_activation_queries': ['材质密度'],
+            'suppress_tool_search_on_auto_activation': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert model.calls == 2
+    assert model.tool_names[0] == ['erp_design_query_master_data']
+    assert gateway.saved['active_tool_names'] == ['erp_design_query_master_data']
+    assert gateway.physical_calls == 1
+
+
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():
     risk_tool = {'type': 'function', 'function': {'name': 'analyze_delivery_risk',
                                                   'description': '分析供应商发货延期和临期风险。'}}
@@ -923,6 +1039,216 @@ def test_business_query_mentioning_model_still_allows_tool_search():
                                            'evidence_ids': [], 'suggestions': []})}
     run_loop(context(prompt='用模型查询项目计划，看看项目大节点', core_tool_names=[],
                      tools=[OTHER_TOOL], skills=[]), InspectingModel([]), Gateway())
+
+
+@pytest.mark.parametrize('prompt', [
+    '帮我执行解析这个钢料新模清单',
+    '重新匹配历史无图的设计上传会话',
+    '查询设计订单明细的闲置料决策',
+    '维护材质密度和设计分组规则',
+    '提交设变申请并维护设变明细',
+    '审批并重新提交设计订单',
+    '上传修模改模图纸并查看加工商响应',
+    '导入BOM并核对缺料和采购进度',
+    '上传厂内标准件图纸',
+])
+def test_design_business_vocabulary_allows_tool_search(prompt):
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': prompt,
+        'recent_requests': [],
+    })
+
+
+def test_design_upload_attachment_exposes_tool_search():
+    class InspectingModel(Model):
+        def generate(self, messages, tools):
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
+            assert 'ToolSearch query="上传新模钢料表"' in messages[0]['content']
+            return {'content': json.dumps({'response_kind': 'CLARIFICATION',
+                                           'summary': '请确认清单类型。',
+                                           'evidence_ids': [], 'suggestions': []})}
+
+    run_loop(context(prompt='帮我解析当前附件', core_tool_names=[],
+                     files=[{'filename': 'M250238-P4料单.XLSX',
+                             'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}],
+                     tools=[{'type': 'function', 'function': {
+                         'name': 'erp_design_parse_new_mold_upload',
+                         'description': '解析并上传当前新模钢料或五金清单附件。',
+                     }}],
+                     skills=[{'key': 'erp_new_mold_design_upload',
+                              'name': 'ERP 新模设计上传流程',
+                              'agent_description': '解析新模钢料或五金设计清单',
+                              'tools': ['erp_design_parse_new_mold_upload'],
+                              'activation_tools': ['erp_design_parse_new_mold_upload'],
+                              'activation_queries': ['上传新模钢料表', '上传新模五金表']}]),
+             InspectingModel([]), Gateway())
+
+
+def test_csv_design_upload_attachment_exposes_tool_search():
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': '解析当前附件',
+        'files': [{'filename': 'M250238-P4五金.csv', 'media_type': 'text/csv'}],
+        'skills': [{'key': 'erp_new_mold_design_upload'}],
+        'recent_requests': [],
+    })
+
+
+def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
+    parse_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '解析并上传当前新模钢料或五金清单附件。',
+    }}
+    order_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_query_orders',
+        'description': '查询 ERP 设计订单。',
+    }}
+    bom_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_query_bom',
+        'description': '查询 ERP BOM 或物料清单明细。',
+    }}
+    report_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_query_bom_report',
+        'description': '查询 ERP BOM 物料和采购进度报表。',
+    }}
+
+    class InspectingModel(Model):
+        def generate(self, messages, tools):
+            names = [tool['function']['name'] for tool in tools]
+            if self.calls == 0:
+                assert names == ['ToolSearch']
+                self.calls += 1
+                return {'role': 'assistant', 'tool_calls': [{
+                    'id': 'search-hardware-upload',
+                    'type': 'function',
+                    'function': {'name': 'ToolSearch',
+                                 'arguments': json.dumps({'query': '五金清单'})},
+                }]}
+            assert names == ['ToolSearch', 'erp_design_parse_new_mold_upload']
+            self.calls += 1
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CLARIFICATION',
+                'summary': '已选择附件解析上传能力。',
+                'evidence_ids': [],
+                'suggestions': [],
+            }, ensure_ascii=False)}
+
+    gateway = Gateway()
+    run_loop(context(
+        prompt='解析这个五金清单',
+        core_tool_names=[],
+        files=[{'id': 'file-hardware',
+                'filename': 'M250238-P4-五金请购单66.xlsx',
+                'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}],
+        tools=[parse_tool, order_tool, bom_tool, report_tool],
+        skills=[
+            {'key': 'erp_new_mold_design_upload',
+             'name': 'ERP 新模设计上传流程',
+             'agent_description': '解析新模钢料或五金设计清单',
+             'tools': ['erp_design_parse_new_mold_upload'],
+             'activation_tools': ['erp_design_parse_new_mold_upload'],
+             'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表']},
+            {'key': 'erp_design_workspace_review',
+             'name': 'ERP 设计资料核对',
+             'agent_description': '查询 ERP 设计订单、BOM 和 BOM 报表',
+             'tools': ['erp_design_query_orders'],
+             'optional_tools': ['erp_design_query_bom', 'erp_design_query_bom_report'],
+             'activation_queries': ['设计与物料清单', '钢料清单', '五金清单']},
+        ],
+    ), InspectingModel([]), gateway)
+
+    assert gateway.saved['active_tool_names'] == ['erp_design_parse_new_mold_upload']
+    assert gateway.physical_calls == 0
+
+
+def test_xlsx_attachment_without_design_upload_skill_does_not_activate_tools():
+    assert not harness_module._business_tool_activation_allowed({
+        'prompt': '解析当前附件',
+        'files': [{'filename': 'M250238-P4料单.XLSX'}],
+        'skills': [],
+        'recent_requests': [],
+    })
+
+
+def test_design_elliptical_action_uses_recent_design_object():
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': '重新匹配',
+        'recent_requests': ['解析这个钢料新模清单'],
+    })
+
+
+def test_erp_material_list_alias_activates_erp_design_workspace():
+    deferred = {
+        'query_design_route_context': {'type': 'function', 'function': {
+            'name': 'query_design_route_context', 'description': '读取本地设计BOM与路线上下文'}},
+        'erp_design_query_orders': {'type': 'function', 'function': {
+            'name': 'erp_design_query_orders', 'description': '查询 ERP 设计订单及其当前状态'}},
+        'erp_design_query_bom': {'type': 'function', 'function': {
+            'name': 'erp_design_query_bom', 'description': '查询 ERP BOM 或物料清单明细'}},
+    }
+    groups = harness_module._skill_tool_groups([
+        {'key': 'design_route_context_review', 'tools': ['query_design_route_context']},
+        {'key': 'erp_design_workspace_review', 'tools': ['erp_design_query_orders'],
+         'optional_tools': ['erp_design_query_bom']},
+    ], deferred)
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        '设计与物料清单', deferred, groups,
+        current_prompt='查询设计与物料清单')
+
+    assert matches == ['erp_design_workspace_review']
+    assert activated[0] == 'erp_design_query_orders'
+    assert 'erp_design_query_bom' in activated
+    assert 'query_design_route_context' not in activated
+    assert matched_groups == ['erp_design_workspace_review']
+
+
+def test_tolerance_search_activates_only_the_single_tolerance_tool():
+    deferred = {
+        'erp_design_parse_new_mold_upload': {'type': 'function', 'function': {
+            'name': 'erp_design_parse_new_mold_upload', 'description': '解析 ERP 新模清单'}},
+        'erp_design_evaluate_tolerances': {'type': 'function', 'function': {
+            'name': 'erp_design_evaluate_tolerances', 'description': '判断 ERP 新模钢料公差'}},
+    }
+    groups = harness_module._skill_tool_groups([
+        {'key': 'erp_new_mold_design_upload', 'tools': ['erp_design_parse_new_mold_upload'],
+         'optional_tools': ['erp_design_evaluate_tolerances'],
+         'activation_tools': ['erp_design_parse_new_mold_upload']},
+        {'key': 'erp_design_tolerance_evaluation', 'tools': ['erp_design_evaluate_tolerances'],
+         'activation_tools': ['erp_design_evaluate_tolerances']},
+    ], deferred)
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        '判断公差', deferred, groups, current_prompt='判断这份钢料清单的公差')
+
+    assert matches == ['erp_design_tolerance_evaluation']
+    assert activated == ['erp_design_evaluate_tolerances']
+    assert matched_groups == ['erp_design_tolerance_evaluation']
+
+
+def test_erp_mold_number_overrides_model_shortened_local_design_search():
+    deferred = {
+        'query_design_route_context': {'type': 'function', 'function': {
+            'name': 'query_design_route_context', 'description': '读取本地设计BOM与路线上下文'}},
+        'erp_design_query_orders': {'type': 'function', 'function': {
+            'name': 'erp_design_query_orders', 'description': '查询 ERP 设计订单及其当前状态'}},
+        'erp_design_query_bom': {'type': 'function', 'function': {
+            'name': 'erp_design_query_bom', 'description': '查询 ERP BOM 明细'}},
+        'erp_design_query_bom_report': {'type': 'function', 'function': {
+            'name': 'erp_design_query_bom_report', 'description': '查询 ERP BOM 物料和采购进度报表'}},
+    }
+    groups = harness_module._skill_tool_groups([
+        {'key': 'design_route_context_review', 'tools': ['query_design_route_context']},
+        {'key': 'erp_design_workspace_review', 'tools': ['erp_design_query_orders'],
+         'optional_tools': ['erp_design_query_bom', 'erp_design_query_bom_report']},
+    ], deferred)
+
+    matches, activated, _ = harness_module._find_deferred_tools(
+        '设计BOM与路线上下文核对', deferred, groups,
+        current_prompt='查询设计与物料清单，项目号 M250238，模具号 M250238-P4')
+
+    assert matches == ['erp_design_workspace_review']
+    assert activated[0] == 'erp_design_query_orders'
+    assert 'query_design_route_context' not in activated
 
 
 def test_workbench_support_request_hides_tool_search_and_business_catalog():
@@ -1350,6 +1676,51 @@ def test_context_budget_compacts_model_visible_tool_history_before_next_model_ca
     assert result["summary"] == "one visible project"
     assert gateway.saved["context_usage"]["compaction_count"] == 1
     assert gateway.saved["context_compactions"][0]["saved_tokens"] > 0
+
+
+def test_compacted_context_does_not_reuse_stale_provider_prompt_tokens():
+    second_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'call-2', 'type': 'function',
+        'function': {'name': 'query_projects', 'arguments': '{"page":2}'},
+    }]}
+
+    class TwoStageGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            if seq == 0:
+                return {'evidence_id': 'e1', 'data': [
+                    {'code': 'DEMO-A', 'detail': '长字段' * 5000},
+                ]}
+            return {'evidence_id': 'e2', 'data': []}
+
+    class StaleUsageModel:
+        def __init__(self):
+            self.calls = 0
+            self.last_metrics = {}
+
+        def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                self.last_metrics = {'prompt_tokens': 3000, 'completion_tokens': 20}
+                return copy.deepcopy(PROPOSAL)
+            if self.calls == 2:
+                tool_content = next(message['content'] for message in messages if message.get('role') == 'tool')
+                assert 'compact_summary' in tool_content
+                # This count belongs only to call 2. It must not be reused for
+                # the changed transcript after the next assistant message.
+                self.last_metrics = {'prompt_tokens': 7446, 'completion_tokens': 27}
+                return copy.deepcopy(second_call)
+            self.last_metrics = {'prompt_tokens': 4200, 'completion_tokens': 60}
+            return copy.deepcopy(FINAL)
+
+    gateway = TwoStageGateway()
+    model = StaleUsageModel()
+    result = run_loop(context(), model, gateway, context_window=8192, max_output_tokens=2048)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 2
+    assert model.calls == 3
+    assert gateway.saved['context_usage']['used_tokens'] <= gateway.saved['context_usage']['safe_limit']
 
 
 

@@ -4,6 +4,7 @@ Authentication is the existing first-party worker credential plus fenced run
 lease; this is not a public OAuth MCP endpoint for arbitrary external clients.
 """
 import json
+import logging
 from typing import Any
 from fastapi import Body,Depends,Request,Response
 from fastapi.responses import JSONResponse
@@ -13,6 +14,7 @@ from .errors import DomainError
 from . import tool_gateway as tools
 
 VERSION='2025-06-18'
+log=logging.getLogger(__name__)
 
 
 def error(rid,code,message,status=200):
@@ -63,7 +65,9 @@ def install_mcp(app,worker_auth,fence,execute_step):
             if params.get('cursor'):return error(rid,-32602,'无效的工具分页标识')
             result={'tools':[{'name':k,'description':tools.TOOLS[k]['description'],
                 'inputSchema':tools.tool_schema(k)['function']['parameters'],
-                'annotations':{'readOnlyHint':not k.startswith('prepare_'),'destructiveHint':False,'idempotentHint':True}}
+                'annotations':{'readOnlyHint':not (k.startswith('prepare_') or tools.TOOLS[k].get('write',False)),
+                               'destructiveHint':bool(tools.TOOLS[k].get('destructive',False)),
+                               'idempotentHint':True}}
                 for k in tools.available_tools(db,user)]}
         elif method=='tools/call':
             name=params.get('name');arguments=params.get('arguments',{});meta=params.get('_meta',{})
@@ -81,6 +85,21 @@ def install_mcp(app,worker_auth,fence,execute_step):
                 tool_error={'tool_error':{'code':exc.code,'message':exc.message}}
                 result={'content':[{'type':'text','text':json.dumps(tool_error,ensure_ascii=False)}],
                         'structuredContent':tool_error,'errorCode':exc.code,'isError':True}
+            except Exception as exc:
+                # A tool implementation must never turn into an HTTP 500 for the
+                # Harness.  The worker treats that as a transport failure and
+                # abandons the whole run, instead of giving the model a chance to
+                # explain the failed tool call.  Do not log exception text here:
+                # it can contain an upstream response or credentials.
+                db.rollback()
+                log.warning('Unexpected MCP tool failure: run=%s tool=%s exception=%s',
+                            run_id, name, type(exc).__name__)
+                tool_error={'tool_error':{
+                    'code':'TOOL_EXECUTION_FAILED',
+                    'message':'工具执行时发生内部错误，已记录诊断信息；请稍后重试。',
+                }}
+                result={'content':[{'type':'text','text':json.dumps(tool_error,ensure_ascii=False)}],
+                        'structuredContent':tool_error,'errorCode':'TOOL_EXECUTION_FAILED','isError':True}
         else:return error(rid,-32601,'不支持的工具协议方法')
         db.commit()
         return {'jsonrpc':'2.0','id':rid,'result':result}

@@ -1,10 +1,12 @@
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 
 from app import models as m
 from app.authorization import PERMISSIONS
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tool_gateway import _fallback_empty_design_context_to_erp
 
 
 def factory():
@@ -187,3 +189,65 @@ def test_design_context_reports_multiple_candidates_and_no_effective_design():
     finally:
         engine.dispose()
 
+
+def test_empty_local_design_context_falls_back_to_erp_mold_order(monkeypatch):
+    calls=[]
+
+    def fake_erp_execute(db,user,key,arguments,run=None):
+        calls.append((key,arguments))
+        if key=='erp_design_query_orders':
+            return {'data': {'rows': [{
+                'id': 101, 'requestId': 101, 'orderNo': 'PR20260916105858',
+                'moldNo': 'M250238-P4', 'itemCount': 10, 'sourceLabel': '首批',
+                'currentStageLabel': '收货验收',
+            }], 'total': 1}, 'source': 'management-system ERP via erp-design-upload MCP',
+                'as_of': '2026-09-18T09:00:00+08:00', 'limitations': ['以 ERP 回执为准。']}
+        assert key=='erp_design_get_record'
+        return {'data': {'requestId': 101, 'moldNo': 'M250238-P4',
+                         'sourceLabel': '首批', 'currentStageLabel': '收货验收',
+                         'items': [{'id': index} for index in range(10)]},
+                'source': 'management-system ERP via erp-design-upload MCP',
+                'as_of': '2026-09-18T09:00:00+08:00', 'limitations': []}
+
+    monkeypatch.setattr('domain_packs.mold.tool_gateway.erp_design_mcp.execute_tool', fake_erp_execute)
+    local={'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':'2026-09-18T08:00:00+08:00',
+           'limitations':['只读取本地可见项目。']}
+    result=_fallback_empty_design_context_to_erp(
+        object(),object(),SimpleNamespace(identifier='M250238-P4'),
+        {'erp_design_query_orders','erp_design_get_record'},local)
+    assert result['resolution']=='RESOLVED'
+    assert result['source']=='management-system ERP via erp-design-upload MCP'
+    assert result['erp_fallback']=={
+        'attempted':True,'from':'agent_db','reason':'LOCAL_DESIGN_CONTEXT_EMPTY',
+        'identifier':'M250238-P4','mold_number':'M250238-P4','matched':True,
+    }
+    row=result['data'][0]
+    assert row['erp_design_orders'][0]['orderNo']=='PR20260916105858'
+    assert len(row['erp_design_order_detail']['items'])==10
+    assert calls==[
+        ('erp_design_query_orders',{'query':{'moldNo':'M250238-P4'}}),
+        ('erp_design_get_record',{'resource':'design_order','id':101}),
+    ]
+
+
+def test_design_context_does_not_fallback_without_erp_mold_number(monkeypatch):
+    monkeypatch.setattr('domain_packs.mold.tool_gateway.erp_design_mcp.execute_tool',
+                        lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('unexpected ERP fallback')))
+    local={'resolution':'NOT_FOUND','data':[],'source':'agent_db','as_of':'2026-09-18T08:00:00+08:00',
+           'limitations':[]}
+    result=_fallback_empty_design_context_to_erp(
+        object(),object(),SimpleNamespace(identifier='DES-NOT-FOUND'),
+        {'erp_design_query_orders','erp_design_get_record'},local)
+    assert result is local
+    assert 'erp_fallback' not in result
+
+
+def test_nonempty_local_design_context_is_not_overwritten_by_erp(monkeypatch):
+    monkeypatch.setattr('domain_packs.mold.tool_gateway.erp_design_mcp.execute_tool',
+                        lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('unexpected ERP fallback')))
+    local={'resolution':'RESOLVED','data':[{'design_routes':[{'number':'LOCAL-DESIGN-1'}]}],
+           'source':'agent_db','as_of':'2026-09-18T08:00:00+08:00','limitations':[]}
+    result=_fallback_empty_design_context_to_erp(
+        object(),object(),SimpleNamespace(identifier='M250238-P4'),
+        {'erp_design_query_orders','erp_design_get_record'},local)
+    assert result is local

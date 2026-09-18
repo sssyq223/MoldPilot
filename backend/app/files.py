@@ -25,7 +25,8 @@ from .events import record
 router=APIRouter()
 TYPES={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg',
        '.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-       '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.dxf':'application/dxf',
+       '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.xls':'application/vnd.ms-excel',
+       '.csv':'text/csv','.dxf':'application/dxf','.dwg':'application/acad','.prt':'application/octet-stream',
        '.zip':'application/zip'}
 
 
@@ -34,10 +35,22 @@ def validate_file(filename,data):
     if not filename or len(filename)>200 or any(ch in filename for ch in '/\\:') or any(unicodedata.category(ch) in {'Cc','Cf'} for ch in filename):
         raise DomainError('FILE_NAME_INVALID','文件名无效，请使用不含路径和控制字符的名称')
     ext=PurePath(filename).suffix.lower()
-    if ext not in TYPES:raise DomainError('FILE_TYPE_UNSUPPORTED','当前支持 PDF、PNG、JPG、DOCX 和 XLSX 原件')
+    if ext not in TYPES:raise DomainError('FILE_TYPE_UNSUPPORTED','当前支持 PDF、PNG、JPG、DOCX、XLSX、XLS、CSV、DXF、DWG 和 PRT 原件')
     if not data:raise DomainError('FILE_EMPTY','不能上传空文件')
     valid=(ext=='.pdf' and data.startswith(b'%PDF-') or ext=='.png' and data.startswith(b'\x89PNG\r\n\x1a\n')
            or ext in {'.jpg','.jpeg'} and data.startswith(b'\xff\xd8\xff') or ext=='.dxf' and len(data)<=20*1024*1024)
+    if ext=='.csv':
+        valid=b'\x00' not in data
+    if ext=='.xls':
+        # Legacy Excel workbooks use the OLE Compound File signature.  Keep
+        # validation deliberately structural here; the ERP remains the parser.
+        valid=data.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1')
+    if ext=='.dwg':
+        valid=len(data)>=64 and data.startswith(b'AC10')
+    if ext=='.prt':
+        # NX/Creo PRT files have several binary container generations.  The
+        # ERP validates the package pair and performs the actual conversion.
+        valid=len(data)>=64
     if ext in {'.docx','.xlsx','.zip'}:
         try:
             with ZipFile(BytesIO(data)) as archive:

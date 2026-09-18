@@ -51,6 +51,8 @@ app.include_router(file_router)
 from .proposal_api import router as proposal_router
 app.include_router(proposal_router)
 
+_conversation_flags_checked = False
+
 def compact_conversation_title(prompt: str) -> str:
     return active_manifest.conversation_title(prompt)
 

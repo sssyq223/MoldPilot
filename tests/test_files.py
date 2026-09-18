@@ -55,6 +55,33 @@ def test_upload_private_original_retry_and_download(client,data):
     with data[1]() as db:assert db.scalar(select(func.count()).select_from(FileObject))==1
 
 
+def test_upload_accepts_csv_attachment(client):
+    sign_in(client)
+    content='物料编号,数量\nA-001,12\n'.encode('utf-8')
+    response=upload(client,content,'物料清单.csv')
+    assert response.status_code==200,response.text
+    blob=response.json()
+    assert blob['filename']=='物料清单.csv' and blob['media_type']=='text/csv'
+    assert client.get('/api/files/'+blob['id']+'/content').content==content
+
+
+def test_upload_accepts_legacy_xls_and_standard_hardware_sources(client):
+    sign_in(client)
+    legacy=b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'+b'\x00'*504
+    response=upload(client,legacy,'设计清单.xls')
+    assert response.status_code==200,response.text
+    assert response.json()['media_type']=='application/vnd.ms-excel'
+
+    dwg=b'AC1032'+b'\x00'*128
+    response=upload(client,dwg,'R-BZ-001.dwg')
+    assert response.status_code==200,response.text
+    assert response.json()['media_type']=='application/acad'
+
+    response=upload(client,b'NX-PRT'+b'\x00'*128,'R-BZ-001.prt')
+    assert response.status_code==200,response.text
+    assert response.json()['media_type']=='application/octet-stream'
+
+
 def test_upload_rejects_path_type_size_and_macro(client,data,monkeypatch):
     sign_in(client)
     for name,body in [('../合同.pdf',PDF),('x.html',b'<script>'),('x.png',b'<html>'),('empty.pdf',b'')]:

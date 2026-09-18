@@ -132,3 +132,115 @@ def test_erp_design_tools_expose_curated_chinese_titles():
     assert set(TOOL_NAMES) == {key for key in TOOLS if key.startswith("erp_design_")}
     for key, title in TOOL_NAMES.items():
         assert capability_descriptor("TOOL", key, TOOLS[key])["name"] == title
+
+
+def test_erp_design_skills_are_grouped_with_design_tools():
+    keys = [
+        "erp_new_mold_design_upload",
+        "erp_design_modify_mold_upload",
+        "erp_design_price_calculation",
+        "erp_design_tolerance_evaluation",
+        "erp_design_drawing_preview",
+        "erp_design_drawing_auto_correction",
+        "erp_design_workspace_review",
+        "erp_design_order_adjustment",
+        "erp_design_master_data_maintenance",
+        "erp_design_standard_hardware_maintenance",
+        "erp_design_change_management",
+        "erp_design_order_lifecycle",
+        "erp_design_mold_repair",
+        "erp_design_bom_maintenance",
+    ]
+    for key in keys:
+        item = capability_descriptor("SKILL", key, SKILLS[key])
+        assert item["department"] == "design"
+        assert item["department_name"] == "设计部门"
+        assert item["type"] == "review"
+
+
+def test_new_mold_attachment_upload_activates_only_the_parser_initially():
+    item = capability_descriptor("SKILL", "erp_new_mold_design_upload",
+                                 SKILLS["erp_new_mold_design_upload"])
+    assert item["activation_dependencies"] == ["erp_design_parse_new_mold_upload"]
+
+
+def test_modify_mold_upload_skill_is_separate_from_dxf_mold_repair():
+    skill = SKILLS["erp_design_modify_mold_upload"]
+    item = capability_descriptor("SKILL", "erp_design_modify_mold_upload", skill)
+
+    assert skill["name"] == "ERP 修模改模清单上传流程（类型：改模）"
+    assert item["activation_dependencies"] == ["erp_design_parse_modify_mold_upload"]
+    assert {
+        "erp_design_parse_modify_mold_upload",
+        "erp_design_get_modify_mold_approval_config",
+        "erp_design_import_modify_mold",
+    } <= set(skill["tools"] + skill["optional_tools"])
+    assert "erp_design_upload_mold_repair_drawing" not in skill["tools"] + skill["optional_tools"]
+    assert {"上传改模钢料清单", "上传时选择改模", "修模改模清单上传"} <= set(
+        skill["activation_queries"]
+    )
+
+
+def test_new_mold_upload_exposes_existing_pricing_and_drawing_preview_tools():
+    skill = SKILLS["erp_new_mold_design_upload"]
+    assert {"erp_design_reprice_rows", "erp_design_download_file", "erp_design_preview_drawing",
+            "erp_design_auto_correct_rows", "erp_design_evaluate_tolerances"} <= set(skill["optional_tools"])
+    assert {"核算价格", "价格核算", "图纸预览", "预览图纸", "查看订单明细"} <= set(skill["activation_queries"])
+    assert {"自动修正参数", "按图纸修正", "修正数量", "修正长宽厚"} <= set(skill["activation_queries"])
+
+
+def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
+    expected_tools = {
+        "erp_design_reprice_rows": ("核算 ERP 设计钢料价格", "operation"),
+        "erp_design_preview_drawing": ("预览 ERP 设计上传图纸", "query"),
+        "erp_design_auto_correct_rows": ("按图纸自动修正清单参数", "operation"),
+        "erp_design_evaluate_tolerances": ("判断 ERP 设计钢料公差", "query"),
+    }
+    for key, (name, capability_type) in expected_tools.items():
+        item = capability_descriptor("TOOL", key, TOOLS[key])
+        assert item["name"] == name
+        assert item["department"] == "design"
+        assert item["type"] == capability_type
+
+    price = SKILLS["erp_design_price_calculation"]
+    preview = SKILLS["erp_design_drawing_preview"]
+    correction = SKILLS["erp_design_drawing_auto_correction"]
+    tolerance = SKILLS["erp_design_tolerance_evaluation"]
+    assert "erp_design_reprice_rows" in price["tools"]
+    assert "算价格" in price["activation_queries"]
+    assert "erp_design_preview_drawing" in preview["tools"]
+    assert "看图纸" in preview["activation_queries"]
+    assert "erp_design_auto_correct_rows" in correction["tools"]
+    assert {"自动修正", "修正数量", "修正长宽厚"} <= set(correction["activation_queries"])
+    assert tolerance["tools"] == ["erp_design_evaluate_tolerances"]
+    assert {"判断公差", "公差档位", "对角公差"} <= set(tolerance["activation_queries"])
+
+
+def test_erp_design_workspace_has_material_list_aliases_and_mold_priority():
+    skill = SKILLS["erp_design_workspace_review"]
+    assert {"设计与物料清单", "钢料清单", "五金清单", "模具物料"} <= set(skill["activation_queries"])
+    assert skill["priority_patterns"] == [r"(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])"]
+
+
+def test_design_mold_repair_skill_exposes_dedicated_erp_operations():
+    dedicated = {
+        "erp_design_upload_mold_repair_drawing",
+        "erp_design_confirm_mold_repair_quantity",
+        "erp_design_submit_mold_repair_approval_batches",
+        "erp_design_confirm_mold_repair_order_link",
+        "erp_design_respond_mold_repair_processor",
+    }
+    skill = SKILLS["erp_design_mold_repair"]
+
+    assert skill["name"] == "ERP 设计修模改模图纸办理"
+    assert dedicated <= set(skill["optional_tools"])
+    assert dedicated <= set(skill["activation_tools"])
+    assert "erp_design_manage_mold_repair" not in skill["activation_tools"]
+    assert {"设计修模", "设计改模", "确认新图数量", "同意改图", "已加工反馈"} <= set(
+        skill["activation_queries"]
+    )
+
+    for tool in dedicated:
+        item = capability_descriptor("TOOL", tool, TOOLS[tool])
+        assert item["department"] == "design"
+        assert item["type"] == "operation"

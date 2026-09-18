@@ -22,8 +22,15 @@ UNAMBIGUOUS_FORMAL_ACTION_TERMS = getattr(_policy, "UNAMBIGUOUS_FORMAL_ACTION_TE
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
 BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
+DESIGN_BUSINESS_OBJECT_HINTS = getattr(_policy, "DESIGN_BUSINESS_OBJECT_HINTS", ())
+DESIGN_BUSINESS_ACTION_HINTS = getattr(_policy, "DESIGN_BUSINESS_ACTION_HINTS", ())
 PURE_CONVERSATION_TERMS = _policy.PURE_CONVERSATION_TERMS
 ELLIPTICAL_ACTION_TERMS = _policy.ELLIPTICAL_ACTION_TERMS
+DESIGN_ELLIPTICAL_ACTION_TERMS = getattr(_policy, "DESIGN_ELLIPTICAL_ACTION_TERMS", ())
+DESIGN_UPLOAD_SKILL_KEYS = getattr(_policy, "DESIGN_UPLOAD_SKILL_KEYS", ())
+DESIGN_ATTACHMENT_ACTION_HINTS = getattr(_policy, "DESIGN_ATTACHMENT_ACTION_HINTS", ())
+ALL_BUSINESS_OBJECT_HINTS = (*BUSINESS_OBJECT_HINTS, *DESIGN_BUSINESS_OBJECT_HINTS)
+ALL_ELLIPTICAL_ACTION_TERMS = (*ELLIPTICAL_ACTION_TERMS, *DESIGN_ELLIPTICAL_ACTION_TERMS)
 SYSTEM = _policy.SYSTEM_PROMPT
 TOOL_SEARCH_SCHEMA_DESCRIPTION = getattr(
     _policy,
@@ -105,6 +112,7 @@ def _structured_result_text(content):
 
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
+TOOL_ARGUMENT_REPAIR_REMINDER = """上一轮工具调用的 arguments 不是有效 JSON 对象，工具尚未执行。请根据当前工具的参数 schema 重新发起一次工具调用；arguments 必须是一个完整 JSON 对象，不能在对象结束后追加字段，也不能把对象类型字段写成字符串。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
 UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮再调用 ToolSearch 返回的真实工具。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
 ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
@@ -114,6 +122,10 @@ PROPOSAL_RESOLVED_REPAIR_REMINDER = """本轮是确认卡处理完成后的恢�
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 MAX_PROTOCOL_REPAIRS = 2
+
+
+class ToolArgumentsError(ValueError):
+    """The provider emitted a tool call whose arguments are not a JSON object."""
 
 
 def _tool_name(tool):
@@ -155,10 +167,10 @@ def _is_elliptical_business_action(prompt):
     if not compact:
         return False
     remainder = compact
-    for term in sorted((*PURE_CONVERSATION_TERMS, *ELLIPTICAL_ACTION_TERMS), key=len, reverse=True):
+    for term in sorted((*PURE_CONVERSATION_TERMS, *ALL_ELLIPTICAL_ACTION_TERMS), key=len, reverse=True):
         remainder = remainder.replace(term, "")
     remainder = remainder.strip("请一下下吧啊呀哦呢啦的了")
-    return not remainder and _contains_any(compact, ELLIPTICAL_ACTION_TERMS)
+    return not remainder and _contains_any(compact, ALL_ELLIPTICAL_ACTION_TERMS)
 
 
 def _has_formal_action_intent(prompt):
@@ -188,19 +200,52 @@ def _has_formal_action_intent(prompt):
     return _contains_any(compact, FORMAL_ACTION_TERMS)
 
 
+def _has_current_design_list_attachment(context):
+    """Whether this Run, rather than an earlier message, has XLSX/XLS/CSV input."""
+    for file in context.get("files") or []:
+        if not isinstance(file, dict):
+            continue
+        filename = str(file.get("filename") or file.get("name") or "").lower()
+        media_type = str(file.get("media_type") or file.get("content_type") or "").lower()
+        if (filename.endswith((".xlsx", ".xls", ".csv"))
+                or media_type in {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"}):
+            return True
+    return False
+
+
+def _has_design_upload_skill(context):
+    keys = set(DESIGN_UPLOAD_SKILL_KEYS)
+    return bool(keys and any(
+        isinstance(skill, dict) and str(skill.get("key") or "") in keys
+        for skill in context.get("skills") or []
+    ))
+
+
+def _is_design_attachment_upload_request(context):
+    return bool(
+        _contains_any(context.get("prompt") or "", DESIGN_ATTACHMENT_ACTION_HINTS)
+        and _has_current_design_list_attachment(context)
+        and _has_design_upload_skill(context)
+    )
+
+
 def _business_tool_activation_allowed(context):
     current_prompt = context.get("prompt") or ""
     if _is_pure_conversation(current_prompt):
         return False
-    has_current_business_object = _contains_any(current_prompt, BUSINESS_OBJECT_HINTS)
-    # Reuse the formal-action parser instead of maintaining a second,
-    # inevitably divergent list of verbs for tool visibility.  It already
-    # removes explicit negation/read-only scope, while BUSINESS_ACTION_HINTS
-    # continues to cover query and conversational inspection wording.
+    has_current_business_object = _contains_any(current_prompt, ALL_BUSINESS_OBJECT_HINTS)
+    # The generic policy covers cross-domain queries and formal operations.
+    # The design policy additionally covers non-formal workflow steps such as
+    # parsing an attached new-mold list or rematching a drawing.  They open
+    # ToolSearch only; write-capable ERP tools still enforce confirmation and
+    # permission checks when invoked.
     has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
+                          or _contains_any(current_prompt, DESIGN_BUSINESS_ACTION_HINTS)
                           or _has_formal_action_intent(current_prompt))
+    has_design_attachment_request = _is_design_attachment_upload_request(context)
     has_workbench_support = _contains_any(current_prompt, WORKBENCH_SUPPORT_HINTS)
-    if has_current_business_object and has_current_action:
+    if ((has_current_business_object and has_current_action)
+            or has_design_attachment_request):
         return True
     if has_workbench_support:
         return False
@@ -208,7 +253,7 @@ def _business_tool_activation_allowed(context):
     # the omitted object after this turn explicitly asks to inspect/continue it.
     recent_text = "\n".join(context.get("recent_requests") or [])
     return bool(_is_elliptical_business_action(current_prompt)
-                and _contains_any(recent_text, BUSINESS_OBJECT_HINTS))
+                and _contains_any(recent_text, ALL_BUSINESS_OBJECT_HINTS))
 
 
 def _tool_search_schema():
@@ -251,7 +296,13 @@ def _skill_tool_groups(skills, all_tools):
                        "optional": [name for name in optional if name in all_tools],
                        "activation_queries": skill.get("activation_queries") or spec.get("activation_queries", []),
                        "skill_layer": skill.get("skill_layer"), "skill_domain": skill.get("skill_domain"),
-                       "route_terms": skill.get("route_terms") or []})
+                       "route_terms": skill.get("route_terms") or [],
+                       "auto_activation_queries": skill.get("auto_activation_queries") or spec.get("auto_activation_queries", []),
+                       "suppress_tool_search_on_auto_activation": bool(
+                           skill.get("suppress_tool_search_on_auto_activation")
+                           or spec.get("suppress_tool_search_on_auto_activation", False)
+                       ),
+                       "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", [])})
     return result
 
 
@@ -291,7 +342,12 @@ def _score_search_candidate(query, terms, *fields):
 
 def _search_terms(query):
     terms = [term for term in query.replace("/", " ").replace("|", " ").replace(";", " ").replace(",", " ").split() if term]
-    domain_terms = (*BUSINESS_OBJECT_HINTS, *BUSINESS_ACTION_HINTS, *TOOL_SEARCH_DOMAIN_TERMS)
+    domain_terms = (
+        *ALL_BUSINESS_OBJECT_HINTS,
+        *BUSINESS_ACTION_HINTS,
+        *DESIGN_BUSINESS_ACTION_HINTS,
+        *TOOL_SEARCH_DOMAIN_TERMS,
+    )
     for term in domain_terms:
         folded = term.lower()
         if folded in query and folded not in terms:
@@ -317,7 +373,8 @@ def _search_terms(query):
     return terms
 
 
-def _rank_group_tools(query, group, deferred_tools, action_intent=False, current_prompt=""):
+def _rank_group_tools(query, group, deferred_tools, action_intent=False, current_prompt="",
+                      tool_annotations=None):
     """Rank one matched skill's tools instead of exposing its whole pack."""
     # ToolSearch chooses a capability group, but the user's current request is
     # authoritative for the concrete operation inside that group.  A model may
@@ -333,16 +390,19 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
     # ToolSearch wording is a retrieval hint, not authority to turn a read-only
     # request into an operation.
     has_action_intent = bool(action_intent)
+    tool_annotations = tool_annotations or {}
     scored = []
     for position, name in enumerate(group["tools"]):
         tool = deferred_tools.get(name)
         if not tool:
             continue
+        if _is_write_capable_tool(name, tool_annotations) and not has_action_intent:
+            continue
         score = _score_search_candidate(normalized, terms, name, _tool_description(tool))
         searchable = (name + " " + _tool_description(tool)).lower()
         if terminal_term and terminal_term in searchable:
             score += 400
-        if name in required and name.startswith("query_"):
+        if name in required and _is_read_query_tool(name):
             score += 240
         scored.append((score, position, name))
     if not scored:
@@ -352,23 +412,41 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
     # evidence prerequisites, so they must not set the relevance floor that
     # decides which optional operation to expose.
     optional_scores = [score for score, _, name in scored
-                       if name not in required and (not name.startswith("prepare_") or has_action_intent)]
+                       if name not in required and (
+                           not _is_write_capable_tool(name, tool_annotations) or has_action_intent)]
     best_relevance = max(optional_scores or [score for score, _, _ in scored])
     relevance_floor = max(80, best_relevance // 2)
     selected = []
-    # Read tools are the evidence-producing prerequisites for prepare tools.
+    # Required read tools are the evidence-producing prerequisites for an
+    # operation.  Skills with several independent catalogues should expose a
+    # single aggregate reader instead of declaring all of them required.
     for _, _, name in scored:
-        if name in required and name.startswith("query_") and name not in selected:
+        if name in required and _is_read_query_tool(name) and name not in selected:
             selected.append(name)
             if len(selected) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
                 return selected
     for score, _, name in sorted(scored, key=lambda item: (-item[0], item[1])):
-        if score < relevance_floor or name in selected or (name.startswith("prepare_") and not has_action_intent):
+        if (score < relevance_floor or name in selected
+                or (_is_write_capable_tool(name, tool_annotations) and not has_action_intent)):
             continue
         selected.append(name)
         if len(selected) >= MAX_ACTIVATED_TOOLS_PER_SEARCH:
             break
     return selected
+
+
+def _is_read_query_tool(name):
+    return str(name).startswith(("query_", "erp_design_query_"))
+
+
+def _is_write_capable_tool(name, tool_annotations=None):
+    """Whether a tool can change a business system, independent of its name."""
+    annotation = (tool_annotations or {}).get(name) or {}
+    if annotation.get("readOnlyHint") is False:
+        return True
+    # Direct unit tests and older MCP providers may not carry annotations. The
+    # conventional proposal prefix remains a safe conservative fallback.
+    return str(name).startswith("prepare_")
 
 
 def _group_prompt_relevance(current_prompt, group, deferred_tools):
@@ -391,19 +469,34 @@ def _group_prompt_relevance(current_prompt, group, deferred_tools):
         searchable_tools,
         searchable_descriptions,
     )
-    return alias_score + semantic_score
+    return alias_score + semantic_score + (50000 if _group_priority_matches(current_prompt, group) else 0)
 
 
-def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt=""):
+def _group_priority_matches(current_prompt, group):
+    """Return whether a domain-declared identifier makes this group authoritative."""
+    text = str(current_prompt or "")
+    for pattern in group.get("priority_patterns", []):
+        try:
+            if re.search(str(pattern), text):
+                return True
+        except re.error:
+            # Capability metadata must never be able to break a model turn.
+            continue
+    return False
+
+
+def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt="", preferred_group_keys=()):
     grouped_tools = {name for group in tool_groups for name in group["tools"]}
     group_entries = [group for group in _route_skill_groups(current_prompt, tool_groups)
                      if any(name in deferred_tools for name in group["tools"])]
     loose_entries = [(name, _tool_description(tool)) for name, tool in deferred_tools.items() if name not in grouped_tools]
     if not group_entries and not loose_entries:
         return ""
+    preferred = set(preferred_group_keys or ())
     ranked_groups = [
         group for _, _, group in sorted(
-            [(-_group_prompt_relevance(current_prompt, group, deferred_tools), index, group)
+            [(-(_group_prompt_relevance(current_prompt, group, deferred_tools)
+                + (100000 if group["key"] in preferred else 0)), index, group)
              for index, group in enumerate(group_entries)],
             key=lambda item: (item[0], item[1]),
         )
@@ -444,16 +537,40 @@ def _compact_skills(skills):
     return result
 
 
-def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=False, current_prompt=""):
+def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=False, current_prompt="",
+                         preferred_group_keys=(), tool_annotations=None):
     normalized = (query or "").strip().lower()
     if not normalized:
         return [], [], []
     terms = _search_terms(normalized)
+    preferred = set(preferred_group_keys or ())
+    preferred_groups = [group for group in (tool_groups or [])
+                        if group["key"] in preferred
+                        and any(name in deferred_tools for name in group["tools"])]
+    if preferred_groups:
+        # Current attachment intent is authoritative. A model-shortened search
+        # such as “五金清单” must not turn an uploaded workbook into a BOM query.
+        group = preferred_groups[0]
+        activated = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt,
+                                      tool_annotations)
+        return [group["key"]], activated, [group["key"]]
     if normalized in deferred_tools:
-        if normalized.startswith("prepare_") and not action_intent:
+        if _is_write_capable_tool(normalized, tool_annotations) and not action_intent:
             return [], [], []
         return [normalized], [normalized], []
     tool_groups = _route_skill_groups(" ".join([current_prompt, normalized]), tool_groups or [])
+    priority_groups = [group for group in tool_groups
+                       if _group_priority_matches(current_prompt, group)
+                       and any(name in deferred_tools for name in group["tools"])]
+    if priority_groups:
+        # A domain-owned identifier pattern is stronger than a model-shortened
+        # ToolSearch phrase. Rank concrete tools from the full current prompt
+        # so a material-list request opens both the ERP order and BOM readers.
+        group = max(priority_groups,
+                    key=lambda item: _group_prompt_relevance(current_prompt, item, deferred_tools))
+        activated = _rank_group_tools((current_prompt or normalized).strip().lower(), group, deferred_tools,
+                                      action_intent, current_prompt, tool_annotations)
+        return [group["key"]], activated, [group["key"]]
     alias_scores = []
     for group in tool_groups:
         aliases = [str(alias).strip().lower() for alias in group.get("activation_queries", []) if str(alias).strip()]
@@ -467,7 +584,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         for _, key, _ in sorted((item for item in alias_scores if item[0] == best_score), reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
             matches.append(key)
             group = next(item for item in (tool_groups or []) if item["key"] == key)
-            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt)
+            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt,
+                                           tool_annotations)
             for name in tool_names:
                 if name not in activated:
                     activated.append(name)
@@ -488,7 +606,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         for _, key, _ in sorted(group_scores, reverse=True)[:MAX_TOOL_SEARCH_MATCHES]:
             matches.append(key)
             group = next(item for item in (tool_groups or []) if item["key"] == key)
-            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt)
+            tool_names = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt,
+                                           tool_annotations)
             for name in tool_names:
                 if name not in activated:
                     activated.append(name)
@@ -497,7 +616,7 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         return matches, activated, matches
     scored = []
     for name, tool in deferred_tools.items():
-        if name.startswith("prepare_") and not action_intent:
+        if _is_write_capable_tool(name, tool_annotations) and not action_intent:
             continue
         lname = name.lower()
         description = _tool_description(tool).lower()
@@ -581,27 +700,59 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     mode_instruction = permission_mode_instruction(context.get("agent_permission_mode", "ask"))
     all_tools = {name: tool for tool in context["tools"] if (name := _tool_name(tool))}
     core_tool_names = set(context.get("core_tool_names", []))
+    tool_annotations = context.get('tool_annotations', {})
     active_tool_names = set(context.get("active_tool_names", [])) & set(all_tools)
     active_tool_names |= core_tool_names & set(all_tools)
     proposal_resolution = (context.get("proposal_resolution")
                            if isinstance(context.get("proposal_resolution"), dict) else None)
     resolution_decision = (proposal_resolution or {}).get("decision")
+    design_attachment_upload_requested = _is_design_attachment_upload_request(context)
+    preferred_group_keys = DESIGN_UPLOAD_SKILL_KEYS if design_attachment_upload_requested else ()
     business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
     formal_action_requested = bool(
         _has_formal_action_intent(context.get("prompt", ""))
-        and _contains_any(context.get("prompt", ""), BUSINESS_OBJECT_HINTS)
+        and _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
     )
+    tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
+    suppress_tool_search = False
     if not business_tools_allowed:
         active_tool_names.clear()
+    else:
+        # Domain packs may mark a small, unambiguous read boundary for direct
+        # activation. This avoids spending a model turn on ToolSearch while
+        # still keeping every unrelated capability deferred.
+        auto_deferred = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
+        prompt = context.get("prompt", "")
+        normalized_prompt = prompt.lower()
+        for group in tool_groups:
+            aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
+                       if str(alias).strip()]
+            if not any(alias in normalized_prompt for alias in aliases):
+                continue
+            group_already_active = any(name in active_tool_names for name in group["tools"])
+            selected = _rank_group_tools(
+                normalized_prompt, group, auto_deferred,
+                action_intent=formal_action_requested,
+                current_prompt=prompt,
+                tool_annotations=tool_annotations,
+            )
+            active_tool_names.update(selected)
+            for name in selected:
+                auto_deferred.pop(name, None)
+            if ((selected or group_already_active)
+                    and group.get("suppress_tool_search_on_auto_activation")
+                    and not formal_action_requested):
+                suppress_tool_search = True
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
-    tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
-    optional_prompt = _optional_tools_prompt(deferred_tools, tool_groups, context.get("prompt", "")) if business_tools_allowed else ""
+    optional_prompt = "" if suppress_tool_search else _optional_tools_prompt(
+        deferred_tools, tool_groups, context.get("prompt", ""), preferred_group_keys
+    ) if business_tools_allowed else ""
 
     def active_tools():
         if not business_tools_allowed:
             return []
         tools = [all_tools[name] for name in all_tools if name in active_tool_names]
-        if deferred_tools:
+        if deferred_tools and not suppress_tool_search:
             tools.insert(0, _tool_search_schema())
         return tools
 
@@ -620,7 +771,6 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     finalizing = bool(proposal_resolution) or context.get('finalizing', False)
     protocol_repairs = context.get('protocol_repairs', 0)
     executed_tool_signatures = list(context.get('executed_tool_signatures', []))
-    tool_annotations = context.get('tool_annotations', {})
     action_outcomes = dict(context.get('action_outcomes', {}))
     compactions = list(context.get('context_compactions', []))
     last_model_message = context.get('last_model_message')
@@ -633,10 +783,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     ]
 
     def tool_signature(call):
-        name = call["function"]["name"]
-        arguments = json.loads(call["function"]["arguments"])
+        try:
+            function = call["function"]
+            name = function["name"]
+            raw_arguments = function["arguments"]
+            if not isinstance(name, str) or not isinstance(raw_arguments, str):
+                raise ToolArgumentsError
+            arguments = json.loads(raw_arguments)
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ToolArgumentsError from error
         if not isinstance(arguments, dict):
-            raise RuntimeError("INVALID_TOOL_INPUT")
+            raise ToolArgumentsError
         canonical = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         # PostgreSQL jsonb rejects the NUL character even when JSON-escaped.
         # Persist a stable printable signature so duplicate detection survives
@@ -669,7 +826,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                        context_window=context_window,
                                        max_output_tokens=max_output_tokens,
                                        model_metrics=model_metrics,
-                                       compactions=compactions)
+                                       compactions=compactions,
+                                       use_provider_input_tokens=False)
         gateway.checkpoint({"messages": messages, "turn": turn, "tool_count": count,
                             "evidence_ids": evidence_ids, "deadline": deadline,
                             "pending": pending, "pending_index": pending_index,
@@ -695,7 +853,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                context_window=context_window,
                                max_output_tokens=max_output_tokens,
                                model_metrics=model_metrics,
-                               compactions=compactions)
+                               compactions=compactions,
+                               use_provider_input_tokens=False)
         if usage["used_tokens"] <= usage["safe_limit"]:
             return
         compacted, record = compact_messages_for_model(messages)
@@ -707,7 +866,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                    context_window=context_window,
                                    max_output_tokens=max_output_tokens,
                                    model_metrics=model_metrics,
-                                   compactions=compactions)
+                                   compactions=compactions,
+                                   use_provider_input_tokens=False)
         if usage["used_tokens"] > usage["safe_limit"]:
             raise RuntimeError("CONTEXT_BUDGET_EXCEEDED")
 
@@ -724,13 +884,25 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 if count >= max_tools: raise RuntimeError("BUDGET_EXCEEDED")
                 name = call["function"]["name"]
                 if name not in batch_allowed_names: raise RuntimeError("TOOL_FORBIDDEN")
-                signature, arguments = tool_signature(call)
+                try:
+                    signature, arguments = tool_signature(call)
+                except ToolArgumentsError:
+                    # A checkpoint created by an older Harness may contain an
+                    # invalid pending call. Remove its assistant envelope so
+                    # the provider can issue one corrected call.
+                    if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                        messages.pop()
+                    pending, pending_index = [], 0
+                    request_tool_repair(TOOL_ARGUMENT_REPAIR_REMINDER)
+                    break
                 phase = 'TOOL_RUNNING'; save()
                 if name == TOOL_SEARCH_NAME:
                     matches, candidates, matched_groups = _find_deferred_tools(
                         arguments.get("query", ""), deferred_tools, tool_groups,
                         action_intent=formal_action_requested,
-                        current_prompt=context.get("prompt", ""))
+                        current_prompt=context.get("prompt", ""),
+                        preferred_group_keys=preferred_group_keys,
+                        tool_annotations=tool_annotations)
                     activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
                     result = {"source": "harness", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -764,15 +936,19 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             pending, pending_index = [], 0
             save()
             continue
+        # First compact the transcript that will actually be submitted. The
+        # provider token count in model_metrics describes the previous request.
+        check_budget()
         context_size = usage_snapshot(_messages_for_model(messages, next_model_instructions), [] if finalizing else active_tools(),
                                       context_window=context_window,
                                       max_output_tokens=max_output_tokens,
                                       model_metrics=model_metrics,
-                                      compactions=compactions)["used_tokens"]
+                                      compactions=compactions,
+                                      use_provider_input_tokens=False)["used_tokens"]
         should_finalize = bool(evidence_ids) and (
             finalizing
             or turn >= max_turns - 1
-            or context_size >= max(1, int((context_window - max_output_tokens) * 0.75))
+            or context_size >= max(1, int((context_window - max_output_tokens) * 0.90))
         )
         if should_finalize and not finalizing:
             finalizing = True
@@ -867,9 +1043,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     continue
                 raise RuntimeError("TOOL_FORBIDDEN")
             signatures = []
-            for call in calls:
-                signature, _ = tool_signature(call)
-                signatures.append(signature)
+            try:
+                for call in calls:
+                    signature, _ = tool_signature(call)
+                    signatures.append(signature)
+            except ToolArgumentsError:
+                request_tool_repair(TOOL_ARGUMENT_REPAIR_REMINDER)
+                continue
             if any(signature in executed_tool_signatures for signature in signatures):
                 request_protocol_repair(DUPLICATE_TOOL_REMINDER)
                 continue

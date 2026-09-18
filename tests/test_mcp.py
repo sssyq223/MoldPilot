@@ -59,6 +59,28 @@ def test_mcp_cannot_expand_actor_tools_and_reports_tool_errors(client,data,monke
     with data[1]() as db:assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==c['id']))==0
 
 
+def test_mcp_unexpected_tool_failure_is_recoverable(client,data,monkeypatch,caplog):
+    _,c=start(client,monkeypatch)
+    from app import mcp_api
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError('private upstream response must not reach the user')
+
+    monkeypatch.setattr(mcp_api.tools,'execute',fail)
+    response=rpc(client,c,'tools/call',{'name':'query_purchase_requests','arguments':{},'_meta':{'agent/sequence':0}})
+
+    assert response.status_code==200
+    result=response.json()['result']
+    assert result['isError'] is True
+    assert result['errorCode']=='TOOL_EXECUTION_FAILED'
+    assert result['structuredContent']['tool_error']=={
+        'code':'TOOL_EXECUTION_FAILED',
+        'message':'工具执行时发生内部错误，已记录诊断信息；请稍后重试。',
+    }
+    assert 'RuntimeError' in caplog.text
+    assert 'private upstream response' not in caplog.text
+
+
 def test_mcp_revocation_and_cancel_fence_cached_receipts(client,data,monkeypatch):
     _,c=start(client,monkeypatch);ids,factory=data
     args={'name':'query_purchase_requests','arguments':{},'_meta':{'agent/sequence':0}}

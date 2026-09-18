@@ -10,11 +10,54 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:9099";
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 2_000_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const MODIFY_MOLD_PURCHASE_REASONS = [
+  "customer_change", "design_abnormal", "machining_abnormal", "assembly_abnormal",
+  "trial_mold_abnormal", "outsource_abnormal", "process_improvement", "other_abnormal",
+];
 
 const tools = [
   {
+    name: "parse_new_mold_design_file_auto",
+    description: "Upload a new-mold design sheet and let ERP identify whether it is steel or hardware using ERP's existing parsers.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      filePath: { type: "string", minLength: 1 },
+      sheetType: { type: "string", enum: ["auto", "steel", "hardware"] },
+      designOrderSubType: { type: ["string", "null"] }
+    }, required: ["filePath"] }
+  },
+  {
+    name: "parse_modify_mold_design_file_auto",
+    description: "Upload a modify-mold design purchase sheet with ERP designOrderType fixed to repair_other and let ERP identify steel or hardware.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      filePath: { type: "string", minLength: 1 },
+      sheetType: { type: "string", enum: ["auto", "steel", "hardware"] }
+    }, required: ["filePath"] }
+  },
+  {
+    name: "get_modify_mold_approval_launch_config",
+    description: "Read ERP approval launch settings for a modify-mold design upload session using designOrderType repair_other.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      sessionId: { type: "integer", minimum: 1 }
+    }, required: ["sessionId"] }
+  },
+  {
+    name: "import_modify_mold_design",
+    description: "Create an ERP modify-mold design request from validated rows using the repair_other business type and its dedicated approval flow.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      sessionId: { type: "integer", minimum: 1 },
+      sheetType: { type: "string", enum: ["steel", "hardware"] },
+      moldCode: { type: ["string", "null"] },
+      previewRows: { type: "array", minItems: 1, maxItems: 1000, items: { type: "object" } },
+      urgencyLevel: { type: "string", enum: ["normal", "important", "urgent"] },
+      expectedDate: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+      purchaseReason: { type: "string", enum: MODIFY_MOLD_PURCHASE_REASONS },
+      remark: { type: ["string", "null"], maxLength: 1000 },
+      allowDuplicate: { type: "boolean" }
+    }, required: ["sessionId", "sheetType", "previewRows", "expectedDate", "purchaseReason"] }
+  },
+  {
     name: "rematch_new_mold_upload_drawings",
-    description: "Retry ERP drawing matching for historical no-drawing rows in one new-mold upload session.",
+    description: "Retry ERP drawing matching for historical no-drawing rows in one owned design-upload session.",
     inputSchema: { type: "object", additionalProperties: false, properties: { sessionId: { type: "integer", minimum: 1 } }, required: ["sessionId"] }
   },
   {
@@ -42,54 +85,28 @@ const tools = [
     }, required: ["detailId", "detailVersion"] }
   },
   {
-    name: "create_design_density",
-    description: "Create one ERP design material-density record.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { density: { type: "object" } }, required: ["density"] }
+    name: "manage_design_density",
+    description: "Create, update, or delete one ERP design material-density record.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      operation: { type: "string", enum: ["create", "update", "delete"] },
+      id: { type: ["integer", "null"], minimum: 1 }, payload: { type: ["object", "null"] }
+    }, required: ["operation"] }
   },
   {
-    name: "update_design_density",
-    description: "Update one ERP design material-density record.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { densityId: { type: "integer", minimum: 1 }, density: { type: "object" } }, required: ["densityId", "density"] }
+    name: "manage_design_group_rule",
+    description: "Create, update, delete, enable, or disable one ERP design grouping and procurement-split rule.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      operation: { type: "string", enum: ["create", "update", "delete", "set_status"] },
+      id: { type: ["integer", "null"], minimum: 1 }, payload: { type: ["object", "null"] }
+    }, required: ["operation"] }
   },
   {
-    name: "delete_design_density",
-    description: "Delete one ERP design material-density record.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { densityId: { type: "integer", minimum: 1 } }, required: ["densityId"] }
-  },
-  {
-    name: "create_design_group_rule",
-    description: "Create one ERP design grouping and procurement-split rule.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { rule: { type: "object" } }, required: ["rule"] }
-  },
-  {
-    name: "update_design_group_rule",
-    description: "Update one ERP design grouping and procurement-split rule.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { ruleId: { type: "integer", minimum: 1 }, rule: { type: "object" } }, required: ["ruleId", "rule"] }
-  },
-  {
-    name: "toggle_design_group_rule",
-    description: "Enable or disable one ERP design grouping and procurement-split rule.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { ruleId: { type: "integer", minimum: 1 }, status: { type: "string", enum: ["active", "inactive"] } }, required: ["ruleId", "status"] }
-  },
-  {
-    name: "delete_design_group_rule",
-    description: "Delete one or more ERP design grouping and procurement-split rules.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { ruleIds: { type: "array", items: { type: "integer", minimum: 1 }, minItems: 1 } }, required: ["ruleIds"] }
-  },
-  {
-    name: "create_design_group_keyword",
-    description: "Create one ERP design grouping keyword.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { keyword: { type: "object" } }, required: ["keyword"] }
-  },
-  {
-    name: "update_design_group_keyword",
-    description: "Update one ERP design grouping keyword.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { keywordId: { type: "integer", minimum: 1 }, keyword: { type: "object" } }, required: ["keywordId", "keyword"] }
-  },
-  {
-    name: "delete_design_group_keyword",
-    description: "Delete one or more ERP design grouping keywords.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { keywordIds: { type: "array", items: { type: "integer", minimum: 1 }, minItems: 1 } }, required: ["keywordIds"] }
+    name: "manage_design_group_keyword",
+    description: "Create, update, or delete one ERP design grouping keyword.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      operation: { type: "string", enum: ["create", "update", "delete"] },
+      id: { type: ["integer", "null"], minimum: 1 }, payload: { type: ["object", "null"] }
+    }, required: ["operation"] }
   },
   {
     name: "upload_standard_hardware_drawings",
@@ -163,7 +180,7 @@ const tools = [
   {
     name: "download_erp_design_file",
     description: "Download a fixed ERP design drawing, drawing package, standard-hardware folder, or BOM export as a private MoldPilot file artifact.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { artifact: { type: "string", enum: ["drawing_preview", "drawing_download", "standard_hardware_preview", "standard_hardware_folder", "mold_repair_outsource_approval_drawing", "mold_repair_approval_drawing", "mold_repair_entrust_order_drawing", "mold_repair_exception_drawing", "mold_repair_group_drawing", "mold_repair_authorized_package", "bom_export"] }, drawingId: { type: ["integer", "null"], minimum: 1 }, relativePath: { type: ["string", "null"], minLength: 1 }, approvalOrderId: { type: ["integer", "null"], minimum: 1 }, exceptionId: { type: ["integer", "null"], minimum: 1 }, batchId: { type: ["integer", "null"], minimum: 1 }, orderId: { type: ["integer", "null"], minimum: 1 }, groupToken: { type: ["string", "null"], minLength: 1 }, kind: { type: ["string", "null"], minLength: 1 }, routeType: { type: ["string", "null"], minLength: 1 }, orderNo: { type: ["string", "null"] }, partnerId: { type: ["integer", "null"], minimum: 1 }, moldId: { type: ["integer", "null"], minimum: 1 } }, required: ["artifact"] }
+    inputSchema: { type: "object", additionalProperties: false, properties: { artifact: { type: "string", enum: ["drawing_preview", "drawing_download", "standard_hardware_preview", "standard_hardware_folder", "mold_repair_outsource_approval_drawing", "mold_repair_approval_drawing", "mold_repair_entrust_order_drawing", "mold_repair_exception_drawing", "mold_repair_group_drawing", "mold_repair_authorized_package", "bom_export"] }, drawingId: { type: ["integer", "null"], minimum: 1 }, previewUrl: { type: ["string", "null"], minLength: 1, maxLength: 500 }, relativePath: { type: ["string", "null"], minLength: 1 }, approvalOrderId: { type: ["integer", "null"], minimum: 1 }, exceptionId: { type: ["integer", "null"], minimum: 1 }, batchId: { type: ["integer", "null"], minimum: 1 }, orderId: { type: ["integer", "null"], minimum: 1 }, groupToken: { type: ["string", "null"], minLength: 1 }, kind: { type: ["string", "null"], minLength: 1 }, routeType: { type: ["string", "null"], minLength: 1 }, orderNo: { type: ["string", "null"] }, partnerId: { type: ["integer", "null"], minimum: 1 }, moldId: { type: ["integer", "null"], minimum: 1 } }, required: ["artifact"] }
   }
 ];
 
@@ -278,7 +295,18 @@ async function requestErpFile({ method, route, formData, searchParams, fallbackN
       const text = new TextDecoder().decode(bytes).slice(0, 1000);
       throw new Error(`ERP ${method} ${route} failed (${response.status}): ${text || response.statusText}`);
     }
-    return { fileName: filenameFromDisposition(response.headers.get("content-disposition"), fallbackName), mediaType: response.headers.get("content-type") || "application/octet-stream", base64: Buffer.from(bytes).toString("base64") };
+    const mediaType = response.headers.get("content-type") || "application/octet-stream";
+    if (mediaType.toLowerCase().includes("application/json")) {
+      const text = new TextDecoder().decode(bytes).slice(0, 1000);
+      let message = text || "ERP returned JSON instead of a file.";
+      try {
+        const payload = JSON.parse(text);
+        message = payload?.msg || payload?.detail || payload?.message || message;
+      } catch { /* keep bounded response text */ }
+      throw new Error(String(message));
+    }
+    if (bytes.length < 64) throw new Error("ERP preview file is empty or incomplete.");
+    return { fileName: filenameFromDisposition(response.headers.get("content-disposition"), fallbackName), mediaType, base64: Buffer.from(bytes).toString("base64") };
   } catch (caught) {
     if (caught?.name === "AbortError") throw new Error(`ERP ${method} ${route} timed out.`);
     throw caught;
@@ -371,10 +399,49 @@ async function manageErpBom(args) {
   throw new Error("Unsupported ERP BOM operation.");
 }
 
+async function manageDesignDensity(args) {
+  if (!["create", "update", "delete"].includes(args?.operation)) throw new Error("Unsupported density operation.");
+  if (["update", "delete"].includes(args.operation)) positiveInteger(args?.id, "id");
+  if (args.operation === "create") return requestErp({ method: "POST", route: "/design/density", body: requiredObject(args?.payload, "payload") });
+  if (args.operation === "update") return requestErp({ method: "PUT", route: `/design/density/${args.id}`, body: requiredObject(args?.payload, "payload") });
+  return requestErp({ method: "DELETE", route: `/design/density/${args.id}` });
+}
+
+async function manageDesignGroupRule(args) {
+  if (!["create", "update", "delete", "set_status"].includes(args?.operation)) throw new Error("Unsupported grouping-rule operation.");
+  if (["update", "delete", "set_status"].includes(args.operation)) positiveInteger(args?.id, "id");
+  if (args.operation === "create") return requestErp({ method: "POST", route: "/design/group-rule", body: requiredObject(args?.payload, "payload") });
+  if (args.operation === "update") return requestErp({ method: "PUT", route: "/design/group-rule", body: { ...requiredObject(args?.payload, "payload"), id: args.id } });
+  if (args.operation === "set_status") {
+    if (!["active", "inactive"].includes(args?.payload?.status)) throw new Error("status must be active or inactive.");
+    return requestErp({ method: "PUT", route: `/design/group-rule/${args.id}/toggle/${args.payload.status}` });
+  }
+  return requestErp({ method: "DELETE", route: `/design/group-rule/${args.id}` });
+}
+
+async function manageDesignGroupKeyword(args) {
+  if (!["create", "update", "delete"].includes(args?.operation)) throw new Error("Unsupported grouping-keyword operation.");
+  if (["update", "delete"].includes(args.operation)) positiveInteger(args?.id, "id");
+  if (args.operation === "create") return requestErp({ method: "POST", route: "/design/group-keyword", body: requiredObject(args?.payload, "payload") });
+  if (args.operation === "update") return requestErp({ method: "PUT", route: "/design/group-keyword", body: { ...requiredObject(args?.payload, "payload"), id: args.id } });
+  return requestErp({ method: "DELETE", route: `/design/group-keyword/${args.id}` });
+}
+
 async function downloadErpDesignFile(args) {
   const artifact = args?.artifact;
   if (artifact === "drawing_preview" || artifact === "drawing_download") {
     positiveInteger(args?.drawingId, "drawingId");
+    if (artifact === "drawing_preview" && args?.previewUrl) {
+      const route = String(args.previewUrl).trim();
+      const patterns = [
+        /^\/purchase\/drawing\/resource\/(\d+)\/preview$/,
+        /^\/entrust\/drawing\/preview-file\/(\d+)$/,
+        /^\/design\/drawing-version\/(\d+)\/preview$/,
+      ];
+      const match = patterns.map((pattern) => route.match(pattern)).find(Boolean);
+      if (!match || Number(match[1]) !== Number(args.drawingId)) throw new Error("previewUrl is not an allowed ERP drawing preview route.");
+      return requestErpFile({ method: "GET", route, fallbackName: `drawing-${args.drawingId}-preview` });
+    }
     return requestErpFile({ method: "GET", route: `/design/drawing-version/${args.drawingId}/${artifact === "drawing_preview" ? "preview" : "download"}`, fallbackName: `drawing-${args.drawingId}.dxf` });
   }
   if (artifact === "standard_hardware_preview" || artifact === "standard_hardware_folder") {
@@ -399,6 +466,53 @@ async function downloadErpDesignFile(args) {
 }
 
 async function callTool(name, args) {
+  if (name === "parse_new_mold_design_file_auto") {
+    return uploadSingleFile("/design/upload/parse", args?.filePath, {
+      sheetType: args?.sheetType || "auto",
+      designOrderType: "new_model",
+      ...(args?.designOrderSubType ? { designOrderSubType: args.designOrderSubType } : {}),
+    });
+  }
+  if (name === "parse_modify_mold_design_file_auto") {
+    return uploadSingleFile("/design/upload/parse", args?.filePath, {
+      sheetType: args?.sheetType || "auto",
+      designOrderType: "repair_other",
+    });
+  }
+  if (name === "get_modify_mold_approval_launch_config") {
+    positiveInteger(args?.sessionId, "sessionId");
+    return requestErp({
+      method: "GET",
+      route: `/design/upload/session/${args.sessionId}/approval-launch-config`,
+      searchParams: { designOrderType: "repair_other" },
+    });
+  }
+  if (name === "import_modify_mold_design") {
+    positiveInteger(args?.sessionId, "sessionId");
+    if (!["steel", "hardware"].includes(args?.sheetType)) throw new Error("sheetType must be steel or hardware.");
+    if (!Array.isArray(args?.previewRows) || args.previewRows.length < 1) throw new Error("previewRows must contain at least one row.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args?.expectedDate || "")) throw new Error("expectedDate must use YYYY-MM-DD.");
+    if (!MODIFY_MOLD_PURCHASE_REASONS.includes(args?.purchaseReason)) throw new Error("purchaseReason is invalid for modify-mold upload.");
+    return requestErp({
+      method: "POST",
+      route: "/design/upload/confirm-import",
+      body: {
+        sessionId: args.sessionId,
+        sheetType: args.sheetType,
+        moldCode: args.moldCode || null,
+        designOrderType: "repair_other",
+        designOrderSubType: null,
+        urgencyLevel: args.urgencyLevel || "normal",
+        expectedDate: args.expectedDate,
+        purchaseReason: args.purchaseReason,
+        remark: args.remark || null,
+        importMode: "new_request",
+        hasExistingPurchaseContext: false,
+        allowDuplicate: args.allowDuplicate === true,
+        previewRows: args.previewRows,
+      },
+    });
+  }
   if (name === "rematch_new_mold_upload_drawings") {
     positiveInteger(args?.sessionId, "sessionId");
     return requestErp({ method: "POST", route: `/design/upload/session/${args.sessionId}/rematch-no-drawing` });
@@ -425,47 +539,9 @@ async function callTool(name, args) {
     if (typeof args?.detailVersion !== "string" || !args.detailVersion) throw new Error("detailVersion is required.");
     return requestErp({ method: "POST", route: `/design/order/item/${args.detailId}/scrap-release`, body: { detailVersion: args.detailVersion } });
   }
-  if (name === "create_design_density") {
-    object(args?.density, "density");
-    return requestErp({ method: "POST", route: "/design/density", body: args.density });
-  }
-  if (name === "update_design_density") {
-    positiveInteger(args?.densityId, "densityId"); object(args?.density, "density");
-    return requestErp({ method: "PUT", route: `/design/density/${args.densityId}`, body: args.density });
-  }
-  if (name === "delete_design_density") {
-    positiveInteger(args?.densityId, "densityId");
-    return requestErp({ method: "DELETE", route: `/design/density/${args.densityId}` });
-  }
-  if (name === "create_design_group_rule") {
-    object(args?.rule, "rule");
-    return requestErp({ method: "POST", route: "/design/group-rule", body: args.rule });
-  }
-  if (name === "update_design_group_rule") {
-    positiveInteger(args?.ruleId, "ruleId"); object(args?.rule, "rule");
-    return requestErp({ method: "PUT", route: "/design/group-rule", body: { ...args.rule, id: args.ruleId } });
-  }
-  if (name === "toggle_design_group_rule") {
-    positiveInteger(args?.ruleId, "ruleId");
-    if (!["active", "inactive"].includes(args?.status)) throw new Error("status must be active or inactive.");
-    return requestErp({ method: "PUT", route: `/design/group-rule/${args.ruleId}/toggle/${args.status}` });
-  }
-  if (name === "delete_design_group_rule") {
-    ids(args?.ruleIds, "ruleIds");
-    return requestErp({ method: "DELETE", route: `/design/group-rule/${args.ruleIds.join(",")}` });
-  }
-  if (name === "create_design_group_keyword") {
-    object(args?.keyword, "keyword");
-    return requestErp({ method: "POST", route: "/design/group-keyword", body: args.keyword });
-  }
-  if (name === "update_design_group_keyword") {
-    positiveInteger(args?.keywordId, "keywordId"); object(args?.keyword, "keyword");
-    return requestErp({ method: "PUT", route: "/design/group-keyword", body: { ...args.keyword, id: args.keywordId } });
-  }
-  if (name === "delete_design_group_keyword") {
-    ids(args?.keywordIds, "keywordIds");
-    return requestErp({ method: "DELETE", route: `/design/group-keyword/${args.keywordIds.join(",")}` });
-  }
+  if (name === "manage_design_density") return manageDesignDensity(args);
+  if (name === "manage_design_group_rule") return manageDesignGroupRule(args);
+  if (name === "manage_design_group_keyword") return manageDesignGroupKeyword(args);
   if (name === "upload_standard_hardware_drawings") {
     if (!Array.isArray(args?.filePaths) || args.filePaths.length < 1 || typeof args?.folderName !== "string" || !args.folderName.trim()) {
       throw new Error("filePaths and folderName are required.");

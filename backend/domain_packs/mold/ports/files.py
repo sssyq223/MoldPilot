@@ -16,6 +16,10 @@ def metadata(blob):
     return host_ports().file_metadata(blob)
 
 
+def validate_file(filename, data):
+    return host_ports().validate_file(filename, data)
+
+
 class AttachInput(c.Mutation):
     file_id:str=Field(min_length=1,max_length=36)
     title:str=Field(min_length=1,max_length=150)

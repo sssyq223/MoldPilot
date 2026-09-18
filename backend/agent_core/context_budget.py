@@ -69,12 +69,17 @@ def usage_snapshot(
     max_output_tokens: int,
     model_metrics: dict[str, Any] | None = None,
     compactions: list[dict[str, Any]] | None = None,
+    use_provider_input_tokens: bool = True,
 ) -> dict[str, Any]:
     metrics = model_metrics or {}
     message_tokens = estimate_json_tokens(messages)
     tool_schema_tokens = estimate_json_tokens(tools) if tools else 0
     estimated_input_tokens = message_tokens + tool_schema_tokens
-    exact_input_tokens = _metric_int(metrics, "prompt_tokens", "prompt_eval_count")
+    reported_input_tokens = _metric_int(metrics, "prompt_tokens", "prompt_eval_count")
+    # Provider usage belongs to the request that just completed. Once another
+    # message is appended or compaction rewrites the transcript, that input
+    # count is stale and must not budget the next request.
+    exact_input_tokens = reported_input_tokens if use_provider_input_tokens else 0
     output_tokens = _metric_int(metrics, "completion_tokens", "eval_count")
     total_tokens = _metric_int(metrics, "total_tokens")
     reasoning_tokens = _metric_int(metrics, "reasoning_tokens")
@@ -101,7 +106,7 @@ def usage_snapshot(
         "message_tokens_estimated": message_tokens,
         "tool_schema_tokens_estimated": tool_schema_tokens,
         "tool_message_tokens_estimated": tool_message_tokens,
-        "input_tokens": exact_input_tokens,
+        "input_tokens": reported_input_tokens,
         "input_tokens_estimated": estimated_input_tokens,
         "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens,
