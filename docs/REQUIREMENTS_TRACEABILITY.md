@@ -216,8 +216,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部开工业务状态为：待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中。中标接收、匹配等处理动作另留记录；拒单记录原因后结束，暂停和终止按第12章管理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态
-- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收
+- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态；query_project_kickoff_context 将承接、正式开工和项目基线计划投影为 ACCEPTANCE、START_PREPARATION、PLAN_APPROVAL、EXECUTION 或 REJECTED 阶段；每个阶段仍引用自己的业务材料，不合并状态或自动推进
+- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收；tests/test_project_kickoff_lifecycle.py 覆盖无承接、承接已生效、正式开工已生效和基线计划已生效时的阶段迁移，并验证多候选不合并项目事实
 - 验收状态：NOT_VERIFIED
 
 ### FR-023
@@ -225,8 +225,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部通知关联外部订单、客户及内部模具、机型或物料号、项目、合同、开工时间和交期。新模流程生成或确认内部唯一模具号，已有模具设变复用原号。内部通知与销售合同分别管理，合同未到不阻塞已满足条件的项目开工。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：正式开工条件核对同时展示开工通知、销售合同、整套委外合同和计划上下文，明确内部通知与销售合同分别管理；工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对
-- 验证证据：tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收
+- 实现证据：正式开工条件核对同时展示开工通知、销售合同、整套委外合同和计划上下文，明确内部通知与销售合同分别管理；工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对；项目启动链路把销售合同标记为可并行阶段；合同缺失或晚到不会把已经具备独立承接依据的正式开工阶段改写为受阻
+- 验证证据：tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收；tests/test_project_kickoff_lifecycle.py 覆盖承接主线与合同并行建议，以及合同阶段与开工阶段不互相冒充
 - 验收状态：NOT_VERIFIED
 
 ### FR-024
@@ -283,8 +283,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 开工通知与销售合同为关联单据，不视为同一对象。合同晚到时按确认的开工依据执行，收到后核对原项目价格、交期和付款条件；差异转相关责任人确认，必要时联动计划及财务变更。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_contract_context 与 query_quote_acceptance_context 分别呈现合同、承接和正式开工上下文，避免把开工通知与销售合同视为同一对象；late_expected_contracts 标识预计日期已过但合同记录未生效/关闭的当前可见记录，仅提示核对，不自动改变状态
-- 验证证据：tests/test_contract_tools.py 覆盖晚到合同提示；tests/test_quote_tools.py 覆盖承接、开工、合同独立派生状态
+- 实现证据：query_contract_context 与 query_quote_acceptance_context 分别呈现合同、承接和正式开工上下文，避免把开工通知与销售合同视为同一对象；late_expected_contracts 标识预计日期已过但合同记录未生效/关闭的当前可见记录，仅提示核对，不自动改变状态；query_project_kickoff_context 在同一投影中分别显示合同和正式开工，合同建议为 PARALLEL，正式开工建议为 PRIMARY，且两者各自保留查询和准备工具
+- 验证证据：tests/test_contract_tools.py 覆盖晚到合同提示；tests/test_quote_tools.py 覆盖承接、开工、合同独立派生状态；tests/test_project_kickoff_lifecycle.py 覆盖合同可并行补齐而承接仍是开工主线前置条件
 - 验收状态：NOT_VERIFIED
 
 ### FR-030
@@ -323,8 +323,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认；项目启动链路只有在正式开工已经生效后才把基线计划作为主线下一步；已存在有效计划时只显示 ACTIVE 和任务/大节点事实，不重复准备计划
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收；tests/test_project_kickoff_lifecycle.py 覆盖开工生效后建议准备基线计划、有效计划存在后进入 EXECUTION，以及已有计划但缺承接时仍揭示数据矛盾而不倒推承接已完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-034
@@ -417,8 +417,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计主管确认内部设计或设计委外并提交审批，记录负责人、时间、费用及适用的供应商信息。当前设计排产以线下安排、线上进度记录为基础；供应商不适用于内部设计时不强制虚填。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；prepare_design_order_approval 固定读取一条 ERP 设计订单并在用户确认后冻结来源、原生版本、时点、哈希、摘要、原始快照及当前对话附件，提交 Agent BPM 而非 ERP 设计审批；确认时再次读取 ERP，快照变化会阻止提交；design_route_context_review 与 erp_design_order_approval 两个 Skill 分离查询和审批职责
-- 验证证据：tests/test_design_tools.py 覆盖设计上下文与权限隔离；tests/test_design_approval_tools.py 覆盖 ERP 订单证据、附件和审批快照冻结，并覆盖确认前 ERP 版本变化阻断且不创建业务材料
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-044
@@ -426,8 +426,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 内部设计按工艺分析、结构设计、出图、设计确认推进。设计委外记录任务下达、成果接收、审核及整改结果，由设计主管组织排期和确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 保留内部/委外设计的本地上下文；prepare_design_order_approval 把 ERP 设计订单作为不可变材料提交可配置 Agent BPM，并锁定复核人、图纸版本和当前对话附件。当前实现尚未补齐设计委外供应商、费用、任务下达/成果整改全流程
-- 验证证据：tests/test_design_tools.py 覆盖设计/BOM/路线查询；tests/test_design_approval_tools.py 覆盖可配置流程提交、来源快照和附件版本冻结
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-045
@@ -435,8 +435,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计确认后形成正式设计版本，管理对应BOM、工艺路线、零件清单及后续任务；设计人员上传需采购物料、零件和加工任务清单。成果产生方式按适配确认，正式版本的项目、模具和任务关联必须保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：prepare_design_order_approval 冻结 ERP 设计订单的原生版本或内容版本、图纸版本、订单明细和本轮附件，ApprovalInstance.snapshot 保留 `erp_order_material` 与精确文件版本；审批详情在材料弹窗显示证据，实时图纸/BOM/密度/标准件仍由 ERP 封装工具读取
-- 验证证据：tests/test_design_approval_tools.py 覆盖精确 ERP 版本、快照、订单明细、附件 file_id/version/SHA-256 和 Agent BPM 实例快照；mold/template 前端构建覆盖审批材料渲染
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-046
@@ -444,8 +444,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 图纸或工艺路线改版保留旧版，评估对采购、加工和其他任务的影响。工程联络单转设计时创建或关联设计订单，继承客户、项目、模具、料号、责任、紧急程度、方案、要求日期及附件审批信息。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：现有 query_design_route_context 继续输出改版影响；ERP 设计审批材料现保留旧审批快照和附件版本，新确认前还会检测 ERP 订单变化。工程联络转设计订单和后续计划变更审批联动仍未完成，不能把本次材料冻结误报为该闭环
-- 验证证据：tests/test_design_tools.py 覆盖版本影响分析；tests/test_design_approval_tools.py 覆盖材料版本变化阻断和旧材料不可覆盖基础契约
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
 - 验收状态：NOT_VERIFIED
 
 ### FR-047

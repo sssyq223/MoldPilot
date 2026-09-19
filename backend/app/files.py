@@ -13,7 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 from pydantic import Field,field_validator
 from sqlalchemy import select,func,text
-from . import models as m,authorization as auth,object_storage
+from . import models as m,authorization as auth,object_storage,document_preview
 from agent_core.domain_pack import component
 from .db import get_db,now
 from .config import settings
@@ -141,13 +141,19 @@ def conversation_files(cid:str,user=Depends(current_user),db=Depends(get_db)):
 
 
 @router.get('/api/files/{fid}/content')
-def content(fid:str,preview:bool=False,user=Depends(current_user),db=Depends(get_db)):
+def content(fid:str,preview:bool=False,render:str|None=Query(default=None),user=Depends(current_user),db=Depends(get_db)):
     blob=load(db,user,fid)
-    if preview and blob.media_type not in {'application/pdf','image/png','image/jpeg'}:raise DomainError('PREVIEW_UNSUPPORTED','此格式暂不支持在线预览，请下载原件查看')
-    data=object_storage.read(blob)
+    if preview and blob.media_type not in {'application/pdf','image/png','image/jpeg',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}:
+        raise DomainError('PREVIEW_UNSUPPORTED','此格式暂不支持在线预览，请下载原件查看')
+    data=object_storage.read(blob);media_type=blob.media_type;filename=blob.filename
+    if render:
+        if not preview or render!='pdf' or blob.media_type!='application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            raise DomainError('PREVIEW_RENDER_UNSUPPORTED','当前文件不支持此在线预览格式')
+        data=document_preview.docx_to_pdf(data,blob.sha256);media_type='application/pdf';filename=PurePath(blob.filename).stem+'.pdf'
     record(db,user,'file.previewed' if preview else 'file.downloaded',blob.id);db.commit()
-    return Response(data,media_type=blob.media_type,headers={
-        'Content-Disposition':('inline' if preview else 'attachment')+"; filename*=UTF-8''"+quote(blob.filename,safe=''),
+    return Response(data,media_type=media_type,headers={
+        'Content-Disposition':('inline' if preview else 'attachment')+"; filename*=UTF-8''"+quote(filename,safe=''),
         'Content-Security-Policy':"sandbox; default-src 'none'",'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
 
 

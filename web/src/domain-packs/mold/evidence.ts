@@ -41,4 +41,4 @@ export function evidenceSections(row:any){
 export function evidenceCardTitle(row:any,index:number,title:string){return isRecord(row)?(compactRecordTitle(row)||`${title} ${Number(index)+1}`):`${title} ${Number(index)+1}`}
 export function evidenceBriefTitle(item:any){const rows=Array.isArray(item?.data)?item.data:[];if(!rows.length)return '暂无可见记录';const title=compactRecordTitle(rows[0])||'业务记录';return rows.length>1?`${title} 等 ${rows.length} 条记录`:title}
 export function evidenceBriefSummary(item:any){const rows=Array.isArray(item?.data)?item.data:[];if(!rows.length)return '本次查询未返回当前权限范围内的业务记录。';const facts=compactRecordFields(rows[0]).map(fact=>`${fact.label} ${fact.value}`);return facts.length?facts.join(' · '):`${rows.length} 条记录 · 按当前权限返回`}
-export function hasBusinessFactHighlights(row:any){const analysis=row?.analysis;return Boolean(analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)}
+export function hasBusinessFactHighlights(row:any){const analysis=row?.analysis;return Boolean(analysis?.kickoff_lifecycle||analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)}

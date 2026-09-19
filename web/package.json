@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "bpmn-js": "^18.6.1",
+    "docx-preview": "^0.3.6",
     "dxf-viewer": "^1.0.48",
     "lucide-vue-next": "^0.468.0",
     "pdfjs-dist": "^6.3.289",

@@ -1,13 +1,28 @@
 <script setup lang="ts">
-import {fieldName,valueText} from '../uiText'
+import {capabilityName,fieldName,valueText} from '../uiText'
 const props=defineProps<{value:any;highlightsOnly?:boolean;contractNumber?:string}>()
 const hidden=new Set(['id','subject_id','plan_id','created_at','source_line_id','case_id','department_id','plan_subject_id','source_pause_subject_id','pause_id','task_id','closure_case_id','source_termination_subject_id','opened_by','closed_by','updated_by','analysis','attachments','source_snapshot','source_summary','erp_order_material','source_system','source_resource_type','source_resource_id','source_resource_version','source_as_of','source_snapshot_hash'])
 const milestoneNames:Record<string,string>={design:'设计/工艺/出图',purchase:'采购',machining:'加工',assembly:'装配',trial:'试模/调试',delivery:'交付/验收'}
 function tasks(){return props.value?.analysis?.tasks||[]}
+function kickoffLifecycle(){return props.value?.analysis?.kickoff_lifecycle}
 function milestoneCoverage(){return props.value?.analysis?.milestone_coverage}
 function revisionImpact(){return props.value?.analysis?.revision_impact}
 function planChangeCandidates(){return props.value?.analysis?.plan_change_candidates||[]}
 function statusName(value:string){return valueText('status',value)}
+const phaseNames:Record<string,string>={REJECTED:'已拒绝承接',ACCEPTANCE:'承接确认',START_PREPARATION:'正式开工准备',PLAN_APPROVAL:'基线计划审批',EXECUTION:'项目执行'}
+const stageFactNames:Record<string,string>={latest_acceptance:'承接',latest_rejection:'拒单',effective_contract:'合同',latest_internal_start:'开工通知',active_plan:'基线计划',pending_count:'待审',workflow_count:'可选流程',history_count:'历史合同',late_expected_count:'逾期补齐',task_count:'计划任务',project_status:'项目状态',can_prepare:'可准备开工',missing_milestones:'缺少大节点'}
+function compactSubject(value:any){return [value?.number,value?.contract_number,value?.status&&statusName(value.status)].filter(Boolean).join(' · ')||'—'}
+function stageFactText(facts:any){
+ const parts:string[]=[]
+ for(const [key,value] of Object.entries(facts||{})){
+  if(value===null||value===undefined||value===''||(Array.isArray(value)&&!value.length))continue
+  const label=stageFactNames[key]||fieldName(key)
+  const text=typeof value==='object'&&!Array.isArray(value)?compactSubject(value):Array.isArray(value)?value.map(item=>key==='missing_milestones'?(milestoneNames[item]||item):item).join('、'):typeof value==='boolean'?(value?'是':'否'):key==='project_status'?statusName(String(value)):key.endsWith('_count')?String(value):valueText(key,value)
+  parts.push(`${label} ${text}`)
+ }
+ return parts.join('；')||'尚无可展示事实'
+}
+function stageNextTool(stage:any){return stage?.action_tool||stage?.query_tool}
 function milestoneList(items:any[]){return (items||[]).map(item=>item.name||item.key).filter(Boolean).join('、')||'—'}
 function designRevisionLabel(){
  const impact=revisionImpact()||{}
@@ -31,7 +46,26 @@ function displayValue(key:string,value:any){
 }
 
 </script>
-<template><div class="business-facts"><section v-if="tasks().length" class="surface">
+<template><div class="business-facts"><section v-if="kickoffLifecycle()" class="surface">
+  <h4>项目启动链路</h4>
+  <div class="fact-line"><span class="muted">当前阶段</span><span>{{phaseNames[kickoffLifecycle().phase]||kickoffLifecycle().phase}}</span></div>
+  <div class="table-scroll"><table><thead><tr><th>业务阶段</th><th>状态</th><th>已知事实</th><th>阻塞或说明</th><th>下一步能力</th></tr></thead><tbody>
+    <tr v-for="stage in kickoffLifecycle().stages||[]" :key="stage.key">
+      <td>{{stage.name}}</td><td>{{statusName(stage.state)}}</td><td>{{stageFactText(stage.facts)}}</td>
+      <td>{{(stage.blockers||[]).join('；')||(stage.parallel?'可与主线并行办理':'—')}}</td>
+      <td>{{stageNextTool(stage)?capabilityName(stageNextTool(stage)):'—'}}</td>
+    </tr>
+  </tbody></table></div>
+  <div v-if="kickoffLifecycle().recommended_next_steps?.length" class="business-facts">
+    <h4>建议下一步</h4>
+    <div v-for="item in kickoffLifecycle().recommended_next_steps" :key="item.kind+item.stage" class="fact-line">
+      <span class="muted">{{item.kind==='PRIMARY'?'主线':'并行'}}</span>
+      <span>{{capabilityName(item.tool)}} · {{item.reason}}{{item.requires_user_confirmation?'（需本人确认）':''}}</span>
+    </div>
+  </div>
+  <p v-if="kickoffLifecycle().access_gaps?.length" class="muted small">未读取：{{kickoffLifecycle().access_gaps.join('、')}}</p>
+  <p v-if="kickoffLifecycle().guardrails?.length" class="muted small">{{kickoffLifecycle().guardrails.join(' ')}}</p>
+</section><section v-if="tasks().length" class="surface">
   <h4>项目大节点 / 计划任务表</h4>
   <div class="table-scroll"><table><thead><tr><th>节点</th><th>状态</th><th>计划开始</th><th>计划结束</th><th>前置</th></tr></thead><tbody>
     <tr v-for="task in tasks()" :key="task.id||task.key"><td>{{task.name||task.key}}</td><td>{{statusName(task.status)}}</td><td>{{task.planned_start||'—'}}</td><td>{{task.planned_end||'—'}}</td><td>{{(task.prerequisites||[]).join('、')||'—'}}</td></tr>

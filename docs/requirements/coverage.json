@@ -340,10 +340,12 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态",
-        "暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态"
+        "暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态",
+        "query_project_kickoff_context 将承接、正式开工和项目基线计划投影为 ACCEPTANCE、START_PREPARATION、PLAN_APPROVAL、EXECUTION 或 REJECTED 阶段；每个阶段仍引用自己的业务材料，不合并状态或自动推进"
       ],
       "verification_evidence": [
-        "tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收"
+        "tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收",
+        "tests/test_project_kickoff_lifecycle.py 覆盖无承接、承接已生效、正式开工已生效和基线计划已生效时的阶段迁移，并验证多候选不合并项目事实"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -355,10 +357,12 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "正式开工条件核对同时展示开工通知、销售合同、整套委外合同和计划上下文，明确内部通知与销售合同分别管理",
-        "工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对"
+        "工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对",
+        "项目启动链路把销售合同标记为可并行阶段；合同缺失或晚到不会把已经具备独立承接依据的正式开工阶段改写为受阻"
       ],
       "verification_evidence": [
-        "tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收"
+        "tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收",
+        "tests/test_project_kickoff_lifecycle.py 覆盖承接主线与合同并行建议，以及合同阶段与开工阶段不互相冒充"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -447,10 +451,12 @@
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
         "query_contract_context 与 query_quote_acceptance_context 分别呈现合同、承接和正式开工上下文，避免把开工通知与销售合同视为同一对象",
-        "late_expected_contracts 标识预计日期已过但合同记录未生效/关闭的当前可见记录，仅提示核对，不自动改变状态"
+        "late_expected_contracts 标识预计日期已过但合同记录未生效/关闭的当前可见记录，仅提示核对，不自动改变状态",
+        "query_project_kickoff_context 在同一投影中分别显示合同和正式开工，合同建议为 PARALLEL，正式开工建议为 PRIMARY，且两者各自保留查询和准备工具"
       ],
       "verification_evidence": [
-        "tests/test_contract_tools.py 覆盖晚到合同提示；tests/test_quote_tools.py 覆盖承接、开工、合同独立派生状态"
+        "tests/test_contract_tools.py 覆盖晚到合同提示；tests/test_quote_tools.py 覆盖承接、开工、合同独立派生状态",
+        "tests/test_project_kickoff_lifecycle.py 覆盖合同可并行补齐而承接仍是开工主线前置条件"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -510,10 +516,12 @@
         "具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required",
         "prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM",
         "当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data",
-        "计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认"
+        "计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认",
+        "项目启动链路只有在正式开工已经生效后才把基线计划作为主线下一步；已存在有效计划时只显示 ACTIVE 和任务/大节点事实，不重复准备计划"
       ],
       "verification_evidence": [
-        "tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收"
+        "tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收",
+        "tests/test_project_kickoff_lifecycle.py 覆盖开工生效后建议准备基线计划、有效计划存在后进入 EXECUTION，以及已有计划但缺承接时仍揭示数据矛盾而不倒推承接已完成"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

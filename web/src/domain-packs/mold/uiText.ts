@@ -69,7 +69,7 @@ Object.assign(auditNames,{'approval.seat.added':'增加审批复核人'})
 Object.assign(auditNames,{'approval.proxy.enabled':'启用人工审批代理','approval.proxy.revoked':'撤销人工审批代理'})
 export function auditName(value:string){return auditNames[value]||commandNames[value]||'业务操作记录'}
 Object.assign(auditNames,{'contact.created':'创建工程联络单','contact.note':'追加联络过程记录','contact.task_created':'新增联络协作事项','contact.assigned':'分派联络事项','contact.responded':'提交联络处理反馈'})
-export function statusName(value:string){return stateLabels[value]||({ACTIVE:'进行中',COMPLETED:'已完成',PENDING:'待处理',PUBLISHED:'已发布',BLOCKED:'等待处理',APPROVE:'同意',REJECT:'驳回',RETURN:'退回修改',WAITING:'等待处理',SKIPPED:'未经过此节点'} as Record<string,string>)[value]||'待核实状态'}
+export function statusName(value:string){return stateLabels[value]||({ACTIVE:'已生效/执行中',COMPLETED:'已完成',PENDING:'待处理',PUBLISHED:'已发布',BLOCKED:'受阻',APPROVE:'同意',REJECT:'驳回',RETURN:'退回修改',WAITING:'等待处理',SKIPPED:'未经过此节点',UNAVAILABLE:'未读取',DATA_CONFLICT:'资料冲突',REJECTED:'已拒单',WAITING_APPROVAL:'审批中',READY:'可办理',NOT_STARTED:'未开始'} as Record<string,string>)[value]||'待核实状态'}
 const fields:Record<string,string>={...labels,code:'编号',number:'单据编号',project_id:'项目',category:'采购类别',quantity:'明细数量',amount:'总金额',remark:'备注',due_date:'需求日期',revision:'材料版本',created_by:'创建人',submitted_at:'提交时间',submitter:'提交人',department:'部门',username:'登录名',field:'判断字段',op:'比较方式',value:'比较值',target:'目标节点',all:'全部满足',any:'任一满足',reason:'原因',name:'名称',version:'版本',remaining_quantity:'未发货数量',signals:'预警信号',suggestions:'建议',limitations:'分析范围说明',source:'来源',as_of:'查询时间',description:'说明',active:'是否启用',enabled:'是否启用',mode:'审批方式',business_type:'业务类型',warehouse_id:'仓库',scope:'数据范围'}
 Object.assign(fields,{expected_ship_date:'预计发货日期',expected_date:'预计签订/补齐日期',replaces_id:'替代原合同',shipped_quantity:'已发货数量',received_quantity:'已收货数量',execution_status:'执行状态',definition_id:'所用流程',instance_id:'审批记录',decision:'审批决定',comment:'审批意见',round_no:'审批轮次',supplier:'供应商',material:'物料',order_number:'订单编号',rule_version:'预警规则版本',near_due_days:'临期天数',exception_reasons:'异常原因',scope_confirmed:'管理范围已确认',internal_number:'内部编号',drawing_revision:'图纸版本',lines:'明细',history:'操作记录'})
 export function fieldName(key:string){return fields[key]||'业务补充信息'}
@@ -113,6 +113,11 @@ Object.assign(fields,{project_code:'项目编号',project_name:'项目名称',pr
 Object.assign(auditNames,{'project.closure.opened':'发起项目结项清单','project.closure.cancelled':'取消原结项清单','project.closure.item.updated':'更新结项核对事项','project.terminated':'项目终止生效','project.closed':'项目关闭生效'})
 Object.assign(auditNames,{'contact.resolution_submitted':'提交联络方案审批','contact.reviewer_set':'指定联络验收负责人','contact.task_cancelled':'撤销联络事项','contact.task_reviewed':'复验联络处理结果','contact.closed':'人工关闭联络单'})
 Object.assign(auditNames,{'plan.change.effective':'项目计划变更已生效'})
+
+Object.assign(capabilityNames,{query_project_kickoff_context:'读取项目启动链路',project_kickoff_orchestration:'项目启动链路协调',prepare_quote_acceptance_decision:'准备报价承接/拒单',prepare_contract_record:'准备合同登记',prepare_internal_start:'准备正式开工',prepare_project_plan_baseline:'准备项目基线计划'})
+Object.assign(capabilityDepartments,{query_project_kickoff_context:'project',project_kickoff_orchestration:'project'})
+Object.assign(capabilityTypes,{project_kickoff_orchestration:'review'})
+Object.assign(fields,{kickoff_lifecycle:'项目启动链路',phase:'当前阶段',stages:'业务阶段',recommended_next_steps:'建议下一步',access_gaps:'未读取能力',guardrails:'业务边界'})
 
 export function numberText(value:string=''){return value.replace(/^CONTACT_RESOLUTI-/, '联络方案-')}
 export function capabilityExample(detail:{kind:'tool'|'skill';item:any}|null){

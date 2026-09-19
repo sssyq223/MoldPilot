@@ -8,7 +8,7 @@ from sqlalchemy import select,func,text
 from sqlalchemy.exc import DBAPIError
 from app.config import settings
 from app.models import FileObject,ContactAttachment,ContactCase,Grant,Capability,RunFile,Outbox,Notification,AuditEvent
-from app import object_storage
+from app import object_storage,document_preview
 from app.errors import DomainError
 from conftest import sign_in
 from test_contacts import create,grant,add_task,operation
@@ -65,6 +65,47 @@ def test_upload_accepts_csv_attachment(client):
     blob=response.json()
     assert blob['filename']=='物料清单.csv' and blob['media_type']=='text/csv'
     assert client.get('/api/files/'+blob['id']+'/content').content==content
+
+
+def test_docx_attachment_can_be_previewed_inline(client):
+    sign_in(client)
+    package=BytesIO()
+    with ZipFile(package,'w') as archive:
+        archive.writestr('[Content_Types].xml','<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        archive.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>')
+    content=package.getvalue()
+    response=upload(client,content,'工程变更联络单.docx')
+    assert response.status_code==200,response.text
+    preview=client.get('/api/files/'+response.json()['id']+'/content?preview=true')
+    assert preview.status_code==200 and preview.content==content
+    assert preview.headers['content-disposition'].startswith('inline;')
+
+
+def test_docx_attachment_can_be_rendered_as_pdf(client,monkeypatch):
+    sign_in(client)
+    package=BytesIO()
+    with ZipFile(package,'w') as archive:
+        archive.writestr('[Content_Types].xml','<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        archive.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>')
+    response=upload(client,package.getvalue(),'工程变更联络单.docx')
+    monkeypatch.setattr(document_preview,'docx_to_pdf',lambda _data,_digest=None:PDF)
+    preview=client.get('/api/files/'+response.json()['id']+'/content?preview=true&render=pdf')
+    assert preview.status_code==200 and preview.content==PDF
+    assert preview.headers['content-type'].startswith('application/pdf')
+    assert preview.headers['content-disposition'].endswith('.pdf')
+
+
+def test_docx_pdf_preview_reuses_digest_cache(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings(),'file_local_root',str(tmp_path/'objects'))
+    calls=[]
+    def convert(_source,target,_work):
+        calls.append(target);target.write_bytes(PDF)
+    monkeypatch.setattr(document_preview,'_word_to_pdf',convert)
+    monkeypatch.setattr(document_preview,'_libreoffice_to_pdf',convert)
+    digest=sha256(b'docx-source').hexdigest()
+    assert document_preview.docx_to_pdf(b'docx-source',digest)==PDF
+    assert document_preview.docx_to_pdf(b'docx-source',digest)==PDF
+    assert len(calls)==1
 
 
 def test_upload_accepts_legacy_xls_and_standard_hardware_sources(client):

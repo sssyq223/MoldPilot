@@ -53,6 +53,7 @@ TOOLS.update({f'query_{key}': {'description':f'查询当前人员授权范围内
 TOOLS['query_engineering_change']['description']='查询已有工程联络方案审批材料及生效状态；独立联络协作、责任部门和人员进度请使用工程联络协作查询工具。'
 TOOLS.update({
     'query_business_object_candidates':{'description':'按项目号、项目名、模具号、合同号、订单号等线索查询当前权限内候选业务对象；只返回候选和来源，不自动匹配或创建。','permission':'project.dossier.read'},
+    'query_project_kickoff_context':{'description':'按项目线索一次核对承接、销售合同、正式开工和基线计划四个独立阶段，返回阻塞项与下一步工具；只读，不自动跨阶段办理。','permission':'project.read'},
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
     'prepare_quote_acceptance_decision':{'description':'准备报价承接或拒单审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'quote_acceptance.create'},
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
@@ -125,6 +126,13 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工']},
+               'project_kickoff_orchestration':{'name':'项目启动链路协调','tools':['query_project_kickoff_context'],
+                   'optional_tools':['query_quote_acceptance_context','prepare_quote_acceptance_decision',
+                       'query_contract_context','prepare_contract_record','query_internal_start_readiness',
+                       'prepare_internal_start','query_project_plan_context','prepare_project_plan_baseline'],
+                   'activation_tools':['query_project_kickoff_context'],
+                   'activation_queries':['项目启动链路','接单到计划','合同开工计划','项目推进到哪一步',
+                       '项目下一步','继续推进项目','从承接到开工','从开工到计划']},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_baseline'],
                    'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度']},
@@ -373,6 +381,7 @@ CAPABILITY_NAMES = {
     'query_projects': '查询项目资料',
     'query_purchase_requests': '查询采购申请',
     'query_business_object_candidates': '查询业务对象候选',
+    'query_project_kickoff_context': '读取项目启动链路',
     'query_quote_acceptance_context': '读取报价承接上下文',
     'prepare_quote_acceptance_decision': '准备报价承接/拒单',
     'query_quote_evaluation_context': '读取报价评估上下文',
@@ -437,6 +446,7 @@ CAPABILITY_NAMES = {
 
 CAPABILITY_DEPARTMENTS = {
     'query_projects': 'project', 'query_project_dossier': 'project', 'query_business_object_candidates': 'project',
+    'query_project_kickoff_context': 'project', 'project_kickoff_orchestration': 'project',
     'project_dossier_review': 'project', 'business_object_matching': 'project',
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
     'query_quote_evaluation_context': 'sales',
@@ -498,6 +508,7 @@ CAPABILITY_TYPES = {
     'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
+    'project_kickoff_orchestration': 'review',
     'prepare_internal_start': 'approval',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
     'prepare_project_plan_baseline': 'approval',
@@ -606,6 +617,9 @@ def tool_schema(key):
     if key=='query_business_object_candidates':
         from domain_packs.mold.erp.core.business_matching import BusinessMatchInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':BusinessMatchInput.model_json_schema()}}
+    if key=='query_project_kickoff_context':
+        from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import ProjectKickoffContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectKickoffContextInput.model_json_schema()}}
     if key in {'query_quote_acceptance_context','prepare_quote_acceptance_decision'}:
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput, quote_decision_schema
         parameters=quote_decision_schema() if key=='prepare_quote_acceptance_decision' else QuoteContextInput.model_json_schema()
@@ -720,7 +734,7 @@ def skill_paths():
         ("agent", "procurement"): ["业务状态", "审批状态", "执行状态"],
         ("agent", "governance"): ["权限", "审计", "来源治理", "授权"],
         ("agent", "operations"): ["部署", "容量", "备份", "恢复", "运行交付", "日志保留"],
-        ("erp", "project"): ["项目计划", "开工", "暂停", "恢复", "结项", "终止", "项目档案"],
+        ("erp", "project"): ["项目计划", "开工", "启动链路", "项目推进", "暂停", "恢复", "结项", "终止", "项目档案"],
         ("erp", "design"): ["设计", "图纸", "BOM", "工艺", "修模", "改模"],
         ("erp", "procurement"): ["采购", "供应商", "委外", "采购价格", "采购订单"],
         ("erp", "manufacturing"): ["制造", "加工", "质检", "装配", "试模"],
@@ -871,6 +885,10 @@ def execute(db, user, key, arguments, run=None):
         from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput,query
         try:data=ProjectDossierInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目档案查询参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_project_kickoff_context':
+        from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import parse, query
+        data=parse(arguments)
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_business_object_candidates':
         from pydantic import ValidationError
