@@ -1,11 +1,11 @@
-"""Versioned contract documents, receipt evidence and settlement lineage."""
+"""Versioned contract documents, business terms and settlement lineage."""
 from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from agent_core.model_base import Base, IdentityMixin
+from agent_core.model_base import Base, IdentityMixin, J
 
 
 class ContractAttachment(IdentityMixin, Base):
@@ -35,6 +35,37 @@ class ContractReceiptEvidence(Base):
     )
     received_date: Mapped[date] = mapped_column(Date)
     recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+
+
+class ContractBusinessTerms(Base):
+    """Immutable contract terms and the exact business links reviewed by a person.
+
+    The record is an approval snapshot owned by the mold domain pack.  It does
+    not mirror or replace the existing ERP contract ledger.
+    """
+
+    __tablename__ = "contract_business_terms"
+    contract_subject_id: Mapped[str] = mapped_column(
+        ForeignKey("business_subject.id"), primary_key=True
+    )
+    signed_date: Mapped[date | None] = mapped_column(Date)
+    delivery_due_date: Mapped[date] = mapped_column(Date)
+    payment_method: Mapped[str] = mapped_column(String(200))
+    customer_rule_key: Mapped[str | None] = mapped_column(String(80))
+    customer_reference_type: Mapped[str] = mapped_column(String(30))
+    customer_project_number: Mapped[str | None] = mapped_column(String(120))
+    customer_order_number: Mapped[str | None] = mapped_column(String(120))
+    mapping_evidence: Mapped[str] = mapped_column(Text)
+    association_snapshot: Mapped[dict] = mapped_column(J)
+    recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    __table_args__ = (
+        CheckConstraint(
+            "customer_reference_type IN "
+            "('PROJECT_NUMBER','CONTRACT_NUMBER','ORDER_NUMBER',"
+            "'MANUAL_CONFIRMED','SUPPLIER_CONTRACT')",
+            name="contract_customer_reference_type",
+        ),
+    )
 
 
 class ContractSettlementAllocation(IdentityMixin, Base):

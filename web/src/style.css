@@ -1040,7 +1040,7 @@ html[data-theme="light"] .workspace-header,html[data-theme="light"] .workspace-t
 .context-popover dl{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px 12px;margin:0;font-size:12px}
 .context-popover dt{color:var(--muted)}
 .context-popover dd{margin:0;text-align:right;word-break:break-word}
-.context-popover p{margin:10px 0 0;text-align:right}
+.context-popover p{display:block;max-width:100%;margin:10px 0 0;text-align:left;white-space:normal;overflow:visible;overflow-wrap:anywhere;word-break:break-word;line-height:1.55}
 .composer-toolbar>.muted.small{white-space:nowrap}
 @media(max-width:900px){.composer-model-label{max-width:min(34vw,300px)}}
 @media(max-width:650px){.model-selector-wrap{display:none!important}.composer-meta-group{flex:0 0 auto;margin-left:auto}}

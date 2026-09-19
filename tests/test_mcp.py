@@ -29,6 +29,47 @@ def test_harness_mcp_discovery_and_execution_use_same_receipt(client,data,monkey
     with data[1]() as db:assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==run['id']))==1
 
 
+def test_mcp_receipt_persists_semantic_model_context_without_runtime_sampling(client, data, monkeypatch):
+    """The host boundary must persist the complete semantic tool receipt.
+
+    Context compaction is a model-view concern.  It must never happen while
+    the MCP result is being stored, otherwise a later retry/resume cannot
+    rebuild the same evidence.
+    """
+    sign_in(client)
+    _, c = start(client, monkeypatch)
+    from app import mcp_api
+
+    semantic_context = {
+        'contract': {
+            'number': 'SMOKE-CONTRACT-0919182654-SC-0919182654',
+            'signed_on': '2026-09-19',
+            'customer': {'code': 'BROWSER-CONTRACT-CUSTOMER', 'name': '浏览器验收客户'},
+        },
+        'project': {'code': 'BROWSER-OUT-001', 'plan': {'revision': 7, 'milestone': {'key': 'DELIVERY'}}},
+    }
+
+    monkeypatch.setattr(
+        mcp_api.tools,
+        'execute',
+        lambda *_args, **_kwargs: {
+            'resolution': 'RESOLVED',
+            'model_context': semantic_context,
+            'data': [{'audit': '完整审计明细'}],
+        },
+    )
+    response = rpc(client, c, 'tools/call', {
+        'name': 'query_purchase_requests',
+        'arguments': {},
+        '_meta': {'agent/sequence': 0},
+    })
+    assert response.status_code == 200, response.text
+    with data[1]() as db:
+        step = db.scalar(select(Step).where(Step.run_id == c['id'], Step.sequence == 0))
+        assert step is not None
+        assert step.result['model_context'] == semantic_context
+
+
 def test_mcp_transport_and_protocol_validation(client,data,monkeypatch):
     _,c=start(client,monkeypatch)
     path=f"/internal/runs/{c['id']}/mcp"

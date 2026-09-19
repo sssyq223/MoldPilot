@@ -15,6 +15,7 @@ from domain_packs.mold.ports.security import current_user
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.erp.commercial import contract_documents
 from domain_packs.mold.erp.commercial import contract_relations
+from domain_packs.mold.erp.commercial import contract_terms
 
 
 class ContractContextInput(StrictModel):
@@ -49,9 +50,20 @@ class ContractProposalInput(StrictModel):
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     currency: str = Field(pattern=r'^[A-Z]{3}$')
     contract_number: str = Field(min_length=1, max_length=100)
+    signed_date: date | None = Field(default=None,
+        description='合同签订日期；销售合同必须填写，整套委外草稿可在签署前留空。')
+    delivery_due_date: date = Field(description='合同约定的最终交付日期。')
+    payment_method: str = Field(min_length=1, max_length=200,
+        description='合同约定的付款方式或结算方式摘要。')
     expected_date: date | None = None
     received_date: date | None = Field(default=None,
         description='合同原件实际到达日期；销售合同登记必须填写，并与本轮上传附件一并留痕。')
+    customer_project_number: str | None = Field(default=None, min_length=1, max_length=120,
+        description='客户合同中的项目编号；海信销售合同必须填写。')
+    customer_order_number: str | None = Field(default=None, min_length=1, max_length=120,
+        description='客户订单编号；海尔电子合同必须填写并与中标接收记录核对。')
+    mapping_evidence: str = Field(min_length=1, max_length=4000,
+        description='合同与项目、模具、客户订单及开工依据的人工核对说明。')
     replaces_id: str | None = Field(default=None, max_length=36)
     relation_type: Literal['ORIGINAL','REPLACEMENT','ADDITION'] = Field(
         default='ORIGINAL', description='原始合同、替代合同或追加合同。')
@@ -276,6 +288,87 @@ def _late_expected(records):
     return result
 
 
+def _fallback_payment_terms(db,user,project_id,allowed_tools):
+    if not ({'query_quote_acceptance_context','query_quote_evaluation_context'} & allowed_tools):
+        return None
+    acceptance=db.scalar(select(m.BusinessSubject).where(
+        m.BusinessSubject.project_id==project_id,
+        m.BusinessSubject.kind=='quote_acceptance',
+        m.BusinessSubject.status=='EFFECTIVE').order_by(
+            m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(1))
+    if not acceptance:return None
+    try:
+        acceptance_card=domains.data(db,user,acceptance)
+    except DomainError:
+        return None
+    decision=acceptance_card.get('detail') if isinstance(acceptance_card.get('detail'),dict) else {}
+    quotation_id=decision.get('source_subject_id')
+    quotation=db.get(m.BusinessSubject,quotation_id) if quotation_id else None
+    if not quotation or quotation.kind!='quotation' or quotation.project_id!=project_id:return None
+    try:
+        quotation_card=domains.data(db,user,quotation)
+    except DomainError:
+        return None
+    quote=quotation_card.get('detail') if isinstance(quotation_card.get('detail'),dict) else {}
+    terms=quote.get('payment_terms')
+    if not terms:return None
+    return {'source':'EFFECTIVE_QUOTE_ACCEPTANCE','acceptance_id':acceptance.id,
+        'quotation_id':quotation.id,'quotation_number':quote.get('quotation_number'),
+        'payment_terms':terms,'structured_schedule':False}
+
+
+def _contract_model_card(record):
+    detail=record.get('detail') if isinstance(record.get('detail'),dict) else {}
+    terms=detail.get('business_terms') or {}
+    associations=terms.get('association_snapshot') or {}
+    customer=associations.get('customer') or {}
+    return {
+        'id':record.get('id'),'number':record.get('number'),'status':record.get('status'),
+        'revision':record.get('revision'),'contract_number':detail.get('contract_number'),
+        'amount':detail.get('amount'),'currency':detail.get('currency'),
+        # The legacy expected date is the expected signing/supplement date, not
+        # the contractual delivery date.  Keep model-facing dates unambiguous.
+        'signed_date':terms.get('signed_date'),
+        'delivery_due_date':terms.get('delivery_due_date'),
+        'contract_original_received_date':detail.get('received_date'),
+        'expected_contract_signing_or_supplement_date':detail.get('expected_date'),
+        'payment_method':terms.get('payment_method'),
+        'customer':({
+            'id':customer.get('id') or detail.get('customer_id'),
+            'code':customer.get('code'),'name':customer.get('name'),
+        } if customer or detail.get('customer_id') else None),
+        'supplier':({'id':detail.get('supplier_id')} if detail.get('supplier_id') else None),
+        'customer_reference':({
+            'type':terms.get('customer_reference_type'),
+            'rule_key':terms.get('customer_rule_key'),
+            'customer_project_number':terms.get('customer_project_number'),
+            'customer_order_number':terms.get('customer_order_number'),
+            'mapping_evidence':terms.get('mapping_evidence'),
+        } if terms else None),
+        'project_association':associations.get('project'),
+        'internal_molds':[{
+            'id':item.get('id'),'internal_number':item.get('internal_number'),
+            'name':item.get('name'),
+        } for item in associations.get('internal_molds') or []],
+        'effective_internal_starts':associations.get('effective_internal_starts') or [],
+        'payment_stages':[{
+            'id':item.get('id'),'name':item.get('name'),'amount':item.get('amount'),
+            'currency':item.get('currency'),'condition':item.get('condition'),
+            'condition_confirmed':item.get('condition_confirmed'),
+            'trigger_event':item.get('trigger_event'),'trigger_date':item.get('trigger_date'),
+            'credit_days':item.get('credit_days'),'expected_due_date':item.get('expected_due_date'),
+            'schedule_confirmed':item.get('schedule_confirmed'),
+        } for item in detail.get('stages') or []],
+        'relation':{
+            'type':detail.get('relation_type'),'replaces_id':detail.get('replaces_id'),
+            'settlement_allocations':detail.get('settlement_allocations') or [],
+        },
+        'attachments':[{'file_id':item.get('file_id'),'filename':item.get('filename'),
+            'version':item.get('version'),'source_kind':item.get('source_kind'),
+            'is_current':item.get('is_current')} for item in detail.get('attachments') or []],
+    }
+
+
 def query(db,user,data:ContractContextInput,allowed_tools:set[str]):
     project,alternatives,truncated=_resolve(db,user,data,allowed_tools)
     limitations=['只读取当前用户可见且具备项目业务档案读取权限的项目。',
@@ -286,6 +379,9 @@ def query(db,user,data:ContractContextInput,allowed_tools:set[str]):
         records,record_truncated=_records(db,user,project.id,allowed_tools)
         sales=records['sales_contract'];outsource=records['full_outsource_contract']
         all_records=sales+outsource
+        fallback_terms=_fallback_payment_terms(db,user,project.id,allowed_tools) if not any(
+            row.get('status')=='EFFECTIVE' for row in sales) else None
+        cash_timing=contract_terms.cash_timing_analysis(sales,outsource,fallback_terms)
         if record_truncated['sales_contract']:limitations.append('销售合同最多返回最新20条。')
         if record_truncated['full_outsource_contract']:limitations.append('整套委外合同最多返回最新20条。')
         skipped=[]
@@ -297,27 +393,40 @@ def query(db,user,data:ContractContextInput,allowed_tools:set[str]):
             for kind in ('sales_contract','full_outsource_contract'):
                 try:workflows[kind]=workflow_options(db,user,project,kind)
                 except DomainError as error:limitations.append(s.CATALOG[kind]['name']+'当前人员不可提交，未返回可选流程：'+error.message)
-        return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
+        project_card=_project_card(db,user,project,alternatives or ('项目定位',))
+        replacement_links=_replacement_map(all_records)
+        late_expected=_late_expected(all_records)
+        model_context={'project':project_card,
+            'sales_contracts':[_contract_model_card(row) for row in sales],
+            'full_outsource_contracts':[_contract_model_card(row) for row in outsource],
+            'replacement_links':replacement_links,'late_expected_contracts':late_expected,
+            'cash_timing_analysis':cash_timing,'workflow_options':workflows}
+        return {'resolution':'RESOLVED','data':[{'project':project_card,
             'sales_contracts':sales,'full_outsource_contracts':outsource,
             'contract_totals':{'sales_contract':_totals(sales),'full_outsource_contract':_totals(outsource)},
             'current_effective_contract_totals':{
                 'sales_contract':_totals(sales,{'EFFECTIVE'}),
                 'full_outsource_contract':_totals(outsource,{'EFFECTIVE'}),
             },
-            'replacement_links':_replacement_map(all_records),
-            'late_expected_contracts':_late_expected(all_records),
+            'replacement_links':replacement_links,
+            'late_expected_contracts':late_expected,
+            'cash_timing_analysis':cash_timing,
             'workflow_options':workflows,
             'derived_status':{
                 'has_sales_contract':bool(sales),
                 'has_full_outsource_contract':bool(outsource),
                 'has_effective_sales_contract':any(row.get('status')=='EFFECTIVE' for row in sales),
                 'has_effective_full_outsource_contract':any(row.get('status')=='EFFECTIVE' for row in outsource),
-                'has_replacement_relation':bool(_replacement_map(all_records)),
+                'has_replacement_relation':bool(replacement_links),
                 'has_pending_contract_relation':any(
                     (row.get('detail') or {}).get('relation_type') in {'REPLACEMENT','ADDITION'}
                     and row.get('status')!='EFFECTIVE' for row in all_records),
-                'has_late_expected_contract':bool(_late_expected(all_records))}}],
-            'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
+                'has_late_expected_contract':bool(late_expected),
+                'cash_timing_state':cash_timing['state'],
+                'has_projected_cash_shortfall':any(
+                    item['has_projected_shortfall'] for item in cash_timing['currencies'])}}],
+            'model_context':model_context,'source':'agent_db','as_of':now().isoformat(),
+            'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),
                 'limitations':limitations}
@@ -444,6 +553,9 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         supplier=db.get(m.Supplier,detail.supplier_id) if detail.supplier_id else None
         if not supplier or not supplier.active or supplier.category!='outsource' or detail.customer_id:
             raise DomainError('PARTY_INVALID','整套委外合同须关联有效委外供应商，且不能填写客户')
+    if data.contract_kind=='sales_contract' and not data.signed_date:
+        raise DomainError('CONTRACT_SIGNED_DATE_REQUIRED','登记销售合同必须填写合同签订日期',409)
+    association_snapshot=contract_terms.preview(db,project,data)
     if sum((stage.amount for stage in detail.stages),Decimal(0))>detail.amount:
         raise DomainError('STAGE_OVERFLOW','合同阶段金额合计超出合同金额')
     predecessor,allocation_cards=_preview_settlement_allocations(db,data,detail)
@@ -473,6 +585,21 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         **party,
         '合同号':detail.contract_number,
         '合同金额':str(detail.amount)+' '+detail.currency,
+        '合同签订日期':data.signed_date.isoformat() if data.signed_date else '整套委外合同尚未签署',
+        '合同交付日期':data.delivery_due_date.isoformat(),
+        '付款方式':data.payment_method,
+        '客户编号核对':{
+            '客户规则':association_snapshot.get('customer_classification') or '不适用',
+            '关联类型':association_snapshot['customer_reference_type'],
+            '客户项目号':data.customer_project_number or '不适用',
+            '客户订单号':data.customer_order_number or '不适用',
+            '核对依据':data.mapping_evidence,
+        },
+        '冻结关联':{
+            '内部模具号':[row['internal_number'] for row in association_snapshot['internal_molds']],
+            '正式开工单':[row['number'] for row in association_snapshot['effective_internal_starts']] or ['尚无生效正式开工单'],
+            '已确认客户订单':[row['number'] for row in association_snapshot['known_customer_orders']] or ['尚无中标接收订单号'],
+        },
         '合同关系':relation_labels[data.relation_type],
         '前序合同':(db.get(m.ContractDetail,predecessor.id).contract_number if predecessor else '无'),
         '历史实收实付分配':[{
@@ -490,7 +617,7 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         '备注':data.remark or '无',
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建合同材料并提交 Agent BPM；替代关系仅在审批生效时关闭前序版本，历史实收实付仍保留在原记录并按明确节点归属，不执行收付款或 ERP 合同操作。'}
-    return detail,display,blobs,allocation_cards
+    return detail,display,blobs,allocation_cards,association_snapshot
 
 
 def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalInput):
@@ -550,7 +677,7 @@ def create_contract_signing_record(db,user,data:ContractSigningRecordProposalInp
 def execute_contract_tool(db,user,key,arguments,run=None):
     if key=='prepare_contract_record':
         data=parse_contract(arguments)
-        _,display,_,_=preview_contract(db,user,data,run)
+        _,display,_,_,_=preview_contract(db,user,data,run)
         proposal={'kind':data.contract_kind,'action':'contract_record','requires_approval':True,
             'input':data.model_dump(mode='json'),'display':display,
             'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
@@ -590,7 +717,7 @@ def validate_intent(db,user,payload):
         _,display=preview_contract_signing_record(db,user,data)
     else:
         data=parse_contract(proposal['input'])
-        _,display,_,_=preview_contract(db,user,data,run)
+        _,display,_,_,_=preview_contract(db,user,data,run)
     if content_hash(display)!=content_hash(proposal['display']):
         raise DomainError('VERSION_CONFLICT','项目、合同、权限或流程资料已变化，请重新准备',409)
     return proposal,data
@@ -605,7 +732,7 @@ def confirm(db,user,payload):
             'contract_signing_record_id':record.id,'action':'contract_signing_record','status':'CONFIRMED'}
     step=db.get(m.Step,payload['step_id'])
     run=db.get(m.Run,step.run_id) if step else None
-    detail,_,blobs,allocation_cards=preview_contract(db,user,data,run)
+    detail,_,blobs,allocation_cards,association_snapshot=preview_contract(db,user,data,run)
     subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
         category='outsource' if data.contract_kind=='full_outsource_contract' else None,
         remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
@@ -615,6 +742,7 @@ def confirm(db,user,payload):
             received_date=data.received_date,
             recorded_by=user.id,
         ))
+    contract_terms.create(db,user,subject,data,association_snapshot)
     stages={row.name:row for row in db.scalars(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))}
     for item in allocation_cards:
         target=stages[item['target_stage_name']]
