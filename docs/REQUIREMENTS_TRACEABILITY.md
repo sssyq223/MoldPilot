@@ -8,7 +8,7 @@
 
 ## 跨阶段执行编排证据
 
-- `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。
+- `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把客户报价、承接、合同、正式开工和基线计划保持为五类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。
 - 总 Skill 首轮只开放全生命周期协调器，随后只展开一个分段协调器；三个分段 Skill 首轮也只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。
 - `tests/test_project_lifecycle_overview.py` 覆盖分层注册、启动转执行、暂停路由、资料矛盾、权限隔离和候选不合并；`tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。
 
@@ -70,8 +70,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 业务人员接收客户报价图纸、项目资料或先行收到的中标资料，确认客户及项目基本信息后提交报价评估。接收资料、附件和沟通依据应与报价记录关联。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 可按项目 ID/项目编号/名称或授权候选线索定位当前可见项目，汇总报价承接上下文与关联依据口径；报价承接上下文工具返回未找到、多候选、无权或已定位状态，不创建报价、不接收附件、不自动提交评估
-- 验证证据：tests/test_quote_tools.py 覆盖工具 schema、有效承接摘要和定位口径；完整资料接收、附件关联及报价评估流程尚未验收
+- 实现证据：query_quote_acceptance_context 可按项目 ID/项目编号/名称或授权候选线索定位当前可见项目，汇总报价承接上下文与关联依据口径；报价承接上下文工具返回未找到、多候选、无权或已定位状态，不创建报价、不接收附件、不自动提交评估；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_tools.py 覆盖工具 schema、有效承接摘要和定位口径；完整资料接收、附件关联及报价评估流程尚未验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-007
@@ -79,8 +79,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 总经理根据项目资料、客户类型和负荷判断是否报价及承接。不承接时记录拒单原因并结束对应流程；可承接时组织成本、技术及项目人员评估。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 汇总有效承接与有效拒单记录，并明确拒单、承接、正式开工互不等同；工具只读展示决定事实，不代替总经理判断、评估组织或拒单结束流程
-- 验证证据：tests/test_quote_tools.py 覆盖承接/拒单上下文读取及多候选不自动决定；承接/拒单审批链尚未完成验收
+- 实现证据：query_quote_acceptance_context 汇总有效承接与有效拒单记录，并明确拒单、承接、正式开工互不等同；工具只读展示决定事实，不代替总经理判断、评估组织或拒单结束流程；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_tools.py 覆盖承接/拒单上下文读取及多候选不自动决定；承接/拒单审批链尚未完成验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-008
@@ -88,8 +88,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 内部加工由成本人员核算价格、技术人员开展粗略工艺分析、项目人员估算工期；整套委外应评估供应商价格、交付周期及其他要求。报价形成的价格、交期、收款条件及依据应保留版本。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_evaluation_context 按项目线索核对报价阶段金额/币种/依据文本、最终加工方式、可见销售合同、可见整套委外合同和计划任务摘要；工具明确区分综合证据文本与结构化成本核算、粗略工艺分析、工期估算明细；当前返回 gaps，不把综合依据当作完整结构化评估；整套委外承接时检查当前可见整套委外合同，不把承接方式自动等同于供应商价格、周期和合同已确认
-- 验证证据：tests/test_quote_evaluation_tools.py 覆盖金额/加工方式/客户下游事实派生状态、结构化拆分缺口和多候选不自动决定；完整成本/工艺/工期评估表单和正式业务验收尚未完成
+- 实现证据：query_quote_evaluation_context 按项目线索核对报价阶段金额/币种/依据文本、最终加工方式、可见销售合同、可见整套委外合同和计划任务摘要；工具明确区分综合证据文本与结构化成本核算、粗略工艺分析、工期估算明细；当前返回 gaps，不把综合依据当作完整结构化评估；整套委外承接时检查当前可见整套委外合同，不把承接方式自动等同于供应商价格、周期和合同已确认；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_evaluation_tools.py 覆盖金额/加工方式/客户下游事实派生状态、结构化拆分缺口和多候选不自动决定；完整成本/工艺/工期评估表单和正式业务验收尚未完成；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-009
@@ -97,8 +97,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 报价阶段形成初步加工方式，中标承接审批时确认最终加工方式。执行中需调整时，评估已发生采购、生产、费用及交期影响，经审批后切换，并保留原方式及变更记录。后续任务按当前有效方式执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_evaluation_context 同时返回报价/承接记录中的 execution_mode、项目档案当前 execution_mode，并在两者不一致或历史记录出现多个方式时提示需要核对当前有效依据；工具把报价阶段、承接确认和执行中变更的加工方式视为不同依据层，不自动切换项目方式或下推执行
-- 验证证据：tests/test_quote_evaluation_tools.py 覆盖最终加工方式派生状态和多候选边界；执行中方式变更审批、已发生采购/生产/费用影响评估及后续任务重路由尚未验收
+- 实现证据：query_quote_evaluation_context 同时返回报价/承接记录中的 execution_mode、项目档案当前 execution_mode，并在两者不一致或历史记录出现多个方式时提示需要核对当前有效依据；工具把报价阶段、承接确认和执行中变更的加工方式视为不同依据层，不自动切换项目方式或下推执行；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_evaluation_tools.py 覆盖最终加工方式派生状态和多候选边界；执行中方式变更审批、已发生采购/生产/费用影响评估及后续任务重路由尚未验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-010
@@ -106,8 +106,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 内部加工或委外评估完成后，汇总价格、交期和相关条件提交客户；保存提交版本及客户反馈。报价结果、后续修改和对应承接结果应可查询。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_acceptance_context 将报价承接决定、后续承接结果和开放中的报价决定按项目上下文返回，供会话查询核对；当前只查询已登记业务单据事实，不生成报价版本、不提交客户反馈、不覆盖原报价依据；query_quote_evaluation_context 进一步汇总报价金额、加工方式、可见合同和客户反馈/下游事实信号，并保留 gaps 说明正式提交版本与客户反馈仍需专门材料
-- 验证证据：tests/test_quote_tools.py 覆盖有效承接、开放决定集合和项目线索定位；tests/test_quote_evaluation_tools.py 覆盖客户反馈或下游合同信号；报价提交版本与客户反馈全流程尚未验收
+- 实现证据：query_quote_acceptance_context 将报价承接决定、后续承接结果和开放中的报价决定按项目上下文返回，供会话查询核对；当前只查询已登记业务单据事实，不生成报价版本、不提交客户反馈、不覆盖原报价依据；query_quote_evaluation_context 进一步汇总报价金额、加工方式、可见合同和客户反馈/下游事实信号，并保留 gaps 说明正式提交版本与客户反馈仍需专门材料；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_tools.py 覆盖有效承接、开放决定集合和项目线索定位；tests/test_quote_evaluation_tools.py 覆盖客户反馈或下游合同信号；报价提交版本与客户反馈全流程尚未验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-011
@@ -115,8 +115,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 报价数据库应保存客户公司、负责人、项目名称、模具信息、金额、我方责任人、历史报价及资料，供中标匹配。历史资料用于评估参考，不代替本项目的承接和价格审批。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_evaluation_context 可按项目编号/名称等线索定位当前可见项目，并返回项目画像、报价/承接记录编号、报价金额、依据文本和后续合同摘要；历史报价资料仅作为可见上下文呈现，不替代本项目承接、价格审批或人工匹配确认
-- 验证证据：tests/test_quote_evaluation_tools.py 覆盖项目线索定位和报价版本摘要；客户公司/负责人/模具信息/附件资料的完整报价资料库尚未验收
+- 实现证据：query_quote_evaluation_context 可按项目编号/名称等线索定位当前可见项目，并返回项目画像、报价/承接记录编号、报价金额、依据文本和后续合同摘要；历史报价资料仅作为可见上下文呈现，不替代本项目承接、价格审批或人工匹配确认；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_evaluation_tools.py 覆盖项目线索定位和报价版本摘要；客户公司/负责人/模具信息/附件资料的完整报价资料库尚未验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ### FR-012
@@ -124,8 +124,8 @@ Agent 开发资料接收、成本/工艺/工期评估、加工方式、报价版
 报价成本与后续实际材料、加工和外协成本分别保留，报价收款条件与最终合同条件建立对应关系；合同、设变或执行数据变化后，不覆盖原报价依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_quote_evaluation_context 将报价金额/依据、项目档案加工方式、可见销售合同和可见整套委外合同分开返回，避免用合同或执行事实覆盖原报价依据；工具目前只做上下文核对，不计算后续实际材料、加工、外协成本，也不把合同节点自动回写为报价收款条件
-- 验证证据：tests/test_quote_evaluation_tools.py 覆盖合同权限隔离，未授权时不泄露合同号；报价成本与后续实际成本、合同条件映射和设变后历史保护仍未完整验收
+- 实现证据：query_quote_evaluation_context 将报价金额/依据、项目档案加工方式、可见销售合同和可见整套委外合同分开返回，避免用合同或执行事实覆盖原报价依据；工具目前只做上下文核对，不计算后续实际材料、加工、外协成本，也不把合同节点自动回写为报价收款条件；客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据
+- 验证证据：tests/test_quote_evaluation_tools.py 覆盖合同权限隔离，未授权时不泄露合同号；报价成本与后续实际成本、合同条件映射和设变后历史保护仍未完整验收；tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py 和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器
 - 验收状态：NOT_VERIFIED
 
 ## 中标与承接

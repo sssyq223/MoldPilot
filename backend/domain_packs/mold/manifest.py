@@ -90,6 +90,7 @@ def install(app, domain_router) -> None:
     from domain_packs.mold.tools.erp.project.plan_tools import router as project_plan_proposal_router
     from domain_packs.mold.tools.erp.project.start_tools import router as internal_start_proposal_router
     from domain_packs.mold.tools.erp.commercial.quote_tools import router as quote_acceptance_proposal_router
+    from domain_packs.mold.tools.erp.commercial.quotation_tools import router as quotation_proposal_router
     from domain_packs.mold.tools.erp.commercial.contract_tools import router as contract_proposal_router
     from domain_packs.mold.tools.erp.finance.finance_context_tools import router as finance_proposal_router
     from domain_packs.mold.tools.erp.procurement.full_outsource_tools import router as full_outsource_proposal_router
@@ -104,6 +105,7 @@ def install(app, domain_router) -> None:
         project_plan_proposal_router,
         internal_start_proposal_router,
         quote_acceptance_proposal_router,
+        quotation_proposal_router,
         contract_proposal_router,
         finance_proposal_router,
         full_outsource_proposal_router,

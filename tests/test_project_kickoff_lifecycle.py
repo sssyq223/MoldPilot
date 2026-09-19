@@ -150,7 +150,7 @@ def test_kickoff_schema_and_fresh_project_recommend_acceptance_with_parallel_con
         with Session.begin() as db:
             admin = user(db, "admin", True)
             project(db, "KICKOFF-FRESH")
-            for business_type in ("quote_acceptance", "sales_contract", "internal_start", "project_plan"):
+            for business_type in ("quotation", "quote_acceptance", "sales_contract", "internal_start", "project_plan"):
                 workflow(db, admin, business_type)
         schema = tool_schema("query_project_kickoff_context")["function"]["parameters"]
         assert {"project_id", "identifier"} <= set(schema["properties"])
@@ -160,14 +160,16 @@ def test_kickoff_schema_and_fresh_project_recommend_acceptance_with_parallel_con
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             by_key = stages(result)
             assert result["resolution"] == "RESOLVED"
-            assert lifecycle["phase"] == "ACCEPTANCE"
+            assert lifecycle["kind"] == "project_kickoff_lifecycle_v2"
+            assert lifecycle["phase"] == "QUOTATION"
+            assert by_key["quotation"]["state"] == "READY"
             assert by_key["acceptance"]["state"] == "READY"
             assert by_key["contract"]["state"] == "READY"
             assert by_key["contract"]["parallel"] is True
             assert by_key["internal_start"]["state"] == "BLOCKED"
             assert by_key["project_plan"]["state"] == "BLOCKED"
             assert [(item["kind"], item["tool"]) for item in lifecycle["recommended_next_steps"]] == [
-                ("PRIMARY", "prepare_quote_acceptance_decision"),
+                ("PRIMARY", "prepare_quotation_version"),
                 ("PARALLEL", "prepare_contract_record"),
             ]
     finally:
@@ -180,7 +182,7 @@ def test_kickoff_moves_from_acceptance_to_start_then_plan_then_execution():
         with Session.begin() as db:
             admin = user(db, "admin", True)
             project_row = project(db, "KICKOFF-LIFECYCLE")
-            for business_type in ("quote_acceptance", "sales_contract", "internal_start", "project_plan"):
+            for business_type in ("quotation", "quote_acceptance", "sales_contract", "internal_start", "project_plan"):
                 workflow(db, admin, business_type)
             acceptance = decision(db, project_row, admin, "quote_acceptance", "QA-KICKOFF", "ACCEPT")
 
@@ -189,6 +191,7 @@ def test_kickoff_moves_from_acceptance_to_start_then_plan_then_execution():
             result = execute(db, admin, "query_project_kickoff_context", {"identifier": "KICKOFF-LIFECYCLE"})
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             assert lifecycle["phase"] == "START_PREPARATION"
+            assert stages(result)["quotation"]["state"] == "NOT_APPLICABLE"
             assert stages(result)["internal_start"]["state"] == "READY"
             assert lifecycle["recommended_next_steps"][0]["tool"] == "prepare_internal_start"
 
@@ -246,7 +249,7 @@ def test_kickoff_keeps_unassigned_stage_tools_unread_and_does_not_leak_numbers()
             result = execute(db, operator, "query_project_kickoff_context", {"identifier": "KICKOFF-LIMITED"})
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             assert {row["state"] for row in lifecycle["stages"]} == {"UNAVAILABLE"}
-            assert lifecycle["access_gaps"] == ["承接确认", "销售合同", "正式开工", "项目计划"]
+            assert lifecycle["access_gaps"] == ["客户报价", "承接确认", "销售合同", "正式开工", "项目计划"]
             assert "SECRET-QA" not in str(result)
             assert "SECRET-CONTRACT" not in str(result)
     finally:

@@ -45,7 +45,21 @@ def typed_detail(db,subject):
     from domain_packs.mold import domain_extensions as ext
     kind=subject.kind
     if kind in ext.TABLES:return ext.detail_data(db,subject)
-    if kind in {'sales_contract','full_outsource_contract'}:
+    if kind=='quotation':
+        detail=values(db.get(m.QuotationDetail,subject.id),('subject_id',))
+        source_rows=list(db.execute(
+            select(m.QuoteInboundRecord,m.FileObject)
+            .join(m.QuotationSourceLink,m.QuotationSourceLink.inbound_record_id==m.QuoteInboundRecord.id)
+            .join(m.FileObject,m.FileObject.id==m.QuoteInboundRecord.file_id)
+            .where(m.QuotationSourceLink.quotation_subject_id==subject.id)
+            .order_by(m.QuoteInboundRecord.created_at,m.QuoteInboundRecord.id)
+        ))
+        detail['sources']=[{**values(source),
+            'filename':blob.filename,'media_type':blob.media_type,'size':blob.size}
+            for source,blob in source_rows]
+        detail['feedback']=[values(item) for item in rows(
+            db,m.QuotationFeedback,quotation_subject_id=subject.id)]
+    elif kind in {'sales_contract','full_outsource_contract'}:
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
         detail['stages']=[values(stage) for stage in rows(db,m.PaymentStage,contract_id=subject.id)]
         from domain_packs.mold.erp.commercial import contract_documents
@@ -262,6 +276,23 @@ def create(db,user,payload):
     kind=subject.kind
     from domain_packs.mold import domain_extensions as ext
     if kind in ext.TABLES:ext.persist(db,user,subject,detail)
+    elif isinstance(detail,s.QuotationInput):
+        owner=db.get(m.User,detail.owner_user_id)
+        if not owner or not owner.active:
+            raise DomainError('ASSIGNMENT_BLOCKED','报价责任人不存在或已停用')
+        if detail.previous_id:
+            previous=require_source(db,detail.previous_id,project.id,{'quotation'})
+            prior=db.get(m.QuotationDetail,previous.id)
+            if not prior or prior.quotation_number!=detail.quotation_number or detail.version!=prior.version+1:
+                raise DomainError('QUOTE_VERSION_INVALID','报价编号或版本未沿用前一生效版本',409)
+        elif detail.version!=1:
+            raise DomainError('QUOTE_VERSION_INVALID','首个报价版本必须为第1版',409)
+        duplicate=db.scalar(select(m.QuotationDetail.subject_id).where(
+            m.QuotationDetail.quotation_number==detail.quotation_number,
+            m.QuotationDetail.version==detail.version).limit(1))
+        if duplicate:
+            raise DomainError('QUOTE_VERSION_EXISTS','报价编号与版本已存在',409)
+        db.add(m.QuotationDetail(subject_id=subject.id,**detail.model_dump()))
     elif isinstance(detail,s.ContractInput):
         if kind=='sales_contract':
             if not detail.customer_id or not db.get(m.Customer,detail.customer_id) or detail.supplier_id:
@@ -322,7 +353,21 @@ def create(db,user,payload):
         if bool(detail.amount)!=bool(detail.currency):raise DomainError('CURRENCY_REQUIRED','金额与币种须同时填写')
         if kind=='quote_acceptance' and detail.decision=='ACCEPT' and not detail.execution_mode:
             raise DomainError('MODE_REQUIRED','承接时须确认最终加工方式')
-        if detail.source_subject_id:require_source(db,detail.source_subject_id,project.id,set(s.CATALOG))
+        if kind=='quote_acceptance':
+            effective_quote=db.scalar(select(m.BusinessSubject.id).where(
+                m.BusinessSubject.project_id==project.id,m.BusinessSubject.kind=='quotation',
+                m.BusinessSubject.status=='EFFECTIVE').limit(1))
+            if effective_quote and not detail.source_subject_id:
+                raise DomainError('SOURCE_REQUIRED','已有生效报价版本时，承接或拒单必须引用该报价版本',409)
+            if detail.source_subject_id:
+                source=require_source(db,detail.source_subject_id,project.id,{'quotation'})
+                quote=db.get(m.QuotationDetail,source.id)
+                if detail.amount is not None and detail.amount!=quote.quoted_amount:
+                    raise DomainError('QUOTE_AMOUNT_MISMATCH','承接金额必须与所引用报价版本一致',409)
+                if detail.currency is not None and detail.currency!=quote.currency:
+                    raise DomainError('QUOTE_CURRENCY_MISMATCH','承接币种必须与所引用报价版本一致',409)
+        elif detail.source_subject_id:
+            require_source(db,detail.source_subject_id,project.id,set(s.CATALOG))
         db.add(m.BusinessDecisionDetail(subject_id=subject.id,**detail.model_dump()))
     record(db,user,'business.draft.created',subject.id,{'kind':kind});db.flush()
     return subject
@@ -348,7 +393,22 @@ def before_submit(db,user,subject):
     if subject.kind=='contact_resolution':
         from domain_packs.mold.erp.change.contact_lifecycle import ensure_materials
         ensure_materials(db,db.get(m.ContactResolution,subject.id))
-    if subject.kind=='supplier_payment':payment_reserve(db,subject)
+    if subject.kind=='quotation':
+        detail=db.get(m.QuotationDetail,subject.id)
+        pending=db.scalar(select(m.BusinessSubject.id).where(
+            m.BusinessSubject.project_id==subject.project_id,
+            m.BusinessSubject.kind=='quotation',
+            m.BusinessSubject.id!=subject.id,
+            m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED'])
+        ).limit(1))
+        if pending:raise DomainError('QUOTE_VERSION_PENDING','项目已有待处理报价版本',409)
+        if detail.previous_id:
+            require_source(db,detail.previous_id,subject.project_id,{'quotation'})
+        elif db.scalar(select(m.BusinessSubject.id).where(
+            m.BusinessSubject.project_id==subject.project_id,
+            m.BusinessSubject.kind=='quotation',m.BusinessSubject.status=='EFFECTIVE').limit(1)):
+            raise DomainError('QUOTE_VERSION_SOURCE_REQUIRED','项目已有生效报价，新增版本必须关联前一版本',409)
+    elif subject.kind=='supplier_payment':payment_reserve(db,subject)
     elif subject.kind in {'sales_contract','full_outsource_contract'}:
         from domain_packs.mold.erp.commercial.contract_relations import validate_relation
         validate_relation(db,subject,lock=True)
@@ -387,6 +447,24 @@ def apply(db,user,subject):
             if profile:profile.execution_mode=detail.execution_mode
             else:db.add(m.ProjectProfile(project_id=project.id,owner_user_id=user.id,execution_mode=detail.execution_mode))
         # Acceptance is separate from the formal start notice.
+    elif kind=='quotation':
+        detail=db.get(m.QuotationDetail,subject.id)
+        active=list(db.scalars(select(m.BusinessSubject).where(
+            m.BusinessSubject.project_id==project.id,
+            m.BusinessSubject.kind=='quotation',
+            m.BusinessSubject.status=='EFFECTIVE').with_for_update()))
+        if detail.previous_id:
+            previous=require_source(db,detail.previous_id,project.id,{'quotation'})
+            if any(row.id!=previous.id for row in active):
+                raise DomainError('QUOTE_VERSION_CONFLICT','项目存在其他生效报价版本，请先核对版本链',409)
+            previous.status='CLOSED'
+        elif active:
+            raise DomainError('QUOTE_VERSION_EXISTS','项目已有生效报价版本，请通过新版本替代',409)
+        record(db,user,'quotation.version.effective',subject.id,{
+            'quotation_number':detail.quotation_number,'version':detail.version,
+            'previous_id':detail.previous_id,'quoted_amount':str(detail.quoted_amount),
+            'currency':detail.currency,'preliminary_execution_mode':detail.preliminary_execution_mode,
+        },[subject.created_by])
     elif kind=='internal_start':
         if project.status!='DRAFT':raise DomainError('START_STATE','只有未开工项目可正式开工',409)
         detail=db.get(m.BusinessDecisionDetail,subject.id)

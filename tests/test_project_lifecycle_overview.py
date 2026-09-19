@@ -139,7 +139,7 @@ def test_lifecycle_schema_skill_and_fresh_project_use_one_hierarchical_coordinat
             assert data["kind"] == "project_lifecycle_overview_v1"
             assert [row["key"] for row in data["segments"]] == ["kickoff", "execution", "completion"]
             assert data["current_segment"]["key"] == "kickoff"
-            assert data["current_segment"]["focus"]["key"] == "acceptance"
+            assert data["current_segment"]["focus"]["key"] == "quotation"
             assert data["recommended_next_steps"][0]["tool"] == "query_project_kickoff_context"
     finally:
         engine.dispose()
@@ -164,7 +164,8 @@ def test_lifecycle_enters_execution_after_core_kickoff_without_hiding_parallel_c
             assert data["recommended_next_steps"][0]["tool"] == "query_project_execution_context"
             assert by_key["kickoff"]["state"] == "COMPLETED"
             assert by_key["kickoff"]["progress"]["completed_count"] == 3
-            assert by_key["kickoff"]["progress"]["stage_count"] == 4
+            assert by_key["kickoff"]["progress"]["stage_count"] == 5
+            assert by_key["kickoff"]["progress"]["not_applicable_count"] == 1
             assert by_key["execution"]["focus"]["key"] == "design_route"
     finally:
         engine.dispose()

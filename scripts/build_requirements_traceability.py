@@ -72,6 +72,24 @@ COMPLETION_VERIFICATION = {
     for key in COMPLETION_IMPLEMENTATION
 }
 
+QUOTATION_IMPLEMENTATION = {
+    key: (
+        '客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、'
+        '交期、收款条件、内部成本/工艺/工期或整套委外供应商评估、客户与责任人快照；prepare_quotation_version 经本人确认后提交独立 Agent BPM，'
+        '审批生效时关闭前一版本。prepare_quotation_feedback 只追加客户反馈事实，不自动承接、拒单或生成新版本；承接决定在存在生效报价时必须引用该版本且金额币种一致。'
+        'query_quote_evaluation_context 和 query_project_kickoff_context 可查询历史版本、资料来源、反馈及后续承接链路，合同和实际执行数据不会覆盖原报价依据'
+    )
+    for key in ('FR-006', 'FR-007', 'FR-008', 'FR-009', 'FR-010', 'FR-011', 'FR-012')
+}
+QUOTATION_VERIFICATION = {
+    key: (
+        'tests/test_quotation_tools.py 覆盖首版报价确认前零写入、BPM 生效、客户反馈防重、同一接收资料合法复用、连续新版本替代、'
+        '内部与整套委外结构化字段校验，以及承接必须引用当前报价且金额一致；tests/test_quote_evaluation_tools.py、tests/test_quote_tools.py '
+        '和 tests/test_project_kickoff_lifecycle.py 覆盖历史查询、权限边界及报价到承接的链路投影；tests/test_split_migrations.py 验证报价证据表及数据库不可变触发器'
+    )
+    for key in QUOTATION_IMPLEMENTATION
+}
+
 
 def parse_source(text):
     rows = {}
@@ -121,6 +139,10 @@ def main():
             implementation_evidence.append(COMPLETION_IMPLEMENTATION[key])
         if key in COMPLETION_VERIFICATION and COMPLETION_VERIFICATION[key] not in verification_evidence:
             verification_evidence.append(COMPLETION_VERIFICATION[key])
+        if key in QUOTATION_IMPLEMENTATION and QUOTATION_IMPLEMENTATION[key] not in implementation_evidence:
+            implementation_evidence.append(QUOTATION_IMPLEMENTATION[key])
+        if key in QUOTATION_VERIFICATION and QUOTATION_VERIFICATION[key] not in verification_evidence:
+            verification_evidence.append(QUOTATION_VERIFICATION[key])
         requirements.append({
             'id': key, 'source_text': content, 'module': module,
             'agent_responsibility': responsibility,
@@ -142,7 +164,7 @@ def main():
              '状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。', '',
              '生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。', '',
              '## 跨阶段执行编排证据', '',
-             '- `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
+             '- `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把客户报价、承接、合同、正式开工和基线计划保持为五类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
              '- 总 Skill 首轮只开放全生命周期协调器，随后只展开一个分段协调器；三个分段 Skill 首轮也只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。',
              '- `tests/test_project_lifecycle_overview.py` 覆盖分层注册、启动转执行、暂停路由、资料矛盾、权限隔离和候选不合并；`tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。', '']
     last = None

@@ -1,6 +1,7 @@
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import access, select_fields
 from domain_packs.mold.ports.db import now
+from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput, _project_card, _resolve, _subjects
 
 
@@ -23,6 +24,7 @@ def _project_profile(db, user, project_id: str):
 
 def _limited_subjects(db, user, project_id: str, kind: str, allowed_tools: set[str]):
     context_tools = {
+        "quotation": {"query_quote_evaluation_context", "query_quote_acceptance_context"},
         "quote_acceptance": {"query_quote_evaluation_context", "query_quote_acceptance_context"},
         "sales_contract": {"query_contract_context"},
         "full_outsource_contract": {"query_contract_context"},
@@ -52,6 +54,46 @@ def _quote_record(row: dict):
         "has_price_basis": bool(detail.get("amount") and detail.get("currency")),
         "has_processing_mode": bool(detail.get("execution_mode")),
         "has_written_evidence": bool((detail.get("evidence") or "").strip()),
+    }
+
+
+def _quotation_record(row: dict):
+    detail = row.get("detail") or {}
+    feedback = detail.get("feedback") or []
+    return {
+        "record_type": "quotation_version",
+        "id": row.get("id"),
+        "number": row.get("number"),
+        "status": row.get("status"),
+        "quotation_status": row.get("status"),
+        "revision": row.get("revision"),
+        "quotation_number": detail.get("quotation_number"),
+        "version": detail.get("version"),
+        "previous_id": detail.get("previous_id"),
+        "preliminary_execution_mode": detail.get("preliminary_execution_mode"),
+        "quoted_amount": detail.get("quoted_amount"),
+        "currency": detail.get("currency"),
+        "promised_delivery_date": detail.get("promised_delivery_date"),
+        "payment_terms": detail.get("payment_terms"),
+        "cost_amount": detail.get("cost_amount"),
+        "cost_evidence": detail.get("cost_evidence"),
+        "process_analysis": detail.get("process_analysis"),
+        "duration_days": detail.get("duration_days"),
+        "duration_evidence": detail.get("duration_evidence"),
+        "supplier_quote_amount": detail.get("supplier_quote_amount"),
+        "supplier_delivery_date": detail.get("supplier_delivery_date"),
+        "supplier_requirements": detail.get("supplier_requirements"),
+        "supplier_quote_evidence": detail.get("supplier_quote_evidence"),
+        "customer_company_snapshot": detail.get("customer_company_snapshot"),
+        "customer_contact_snapshot": detail.get("customer_contact_snapshot"),
+        "owner_user_id": detail.get("owner_user_id"),
+        "source_summary": detail.get("source_summary") or {},
+        "sources": detail.get("sources") or [],
+        "feedback": feedback,
+        "has_structured_evaluation": bool(
+            detail.get("cost_evidence") and detail.get("process_analysis")
+            and detail.get("duration_days") and detail.get("duration_evidence")
+        ),
     }
 
 
@@ -89,39 +131,70 @@ def _plan_summary(rows: list[dict]):
     return tasks[:20], len(tasks) > 20
 
 
-def _analysis(profile: dict | None, quote_records: list[dict], contracts: list[dict], outsource_contracts: list[dict], plan_tasks: list[dict]):
+def _analysis(project, profile: dict | None, quotation_records: list[dict], quote_records: list[dict], contracts: list[dict], outsource_contracts: list[dict], plan_tasks: list[dict]):
+    effective_quotations = [row for row in quotation_records if row.get("quotation_status") == "EFFECTIVE"]
+    open_quotations = [row for row in quotation_records if row.get("quotation_status") in {
+        "DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"
+    }]
     effective = [row for row in quote_records if row.get("status") == "EFFECTIVE"]
     latest_accept = next((row for row in effective if row.get("decision") == "ACCEPT"), None)
     latest_reject = next((row for row in effective if row.get("decision") == "REJECT"), None)
-    modes = [row.get("execution_mode") for row in quote_records if row.get("execution_mode")]
+    preliminary_modes = [row.get("preliminary_execution_mode") for row in quotation_records if row.get("preliminary_execution_mode")]
+    final_modes = [row.get("execution_mode") for row in quote_records if row.get("execution_mode")]
+    modes = preliminary_modes + final_modes
     accepted_mode = latest_accept.get("execution_mode") if latest_accept else None
     profile_mode = (profile or {}).get("execution_mode")
     warnings = []
     gaps = []
-    if not quote_records:
+    if not quotation_records and not quote_records:
         gaps.append("未见报价评估、报价提交或承接/拒单记录。")
-    if not any(row.get("has_price_basis") for row in quote_records):
+    if not quotation_records and not any(row.get("has_price_basis") for row in quote_records):
         gaps.append("未见报价金额、币种或价格依据。")
-    gaps.append("未见结构化拆分的成本核算、粗略工艺分析和工期估算明细；当前只能读取综合依据文本。")
-    if not any(row.get("has_processing_mode") for row in quote_records) and not profile_mode:
+    if not any(row.get("has_structured_evaluation") for row in quotation_records):
+        gaps.append("未见结构化拆分的成本核算、粗略工艺分析和工期估算明细；当前只能读取综合依据文本。")
+    if not quotation_records or not any(row.get("sources") for row in quotation_records):
+        gaps.append("未见与报价版本冻结关联的客户资料或附件来源。")
+    if not modes and not profile_mode:
         gaps.append("未见最终加工方式。")
-    if not (latest_accept or latest_reject or contracts):
+    feedback = [item for row in quotation_records for item in row.get("feedback", [])]
+    if not (feedback or latest_accept or latest_reject or contracts):
         gaps.append("未见客户反馈、承接、拒单或后续合同事实。")
     if latest_accept and not latest_accept.get("has_processing_mode"):
         warnings.append("有效承接缺少最终加工方式，不能下推执行方式。")
     if accepted_mode and profile_mode and accepted_mode != profile_mode:
         warnings.append(f"项目档案加工方式为{_mode_label(profile_mode)}，最新有效承接为{_mode_label(accepted_mode)}，需要核对是否有后续变更依据。")
-    if len(set(modes)) > 1:
-        warnings.append("报价/承接记录中出现多个加工方式，需要核对当前有效方式和变更记录。")
+    if accepted_mode and preliminary_modes and accepted_mode != preliminary_modes[0]:
+        warnings.append("承接确认的最终加工方式与报价阶段初步方式不同，需要保留评估和审批依据。")
     if accepted_mode == "FULL_OUTSOURCE" and not outsource_contracts:
         warnings.append("最新有效承接为整套委外，但当前未见可见的整套委外合同。")
     return {
+        "status_summary": {
+            "project_status": project.status,
+            "quotation_version_status": (
+                "DATA_CONFLICT" if len(effective_quotations) > 1
+                else "EFFECTIVE" if effective_quotations
+                else "WAITING_APPROVAL" if open_quotations
+                else "NOT_CREATED"
+            ),
+            "acceptance_decision_status": (
+                "ACCEPTED" if latest_accept else "REJECTED" if latest_reject else "NOT_DECIDED"
+            ),
+            "sales_contract_status": (
+                "EFFECTIVE" if any(row.get("status") == "EFFECTIVE" for row in contracts)
+                else "NOT_RECORDED"
+            ),
+        },
+        "current_effective_quotation": effective_quotations[0] if len(effective_quotations) == 1 else None,
+        "open_quotation_versions": open_quotations,
         "latest_effective_acceptance": latest_accept,
         "latest_effective_rejection": latest_reject,
-        "quote_versions": quote_records,
-        "known_price_versions": [row for row in quote_records if row.get("has_price_basis")],
-        "processing_modes_seen": sorted({_mode_label(mode) for mode in modes if mode}),
+        "quotation_versions": quotation_records,
+        "quote_acceptance_decisions": quote_records,
+        "known_price_versions": quotation_records or [row for row in quote_records if row.get("has_price_basis")],
+        "preliminary_processing_modes": sorted({_mode_label(mode) for mode in preliminary_modes if mode}),
+        "final_processing_modes": sorted({_mode_label(mode) for mode in final_modes if mode}),
         "customer_feedback_signals": {
+            "feedback_records": feedback,
             "has_effective_acceptance": bool(latest_accept),
             "has_effective_rejection": bool(latest_reject),
             "has_sales_contract": bool(contracts),
@@ -130,11 +203,11 @@ def _analysis(profile: dict | None, quote_records: list[dict], contracts: list[d
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
-            "has_any_quote_basis": bool(quote_records),
-            "has_price_basis": any(row.get("has_price_basis") for row in quote_records),
+            "has_any_quote_basis": bool(quotation_records or quote_records),
+            "has_price_basis": bool(quotation_records) or any(row.get("has_price_basis") for row in quote_records),
             "has_processing_mode": bool(modes or profile_mode),
-            "has_customer_feedback_or_downstream_fact": bool(latest_accept or latest_reject or contracts),
-            "has_structured_cost_process_duration_breakdown": False,
+            "has_customer_feedback_or_downstream_fact": bool(feedback or latest_accept or latest_reject or contracts),
+            "has_structured_cost_process_duration_breakdown": any(row.get("has_structured_evaluation") for row in quotation_records),
             "has_mode_conflict": bool(accepted_mode and profile_mode and accepted_mode != profile_mode),
         },
     }
@@ -151,11 +224,14 @@ def query(db, user, data: QuoteContextInput, allowed_tools: set[str]):
         limitations.append("最多检查前500个可见项目，结果可能未覆盖全部可见范围。")
     if project:
         matched_by = alternatives or ("项目定位",)
+        quotation_rows, quotation_truncated = _limited_subjects(db, user, project.id, "quotation", allowed_tools)
         quote_rows, quote_truncated = _limited_subjects(db, user, project.id, "quote_acceptance", allowed_tools)
         contracts, contracts_truncated = _limited_subjects(db, user, project.id, "sales_contract", allowed_tools)
         outsource_contracts, outsource_truncated = _limited_subjects(db, user, project.id, "full_outsource_contract", allowed_tools)
         plans, plans_truncated = _limited_subjects(db, user, project.id, "project_plan", allowed_tools)
         changes, changes_truncated = _limited_subjects(db, user, project.id, "plan_change", allowed_tools)
+        if quotation_truncated:
+            limitations.append("客户报价版本最多返回最新20条。")
         if quote_truncated:
             limitations.append("报价/承接记录最多返回最新20条。")
         if contracts_truncated:
@@ -164,12 +240,20 @@ def query(db, user, data: QuoteContextInput, allowed_tools: set[str]):
             limitations.append("整套委外合同最多返回最新20条。")
         if plans_truncated or changes_truncated:
             limitations.append("项目计划和计划变更最多各返回最新20条。")
+        quotation_records = [_quotation_record(row) for row in quotation_rows]
         quote_records = [_quote_record(row) for row in quote_rows]
         plan_tasks, tasks_truncated = _plan_summary(plans + changes)
         if tasks_truncated:
             limitations.append("计划任务摘要最多返回前20条。")
         profile = _project_profile(db, user, project.id)
-        analysis = _analysis(profile, quote_records, contracts, outsource_contracts, plan_tasks)
+        analysis = _analysis(project, profile, quotation_records, quote_records, contracts, outsource_contracts, plan_tasks)
+        quotation_workflows = []
+        if "prepare_quotation_version" in allowed_tools:
+            try:
+                from domain_packs.mold.tools.erp.commercial.quotation_tools import workflow_options
+                quotation_workflows = workflow_options(db, user, project)
+            except DomainError as error:
+                limitations.append("当前人员不可提交报价版本，未返回可选流程：" + error.message)
         return {
             "resolution": "RESOLVED",
             "data": [
@@ -177,6 +261,7 @@ def query(db, user, data: QuoteContextInput, allowed_tools: set[str]):
                     "project": _project_card(db, user, project, matched_by),
                     "project_profile": profile,
                     "analysis": analysis,
+                    "quotation_workflow_options": quotation_workflows,
                     "sales_contracts": [_contract_summary(row) for row in contracts],
                     "full_outsource_contracts": [_contract_summary(row) for row in outsource_contracts],
                 }

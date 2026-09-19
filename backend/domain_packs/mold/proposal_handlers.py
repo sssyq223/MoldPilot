@@ -44,6 +44,9 @@ HANDLERS = (
     })),
     ProposalHandler("internal_start.execute", "domain_packs.mold.tools.erp.project.start_tools", frozenset({"prepare_internal_start"})),
     ProposalHandler("quote_acceptance.execute", "domain_packs.mold.tools.erp.commercial.quote_tools", frozenset({"prepare_quote_acceptance_decision"})),
+    ProposalHandler("quotation.execute", "domain_packs.mold.tools.erp.commercial.quotation_tools", frozenset({
+        "prepare_quotation_version", "prepare_quotation_feedback",
+    })),
     ProposalHandler("contract.execute", "domain_packs.mold.tools.erp.commercial.contract_tools", frozenset({
         "prepare_contract_record", "prepare_contract_signing_record",
     })),

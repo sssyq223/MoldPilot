@@ -34,6 +34,8 @@ class QuoteDecisionProposalInput(StrictModel):
         description='query_quote_acceptance_context 返回的真实 project_id。')
     project_version: int = Field(ge=1,
         description='query_quote_acceptance_context 返回的项目 row_version。')
+    quotation_subject_id: str | None = Field(default=None, max_length=36,
+        description='存在结构化生效报价时必填，使用查询返回的报价业务记录 ID。')
     decision: Literal['ACCEPT','REJECT']
     execution_mode: Literal['INTERNAL','FULL_OUTSOURCE'] | None = Field(default=None,
         description='承接时必填；拒单时保持 null。')
@@ -113,6 +115,8 @@ def _subjects(db,user,project_id,kind,allowed_tools):
     tool='query_'+kind
     if kind=='quote_acceptance':
         if tool not in allowed_tools and 'query_quote_acceptance_context' not in allowed_tools:return [],False
+    elif kind=='quotation':
+        if not ({'query_quote_acceptance_context','query_quote_evaluation_context'} & allowed_tools):return [],False
     elif tool not in allowed_tools:return [],False
     from domain_packs.mold.erp.core.domains import data as subject_data
     rows=list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==project_id,
@@ -147,19 +151,36 @@ def query(db,user,data:QuoteContextInput,allowed_tools:set[str]):
     if project:
         matched_by=alternatives or ('项目定位',)
         quotes,quotes_truncated=_subjects(db,user,project.id,'quote_acceptance',allowed_tools)
+        quotations,quotations_truncated=_subjects(db,user,project.id,'quotation',allowed_tools)
         starts,starts_truncated=_subjects(db,user,project.id,'internal_start',allowed_tools)
         contracts,contracts_truncated=_subjects(db,user,project.id,'sales_contract',allowed_tools)
         latest_accept=next((row for row in quotes if row.get('status')=='EFFECTIVE' and row.get('detail',{}).get('decision')=='ACCEPT'),None)
         latest_reject=next((row for row in quotes if row.get('status')=='EFFECTIVE' and row.get('detail',{}).get('decision')=='REJECT'),None)
         open_drafts=[row for row in quotes if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','REJECTED','APPLY_BLOCKED'}]
         if quotes_truncated:limitations.append('报价与承接决定最多返回最新20条。')
+        if quotations_truncated:limitations.append('客户报价版本最多返回最新20条。')
         if starts_truncated:limitations.append('正式开工通知最多返回最新20条。')
         if contracts_truncated:limitations.append('销售合同最多返回最新20条。')
-        workflows=[]
+        workflows=[];quotation_workflows=[]
         if 'prepare_quote_acceptance_decision' in allowed_tools:
             try:workflows=workflow_options(db,user,project)
             except DomainError as error:limitations.append('当前人员缺少报价承接提交权限，未返回可选审批流程：'+error.message)
+        if 'prepare_quotation_version' in allowed_tools:
+            try:
+                from domain_packs.mold.tools.erp.commercial.quotation_tools import workflow_options as quotation_options
+                quotation_workflows=quotation_options(db,user,project)
+            except DomainError as error:
+                limitations.append('当前人员缺少报价版本提交权限，未返回可选审批流程：'+error.message)
+        current_quotation=next((row for row in quotations if row.get('status')=='EFFECTIVE'),None)
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,matched_by),
+            'status_summary':{
+                'project_status':project.status,
+                'quotation_version_status':'EFFECTIVE' if current_quotation else 'NOT_CREATED',
+                'acceptance_decision_status':(
+                    'ACCEPTED' if latest_accept else 'REJECTED' if latest_reject else
+                    'WAITING_APPROVAL' if open_drafts else 'NOT_DECIDED')},
+            'quotation_versions':quotations,
+            'current_effective_quotation':current_quotation,
             'quote_acceptance':quotes,'latest_acceptance':latest_accept,'latest_rejection':latest_reject,
             'open_quote_decisions':open_drafts,'internal_starts':starts,'sales_contracts':contracts,
             'derived_status':{
@@ -167,7 +188,7 @@ def query(db,user,data:QuoteContextInput,allowed_tools:set[str]):
                 'has_effective_rejection':bool(latest_reject),
                 'has_formal_start':any(row.get('status')=='EFFECTIVE' for row in starts),
                 'has_sales_contract':bool(contracts)},
-            'workflow_options':workflows}],
+            'workflow_options':workflows,'quotation_workflow_options':quotation_workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),
@@ -212,8 +233,26 @@ def preview_quote_decision(db,user,data:QuoteDecisionProposalInput):
         raise DomainError('QUOTE_DECISION_EXISTS','当前项目已有有效承接或拒单决定，请勿重复准备',409)
     if pending:
         raise DomainError('QUOTE_DECISION_PENDING','当前项目已有待处理承接或拒单申请，请先处理原申请',409)
-    detail=s.DecisionInput(decision=data.decision,execution_mode=data.execution_mode,
-        effective_date=data.effective_date,evidence=data.evidence,amount=data.amount,currency=data.currency)
+    active_quotes=list(db.scalars(select(m.BusinessSubject).where(
+        m.BusinessSubject.project_id==project.id,m.BusinessSubject.kind=='quotation',
+        m.BusinessSubject.status=='EFFECTIVE')))
+    if len(active_quotes)>1:
+        raise DomainError('QUOTE_VERSION_CONFLICT','项目存在多个生效报价版本，请先核对版本链',409)
+    quotation=active_quotes[0] if active_quotes else None
+    if quotation and data.quotation_subject_id!=quotation.id:
+        raise DomainError('QUOTE_VERSION_SOURCE_REQUIRED','承接或拒单必须引用当前生效报价版本',409)
+    if not quotation and data.quotation_subject_id:
+        raise DomainError('SOURCE_INVALID','所选报价版本不是当前项目生效版本',409)
+    quote_detail=db.get(m.QuotationDetail,quotation.id) if quotation else None
+    amount=quote_detail.quoted_amount if quote_detail else data.amount
+    currency=quote_detail.currency if quote_detail else data.currency
+    if quote_detail and data.amount is not None and data.amount!=quote_detail.quoted_amount:
+        raise DomainError('QUOTE_AMOUNT_MISMATCH','承接金额必须与当前报价版本一致',409)
+    if quote_detail and data.currency is not None and data.currency!=quote_detail.currency:
+        raise DomainError('QUOTE_CURRENCY_MISMATCH','承接币种必须与当前报价版本一致',409)
+    detail=s.DecisionInput(source_subject_id=quotation.id if quotation else None,
+        decision=data.decision,execution_mode=data.execution_mode,
+        effective_date=data.effective_date,evidence=data.evidence,amount=amount,currency=currency)
     options=workflow_options(db,user,project)
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
@@ -221,10 +260,11 @@ def preview_quote_decision(db,user,data:QuoteDecisionProposalInput):
         '项目':project.code+' · '+project.name,
         '项目版本':project.row_version,
         '业务决定':'承接' if data.decision=='ACCEPT' else '拒单',
+        '引用报价版本':((quote_detail.quotation_number+' · V'+str(quote_detail.version)) if quote_detail else '未建立结构化报价版本'),
         '最终加工方式':data.execution_mode or '不适用',
         '生效日期':data.effective_date.isoformat(),
         '依据':data.evidence,
-        '金额':(str(data.amount)+' '+data.currency if data.amount else '未登记'),
+        '金额':(str(amount)+' '+currency if amount else '未登记'),
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建报价承接/拒单材料并提交 Agent BPM；审批生效前不会正式承接、拒单、开工或修改合同。'}
     return detail,display

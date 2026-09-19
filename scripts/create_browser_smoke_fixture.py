@@ -28,6 +28,7 @@ from app.bpm import content_hash
 from app.db import make_engine, now
 from domain_packs.mold.tools.erp.change import contact_tools
 from domain_packs.mold.tools.erp.commercial import contract_tools
+from domain_packs.mold.tools.erp.commercial import quotation_tools
 from domain_packs.mold.tools.erp.project import project_closure_tools as closure_tools
 from domain_packs.mold.tools.erp.project import project_control_tools as pause_tools
 
@@ -83,6 +84,7 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
         "contact": "工程联络处理方案审批（浏览器验收）",
         "contract": "销售合同审批（浏览器验收）",
         "contract_relation": "销售合同替代审批（浏览器验收）",
+        "quotation": "客户报价版本审批（浏览器验收）",
         "closure": "项目终止与关闭审批（浏览器验收）",
         "pause": "项目暂停恢复审批（浏览器验收）",
     }
@@ -510,6 +512,167 @@ def build(
     return output
 
 
+def build_quotation(
+    database_url: str,
+    password: str,
+    project_code: str | None = None,
+    username: str = "admin",
+):
+    """Create one real quotation proposal, confirmation and approval for browser QA."""
+    _require_postgresql(database_url)
+    engine = make_engine(database_url)
+    parsed = urlsplit(database_url)
+    run_key = now().strftime("%m%d%H%M%S")
+    project_code = project_code or f"SMOKE-QUOTATION-{run_key}"
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            user = db.scalar(select(m.User).where(m.User.username == username).limit(1))
+            if user is None or not user.active:
+                raise SystemExit(
+                    f"Smoke user {username!r} is missing or inactive. "
+                    "Run database/init_moldpilot_admin.sql first."
+                )
+            project = _upsert_one(
+                db,
+                m.Project,
+                [m.Project.code == project_code],
+                {"code": project_code, "name": "浏览器报价版本验收项目", "status": "DRAFT"},
+            )
+            workflow = _build_workflow(db, user.id, "quotation", "quotation")
+            conversation = m.Conversation(user_id=user.id, title="客户报价版本与反馈验收")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                security_version=user.security_version,
+                prompt=f"请根据本轮客户资料为 {project_code} 准备内部加工报价版本并提交审批。",
+                status="SUCCEEDED",
+                checkpoint={
+                    "authorization_hash": fingerprint(db, user),
+                    "agent_permission_mode": "ask",
+                },
+            )
+            db.add(run)
+            db.flush()
+            pdf = (
+                b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                b"2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+                + f"% quotation browser smoke {run_key}\n".encode()
+            )
+            digest = sha256(pdf).hexdigest()
+            key = uuid4().hex + "/" + digest
+            storage = object_storage.put(key, pdf, "application/pdf")
+            blob = m.FileObject(
+                owner_id=user.id,
+                conversation_id=conversation.id,
+                request_key=str(uuid4()),
+                filename=f"{project_code}-客户报价资料.pdf",
+                media_type="application/pdf",
+                size=len(pdf),
+                sha256=digest,
+                object_key=key,
+                **storage,
+            )
+            db.add(blob)
+            db.flush()
+            db.add(m.RunFile(run_id=run.id, file_id=blob.id))
+            db.flush()
+            tool = "prepare_quotation_version"
+            arguments = {
+                "project_id": project.id,
+                "project_version": project.row_version,
+                "previous_id": None,
+                "quotation_number": f"{project_code}-QUOTE",
+                "version": 1,
+                "preliminary_execution_mode": "INTERNAL",
+                "quoted_amount": "128000.00",
+                "currency": "CNY",
+                "promised_delivery_date": (date.today() + timedelta(days=90)).isoformat(),
+                "payment_terms": "合同生效30%，首轮试模40%，终验30%",
+                "cost_amount": "92000.00",
+                "cost_evidence": "客户二维图、产品数据与浏览器验收合成成本清单",
+                "process_analysis": "结构设计、钢材粗精加工、热处理、电极、装配和两轮试模",
+                "duration_days": 75,
+                "duration_evidence": "按设计10天、采购15天、制造35天、装配试模15天估算",
+                "supplier_quote_amount": None,
+                "supplier_delivery_date": None,
+                "supplier_requirements": None,
+                "supplier_quote_evidence": None,
+                "customer_company_snapshot": "浏览器验收客户有限公司",
+                "customer_contact_snapshot": "报价负责人 张工",
+                "owner_user_id": user.id,
+                "source_summary": {
+                    "mold_number": project_code,
+                    "mold_type": "注塑模",
+                    "cavity": "1x2",
+                },
+                "source_kind": "UPLOAD",
+                "source_ref": f"browser-quotation-{run_key}",
+                "file_ids": [blob.id],
+                "workflow_definition_id": workflow.id,
+            }
+            result = quotation_tools.execute_quotation_tool(db, user, tool, arguments, run=run)
+            step = m.Step(
+                run_id=run.id,
+                sequence=0,
+                tool=tool,
+                request_hash=content_hash({"key": tool, "arguments": arguments}),
+                result=result,
+            )
+            db.add(step)
+            db.flush()
+            payload = {"step_id": step.id, "proposal_hash": content_hash(result["proposal"])}
+            intent = business.create_intent(db, user, "quotation.execute", step.id, payload)
+            submitted = business.confirm_intent(db, user, intent["id"], intent["challenge"])
+            instance = db.get(m.ApprovalInstance, submitted["instance_id"])
+            seat = db.scalar(select(m.ApprovalSeat).where(
+                m.ApprovalSeat.instance_id == instance.id,
+                m.ApprovalSeat.user_id == user.id,
+                m.ApprovalSeat.status == "PENDING",
+            ))
+            decision = {
+                "instance_id": instance.id,
+                "seat_id": seat.id,
+                "seat_version": seat.version,
+                "version": instance.version,
+                "snapshot_hash": instance.snapshot_hash,
+                "decision": "APPROVE",
+                "comment": "浏览器验收合成审批：报价资料、成本、工艺、工期、价格和交期已核对",
+            }
+            approval_intent = business.create_intent(
+                db, user, "approval.decide", instance.id, decision
+            )
+            business.confirm_intent(
+                db, user, approval_intent["id"], approval_intent["challenge"]
+            )
+            run.result = {
+                "response_kind": "BUSINESS",
+                "summary": (
+                    f"{project_code} 的客户报价 {project_code}-QUOTE V1 已审批生效。"
+                    "报价金额 128000 CNY，内部成本 92000 CNY，初步方式为内部加工，"
+                    "工期估算 75 天；客户资料已按来源和文件摘要冻结。"
+                ),
+                "evidence_ids": [step.id],
+                "suggestions": [
+                    "该记录是浏览器验收合成数据；客户接受或要求修改应另行登记反馈，承接决定仍须独立审批。"
+                ],
+                "evidence": [{"id": step.id, "tool": step.tool, **result}],
+            }
+            return {
+                "database": parsed.path.lstrip("/"),
+                "host": parsed.hostname,
+                "port": parsed.port,
+                "username": user.username,
+                "password": password,
+                "project_code": project_code,
+                "conversation_id": conversation.id,
+            }
+    finally:
+        engine.dispose()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--database-url", default="", help="PostgreSQL SQLAlchemy DSN. Defaults to AGENT_DATABASE_URL from env/.env.")
@@ -517,9 +680,12 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
     url = _database_url(args.env_file, args.url_key, args.database_url)
-    print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))
+    if args.scenario == "quotation":
+        print(build_quotation(url, args.password, args.project_code or None, args.username))
+    else:
+        print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))

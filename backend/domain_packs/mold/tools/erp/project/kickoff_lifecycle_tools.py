@@ -130,6 +130,63 @@ def _unavailable_stage(key, name, query_tool):
     }
 
 
+def _quotation_stage(row, allowed_tools):
+    if row is None:
+        return _unavailable_stage("quotation", "客户报价", "query_quote_evaluation_context")
+    analysis = row.get("analysis") or {}
+    versions = analysis.get("quotation_versions") or []
+    effective = [item for item in versions if item.get("status") == "EFFECTIVE"]
+    pending = [item for item in versions if item.get("status") in {
+        "DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"
+    }]
+    workflows = row.get("quotation_workflow_options") or []
+    has_legacy_decision = bool(
+        analysis.get("latest_effective_acceptance")
+        or analysis.get("latest_effective_rejection")
+    )
+    blockers = []
+    if len(effective) > 1:
+        state = "DATA_CONFLICT"
+        blockers.append("项目存在多个生效客户报价版本，需要人工核对版本链。")
+    elif effective:
+        state = "COMPLETED"
+    elif pending:
+        state = "WAITING_APPROVAL"
+    elif has_legacy_decision:
+        state = "NOT_APPLICABLE"
+        blockers.append("该历史项目已形成承接或拒单事实但没有结构化报价版本；不倒推或伪造历史报价。")
+    elif workflows and "prepare_quotation_version" in allowed_tools:
+        state = "READY"
+    else:
+        state = "NOT_STARTED"
+        blockers.append("尚无生效客户报价版本或可用报价审批流程。")
+    current = effective[0] if len(effective) == 1 else None
+    return {
+        "key": "quotation",
+        "name": "客户报价",
+        "state": state,
+        "query_tool": "query_quote_evaluation_context",
+        "action_tool": "prepare_quotation_version" if state == "READY" else None,
+        "facts": {
+            "current_effective": ({
+                "id": current.get("id"),
+                "quotation_number": current.get("quotation_number"),
+                "version": current.get("version"),
+                "quoted_amount": current.get("quoted_amount"),
+                "currency": current.get("currency"),
+                "preliminary_execution_mode": current.get("preliminary_execution_mode"),
+                "source_count": len(current.get("sources") or []),
+                "feedback_count": len(current.get("feedback") or []),
+            } if current else None),
+            "pending_count": len(pending),
+            "history_count": len(versions),
+            "workflow_count": len(workflows),
+            "legacy_decision_without_structured_quotation": state == "NOT_APPLICABLE",
+        },
+        "blockers": blockers,
+    }
+
+
 def _acceptance_stage(row, allowed_tools):
     if row is None:
         return _unavailable_stage("acceptance", "承接确认", "query_quote_acceptance_context")
@@ -287,12 +344,28 @@ def _plan_stage(row, allowed_tools, start_state, project_status):
 def _recommendations(stages, allowed_tools):
     by_key = {stage["key"]: stage for stage in stages}
     result = []
+    quotation = by_key["quotation"]
     acceptance = by_key["acceptance"]
     contract = by_key["contract"]
     start = by_key["internal_start"]
     plan = by_key["project_plan"]
 
-    if acceptance["state"] not in {"COMPLETED", "REJECTED", "DATA_CONFLICT"}:
+    if (
+        quotation["state"] not in {"COMPLETED", "NOT_APPLICABLE", "UNAVAILABLE"}
+        and acceptance["state"] not in {"COMPLETED", "REJECTED"}
+    ):
+        tool = quotation.get("action_tool") or (
+            "query_quote_evaluation_context" if "query_quote_evaluation_context" in allowed_tools else None
+        )
+        if tool:
+            result.append({
+                "kind": "PRIMARY",
+                "stage": "quotation",
+                "tool": tool,
+                "reason": "先形成或核对版本化客户报价；报价资料、成本、工艺、工期、价格与交期需留痕后再做承接决定。",
+                "requires_user_confirmation": tool.startswith("prepare_"),
+            })
+    elif acceptance["state"] not in {"COMPLETED", "REJECTED", "DATA_CONFLICT"}:
         tool = acceptance.get("action_tool") or (
             "query_quote_acceptance_context" if "query_quote_acceptance_context" in allowed_tools else None
         )
@@ -349,7 +422,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     limitations = [
         "只读取当前用户具备项目读取权限的项目；每个业务阶段还必须同时具备对应查询工具与业务权限。",
         "本工具只生成项目启动链路投影和下一步建议，不承接、不登记合同、不正式开工、不创建计划。",
-        "合同晚到不自动阻塞具备独立依据的正式开工；承接、合同、开工和计划仍是四类独立业务事实。",
+        "合同晚到不自动阻塞具备独立依据的正式开工；报价、承接、合同、开工和计划仍是五类独立业务事实。",
     ]
     if truncated:
         limitations.append("最多检查前500个可见项目，结果可能未覆盖全部可见范围。")
@@ -375,6 +448,15 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     project_id = project.id
     contexts = {}
     access_gaps = []
+
+    if "query_quote_evaluation_context" in allowed_tools:
+        from domain_packs.mold.tools.erp.commercial.quote_evaluation_tools import QuoteContextInput, query as quote_evaluation_query
+
+        contexts["quotation"] = _first_row(
+            quote_evaluation_query(db, user, QuoteContextInput(project_id=project_id), allowed_tools)
+        )
+    else:
+        access_gaps.append("客户报价")
 
     if "query_quote_acceptance_context" in allowed_tools:
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput, query as quote_query
@@ -413,6 +495,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     else:
         access_gaps.append("项目计划")
 
+    quotation = _quotation_stage(contexts.get("quotation"), allowed_tools)
     acceptance = _acceptance_stage(contexts.get("acceptance"), allowed_tools)
     contract = _contract_stage(contexts.get("contract"), allowed_tools)
     start = _start_stage(contexts.get("internal_start"), allowed_tools, acceptance["state"])
@@ -422,9 +505,11 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         start["state"],
         project.status,
     )
-    stages = [acceptance, contract, start, plan]
+    stages = [quotation, acceptance, contract, start, plan]
     if acceptance["state"] == "REJECTED":
         phase = "REJECTED"
+    elif quotation["state"] not in {"COMPLETED", "NOT_APPLICABLE", "UNAVAILABLE"}:
+        phase = "QUOTATION"
     elif acceptance["state"] != "COMPLETED":
         phase = "ACCEPTANCE"
     elif start["state"] != "COMPLETED":
@@ -435,7 +520,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         phase = "EXECUTION"
 
     lifecycle = {
-        "kind": "project_kickoff_lifecycle_v1",
+        "kind": "project_kickoff_lifecycle_v2",
         "phase": phase,
         "stages": stages,
         "recommended_next_steps": _recommendations(stages, allowed_tools),
@@ -443,7 +528,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         "guardrails": [
             "阶段查询缺失时显示 UNAVAILABLE，不根据其他阶段或历史对话猜测状态。",
             "prepare_* 只生成待确认建议；本人确认后才提交各自 Agent BPM。",
-            "合同材料、承接决定、正式开工和项目计划分别保留版本与审批，不合并为一个状态字段。",
+            "报价材料、承接决定、合同材料、正式开工和项目计划分别保留版本与审批，不合并为一个状态字段。",
         ],
     }
     if access_gaps:

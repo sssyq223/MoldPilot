@@ -60,6 +60,8 @@ TOOLS.update({
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
     'prepare_quote_acceptance_decision':{'description':'准备报价承接或拒单审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'quote_acceptance.create'},
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
+    'prepare_quotation_version':{'description':'使用本轮客户资料准备版本化客户报价；必须结构化填写成本/工艺/工期、初步加工方式、价格、交期和收款条件，本人确认后冻结资料并提交 Agent BPM。','permission':'quotation.create'},
+    'prepare_quotation_feedback':{'description':'准备登记指定生效报价版本的客户反馈；本人确认后仅追加反馈事实，不自动承接、拒单或生成新报价。','permission':'quotation.execute'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'prepare_contract_record':{'description':'使用本轮明确上传的 PDF、图片或 DOCX 原件，准备销售合同或整套委外合同的原始、替代或追加登记审批建议；替代合同必须逐条把前序版本链的历史实收实付归属到新付款节点，追加合同保持独立；必须使用真实项目、项目版本、附件 ID 和流程 ID，本人确认后才冻结附件并提交 Agent BPM。','permission':'project.dossier.read'},
@@ -127,9 +129,12 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                        '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度'],
                    'suppress_tool_search_on_auto_activation':True},
                'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context'],
-                   'optional_tools':['prepare_quote_acceptance_decision'],
+                   'optional_tools':['query_quote_evaluation_context','prepare_quotation_version',
+                       'prepare_quotation_feedback','prepare_quote_acceptance_decision'],
                    'activation_queries':['报价承接','报价拒单','承接','拒单','客户反馈']},
                'quote_evaluation_review':{'name':'报价评估与加工方式核对','tools':['query_quote_evaluation_context'],
+                   'optional_tools':['prepare_quotation_version','prepare_quotation_feedback',
+                       'query_quote_acceptance_context','prepare_quote_acceptance_decision'],
                    'activation_queries':['报价评估','加工方式','成本工艺工期','报价成本','最终加工方式']},
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context'],
                    'activation_queries':['中标接收','客户分类','客户规则','模具关联','开工依据']},
@@ -140,7 +145,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['prepare_internal_start'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工']},
                'project_kickoff_orchestration':{'name':'项目启动链路协调','tools':['query_project_kickoff_context'],
-                   'optional_tools':['query_quote_acceptance_context','prepare_quote_acceptance_decision',
+                   'optional_tools':['query_quote_evaluation_context','prepare_quotation_version',
+                       'prepare_quotation_feedback','query_quote_acceptance_context','prepare_quote_acceptance_decision',
                        'query_contract_context','prepare_contract_record','query_internal_start_readiness',
                        'prepare_internal_start','query_project_plan_context','prepare_project_plan_baseline'],
                    'activation_tools':['query_project_kickoff_context'],
@@ -427,6 +433,8 @@ CAPABILITY_NAMES = {
     'query_quote_acceptance_context': '读取报价承接上下文',
     'prepare_quote_acceptance_decision': '准备报价承接/拒单',
     'query_quote_evaluation_context': '读取报价评估上下文',
+    'prepare_quotation_version': '准备客户报价版本',
+    'prepare_quotation_feedback': '准备客户报价反馈',
     'query_bid_intake_context': '读取中标接收上下文',
     'query_contract_context': '读取合同上下文',
     'prepare_contract_record': '准备合同登记',
@@ -495,7 +503,8 @@ CAPABILITY_DEPARTMENTS = {
     'query_project_completion_context': 'project', 'project_completion_orchestration': 'project',
     'project_dossier_review': 'project', 'business_object_matching': 'project',
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
-    'query_quote_evaluation_context': 'sales',
+    'query_quote_evaluation_context': 'sales', 'prepare_quotation_version': 'sales',
+    'prepare_quotation_feedback': 'sales',
     'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
     'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'prepare_contract_record': 'finance',
     'prepare_contract_signing_record': 'finance',
@@ -550,6 +559,7 @@ CAPABILITY_DEPARTMENTS.update({
 CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
     'prepare_quote_acceptance_decision': 'approval',
+    'prepare_quotation_version': 'approval', 'prepare_quotation_feedback': 'operation',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
     'finance_context_review': 'review', 'governance_context_review': 'review',
@@ -683,6 +693,10 @@ def tool_schema(key):
     if key=='query_quote_evaluation_context':
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
+    if key in {'prepare_quotation_version','prepare_quotation_feedback'}:
+        from domain_packs.mold.tools.erp.commercial.quotation_tools import quotation_schema, quotation_feedback_schema
+        parameters=quotation_schema() if key=='prepare_quotation_version' else quotation_feedback_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_bid_intake_context':
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
@@ -928,6 +942,9 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_quote_acceptance_decision':
         from domain_packs.mold.tools.erp.commercial.quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
+    if key in {'prepare_quotation_version','prepare_quotation_feedback'}:
+        from domain_packs.mold.tools.erp.commercial.quotation_tools import execute_quotation_tool
+        return execute_quotation_tool(db,user,key,arguments,run=run)
     if key in {'prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)

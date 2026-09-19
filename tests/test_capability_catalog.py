@@ -144,6 +144,9 @@ def test_project_kickoff_skill_starts_with_one_coordinator_and_keeps_stage_tools
     assert skill["dependencies"] == ["query_project_kickoff_context"]
     assert skill["activation_dependencies"] == ["query_project_kickoff_context"]
     assert {
+        "query_quote_evaluation_context",
+        "prepare_quotation_version",
+        "prepare_quotation_feedback",
         "query_quote_acceptance_context",
         "prepare_quote_acceptance_decision",
         "query_contract_context",

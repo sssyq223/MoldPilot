@@ -48,6 +48,7 @@ SEGMENTS = (
 
 KICKOFF_FOCUS = {
     "REJECTED": ("acceptance", "承接确认", "REJECTED"),
+    "QUOTATION": ("quotation", "客户报价", None),
     "ACCEPTANCE": ("acceptance", "承接确认", None),
     "START_PREPARATION": ("internal_start", "正式开工", None),
     "PLAN_APPROVAL": ("project_plan", "项目基线计划", None),

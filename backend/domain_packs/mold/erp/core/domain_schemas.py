@@ -92,6 +92,49 @@ class DecisionInput(StrictModel):
     currency: str | None = Field(default=None, pattern=r'^[A-Z]{3}$')
 
 
+class QuotationInput(StrictModel):
+    previous_id: str | None = Field(default=None, max_length=36)
+    quotation_number: str = Field(min_length=1, max_length=100)
+    version: int = Field(ge=1)
+    preliminary_execution_mode: Literal['INTERNAL','FULL_OUTSOURCE']
+    quoted_amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(pattern=r'^[A-Z]{3}$')
+    promised_delivery_date: date
+    payment_terms: str = Field(min_length=1, max_length=4000)
+    cost_amount: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    cost_evidence: str = Field(min_length=1, max_length=4000)
+    process_analysis: str = Field(min_length=1, max_length=10000)
+    duration_days: int = Field(gt=0, le=3650)
+    duration_evidence: str = Field(min_length=1, max_length=4000)
+    supplier_quote_amount: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    supplier_delivery_date: date | None = None
+    supplier_requirements: str | None = Field(default=None, min_length=1, max_length=4000)
+    supplier_quote_evidence: str | None = Field(default=None, min_length=1, max_length=4000)
+    customer_company_snapshot: str = Field(min_length=1, max_length=200)
+    customer_contact_snapshot: str = Field(min_length=1, max_length=200)
+    owner_user_id: str = Field(min_length=1, max_length=36)
+    source_summary: dict = Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def validate_evaluation(self):
+        if self.preliminary_execution_mode == 'INTERNAL':
+            if self.cost_amount is None:
+                raise ValueError('内部加工报价必须填写成本核算金额')
+            if any(value is not None for value in (
+                self.supplier_quote_amount, self.supplier_delivery_date,
+                self.supplier_requirements, self.supplier_quote_evidence,
+            )):
+                raise ValueError('内部加工报价不要填写整套委外供应商评估字段')
+        else:
+            required = (
+                self.supplier_quote_amount, self.supplier_delivery_date,
+                self.supplier_requirements, self.supplier_quote_evidence,
+            )
+            if any(value is None for value in required):
+                raise ValueError('整套委外报价必须填写供应商价格、交期、要求和报价依据')
+        return self
+
+
 class PauseResumeInput(StrictModel):
     decision: Literal['PAUSE','RESUME']
     effective_date: date
@@ -201,6 +244,7 @@ CATALOG = {
     'trial_request': {'name':'试模申请', 'schema':TrialInput, 'risk':'H08'},
     'finance_correction': {'name':'财务冲正审批', 'schema':CorrectionInput, 'risk':'H04'},
     'quote_acceptance': {'name':'报价与承接决定', 'schema':DecisionInput, 'decisions':['ACCEPT','REJECT'], 'risk':'H01'},
+    'quotation': {'name':'客户报价版本', 'schema':QuotationInput, 'risk':'H01'},
     'internal_start': {'name':'正式开工通知', 'schema':DecisionInput, 'decisions':['START'], 'risk':'H12'},
     'sales_contract': {'name':'销售合同', 'schema':ContractInput, 'risk':'H01'},
     'full_outsource_contract': {'name':'整套委外合同', 'schema':ContractInput, 'risk':'H03'},

@@ -10,6 +10,7 @@ import WelcomePanel from '@domain-pack/components/WelcomePanel.vue'
 import DomainWorkspacePanel from '@domain-pack/components/DomainWorkspacePanel.vue'
 import ProposalCard from './components/ProposalCard.vue'
 import FileMaterial from './components/FileMaterial.vue'
+import MarkdownText from './components/MarkdownText.vue'
 import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
 import {legacyStorageKeys,notificationWorkspaceTarget,toolEvidenceLinks} from '@domain-pack/uiPolicy'
 import ErpDesignTable from './components/ErpDesignTable.vue'
@@ -17,6 +18,7 @@ import ErpDrawingPreview from './components/ErpDrawingPreview.vue'
 import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 import {erpDesignSessionFromRun,erpDesignSessionFromTool,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,shouldOpenErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
+import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
 const product=ref<any>(initialProduct)
@@ -52,6 +54,8 @@ const panel=ref(''),expanded=ref(false),full=ref(false),width=ref(DEFAULT_WORKSP
 const approvals=ref<any[]>([]),initiatedApprovals=ref<any[]>([]),approvalWorkItems=ref<any>({copied:[],overdue:[]}),detail=ref<any>(null),capabilities=ref<any>({tools:[],skills:[]})
 const runEventsReady=ref(false)
 let runEvents:EventSource|null=null
+const runClockMs=ref(Date.now())
+let lastRunProjectionSyncAt=0
 const runProcessOpen=ref<Record<string,boolean>>({})
 const streamedText=ref<Record<string,string>>({})
 const streamedTextTargets=new Map<string,string>()
@@ -98,7 +102,7 @@ function connectRunEvents(id:string){
  source.onerror=()=>{if(runEvents===source)runEventsReady.value=false}
  source.addEventListener('runs',(event:MessageEvent)=>{
   if(runEvents!==source||conversation.value!==id)return
-  try{const payload=JSON.parse(event.data);if(Array.isArray(payload))runs.value=payload}catch{}
+  try{const payload=JSON.parse(event.data);if(Array.isArray(payload)){runs.value=payload;lastRunProjectionSyncAt=Date.now()}}catch{}
  })
  source.addEventListener('transport',()=>{if(runEvents===source)runEventsReady.value=false})
 }
@@ -411,7 +415,7 @@ function runProcessExpanded(run:any){
 }
 function toggleRunProcess(run:any){runProcessOpen.value={...runProcessOpen.value,[run.id]:!runProcessExpanded(run)}}
 function runDurationSeconds(run:any){
- if(run.status==='RUNNING'||run.status==='QUEUED')return Number(run.progress?.elapsed_seconds||0)
+ if(run.status==='RUNNING'||run.status==='QUEUED')return activeRunElapsedSeconds(run,runClockMs.value)
  if(Number.isFinite(Number(run.duration_seconds)))return Math.max(0,Number(run.duration_seconds))
  const ms=Number(run.progress?.model_elapsed_ms||0)
  return ms>0?Math.max(1,Math.round(ms/1000)):0
@@ -787,7 +791,7 @@ async function selectConversation(id:string,title='',archived=false){
  try{
   const [loadedRuns,conversationFiles]=await Promise.all([api(`/conversations/${id}/runs`),api(`/conversations/${id}/files`)])
   if(epoch!==conversationEpoch||conversation.value!==id)return
-  runs.value=loadedRuns
+   runs.value=loadedRuns;lastRunProjectionSyncAt=Date.now()
   const attachedFileIds=new Set(loadedRuns.flatMap((run:any)=>(run.files||[]).map((file:any)=>file.id)))
   selectedFiles.value=conversationFiles.filter((file:any)=>!attachedFileIds.has(file.id))
  }catch(e:any){if(epoch===conversationEpoch&&conversation.value===id)fail(e.message)}
@@ -796,7 +800,7 @@ async function selectConversation(id:string,title='',archived=false){
 async function toggleConversationPin(c:any,event?:Event){event?.stopPropagation();try{await post(`/conversations/${c.id}/pin`);await refresh();await nextTick();await fitInitialConversations()}catch(e:any){fail(e.message)}}
 async function archiveConversation(c:any,event?:Event){event?.stopPropagation();try{await post(`/conversations/${c.id}/archive`);if(conversation.value===c.id)newConversation();await refresh()}catch(e:any){fail(e.message)}}
 async function openArchivedConversation(c:any){settingsOpen.value=false;showNotices.value=false;await selectConversation(c.id,c.title,true)}
-function newConversation(){erpDesignOrdersDialog.value=null;conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];conversationLoading.value=false;prompt.value='';detail.value=null;closeErpDesignPreview();collapse()}
+function newConversation(){erpDesignOrdersDialog.value=null;conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];lastRunProjectionSyncAt=0;conversationLoading.value=false;prompt.value='';detail.value=null;closeErpDesignPreview();collapse()}
 async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function stopActiveRun(){const run=activeRun.value;if(!run||busy.value)return;busy.value=true;error.value='';try{await post('/runs/'+run.id+'/cancel');if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function uploadFiles(event:Event){
@@ -818,8 +822,8 @@ function beginSidebarResize(e:PointerEvent){if(e.button!==0||sidebarCollapsed.va
 function resizeSidebarBy(delta:number){sidebarWidth.value=Math.max(190,Math.min(420,sidebarWidth.value+delta));saveLayout()}
 function resetSidebarWidth(){sidebarWidth.value=DEFAULT_SIDEBAR_WIDTH;saveLayout()}
 let polling=false,pollTick=0,runPolling=false
-const timer=setInterval(async()=>{pollTick++;if(!me.value||polling||(!running.value&&pollTick%4!==0))return;polling=true;try{const info=await api('/me');if(info.user.authorization_hash!==me.value.authorization_hash){me.value=info.user;permissions.value=info.permissions;detail.value=null;runs.value=[];expanded.value=false;panel.value='';await refresh();error.value='权限已更新，相关材料已清理，请重新查询'}if(pollTick%12===0)[notices.value,approvals.value,initiatedApprovals.value,approvalWorkItems.value]=await Promise.all([api('/notifications'),api('/approvals'),api('/approvals/initiated'),api('/approval-work-items')])}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{polling=false}},1000)
-const runTimer=setInterval(async()=>{if(!me.value||runEventsReady.value||!running.value||!conversation.value||runPolling)return;runPolling=true;const id=conversation.value,epoch=conversationEpoch;try{const latestRuns=await api(`/conversations/${id}/runs`);if(conversation.value===id&&conversationEpoch===epoch)runs.value=latestRuns}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{runPolling=false}},1000)
+const timer=setInterval(async()=>{runClockMs.value=Date.now();pollTick++;if(!me.value||polling||(!running.value&&pollTick%4!==0))return;polling=true;try{const info=await api('/me');if(info.user.authorization_hash!==me.value.authorization_hash){me.value=info.user;permissions.value=info.permissions;detail.value=null;runs.value=[];expanded.value=false;panel.value='';await refresh();error.value='权限已更新，相关材料已清理，请重新查询'}if(pollTick%12===0)[notices.value,approvals.value,initiatedApprovals.value,approvalWorkItems.value]=await Promise.all([api('/notifications'),api('/approvals'),api('/approvals/initiated'),api('/approval-work-items')])}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{polling=false}},1000)
+const runTimer=setInterval(async()=>{const nowMs=Date.now();if(!me.value||runPolling||!shouldRefreshRunProjection(running.value,conversation.value,lastRunProjectionSyncAt,nowMs))return;runPolling=true;const id=conversation.value,epoch=conversationEpoch;try{const latestRuns=await api(`/conversations/${id}/runs`);if(conversation.value===id&&conversationEpoch===epoch){runs.value=latestRuns;lastRunProjectionSyncAt=Date.now()}}catch(e:any){if(e.status===401){clearSessionData();error.value='登录已失效，请重新登录'}}finally{runPolling=false}},1000)
 onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
 </script>
 <template>
@@ -861,7 +865,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               <div class="run-process-inner">
                 <template v-for="(item,index) in runProcessTrace(run)" :key="item.id||item.call_id||item.message_key||index">
                   <div v-if="item.type==='message'" class="assistant-prose process-text">
-                    <p class="preserve">{{processMessageText(run,item,Number(index))}}</p>
+                    <MarkdownText :text="processMessageText(run,item,Number(index))"/>
                   </div>
                   <div v-else-if="item.type==='tool_search'" class="agent-tool-row tool-search-row">
                     <span class="agent-tool-icon"><Wrench :size="13"/></span>
@@ -926,12 +930,12 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               </div>
             </div>
             <div v-for="(finalItem,finalIndex) in runFinalTraces(run)" :key="'final:'+finalIndex" class="assistant-prose final">
-              <p v-if="finalItem.summary || finalItem.message" class="preserve">{{finalItem.summary ?? finalItem.message}}</p>
+              <MarkdownText v-if="finalItem.summary || finalItem.message" :text="finalItem.summary ?? finalItem.message"/>
               <div v-if="finalItem.error_code" class="run-error-detail" role="note">
                 <strong>失败原因</strong><span>{{runFailureReason(finalItem.error_code)}}</span><code>错误码 {{finalItem.error_code}}</code>
               </div>
               <ul v-if="finalItem.suggestions?.length">
-                <li v-for="s in finalItem.suggestions" :key="s">{{s}}</li>
+                <li v-for="s in finalItem.suggestions" :key="s"><MarkdownText :text="s" inline/></li>
               </ul>
             </div>
             <div v-if="erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
@@ -951,7 +955,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
             <template v-if="!runFinalTraces(run).length&&!runProcessTrace(run).length" v-for="(item,index) in runTrace(run)" :key="item.id||item.call_id||index">
               <div v-if="item.type==='message'" class="assistant-prose">
-                <p class="preserve">{{item.text}}</p>
+                <MarkdownText :text="item.text"/>
               </div>
             </template>
           </div>
