@@ -9,6 +9,7 @@ from app import bpm, business, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold import file_policy
 
 
 def factory():
@@ -49,6 +50,16 @@ def workflow(db,user,kind='sales_contract'):
         'nodes':[{'key':'review','name':'合同审批','mode':'ALL','users':[user.id],'reject_rules':[]}]}
     row=m.WorkflowDefinition(process_key=kind+'_test',version=1,name='合同审批',
         status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+    db.add(row);db.flush();return row
+
+
+def uploaded_contract_file(db, owner, conversation, filename='sales-contract.pdf', digest=None):
+    digest = digest or ('a' * 64)
+    row = m.FileObject(owner_id=owner.id, conversation_id=conversation.id,
+        request_key='file-'+filename+'-'+digest[:8], filename=filename,
+        media_type='application/pdf', size=128, sha256=digest,
+        backend='local', storage_namespace='test', object_key='test/'+digest+'/'+filename,
+        storage_version=None)
     db.add(row);db.flush();return row
 
 
@@ -149,13 +160,16 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
                 prompt='准备登记销售合同',status='SUCCEEDED',
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'delegated_auto'})
             db.add(run);db.flush()
+            file=uploaded_contract_file(db,admin,conversation)
+            db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
                 'contract_number':'SC-PREPARE-001','expected_date':date.today().isoformat(),
                 'stages':[{'name':'预付款','amount':'600.00','condition':'合同生效'}],
-                'remark':'客户线下签署合同待审批归档','workflow_definition_id':definition.id}
+                'remark':'客户线下签署合同待审批归档','workflow_definition_id':definition.id,
+                'file_ids':[file.id],'document_source':'PAPER_SCAN'}
         schema=tool_schema('prepare_contract_record')['function']['parameters']
-        assert {'project_id','project_version','contract_kind','workflow_definition_id'} <= set(schema['properties'])
+        assert {'project_id','project_version','contract_kind','workflow_definition_id','file_ids','document_source'} <= set(schema['properties'])
         with Session.begin() as db:
             admin=db.query(m.User).filter_by(username='admin').one()
             run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
@@ -163,6 +177,7 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             assert evidence['proposal']['kind']=='sales_contract'
             assert evidence['proposal']['requires_approval'] is True
             assert evidence['proposal']['display']['合同号']=='SC-PREPARE-001'
+            assert evidence['proposal']['display']['合同附件']==['sales-contract.pdf']
             assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='sales_contract')) is None
             step=m.Step(run_id=run.id,sequence=0,tool='prepare_contract_record',request_hash='hash',result=evidence)
             db.add(step);db.flush()
@@ -178,10 +193,15 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             assert detail.customer_id==args['customer_id']
             stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))
             assert stage.name=='预付款'
-            assert db.scalar(select(m.ApprovalInstance).where(
+            attachment=db.scalar(select(m.ContractAttachment).where(m.ContractAttachment.contract_subject_id==subject.id))
+            assert attachment and attachment.file_id==args['file_ids'][0]
+            assert attachment.version==1 and attachment.source_kind=='PAPER_SCAN'
+            instance=db.scalar(select(m.ApprovalInstance).where(
                 m.ApprovalInstance.resource_type=='business_subject',
                 m.ApprovalInstance.resource_id==subject.id,
             ))
+            assert instance.snapshot['detail']['attachments'][0]['filename']=='sales-contract.pdf'
+            assert instance.snapshot['detail']['attachments'][0]['sha256']=='a'*64
     finally:
         engine.dispose()
 
@@ -215,9 +235,12 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
                 prompt='准备登记销售合同',status='SUCCEEDED',
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
             db.add(run);db.flush()
+            file=uploaded_contract_file(db,admin,conversation,filename='duplicate-contract.pdf',digest='b'*64)
+            db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'100.00','currency':'CNY',
-                'contract_number':'SC-DUP','workflow_definition_id':definition.id}
+                'contract_number':'SC-DUP','workflow_definition_id':definition.id,
+                'file_ids':[file.id],'document_source':'ELECTRONIC'}
             with pytest.raises(Exception) as duplicate:
                 execute(db,admin,'prepare_contract_record',args,run=run)
             assert getattr(duplicate.value,'code',None)=='CONTRACT_DUPLICATE'
@@ -225,6 +248,62 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
             with pytest.raises(Exception) as invalid:
                 execute(db,admin,'prepare_contract_record',bad,run=run)
             assert getattr(invalid.value,'code',None)=='PARTY_INVALID'
+    finally:
+        engine.dispose()
+
+
+def test_contract_attachment_requires_current_run_and_blocks_duplicate_content():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-FILE-GUARD')
+            c=customer(db,'C-FILE-GUARD','附件防重客户')
+            definition=workflow(db,admin,'sales_contract')
+            conversation=m.Conversation(user_id=admin.id,title='合同附件防重')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='提交合同附件',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            current=uploaded_contract_file(db,admin,conversation,filename='current-contract.pdf',digest='c'*64)
+            args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
+                'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
+                'contract_number':'SC-FILE-GUARD','workflow_definition_id':definition.id,
+                'file_ids':[current.id],'document_source':'ELECTRONIC'}
+            with pytest.raises(Exception) as unbound:
+                execute(db,admin,'prepare_contract_record',args,run=run)
+            assert getattr(unbound.value,'code',None)=='FILE_CONTEXT_INVALID'
+
+            db.add(m.RunFile(run_id=run.id,file_id=current.id))
+            prior=contract(db,p,admin,'sales_contract','SC-FILE-PRIOR')
+            prior_file=uploaded_contract_file(db,admin,conversation,filename='prior-contract.pdf',digest='c'*64)
+            db.add(m.ContractAttachment(contract_subject_id=prior.id,file_id=prior_file.id,
+                document_id='00000000-0000-0000-0000-000000000101',version=1,
+                title=prior_file.filename,source_kind='ELECTRONIC',uploaded_by=admin.id))
+            db.flush()
+            with pytest.raises(Exception) as duplicate:
+                execute(db,admin,'prepare_contract_record',args,run=run)
+            assert getattr(duplicate.value,'code',None)=='CONTRACT_FILE_DUPLICATE'
+    finally:
+        engine.dispose()
+
+
+def test_contract_file_readability_follows_contract_scope_after_linking():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);viewer=user(db,'viewer');outsider=user(db,'outsider')
+            p=project(db,'CONTRACT-FILE-READ')
+            subject=contract(db,p,admin,'sales_contract','SC-FILE-READ')
+            conversation=m.Conversation(user_id=admin.id,title='合同附件读取')
+            db.add(conversation);db.flush()
+            blob=uploaded_contract_file(db,admin,conversation,filename='scoped-contract.pdf',digest='d'*64)
+            db.add(m.ContractAttachment(contract_subject_id=subject.id,file_id=blob.id,
+                document_id='00000000-0000-0000-0000-000000000102',version=1,
+                title=blob.filename,source_kind='PAPER_SCAN',uploaded_by=admin.id))
+            grant(db,admin,viewer,'sales_contract.read',p.id)
+            assert file_policy.readable(db,viewer,blob) is True
+            assert file_policy.readable(db,outsider,blob) is False
     finally:
         engine.dispose()
 

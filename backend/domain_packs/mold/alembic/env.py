@@ -13,14 +13,24 @@ if legacy.get("config") != "backend/domain_packs/mold/alembic.ini":
     )
 
 target_metadata = Base.metadata
+legacy_tables = set(getattr(migration_contract(), "LEGACY_TABLES", ()))
+if not legacy_tables:
+    raise RuntimeError("The mold legacy repository requires a frozen table ownership snapshot")
 environment = dotenv_values('.env')
 url = resolve_migration_url(environment)
 version_table = context.config.attributes.get("version_table", "alembic_version")
 
+
+def include_object(obj, name, type_, reflected, compare_to):
+    if type_ == "table":
+        return name in legacy_tables
+    table = getattr(obj, "table", None)
+    return table is None or table.name in legacy_tables
+
 if context.is_offline_mode():
     context.configure(
         url=url, target_metadata=target_metadata, literal_binds=True,
-        version_table=version_table,
+        version_table=version_table, include_object=include_object,
     )
     with context.begin_transaction(): context.run_migrations()
 else:
@@ -29,5 +39,6 @@ else:
         context.configure(
             connection=connection, target_metadata=target_metadata,
             compare_type=True, version_table=version_table,
+            include_object=include_object,
         )
         with context.begin_transaction(): context.run_migrations()

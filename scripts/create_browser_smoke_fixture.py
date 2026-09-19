@@ -10,8 +10,10 @@ import argparse
 import os
 import sys
 from datetime import date, timedelta
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from dotenv import dotenv_values
 from sqlalchemy import select
@@ -19,10 +21,14 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app import bpm, contact_tools, models as m, project_closure_tools as closure_tools, project_control_tools as pause_tools
+from app import bpm, business, models as m, object_storage
 from app.authorization import fingerprint
 from app.bpm import content_hash
 from app.db import make_engine, now
+from domain_packs.mold.tools.erp.change import contact_tools
+from domain_packs.mold.tools.erp.commercial import contract_tools
+from domain_packs.mold.tools.erp.project import project_closure_tools as closure_tools
+from domain_packs.mold.tools.erp.project import project_control_tools as pause_tools
 
 
 def _database_url(env_file: str, url_key: str, explicit_url: str) -> str:
@@ -74,6 +80,7 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
     xml = bpm.compile_bpmn(config)
     names = {
         "contact": "工程联络处理方案审批（浏览器验收）",
+        "contract": "销售合同审批（浏览器验收）",
         "closure": "项目终止与关闭审批（浏览器验收）",
         "pause": "项目暂停恢复审批（浏览器验收）",
     }
@@ -168,11 +175,21 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
                 {"plan_id": plan.id, "owner_user_id": user.id, **task},
             )
 
-        business_type = "contact_resolution" if scenario == "contact" else "project_close" if scenario == "closure" else "pause_resume"
+        business_type = (
+            "contact_resolution" if scenario == "contact"
+            else "sales_contract" if scenario == "contract"
+            else "project_close" if scenario == "closure"
+            else "pause_resume"
+        )
         workflow = _build_workflow(db, user.id, business_type, scenario)
         conversation = m.Conversation(
             user_id=user.id,
-            title="工程联络影响项验收" if scenario == "contact" else "项目终止业务流验收" if scenario == "closure" else "项目暂停业务流验收",
+            title=(
+                "工程联络影响项验收" if scenario == "contact"
+                else "销售合同附件审批验收" if scenario == "contract"
+                else "项目终止业务流验收" if scenario == "closure"
+                else "项目暂停业务流验收"
+            ),
         )
         db.add(conversation)
         db.flush()
@@ -183,6 +200,8 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
             prompt=(
                 "请将受影响图纸纳入工程联络单，明确返工、交期与费用影响。"
                 if scenario == "contact"
+                else f"请把本轮上传的销售合同原件绑定到 {project_code} 并提交审批。"
+                if scenario == "contract"
                 else f"请根据客户终止通知终止 {project_code} 项目，并转入处置和终止结算。"
                 if scenario == "closure"
                 else f"请根据客户通知暂停 {project_code} 项目，并保留客户承诺交期。"
@@ -191,7 +210,9 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
         )
         db.add(run)
         db.flush()
+        run.checkpoint = {"authorization_hash": fingerprint(db, user)}
 
+        confirm_contract = False
         if scenario == "contact":
             group = _upsert_one(
                 db,
@@ -249,6 +270,64 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
             result = contact_tools.execute_tool(db, user, tool, arguments)
             summary = "已按当前联络单资料准备结构化影响与责任事项，请核对对象、返工动作、交期、金额和来源后确认。"
             suggestions = ["确认后只新增联络协作事项；方案审批、实际执行和独立复验仍分别办理。"]
+        elif scenario == "contract":
+            customer = _upsert_one(
+                db,
+                m.Customer,
+                [m.Customer.code == "BROWSER-CONTRACT-CUSTOMER"],
+                {
+                    "code": "BROWSER-CONTRACT-CUSTOMER",
+                    "name": "浏览器合同验收客户",
+                    "rule_key": "standard",
+                    "active": True,
+                },
+            )
+            pdf = (
+                b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                b"2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+            ) + f"% browser-smoke {run_key}\n".encode()
+            digest = sha256(pdf).hexdigest()
+            key = uuid4().hex + "/" + digest
+            storage = object_storage.put(key, pdf, "application/pdf")
+            blob = m.FileObject(
+                owner_id=user.id,
+                conversation_id=conversation.id,
+                request_key=str(uuid4()),
+                filename=f"{project_code}-销售合同原件.pdf",
+                media_type="application/pdf",
+                size=len(pdf),
+                sha256=digest,
+                object_key=key,
+                **storage,
+            )
+            db.add(blob)
+            db.flush()
+            db.add(m.RunFile(run_id=run.id, file_id=blob.id))
+            db.flush()
+            tool = "prepare_contract_record"
+            arguments = {
+                "project_id": project.id,
+                "project_version": project.row_version,
+                "contract_kind": "sales_contract",
+                "customer_id": customer.id,
+                "supplier_id": None,
+                "amount": "128000.00",
+                "currency": "CNY",
+                "contract_number": f"{project_code}-SC-{run_key}",
+                "expected_date": date.today().isoformat(),
+                "stages": [
+                    {"name": "预付款", "amount": "38400.00", "condition": "合同审批生效"},
+                    {"name": "验收款", "amount": "89600.00", "condition": "客户验收完成"},
+                ],
+                "remark": "浏览器验收合成合同；仅用于验证附件随审批快照展示。",
+                "workflow_definition_id": workflow.id,
+                "file_ids": [blob.id],
+                "document_source": "ELECTRONIC",
+            }
+            result = contract_tools.execute_contract_tool(db, user, tool, arguments, run=run)
+            summary = "已按当前对话上传的合同原件准备销售合同登记，请核对合同字段和附件后确认提交审批。"
+            suggestions = ["确认后合同原件会冻结进审批快照；审批生效前不视为正式合同。"]
+            confirm_contract = True
         elif scenario == "closure":
             tool = "prepare_project_termination"
             arguments = {
@@ -291,7 +370,10 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
         )
         db.add(step)
         db.flush()
-        run.checkpoint = {"authorization_hash": fingerprint(db, user)}
+        if confirm_contract:
+            payload = {"step_id": step.id, "proposal_hash": content_hash(result["proposal"])}
+            intent = business.create_intent(db, user, "contract.execute", step.id, payload)
+            business.confirm_intent(db, user, intent["id"], intent["challenge"])
         run.result = {
             "response_kind": "BUSINESS",
             "summary": summary,
@@ -319,7 +401,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     args = parser.parse_args()
     url = _database_url(args.env_file, args.url_key, args.database_url)

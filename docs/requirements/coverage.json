@@ -429,11 +429,13 @@
       "agent_responsibility": "Agent 开发上传、版本、审核、业务关联、晚到差异及替代追加；历史 ERP 合同/收付款事实引用，禁止重复累计",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "当前合同上下文只读取已登记合同事实和付款节点，明确不上传合同、不 OCR、不生成审批版本",
-        "Skill 指令要求合同上传、审核和版本仍走人工确认及审批流程"
+        "prepare_contract_record 只接受当前用户、当前会话、当前 Run 显式绑定的 PDF/图片/DOCX 合同原件；本人确认后才创建合同材料并提交 BPM",
+        "ContractAttachment 保存文档标识、第 1 版、电子/纸质扫描来源、上传人和上传时间；文件 SHA-256 及附件元数据冻结进审批快照，后续上传不能覆盖当前审批依据",
+        "同一项目、同一合同类型的有效合同附件按原件 SHA-256 防重；业务附件下载权限跟随合同读取授权"
       ],
       "verification_evidence": [
-        "tests/test_contract_tools.py 覆盖只读上下文；电子/纸质合同资料上传人、上传时间、附件版本和审核记录尚未验收"
+        "tests/test_contract_tools.py 覆盖当前 Run 绑定、确认前不写入、确认后提交 BPM、附件版本/来源/快照、防重及合同范围读取权限",
+        "tests/test_split_migrations.py 覆盖 contract_attachment 表与四类文件/附件不可变触发器；真实业务主管/财务流程、后续合同版本及客户规则仍未验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

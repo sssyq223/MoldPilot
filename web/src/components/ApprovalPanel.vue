@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ArrowRightLeft, Check, ChevronDown, FileText, ShieldCheck, Undo2, UserCheck, UserPlus } from 'lucide-vue-next'
 import { api, post, shanghai } from '../api'
 import FileMaterial from './FileMaterial.vue'
@@ -15,6 +15,7 @@ const transferTarget = ref(''), transferReason = ref(''), transferConfirmation =
 const addSignTarget = ref(''), addSignTiming = ref(''), addSignReason = ref(''), addSignConfirmation = ref<any>(null)
 const withdrawReason = ref(''), withdrawConfirmation = ref<any>(null)
 const labels: Record<string,string> = { APPROVE:'同意', REJECT:'驳回', RETURN:'退回修改' }
+const approvalFiles = computed(() => props.detail.snapshot.detail?.attachments || props.detail.snapshot.detail?.material_snapshot?.attachments || [])
 watch(()=>props.detail,(detail)=>{returnTarget.value=detail.return_options?.length===1?detail.return_options[0].key:''},{immediate:true})
 function returnTargetName(key:string){return props.detail.return_options?.find((item:any)=>item.key===key)?.name||'目标已变化'}
 function pickReturnTarget(key:string){returnTarget.value=key;returnTargetOpen.value=false}
@@ -114,7 +115,7 @@ async function claimApproval() {
     <div>
       <dl class="facts"><div><dt>提交人</dt><dd>{{detail.snapshot.submitter.name}}</dd></div><div><dt>提交时间</dt><dd>{{shanghai(detail.snapshot.submitted_at)}}</dd></div><div><dt>部门</dt><dd>{{detail.snapshot.submitter.department || '—'}}</dd></div><div><dt>材料版本</dt><dd>第 {{detail.revision}} 版</dd></div></dl>
       <section class="surface"><h3>申请备注</h3><p class="preserve">{{detail.snapshot.remark || '未填写备注'}}</p></section>
-      <section class="surface"><h3><FileText :size="16"/> 附件资料</h3><template v-if="detail.snapshot.detail?.material_snapshot?.attachments?.length"><p class="muted">以下为提交本轮审批时锁定的附件版本。</p><FileMaterial v-for="file in detail.snapshot.detail.material_snapshot.attachments" :key="file.id" :file="file" @error="emit('error',$event)"/></template><p v-else class="muted">当前申请未绑定附件。</p></section>
+      <section class="surface"><h3><FileText :size="16"/> 附件资料</h3><template v-if="approvalFiles.length"><p class="muted">以下为提交本轮审批时锁定的附件版本。</p><FileMaterial v-for="file in approvalFiles" :key="file.id" :file="file" @error="emit('error',$event)"/></template><p v-else class="muted">当前申请未绑定附件。</p></section>
     </div>
     <section class="timeline surface approval-flow">
       <div class="approval-flow-head"><div><h3>审批流程</h3><small class="muted">{{detail.definition.name}} · 第 {{detail.definition.version}} 版</small></div><span v-if="detail.status==='RUNNING'" class="approval-flow-progress">当前 {{Math.min(detail.stage_index + 1, detail.nodes.length)}} / {{detail.nodes.length}}</span></div>

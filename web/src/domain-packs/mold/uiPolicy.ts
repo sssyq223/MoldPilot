@@ -4,7 +4,7 @@ export const approvalConfirmationNotice='提交后将记录你的正式审批决
 export const authorizationUi:any={
  defaultPermission:'purchase.read',defaultCategory:'hardware',resourceEndpoint:'/projects',resourceScopeKey:'project_id',resourceLabel:'项目',resourcePlaceholder:'选择项目',resourceCodeField:'code',
  unrestrictedPermissions:['file.upload'],categoryScopeKey:'category',categoryPermissionPrefixes:['purchase.','contact.'],categoryLabel:'采购责任域',categoryOptions:categoryNames,
- permissionHints:{'file.upload':'允许向本人会话上传附件；关联联络单仍须另外授予联络单附件权限和数据范围。'} as Record<string,string>,
+ permissionHints:{'file.upload':'允许向本人会话上传附件；关联工程联络单、合同等业务材料仍须具备对应业务权限和数据范围。'} as Record<string,string>,
  allScopeLabel:'明确授予全部数据范围',scopeHelp:'每条授权独立限定动作和范围；新增原材权限不会与另一项目的五金权限交叉扩大。',
 }
 export const workflowUi:any={

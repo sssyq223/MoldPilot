@@ -48,6 +48,8 @@ def typed_detail(db,subject):
     if kind in {'sales_contract','full_outsource_contract'}:
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
         detail['stages']=[values(stage) for stage in rows(db,m.PaymentStage,contract_id=subject.id)]
+        from domain_packs.mold.erp.commercial import contract_documents
+        detail['attachments']=contract_documents.cards(db,subject.id)
     elif kind=='supplier_payment':
         detail=values(db.get(m.PaymentRequestDetail,subject.id),('subject_id',))
         detail['payments']=[values(p) for p in rows(db,m.PaymentConfirmation,request_id=subject.id)]

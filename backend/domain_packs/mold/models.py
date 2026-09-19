@@ -69,6 +69,7 @@ def _mapped_exports(module):
 from domain_packs.mold import attachment_models as _attachments  # noqa: E402
 from domain_packs.mold import contact_models as _contacts  # noqa: E402
 from domain_packs.mold import domain_models as _domain  # noqa: E402
+from domain_packs.mold.erp.commercial import contract_models as _contract_models  # noqa: E402
 
 _exports = {
     "Project": Project,
@@ -78,6 +79,7 @@ _exports = {
     **_mapped_exports(_domain),
     **_mapped_exports(_contacts),
     **_mapped_exports(_attachments),
+    **_mapped_exports(_contract_models),
 }
 globals().update(_exports)
 EXPORTED_MODELS = tuple(_exports)

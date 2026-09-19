@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 from fastapi import APIRouter, Depends
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select, and_
 from domain_packs.mold import models as m, domains, domain_schemas as s, workflow_selection
 from domain_packs.mold.authorization import access, fingerprint, predicate, require, select_fields
@@ -13,6 +13,7 @@ from domain_packs.mold.ports.db import get_db, now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.security import current_user
 from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.erp.commercial import contract_documents
 
 
 class ContractContextInput(StrictModel):
@@ -45,8 +46,18 @@ class ContractProposalInput(StrictModel):
     stages: list[s.StageInput] = Field(default_factory=list, max_length=30)
     remark: str = Field(default='', max_length=4000)
     workflow_definition_id: str = Field(min_length=1, max_length=36)
+    file_ids: list[str] = Field(min_length=1, max_length=10,
+        description='本轮任务中明确上传的合同原件文件 ID；审批将冻结这些文件版本。')
+    document_source: Literal['ELECTRONIC','PAPER_SCAN','OTHER'] = 'ELECTRONIC'
     material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
+
+    @field_validator('file_ids')
+    @classmethod
+    def unique_file_ids(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError('合同附件不能重复')
+        return value
 
 
 class ContractSigningRecordProposalInput(StrictModel):
@@ -319,7 +330,7 @@ def _contract_detail(data):
         expected_date=data.expected_date,replaces_id=data.replaces_id,stages=data.stages)
 
 
-def preview_contract(db,user,data:ContractProposalInput):
+def preview_contract(db,user,data:ContractProposalInput,run):
     project=db.get(m.Project,data.project_id)
     if not project:raise DomainError('NOT_FOUND','项目不存在',404)
     scope={'project_id':project.id}
@@ -344,6 +355,8 @@ def preview_contract(db,user,data:ContractProposalInput):
     duplicate=_duplicate_contract(db,project.id,data.contract_kind,detail.contract_number)
     if duplicate:
         raise DomainError('CONTRACT_DUPLICATE','当前项目已有相同合同号的未关闭合同材料，请勿重复准备',409)
+    blobs=contract_documents.validate_proposal_files(
+        db,user,data.file_ids,run,project.id,data.contract_kind)
     options=workflow_options(db,user,project,data.contract_kind)
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
@@ -357,10 +370,12 @@ def preview_contract(db,user,data:ContractProposalInput):
         '合同金额':str(detail.amount)+' '+detail.currency,
         '预计签订或补齐日期':detail.expected_date.isoformat() if detail.expected_date else '未填写',
         '付款节点':stages or ['未登记付款节点'],
+        '合同附件':[blob.filename for blob in blobs],
+        '附件来源':{'ELECTRONIC':'电子合同','PAPER_SCAN':'纸质合同扫描件','OTHER':'其他人工资料'}[data.document_source],
         '备注':data.remark or '无',
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建合同材料并提交 Agent BPM；审批生效前不视为正式合同，不确认收付款，不触发 ERP 合同执行。'}
-    return detail,display
+    return detail,display,blobs
 
 
 def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalInput):
@@ -420,11 +435,11 @@ def create_contract_signing_record(db,user,data:ContractSigningRecordProposalInp
 def execute_contract_tool(db,user,key,arguments,run=None):
     if key=='prepare_contract_record':
         data=parse_contract(arguments)
-        _,display=preview_contract(db,user,data)
+        _,display,_=preview_contract(db,user,data,run)
         proposal={'kind':data.contract_kind,'action':'contract_record','requires_approval':True,
             'input':data.model_dump(mode='json'),'display':display,
             'confirmation_policy':proposal_confirmation_policy(run,requires_approval=True)}
-        limitations=['仅准备合同登记建议；本人确认后才创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。']
+        limitations=['仅准备合同登记建议；本人确认后才冻结本轮合同原件、创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。']
     elif key=='prepare_contract_signing_record':
         data=parse_contract_signing_record(arguments)
         _,display=preview_contract_signing_record(db,user,data)
@@ -452,13 +467,15 @@ def source(db,user,step_id):
 
 def validate_intent(db,user,payload):
     proposal=source(db,user,payload['step_id'])
+    step=db.get(m.Step,payload['step_id'])
+    run=db.get(m.Run,step.run_id) if step else None
     if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
     if proposal.get('kind')=='contract_signing_record':
         data=parse_contract_signing_record(proposal['input'])
         _,display=preview_contract_signing_record(db,user,data)
     else:
         data=parse_contract(proposal['input'])
-        _,display=preview_contract(db,user,data)
+        _,display,_=preview_contract(db,user,data,run)
     if content_hash(display)!=content_hash(proposal['display']):
         raise DomainError('VERSION_CONFLICT','项目、合同、权限或流程资料已变化，请重新准备',409)
     return proposal,data
@@ -471,10 +488,13 @@ def confirm(db,user,payload):
         record=create_contract_signing_record(db,user,data)
         return {'project_id':data.project_id,'contract_subject_id':data.contract_subject_id,
             'contract_signing_record_id':record.id,'action':'contract_signing_record','status':'CONFIRMED'}
-    detail,_=preview_contract(db,user,data)
+    step=db.get(m.Step,payload['step_id'])
+    run=db.get(m.Run,step.run_id) if step else None
+    detail,_,blobs=preview_contract(db,user,data,run)
     subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
         category='outsource' if data.contract_kind=='full_outsource_contract' else None,
         remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
+    contract_documents.link_initial(db,user,subject,blobs,data.document_source)
     from domain_packs.mold.erp.core.business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
         data.material_review_id,agent_permission_mode=agent_permission_mode_from_proposal(proposal))
