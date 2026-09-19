@@ -63,6 +63,8 @@ def typed_detail(db,subject):
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
         receipt=db.get(m.ContractReceiptEvidence,subject.id)
         detail['received_date']=receipt.received_date.isoformat() if receipt else None
+        from domain_packs.mold.erp.commercial import contract_terms
+        detail['business_terms']=contract_terms.card(db,subject.id)
         detail['stages']=[values(stage) for stage in rows(db,m.PaymentStage,contract_id=subject.id)]
         from domain_packs.mold.erp.commercial import contract_documents
         from domain_packs.mold.erp.commercial.contract_relations import allocation_cards

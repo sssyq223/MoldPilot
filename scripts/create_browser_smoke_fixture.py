@@ -7,6 +7,7 @@ database.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -298,6 +299,36 @@ def build(
                     "active": True,
                 },
             )
+            profile = db.get(m.ProjectProfile, project.id)
+            if profile is None:
+                profile = m.ProjectProfile(
+                    project_id=project.id,
+                    customer_id=customer.id,
+                    owner_user_id=user.id,
+                    execution_mode="INTERNAL",
+                    settlement_status="OPEN",
+                )
+                db.add(profile)
+            else:
+                profile.customer_id = customer.id
+            internal_number = f"{project.code}-MOLD-001"
+            mold = db.scalar(
+                select(m.Mold).where(m.Mold.internal_number == internal_number).limit(1)
+            )
+            if mold is None:
+                mold = m.Mold(
+                    internal_number=internal_number,
+                    name=f"{project.name} 内部模具",
+                    status="ACTIVE",
+                )
+                db.add(mold)
+                db.flush()
+            if not db.scalar(select(m.ProjectMold).where(
+                m.ProjectMold.project_id == project.id,
+                m.ProjectMold.mold_id == mold.id,
+            )):
+                db.add(m.ProjectMold(project_id=project.id, mold_id=mold.id))
+            db.flush()
             pdf_path = Path(pdf_file).resolve() if pdf_file else None
             if pdf_path:
                 if not pdf_path.is_file():
@@ -389,6 +420,11 @@ def build(
                 "amount": "120000.00" if scenario == "contract_relation" else "128000.00",
                 "currency": "CNY",
                 "contract_number": f"{project_code}-SC-{run_key}",
+                "signed_date": date.today().isoformat(),
+                "received_date": date.today().isoformat(),
+                "delivery_due_date": (date.today() + timedelta(days=60)).isoformat(),
+                "payment_method": "浏览器验收合同按结构化节点收款",
+                "mapping_evidence": "浏览器验收已核对项目、内部模具号和客户合同原件",
                 "expected_date": date.today().isoformat(),
                 "replaces_id": predecessor.id if predecessor else None,
                 "relation_type": "REPLACEMENT" if predecessor else "ORIGINAL",
@@ -418,7 +454,7 @@ def build(
             summary = (
                 "替代合同已审批生效；原合同保留为历史版本，历史回款仍在原凭证并按新合同节点计入一次。"
                 if predecessor else
-                "已按当前对话上传的合同原件准备销售合同登记，请核对合同字段和附件后确认提交审批。"
+                "销售合同登记已由本人确认并提交审批；确认卡保留合同字段和附件快照供后续追溯。"
             )
             suggestions = ([
                 "这是浏览器验收合成数据；可查询合同关系、当前有效金额与历史回款归属。"
@@ -494,6 +530,31 @@ def build(
                 business.confirm_intent(
                     db, user, approval_intent["id"], approval_intent["challenge"]
                 )
+        call_id = f"browser-smoke-{step.id}"
+        run.checkpoint = {
+            **(run.checkpoint or {}),
+            "agent_permission_mode": "ask",
+            "completed_at": now().isoformat(),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool,
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps({"evidence_id": step.id}, ensure_ascii=False),
+                },
+            ],
+        }
         run.result = {
             "response_kind": "BUSINESS",
             "summary": summary,

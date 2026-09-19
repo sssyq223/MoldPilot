@@ -23,7 +23,11 @@ def user(db,username='operator',super_admin=False):
 
 def project(db,code,name='合同项目',status='ACTIVE'):
     row=m.Project(code=code,name=name,status=status)
-    db.add(row);db.flush();return row
+    db.add(row);db.flush()
+    mold=m.Mold(internal_number='MOLD-'+code,name=name+'模具')
+    db.add(mold);db.flush()
+    db.add(m.ProjectMold(project_id=row.id,mold_id=mold.id))
+    return row
 
 
 def grant(db,admin,target,permission,project_id,fields=None):
@@ -189,7 +193,9 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
                 'contract_number':'SC-PREPARE-001','expected_date':date.today().isoformat(),
-                'received_date':date.today().isoformat(),
+                'signed_date':date.today().isoformat(),'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=60)).isoformat(),
+                'payment_method':'合同生效后按节点付款','mapping_evidence':'已核对项目、模具和客户合同原件',
                 'stages':[{'name':'预付款','amount':'600.00','condition':'合同生效'}],
                 'remark':'客户线下签署合同待审批归档','workflow_definition_id':definition.id,
                 'file_ids':[file.id],'document_source':'PAPER_SCAN'}
@@ -198,6 +204,10 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
         with Session.begin() as db:
             admin=db.query(m.User).filter_by(username='admin').one()
             run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            with pytest.raises(Exception) as future_receipt:
+                execute(db,admin,'prepare_contract_record',{
+                    **args,'received_date':(date.today()+timedelta(days=1)).isoformat()},run=run)
+            assert getattr(future_receipt.value,'code',None)=='CONTRACT_RECEIPT_DATE_INVALID'
             evidence=execute(db,admin,'prepare_contract_record',args,run=run)
             assert evidence['proposal']['kind']=='sales_contract'
             assert evidence['proposal']['requires_approval'] is True
@@ -217,6 +227,10 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             assert detail.contract_number=='SC-PREPARE-001'
             assert detail.customer_id==args['customer_id']
             assert db.get(m.ContractReceiptEvidence,subject.id).received_date==date.today()
+            terms=db.get(m.ContractBusinessTerms,subject.id)
+            assert terms.signed_date==date.today()
+            assert terms.delivery_due_date==date.today()+timedelta(days=60)
+            assert terms.association_snapshot['internal_molds'][0]['internal_number']=='MOLD-CONTRACT-PREPARE'
             stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))
             assert stage.name=='预付款'
             attachment=db.scalar(select(m.ContractAttachment).where(m.ContractAttachment.contract_subject_id==subject.id))
@@ -228,6 +242,19 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             ))
             assert instance.snapshot['detail']['attachments'][0]['filename']=='sales-contract.pdf'
             assert instance.snapshot['detail']['attachments'][0]['sha256']=='a'*64
+            finance=execute(db,admin,'query_finance_context',{'project_id':p.id})['data'][0]['analysis']
+            business_terms=finance['sales_contracts'][0]['business_terms']
+            assert business_terms['payment_method']=='合同生效后按节点付款'
+            assert business_terms['association_snapshot']['internal_molds'][0]['internal_number']=='MOLD-CONTRACT-PREPARE'
+            context=execute(db,admin,'query_contract_context',{'project_id':p.id})
+            model_card=context['model_context']['sales_contracts'][0]
+            assert model_card['signed_date']==date.today().isoformat()
+            assert model_card['delivery_due_date']==(date.today()+timedelta(days=60)).isoformat()
+            assert model_card['expected_contract_signing_or_supplement_date']==date.today().isoformat()
+            assert model_card['customer']=={
+                'id':c.id,'code':'C-PREPARE','name':'准备合同客户'}
+            assert model_card['internal_molds'][0]['internal_number']=='MOLD-CONTRACT-PREPARE'
+            assert model_card['customer_reference']['type']=='MANUAL_CONFIRMED'
     finally:
         engine.dispose()
 
@@ -264,7 +291,10 @@ def test_contract_replacement_preserves_cash_and_closes_predecessor_only_after_a
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
-                'contract_number':'SC-NEW-001','received_date':date.today().isoformat(),
+                'contract_number':'SC-NEW-001','signed_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=60)).isoformat(),
+                'payment_method':'按替代合同节点付款','mapping_evidence':'客户书面替代通知与项目模具已核对',
                 'replaces_id':old.id,'relation_type':'REPLACEMENT',
                 'settlement_allocation_evidence':'财务按银行回单逐条核对并转入新合同首款节点',
                 'settlement_allocations':[{'source_record_id':receipt.id,'target_stage_name':'新合同首款'}],
@@ -366,7 +396,10 @@ def test_contract_addition_stays_independent_and_replacement_of_addition_does_no
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
-                'contract_number':'SC-ADD-001','received_date':date.today().isoformat(),
+                'contract_number':'SC-ADD-001','signed_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=30)).isoformat(),
+                'payment_method':'追加工作完成后付款','mapping_evidence':'追加范围与原项目模具已核对',
                 'replaces_id':base.id,'relation_type':'ADDITION',
                 'stages':[{'name':'追加款','amount':'200.00','condition':'追加合同生效'}],
                 'remark':'主合同之外的追加工作','workflow_definition_id':definition.id,
@@ -443,7 +476,10 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'100.00','currency':'CNY',
-                'contract_number':'SC-DUP','received_date':date.today().isoformat(),
+                'contract_number':'SC-DUP','signed_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=20)).isoformat(),
+                'payment_method':'按合同节点付款','mapping_evidence':'已核对项目与模具',
                 'workflow_definition_id':definition.id,
                 'file_ids':[file.id],'document_source':'ELECTRONIC'}
             with pytest.raises(Exception) as duplicate:
@@ -473,7 +509,10 @@ def test_contract_attachment_reuses_same_conversation_file_and_blocks_duplicate_
             current=uploaded_contract_file(db,admin,conversation,filename='current-contract.pdf',digest='c'*64)
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
-                'contract_number':'SC-FILE-GUARD','received_date':date.today().isoformat(),
+                'contract_number':'SC-FILE-GUARD','signed_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=20)).isoformat(),
+                'payment_method':'按合同节点付款','mapping_evidence':'已核对项目与模具',
                 'workflow_definition_id':definition.id,
                 'file_ids':[current.id],'document_source':'ELECTRONIC'}
             proposal=execute(db,admin,'prepare_contract_record',args,run=run)
@@ -588,5 +627,101 @@ def test_prepare_contract_signing_record_rejects_duplicate_and_missing_signed_da
             with pytest.raises(Exception) as invalid:
                 execute(db,admin,'prepare_contract_signing_record',missing_date,run=run)
             assert getattr(invalid.value,'code',None)=='INVALID_TOOL_INPUT'
+    finally:
+        engine.dispose()
+
+
+def test_haier_electronic_contract_requires_confirmed_order_mapping():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-HAIER','海尔合同项目')
+            c=customer(db,'C-HAIER','海尔');c.rule_key='haier'
+            db.add(m.ProjectProfile(project_id=p.id,customer_id=c.id,owner_user_id=admin.id,
+                execution_mode='INTERNAL',settlement_status='OPEN'))
+            case=m.BidIntakeCase(project_id=p.id,created_by=admin.id)
+            db.add(case);db.flush()
+            db.add(m.BidIntakeRevision(case_id=case.id,version=1,previous_revision_id=None,
+                source_kind='EMAIL',source_ref='HAIER-ORDER-MAIL',source_fingerprint='9'*64,
+                received_date=date.today(),customer_classification='HAIER',
+                classification_evidence='业务已确认客户为海尔',classification_confirmed_by=admin.id,
+                customer_company='海尔',customer_contact='客户项目经理',customer_mold_number='HM-001',
+                customer_model_or_material='MODEL-001',project_name_snapshot=p.name,amount=Decimal('1000.00'),
+                currency='CNY',our_recipient='业务员',external_order_number='HAIER-ORDER-001',
+                external_start_date=date.today(),customer_due_date=date.today()+timedelta(days=60),
+                customer_process_confirmed=False,customer_process_confirmation_evidence=None,
+                matched_quotation_subject_id=None,historical_mold_number=None,historical_relation_kind=None,
+                match_result='MATCHED',match_evidence='订单与项目人工核对',notes='',recorded_by=admin.id))
+            definition=workflow(db,admin,'sales_contract')
+            conversation=m.Conversation(user_id=admin.id,title='海尔电子合同映射')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='登记海尔电子合同',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            file=uploaded_contract_file(db,admin,conversation,filename='haier-contract.pdf',digest='8'*64)
+            db.add(m.RunFile(run_id=run.id,file_id=file.id))
+            args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
+                'customer_id':c.id,'supplier_id':None,'amount':'1000.00','currency':'CNY',
+                'contract_number':'HAIER-SC-001','signed_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
+                'delivery_due_date':(date.today()+timedelta(days=60)).isoformat(),
+                'payment_method':'3-3-3-1节点收款','customer_order_number':'WRONG-ORDER',
+                'mapping_evidence':'已人工核对电子合同订单号','workflow_definition_id':definition.id,
+                'file_ids':[file.id],'document_source':'ELECTRONIC'}
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            with pytest.raises(Exception) as mismatch:
+                execute(db,admin,'prepare_contract_record',args,run=run)
+            assert getattr(mismatch.value,'code',None)=='CONTRACT_ORDER_MISMATCH'
+            evidence=execute(db,admin,'prepare_contract_record',{
+                **args,'customer_order_number':'HAIER-ORDER-001'},run=run)
+            mapping=evidence['proposal']['display']['客户编号核对']
+            assert mapping['客户规则']=='HAIER'
+            assert mapping['关联类型']=='ORDER_NUMBER'
+            assert mapping['客户订单号']=='HAIER-ORDER-001'
+    finally:
+        engine.dispose()
+
+
+def test_contract_context_projects_cash_shortfall_without_changing_terms():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-CASH-TIMING','合同资金时序项目')
+            sales=contract(db,p,admin,'sales_contract','SC-CASH',amount='1000.00')
+            outsource=contract(db,p,admin,'full_outsource_contract','FO-CASH',amount='800.00')
+            sales_stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==sales.id))
+            sales_stage.expected_due_date=date.today()+timedelta(days=30)
+            outsource_stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==outsource.id))
+            outsource_stage.expected_due_date=date.today()+timedelta(days=10)
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            provisional=execute(db,admin,'query_contract_context',{'project_id':p.id})
+            provisional_analysis=provisional['data'][0]['cash_timing_analysis']
+            assert provisional_analysis['state']=='DATES_INCOMPLETE'
+            assert provisional_analysis['currencies'][0]['first_projected_shortfall'] is None
+            assert provisional['data'][0]['derived_status']['has_projected_cash_shortfall'] is False
+        with Session.begin() as db:
+            sales_stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==sales.id))
+            sales_stage.schedule_confirmed=True
+            sales_stage.trigger_event='客户验收'
+            sales_stage.schedule_evidence='销售合同节点已由财务核对'
+            outsource_stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==outsource.id))
+            outsource_stage.schedule_confirmed=True
+            outsource_stage.trigger_event='供应商预付款'
+            outsource_stage.schedule_evidence='委外合同节点已由采购和财务核对'
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_contract_context',{'project_id':p.id})
+            analysis=result['data'][0]['cash_timing_analysis']
+            assert analysis['state']=='DATED_RISK'
+            cny=analysis['currencies'][0]
+            assert cny['first_projected_shortfall']=={
+                'date':(date.today()+timedelta(days=10)).isoformat(),
+                'amount':'400.00','currency':'CNY'}
+            assert result['data'][0]['derived_status']['has_projected_cash_shortfall'] is True
+            assert '不改变条款' in analysis['semantics']
     finally:
         engine.dispose()

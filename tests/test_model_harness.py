@@ -2129,6 +2129,49 @@ def test_tool_result_compaction_is_idempotent_and_preserves_model_context():
     assert payload['resolution'] == 'RESOLVED'
 
 
+def test_tool_result_compaction_never_samples_semantic_context_or_confirmation_proposal():
+    """A checkpoint may reduce audit detail, but not the tool/model contract.
+
+    This is the regression that distinguishes a safe turn-boundary checkpoint
+    from the former shape-only receipt.  The nested values are intentionally
+    deeper than ``_compact_sample``'s limit and the proposal contains the
+    confirmation facts the next model turn must see.
+    """
+    semantic_context = {
+        'project': {
+            'code': 'BROWSER-OUT-001',
+            'plan': {'revision': 7, 'milestone': {'key': 'DELIVERY', 'state': 'READY'}},
+        },
+        'contract': {
+            'number': 'SMOKE-CONTRACT-0919182654-SC-0919182654',
+            'signed_on': '2026-09-19',
+            'delivery_on': '2026-11-18',
+            'customer': {'code': 'BROWSER-CONTRACT-CUSTOMER', 'name': '浏览器验收客户'},
+        },
+    }
+    proposal = {
+        'kind': 'logistics_route',
+        'step_id': 'proposal-step-1',
+        'display': {'route': '昆山模具工厂→上海客户工厂', 'confirmed': False},
+    }
+    messages = [{'role': 'tool', 'tool_call_id': 'tool-1', 'content': json.dumps({
+        'evidence_id': 'e1',
+        'data': [{'audit': '长字段' * 5000}],
+        'model_context': semantic_context,
+        'proposal': proposal,
+        'resolution': 'AWAITING_CONFIRMATION',
+    }, ensure_ascii=False)}]
+
+    compacted, record = harness_module.compact_messages_for_model(messages)
+    payload = json.loads(compacted[0]['content'])
+
+    assert record is not None
+    assert payload['model_context'] == semantic_context
+    assert payload['proposal'] == proposal
+    assert '…' not in json.dumps(payload['model_context'], ensure_ascii=False)
+    assert '…' not in json.dumps(payload['proposal'], ensure_ascii=False)
+
+
 def test_read_only_tool_result_uses_authoritative_model_projection_but_keeps_evidence_link():
     model_context = {
         'project': {'code': 'P-001'},

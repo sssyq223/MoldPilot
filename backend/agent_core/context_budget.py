@@ -168,8 +168,24 @@ def _compact_payload(content: str) -> tuple[str, bool]:
         "data_shape": data_shape,
         "sample": sample,
     }
-    if "model_context" in payload:
-        compact["model_context"] = _compact_sample(payload["model_context"])
+    # A tool result may carry two different kinds of information:
+    #
+    # * ``data`` is the audit/detail receipt, which can be reduced for the
+    #   next provider request; and
+    # * ``model_context``/``proposal`` are the tool's semantic contract with
+    #   the model.  They are deliberately small projections containing the
+    #   identifiers, dates, states, and approval facts needed to reason about
+    #   this turn.
+    #
+    # Never run the generic depth/length sampler over those projections.  The
+    # old behaviour converted nested business facts to ``…`` and then still
+    # asked the model for a conclusion.  That is an architectural data-loss
+    # bug: an evidence id without its semantic payload is not evidence.  The
+    # complete receipt remains in the durable Step row; this exact projection
+    # is the model-facing checkpoint-safe copy.
+    for key in ("model_context", "proposal", "tool_error", "authoritative_receipt"):
+        if key in payload:
+            compact[key] = deepcopy(payload[key])
     for key in ("status", "resolution", "warnings", "suggestions", "record_count", "limitations"):
         if key in payload:
             compact[key] = _compact_sample(payload[key])

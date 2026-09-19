@@ -433,11 +433,13 @@
       "agent_responsibility": "Agent 开发上传、版本、审核、业务关联、晚到差异及替代追加；历史 ERP 合同/收付款事实引用，禁止重复累计",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_contract_context 按项目或合同线索汇总销售合同、付款节点、金额币种和合同上下文，供财务/业务核对",
+        "prepare_contract_record 冻结合同号、签订日期、金额、交付日期、付款方式、付款节点和本轮合同原件，并把项目、客户、内部模具号、已确认客户订单和生效开工单写入不可变 ContractBusinessTerms 关联快照",
+        "query_contract_context 按项目或合同线索返回经权限过滤的销售合同、整套委外合同、付款节点、合同附件、业务条款和关联快照；不把审批材料伪装为 ERP 实时台账",
         "合同明细必须同时具备对应合同查询工具和业务权限；上下文工具不上传凭证、不确认收付款"
       ],
       "verification_evidence": [
-        "tests/test_contract_tools.py 覆盖合同号定位、付款节点汇总和合同金额合计；凭证上传、签订日期和正式财务对账尚未验收"
+        "tests/test_contract_tools.py 覆盖合同号定位、付款节点汇总、合同金额合计、签订/交付日期、付款方式、内部模具关联快照及审批附件；真实 ERP 财务对账仍待联调验收",
+        "tests/test_split_migrations.py 与 scripts/migrate.py check 覆盖 contract_business_terms 不可变 PostgreSQL 结构和双阶段迁移 head"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -448,11 +450,12 @@
       "agent_responsibility": "Agent 开发上传、版本、审核、业务关联、晚到差异及替代追加；历史 ERP 合同/收付款事实引用，禁止重复累计",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_contract_context 可按合同号或项目线索定位当前可见项目并返回合同记录；字段含义仍以客户适配规则和人工核对为准",
-        "工具不把项目编号、订单编号和合同号混用；多候选要求用户指定项目 ID"
+        "prepare_contract_record 根据 Customer.rule_key 独立校验客户编号语义：海信使用客户项目号，海尔纸质合同使用合同号，海尔电子合同使用已确认客户订单号，其他客户保留人工核对依据",
+        "海尔电子合同订单号与 BidIntakeRevision.external_order_number 不一致时返回 CONTRACT_ORDER_MISMATCH；不同编号分别保存，不复用单一模糊字段",
+        "query_contract_context 可按合同号或项目线索定位当前可见项目；多候选要求用户指定项目 ID"
       ],
       "verification_evidence": [
-        "tests/test_contract_tools.py 覆盖合同号定位和多项目歧义；海信/海尔/电子合同客户规则适配尚未验收"
+        "tests/test_contract_tools.py 覆盖合同号定位、多项目歧义、海尔电子合同订单号不匹配阻断和正确订单映射；海信真实文件字段及客户现场规则仍待联调验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -531,11 +534,12 @@
       "agent_responsibility": "Agent 开发上传、版本、审核、业务关联、晚到差异及替代追加；历史 ERP 合同/收付款事实引用，禁止重复累计",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_contract_context 同一项目下分别返回销售合同和整套委外合同的付款节点与金额汇总，为后续资金安排差异核对提供上下文",
-        "工具只展示节点和金额，不自动比较差异、不改合同条款、不替代采购或财务审批"
+        "query_contract_context 的 cash_timing_analysis 按币种和已确认到期日汇总客户收款与整套委外付款，逐日计算流入、流出、净额和累计净额，并返回首个预计资金缺口",
+        "节点日期不完整时返回 DATES_INCOMPLETE；无生效销售合同但存在可见的生效报价承接时保留原收款条件文本并返回 UNSTRUCTURED_INFLOW_TERMS，不把文本强行解析为金额或日期",
+        "分析明确只读，不自动改变合同条款、不确认收付款、不替代采购或财务审批"
       ],
       "verification_evidence": [
-        "tests/test_contract_tools.py 覆盖销售合同与整套委外合同同时返回及权限隔离；资金差异提示规则尚未完整验收"
+        "tests/test_contract_tools.py 覆盖销售合同与整套委外合同同时返回、权限隔离，以及供应商付款早于客户收款时首个预计缺口日期和金额；真实合同节点日期与财务资金安排仍待现场验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

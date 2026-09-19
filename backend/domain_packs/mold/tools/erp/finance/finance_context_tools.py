@@ -285,6 +285,7 @@ def _contract_context(rows, role):
                 "currency": detail.get("currency"),
                 "expected_date": detail.get("expected_date"),
                 "received_date": detail.get("received_date"),
+                "business_terms": detail.get("business_terms"),
                 "replaces_id": detail.get("replaces_id"),
                 "relation_type": detail.get("relation_type") or ("REPLACEMENT" if detail.get("replaces_id") else "ORIGINAL"),
                 "settlement_allocation_evidence_present": bool(detail.get("settlement_allocation_evidence")),

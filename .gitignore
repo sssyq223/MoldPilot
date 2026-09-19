@@ -5,6 +5,9 @@ __pycache__/
 .pytest_tmp/
 .pytest-runs/
 .tmp/
+tmp/
+output/
+uv.lock
 .browser-test/
 .npm-cache/
 *.pyc
