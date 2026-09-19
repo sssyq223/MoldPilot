@@ -180,6 +180,7 @@ def _contract(row: dict):
         "id": row.get("id"), "number": row.get("number"), "status": row.get("status"),
         "contract_number": detail.get("contract_number"), "amount": detail.get("amount"),
         "currency": detail.get("currency"), "expected_date": detail.get("expected_date"),
+        "received_date": detail.get("received_date"),
         "stages_count": len(detail.get("stages") or []),
     }
 

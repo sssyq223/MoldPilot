@@ -63,7 +63,7 @@ HANDLERS = (
     })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
         "prepare_customer_receivable_schedule", "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",
-        "prepare_supplier_deduction_settlement",
+        "prepare_supplier_deduction_settlement", "prepare_mold_transfer_receipt",
     })),
     ProposalHandler("delivery_logistics.execute", DELIVERY_LOGISTICS_MODULE, frozenset({
         "prepare_logistics_route", "prepare_logistics_quote",

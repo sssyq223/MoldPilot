@@ -660,3 +660,47 @@ def test_prepare_supplier_deduction_settlement_rejects_duplicate_and_incomplete_
     finally:
         engine.dispose()
 
+
+def test_finance_records_mold_transfer_time_from_customer_signature_without_acceptance():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-MOLD-TRANSFER")
+            conversation = m.Conversation(user_id=admin.id, title="登记移模客户签收")
+            db.add(conversation);db.flush()
+            run = m.Run(conversation_id=conversation.id,user_id=admin.id,
+                security_version=admin.security_version,prompt="登记客户签收的移模时间",
+                status="SUCCEEDED",checkpoint={"authorization_hash":fingerprint(db,admin),
+                "agent_permission_mode":"ask"})
+            db.add(run);db.flush()
+            args={"project_id":p.id,"project_version":p.row_version,
+                "signed_date":date.today().isoformat(),"shipment_reference":"MOVE-SIGN-001",
+                "signer_name":"客户项目经理","evidence":"客户签收单原件"}
+        schema=tool_schema("prepare_mold_transfer_receipt")["function"]["parameters"]
+        assert {"project_id","project_version","signed_date","shipment_reference","signer_name","evidence"} <= set(schema["properties"])
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username="admin").one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            evidence=execute(db,admin,"prepare_mold_transfer_receipt",args,run=run)
+            assert evidence["proposal"]["kind"]=="mold_transfer_receipt"
+            step=m.Step(run_id=run.id,sequence=0,tool="prepare_mold_transfer_receipt",request_hash="move",result=evidence)
+            db.add(step);db.flush()
+            payload={"step_id":step.id,"proposal_hash":bpm.content_hash(evidence["proposal"])}
+            intent=business.create_intent(db,admin,"finance.execute",step.id,payload)
+            receipt=business.confirm_intent(db,admin,intent["id"],intent["challenge"])
+            assert receipt["status"]=="CONFIRMED"
+            row=db.get(m.CustomerDeliverySignature,receipt["customer_delivery_signature_id"])
+            assert row.move_type=="MOLD_TRANSFER"
+            assert row.signed_date==date.today()
+            assert db.scalar(select(m.CustomerAcceptanceRecord).where(
+                m.CustomerAcceptanceRecord.project_id==args["project_id"])) is None
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username="admin").one()
+            result=execute(db,admin,"query_finance_context",{"identifier":"FIN-MOLD-TRANSFER"})
+            analysis=result["data"][0]["analysis"]
+            assert analysis["derived_status"]["has_mold_transfer_time"] is True
+            assert analysis["derived_status"]["mold_transfer_is_quality_acceptance"] is False
+            assert analysis["mold_transfer_receipts"][0]["move_time"]==date.today().isoformat()
+    finally:
+        engine.dispose()
+

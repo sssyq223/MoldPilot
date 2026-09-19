@@ -136,6 +136,35 @@ def _tool_description(tool):
     return (tool.get("function") or {}).get("description") or ""
 
 
+def _tool_result_for_model(result, *, prefer_model_context=False):
+    """Project a durable tool receipt into the provider transcript.
+
+    Tool gateways persist the complete result as the authoritative ``ai_step``
+    receipt.  Some domain tools additionally expose a deliberately small
+    ``model_context`` containing the facts needed to answer a read-only turn.
+    Feeding both that projection and the full, deeply nested receipt to the
+    model makes the concise facts compete with audit/detail rows and wastes the
+    context window.  For explicitly read-only turns, use the projection in the
+    model transcript while keeping the evidence id that lets the UI resolve the
+    complete durable receipt.  Action turns keep the complete result because
+    follow-up tools can require version ids and workflow handles from it.
+    """
+    if not prefer_model_context or not isinstance(result, dict):
+        return result
+    model_context = result.get("model_context")
+    if not isinstance(model_context, (dict, list)):
+        return result
+    projected = {"model_context": model_context}
+    for key in (
+        "evidence_id", "resolution", "source", "as_of", "status",
+        "record_count", "warnings", "limitations", "suggestions",
+        "tool_error", "proposal",
+    ):
+        if key in result:
+            projected[key] = result[key]
+    return projected
+
+
 def _compact_description(text, limit=80):
     compact = " ".join((text or "").split())
     return compact if len(compact) <= limit else compact[:limit - 3] + "..."
@@ -790,6 +819,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         instruction for instruction in context.get('next_model_instructions', [])
         if isinstance(instruction, str) and instruction.strip()
     ]
+    activation_grace = bool(context.get('activation_grace', False))
 
     def tool_signature(call):
         try:
@@ -850,6 +880,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             'last_model_message': last_model_message,
                             'streaming_model_message': streaming_model_message,
                             'next_model_instructions': next_model_instructions,
+                            'activation_grace': activation_grace,
                             'context_usage': context_usage,
                             'context_compactions': compactions})
 
@@ -914,6 +945,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         tool_annotations=tool_annotations)
                     activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
+                    if activated:
+                        # ToolSearch promises that newly activated tools are
+                        # available on the next model turn. Context-pressure
+                        # finalization must not remove them before that turn.
+                        activation_grace = True
                     result = {"source": "harness", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                               "query": arguments.get("query", ""), "matches": matches, "activated": activated,
                               "matched_groups": matched_groups,
@@ -940,7 +976,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
-                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
+                model_result = _tool_result_for_model(
+                    result,
+                    prefer_model_context=not formal_action_requested,
+                )
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(model_result, ensure_ascii=False)})
                 save()
             pending, pending_index = [], 0
             save()
@@ -957,7 +997,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         should_finalize = bool(evidence_ids) and (
             finalizing
             or turn >= max_turns - 1
-            or context_size >= max(1, int((context_window - max_output_tokens) * 0.90))
+            or (
+                not activation_grace
+                and context_size >= max(1, int((context_window - max_output_tokens) * 0.90))
+            )
         )
         if should_finalize and not finalizing:
             finalizing = True
@@ -1015,6 +1058,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 "reasoning_active": bool(isinstance(message, dict) and message.get("reasoning_content")),
             }
             last_model_message = _debug_model_message(message)
+            activation_grace = False
             model_ok = True
         finally:
             model_elapsed_ms += round((time.time()-model_started_at)*1000)

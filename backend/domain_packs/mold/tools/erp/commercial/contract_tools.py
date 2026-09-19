@@ -50,6 +50,8 @@ class ContractProposalInput(StrictModel):
     currency: str = Field(pattern=r'^[A-Z]{3}$')
     contract_number: str = Field(min_length=1, max_length=100)
     expected_date: date | None = None
+    received_date: date | None = Field(default=None,
+        description='合同原件实际到达日期；销售合同登记必须填写，并与本轮上传附件一并留痕。')
     replaces_id: str | None = Field(default=None, max_length=36)
     relation_type: Literal['ORIGINAL','REPLACEMENT','ADDITION'] = Field(
         default='ORIGINAL', description='原始合同、替代合同或追加合同。')
@@ -433,6 +435,8 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         raise DomainError('PROJECT_BLOCKED','项目已关闭或终止，不能准备普通合同',409)
     detail=_contract_detail(data)
     if data.contract_kind=='sales_contract':
+        if not data.received_date:
+            raise DomainError('CONTRACT_RECEIVED_DATE_REQUIRED','登记销售合同必须填写合同原件实际到达日期',409)
         customer=db.get(m.Customer,detail.customer_id) if detail.customer_id else None
         if not customer or not customer.active or detail.supplier_id:
             raise DomainError('PARTY_INVALID','销售合同须关联有效客户，且不能填写供应商')
@@ -479,6 +483,7 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         } for row in allocation_cards] or ['无历史实收实付需要迁移'],
         '分配依据':data.settlement_allocation_evidence or '不适用',
         '预计签订或补齐日期':detail.expected_date.isoformat() if detail.expected_date else '未填写',
+        '合同实际到达日期':data.received_date.isoformat() if data.received_date else '未填写',
         '付款节点':stages or ['未登记付款节点'],
         '合同附件':[blob.filename for blob in blobs],
         '附件来源':{'ELECTRONIC':'电子合同','PAPER_SCAN':'纸质合同扫描件','OTHER':'其他人工资料'}[data.document_source],
@@ -604,6 +609,12 @@ def confirm(db,user,payload):
     subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
         category='outsource' if data.contract_kind=='full_outsource_contract' else None,
         remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
+    if data.contract_kind=='sales_contract':
+        db.add(m.ContractReceiptEvidence(
+            contract_subject_id=subject.id,
+            received_date=data.received_date,
+            recorded_by=user.id,
+        ))
     stages={row.name:row for row in db.scalars(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))}
     for item in allocation_cards:
         target=stages[item['target_stage_name']]

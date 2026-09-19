@@ -26,6 +26,7 @@ FINANCE_PROPOSAL_TOOLS = {
     "prepare_customer_receipt_confirmation",
     "prepare_supplier_payment_confirmation",
     "prepare_supplier_deduction_settlement",
+    "prepare_mold_transfer_receipt",
 }
 
 
@@ -100,6 +101,16 @@ class SupplierDeductionSettlementProposalInput(StrictModel):
     settlement_reference: str | None = Field(default=None, max_length=120)
     settlement_evidence: str | None = Field(default=None, max_length=4000)
     source_ref: str | None = Field(default=None, max_length=120)
+
+
+class MoldTransferReceiptProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    signed_date: date = Field(description="客户签收模具的日期，也是财务人工维护的移模时间。")
+    shipment_reference: str = Field(min_length=1, max_length=120)
+    signer_name: str = Field(min_length=1, max_length=120)
+    evidence: str = Field(min_length=1, max_length=4000)
+    logistics_route_id: str | None = Field(default=None, max_length=36)
 
 
 def _strength(value, needle):
@@ -273,6 +284,7 @@ def _contract_context(rows, role):
                 "amount": detail.get("amount"),
                 "currency": detail.get("currency"),
                 "expected_date": detail.get("expected_date"),
+                "received_date": detail.get("received_date"),
                 "replaces_id": detail.get("replaces_id"),
                 "relation_type": detail.get("relation_type") or ("REPLACEMENT" if detail.get("replaces_id") else "ORIGINAL"),
                 "settlement_allocation_evidence_present": bool(detail.get("settlement_allocation_evidence")),
@@ -578,6 +590,37 @@ def _corrections(rows):
     return result
 
 
+def _mold_transfer_receipts(db, project_id):
+    return [
+        {
+            "id": row.id,
+            "shipment_reference": row.shipment_reference,
+            "signed_date": row.signed_date.isoformat(),
+            "move_time": row.signed_date.isoformat(),
+            "signer_name": row.signer_name,
+            "sign_status": row.sign_status,
+            "move_type": row.move_type,
+            "logistics_route_id": row.logistics_route_id,
+            "evidence_present": bool(row.evidence),
+            "recorded_by": row.recorded_by,
+            "quality_acceptance_effect": "NONE",
+        }
+        for row in db.scalars(
+            select(m.CustomerDeliverySignature)
+            .where(
+                m.CustomerDeliverySignature.project_id == project_id,
+                m.CustomerDeliverySignature.move_type == "MOLD_TRANSFER",
+            )
+            .order_by(
+                m.CustomerDeliverySignature.signed_date.desc(),
+                m.CustomerDeliverySignature.created_at.desc(),
+                m.CustomerDeliverySignature.id,
+            )
+            .limit(100)
+        )
+    ]
+
+
 def _cost_impacts(db, user, project_id, allowed_tools):
     contacts = []
     if "query_contact_cases" in allowed_tools:
@@ -637,7 +680,7 @@ def _closure_finance_items(db, user, project_id):
     return rows
 
 
-def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, contract_balances, corrections, cost_impacts, closure_items):
+def _analysis(project, profile, starts, start_materials, contract_follow_up, department_handoffs, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, contract_balances, corrections, mold_transfer_receipts, cost_impacts, closure_items):
     open_reservation = bool(supplier_payments["outstanding_reservations"])
     supplier_paid = bool(supplier_payments["confirmed_totals"])
     customer_received = bool(customer_receipts["confirmed_totals"])
@@ -657,6 +700,14 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
     gaps = []
     if not starts:
         gaps.append("未见正式开工通知上下文，无法证明已向财务形成开工交接。")
+    elif not start_materials:
+        gaps.append("正式开工通知缺少冻结的订单、客户、模具、机型/物料、合同和交期关联材料。")
+    if contract_follow_up.get("state") == "OVERDUE":
+        warnings.append("销售合同已超过正式开工材料中的预计到达日期；应提醒财务和项目负责人，并由业务/市场跟踪补充签订。")
+    elif contract_follow_up.get("state") == "RECEIVED_DATE_MISSING":
+        gaps.append("已见销售合同，但未登记合同原件实际到达日期。")
+    elif contract_follow_up.get("state") == "RECEIVED_ATTACHMENT_MISSING":
+        gaps.append("已见销售合同到达日期，但未见冻结的合同原件附件。")
     if not sales_contracts:
         gaps.append("未见可见销售合同及客户收款节点；不能判断客户应收条件。")
     if customer_nodes and not customer_received:
@@ -688,6 +739,9 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
     return {
         "finance_handoff": {
             "effective_start_notices": starts,
+            "formal_start_materials": start_materials,
+            "contract_follow_up": contract_follow_up,
+            "department_handoffs": department_handoffs,
             "profile_execution_mode": (profile or {}).get("execution_mode"),
             "settlement_status": (profile or {}).get("settlement_status"),
         },
@@ -699,6 +753,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         "supplier_payment_summary": supplier_payments,
         "current_effective_contract_balances": contract_balances,
         "finance_corrections": corrections,
+        "mold_transfer_receipts": mold_transfer_receipts,
         "cost_and_change_impacts": cost_impacts,
         "closure_finance_items": closure_items,
         "gaps": gaps,
@@ -706,6 +761,10 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         "derived_status": {
             "project_status": project.status,
             "has_effective_start_notice": bool(starts),
+            "has_complete_start_material": bool(start_materials),
+            "contract_arrival_state": contract_follow_up.get("state"),
+            "has_mold_transfer_time": bool(mold_transfer_receipts),
+            "mold_transfer_is_quality_acceptance": False,
             "has_sales_contract_payment_nodes": bool(customer_nodes),
             "has_confirmed_receivable_schedule": any(node.get("schedule_confirmed") for node in customer_nodes),
             "customer_receivable_reminder_count": receivable_schedule["reminder_count"],
@@ -742,6 +801,10 @@ def supplier_deduction_settlement_schema():
     return SupplierDeductionSettlementProposalInput.model_json_schema()
 
 
+def mold_transfer_receipt_schema():
+    return MoldTransferReceiptProposalInput.model_json_schema()
+
+
 def parse_customer_receivable_schedule(arguments):
     try:
         return CustomerReceivableScheduleProposalInput.model_validate(arguments or {})
@@ -772,6 +835,19 @@ def parse_supplier_deduction_settlement(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "供应商扣款已结算必须填写结算单号和结算依据")
     if data.status == "RESPONSIBILITY_CONFIRMED" and data.settlement_reference:
         raise DomainError("INVALID_TOOL_INPUT", "仅确认责任时不要填写结算单号；结算完成后再登记已结算依据")
+    return data
+
+
+def parse_mold_transfer_receipt(arguments):
+    try:
+        data = MoldTransferReceiptProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError(
+            "INVALID_TOOL_INPUT",
+            "移模客户签收参数不完整或不符合要求："+error.errors()[0]["msg"],
+        ) from None
+    if data.signed_date > now().date():
+        raise DomainError("DATE_INVALID", "客户签收日期不能在未来")
     return data
 
 
@@ -1027,6 +1103,70 @@ def preview_supplier_payment_confirmation(db, user, data: SupplierPaymentConfirm
     return payload, display
 
 
+def preview_mold_transfer_receipt(db, user, data: MoldTransferReceiptProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "project.dossier.read", scope)
+    require(db, user, "customer_receipt.confirm", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    if data.signed_date > now().date():
+        raise DomainError("DATE_INVALID", "客户签收日期不能在未来")
+    if data.logistics_route_id:
+        route = db.get(m.LogisticsRoute, data.logistics_route_id)
+        if not route:
+            raise DomainError("LOGISTICS_ROUTE_NOT_FOUND", "物流路线不存在", 404)
+    duplicate = db.scalar(
+        select(m.CustomerDeliverySignature.id).where(
+            m.CustomerDeliverySignature.project_id == project.id,
+            m.CustomerDeliverySignature.shipment_reference == data.shipment_reference,
+            m.CustomerDeliverySignature.signed_date == data.signed_date,
+        )
+    )
+    if duplicate:
+        raise DomainError("MOLD_TRANSFER_RECEIPT_DUPLICATE", "该移模客户签收记录已存在", 409)
+    display = {
+        "操作": "登记移模客户签收时间",
+        "项目": project.code+" · "+project.name,
+        "项目版本": project.row_version,
+        "客户签收/移模时间": data.signed_date.isoformat(),
+        "签收或交付单号": data.shipment_reference,
+        "客户签收人": data.signer_name,
+        "物流路线": data.logistics_route_id or "未关联",
+        "签收依据": data.evidence,
+        "说明": "本人确认后仅由财务登记客户签收日期作为移模时间；客户签收不等于质量验收通过，也不代表回款、结算或项目关闭。",
+    }
+    return project, display
+
+
+def create_mold_transfer_receipt(db, user, data: MoldTransferReceiptProposalInput):
+    project, _ = preview_mold_transfer_receipt(db, user, data)
+    row = m.CustomerDeliverySignature(
+        project_id=project.id,
+        logistics_route_id=data.logistics_route_id,
+        shipment_reference=data.shipment_reference,
+        signed_date=data.signed_date,
+        signer_name=data.signer_name,
+        sign_status="SIGNED",
+        move_type="MOLD_TRANSFER",
+        evidence=data.evidence,
+        recorded_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    profile = db.get(m.ProjectProfile, project.id)
+    record(db, user, "mold_transfer.customer_receipt.recorded", row.id, {
+        "project_id": project.id,
+        "signed_date": data.signed_date.isoformat(),
+        "shipment_reference": data.shipment_reference,
+        "move_type": "MOLD_TRANSFER",
+    }, [profile.owner_user_id] if profile and profile.owner_user_id else [])
+    return row
+
+
 def execute_finance_tool(db, user, key, arguments, run=None):
     if key not in FINANCE_PROPOSAL_TOOLS:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
@@ -1044,6 +1184,13 @@ def execute_finance_tool(db, user, key, arguments, run=None):
             "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
             "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
         limitations = ["仅准备客户实际回款登记建议；本人确认后才写入回款确认台账，不执行收款、不开票、不计算收入利润。"]
+    elif key == "prepare_mold_transfer_receipt":
+        data = parse_mold_transfer_receipt(arguments)
+        _, display = preview_mold_transfer_receipt(db, user, data)
+        proposal = {"kind": "mold_transfer_receipt", "action": "confirm_mold_transfer_receipt",
+            "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+        limitations = ["仅准备财务人工登记移模客户签收时间；本人确认后才写入，客户签收不等于质量验收、回款、结算或项目关闭。"]
     else:
         if key == "prepare_supplier_payment_confirmation":
             data = parse_supplier_payment_confirmation(arguments)
@@ -1095,6 +1242,9 @@ def validate_intent(db, user, payload):
     elif proposal.get("kind") == "supplier_deduction_settlement":
         data = parse_supplier_deduction_settlement(proposal["input"])
         display = preview_supplier_deduction_settlement(db, user, data)
+    elif proposal.get("kind") == "mold_transfer_receipt":
+        data = parse_mold_transfer_receipt(proposal["input"])
+        _, display = preview_mold_transfer_receipt(db, user, data)
     else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
@@ -1119,6 +1269,10 @@ def confirm(db, user, payload):
         result = execute_command(db, user, "finance.confirm", data.payment_subject_id, payment.model_dump(mode="json"))
         return {"project_id": data.project_id, "payment_subject_id": data.payment_subject_id,
             "payment_confirmation_id": result["payment_confirmation_id"], "action": "supplier_payment_confirm", "status": "CONFIRMED"}
+    if proposal.get("kind") == "mold_transfer_receipt":
+        receipt = create_mold_transfer_receipt(db, user, data)
+        return {"project_id": data.project_id, "customer_delivery_signature_id": receipt.id,
+            "action": "mold_transfer_receipt_confirm", "status": "CONFIRMED"}
     settlement = create_supplier_deduction_settlement(db, user, data)
     return {"project_id": data.project_id, "supplier_deduction_settlement_id": settlement.id,
         "action": "supplier_deduction_settlement_confirm", "status": "CONFIRMED"}
@@ -1164,7 +1318,21 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                         "evidence_present": bool(detail.get("evidence")),
                     }
                 )
+        from domain_packs.mold.erp.project import start_materials as start_material_service
+        frozen_start_materials = [
+            material
+            for material in (
+                start_material_service.card(db, row["id"]) for row in starts
+            )
+            if material
+        ]
         sales_contracts, customer_nodes = _contract_context(rows["sales_contract"], "CUSTOMER_RECEIVABLE")
+        latest_start_id = starts[0]["id"] if starts else None
+        contract_follow_up = start_material_service.contract_follow_up(
+            db, project.id, latest_start_id, rows["sales_contract"]
+        )
+        from domain_packs.mold.erp.project import start_dispatches
+        department_handoffs = start_dispatches.summary(db, latest_start_id)
         customer_receipts, receipts_skipped = _customer_receipts(db, user, project.id, sales_contracts, customer_nodes)
         receivable_schedule = _receivable_schedule(customer_nodes, customer_receipts, now().date())
         outsource_contracts, _ = _contract_context(rows["full_outsource_contract"], "SUPPLIER_PAYABLE")
@@ -1172,6 +1340,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
         contract_balances = _current_contract_balances(
             sales_contracts, customer_receipts, outsource_contracts, supplier_payments)
         corrections = _corrections(rows["finance_correction"])
+        mold_transfer_receipts = _mold_transfer_receipts(db, project.id)
         cost_impacts = _cost_impacts(db, user, project.id, allowed_tools)
         closure_items = _closure_finance_items(db, user, project.id)
         if receipts_skipped:
@@ -1188,15 +1357,60 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             limitations.append("可在取得已审批供应商付款申请和授权余额后准备供应商实际付款确认；该操作仍需本人核对卡片后才写入。")
         if "prepare_supplier_deduction_settlement" in allowed_tools:
             limitations.append("可在取得供应商、委外合同、工程联络扣款线索和责任/结算依据后准备供应商扣款结算确认；该操作仍需本人核对卡片后才写入。")
+        if "prepare_mold_transfer_receipt" in allowed_tools:
+            limitations.append("可由财务按客户签收日期准备移模时间登记；该操作仍需本人核对卡片后才写入，且不会形成质量验收结论。")
+        analysis = _analysis(
+            project, profile, starts, frozen_start_materials, contract_follow_up,
+            department_handoffs, sales_contracts, customer_nodes,
+            customer_receipts, receivable_schedule, outsource_contracts,
+            supplier_payments, contract_balances, corrections,
+            mold_transfer_receipts, cost_impacts, closure_items,
+        )
+        finance_delivery = next(
+            (item for item in department_handoffs.get("items", [])
+             if item.get("role_key") == "FINANCE_OWNER"),
+            None,
+        )
+        model_context = {
+            "project": {
+                "code": project.code,
+                "name": project.name,
+                "status": project.status,
+            },
+            "formal_start_materials": [
+                start_material_service.frozen_material_model_context(row)
+                for row in frozen_start_materials
+            ],
+            "contract_follow_up": (
+                start_material_service.contract_follow_up_model_context(
+                    contract_follow_up
+                )
+            ),
+            "finance_handoff": {
+                "overall_status": department_handoffs.get("status"),
+                "delivery_state": finance_delivery.get("delivery_state") if finance_delivery else None,
+                "notification_delivered": bool(
+                    finance_delivery
+                    and finance_delivery.get("delivery_state") == "DELIVERED"
+                ),
+                "explicit_receipt_acknowledged": None,
+                "recipient_count": finance_delivery.get("recipient_count") if finance_delivery else 0,
+                "gaps": department_handoffs.get("gaps", []),
+            },
+            "derived_status": analysis.get("derived_status", {}),
+            "gaps": analysis.get("gaps", []),
+            "warnings": analysis.get("warnings", []),
+        }
         return {
             "resolution": "RESOLVED",
             "data": [
                 {
                     "project": _project_card(db, user, project, alternatives or ("项目定位",)),
                     "profile": profile,
-                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, contract_balances, corrections, cost_impacts, closure_items),
+                    "analysis": analysis,
                 }
             ],
+            "model_context": model_context,
             "source": "agent_db",
             "as_of": now().isoformat(),
             "limitations": limitations,

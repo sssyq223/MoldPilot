@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -92,6 +92,9 @@ def customer_start_conditions(db,project,user,suffix='001'):
         revision_id=revision.id,file_id=blob.id,role='EXTERNAL_START_NOTICE',
         content_sha256=blob.sha256,title=blob.filename,
     ))
+    mold=m.Mold(internal_number='MOLD-'+suffix,name=project.name+' 模具')
+    db.add(mold);db.flush()
+    db.add(m.ProjectMold(project_id=project.id,mold_id=mold.id))
     return revision
 
 
@@ -179,6 +182,11 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
             assert detail.source_subject_id==args['source_subject_id']
             assert detail.decision=='START'
             assert detail.execution_mode=='FULL_OUTSOURCE'
+            snapshot=db.get(m.InternalStartSnapshot,start.id)
+            assert snapshot.bid_intake_revision_id==args['bid_intake_revision_id']
+            assert snapshot.linked_business['external_order_number']=='EXT-ORDER-102'
+            assert snapshot.linked_business['internal_molds'][0]['internal_number']=='MOLD-102'
+            assert snapshot.linked_business['processing_kind']=='NEW_MOLD'
             intake_link=db.scalar(select(m.BidIntakeLifecycleLink).where(
                 m.BidIntakeLifecycleLink.subject_id==start.id
             ))
@@ -188,6 +196,80 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
                 m.ApprovalInstance.resource_type=='business_subject',
                 m.ApprovalInstance.resource_id==start.id,
             ))
+    finally:
+        engine.dispose()
+
+
+def test_start_without_contract_requires_expected_date_and_projects_overdue_follow_up():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);finance=user(db,'finance',True)
+            p=project(db,'START-CONTRACT-FOLLOW','开工合同催补项目')
+            db.add(m.ProjectProfile(project_id=p.id,owner_user_id=admin.id,execution_mode='INTERNAL'))
+            db.add(m.ProjectRoleMember(project_id=p.id,role_key='FINANCE_OWNER',user_id=finance.id))
+            db.add(m.ProjectRoleMember(project_id=p.id,role_key='BUSINESS_OWNER',user_id=admin.id))
+            accept=decision(db,p,admin,'quote_acceptance','QA-CONTRACT-FOLLOW','ACCEPT')
+            intake=customer_start_conditions(db,p,admin,'106')
+            definition=workflow(db,admin)
+            conversation=m.Conversation(user_id=admin.id,title='无合同正式开工')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='合同未到，准备正式开工',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
+                'bid_intake_revision_id':intake.id,
+                'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
+                'workflow_definition_id':definition.id}
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            with pytest.raises(Exception) as missing:
+                execute(db,admin,'prepare_internal_start',args,run=run)
+            assert getattr(missing.value,'code',None)=='EXPECTED_CONTRACT_DATE_REQUIRED'
+            evidence=execute(db,admin,'prepare_internal_start',{
+                **args,'expected_contract_date':(date.today()-timedelta(days=1)).isoformat()
+            },run=run)
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_internal_start',request_hash='contract-follow',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'internal_start.execute',step.id,payload)
+            business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            start=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind=='internal_start'))
+            start.status='EFFECTIVE'
+            project_row=db.get(m.Project,args['project_id']);project_row.status='ACTIVE';project_row.row_version+=1
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-CONTRACT-FOLLOW'})
+            follow=result['data'][0]['contract_follow_up']
+            assert follow['state']=='OVERDUE'
+            assert follow['passive_reminder']['kind']=='PASSIVE_WARNING'
+            assert {row['role_key'] for row in follow['passive_reminder']['recipients']}=={
+                'PROJECT_OWNER','FINANCE_OWNER'
+            }
+            owner=next(row for row in follow['passive_reminder']['recipients']
+                if row['user_id']==admin.id)
+            assert owner['role_keys']==['PROJECT_OWNER','BUSINESS_OWNER']
+            assert follow['passive_reminder']['required_role_gaps']==[]
+            model_context=result['model_context']
+            assert model_context['frozen_start_material']['is_frozen'] is True
+            assert model_context['frozen_start_material']['customer_order_number']=='EXT-ORDER-106'
+            assert model_context['frozen_start_material']['customer_order']=={
+                'number':'EXT-ORDER-106','frozen_in_snapshot':True
+            }
+            assert model_context['frozen_start_material']['external_order_number']=='EXT-ORDER-106'
+            assert model_context['frozen_start_material']['internal_mold_numbers']==['MOLD-106']
+            assert model_context['contract_follow_up']['state']=='OVERDUE'
+            assert model_context['contract_follow_up']['overdue_reminder']['active'] is True
+            assert set(model_context['contract_follow_up']['overdue_reminder']['recipient_names'])=={
+                'admin','finance'
+            }
+            assert set(model_context['contract_follow_up']['overdue_reminder']['recipient_roles'])=={
+                '项目负责人','财务负责人','业务负责人'
+            }
+            assert model_context['finance_handoff']['notification_delivered'] is False
+            assert model_context['finance_handoff']['explicit_receipt_acknowledged'] is None
     finally:
         engine.dispose()
 
@@ -392,6 +474,8 @@ def test_effective_internal_start_creates_role_handoffs_and_delivers_notificatio
             assert row['department_handoffs']['assigned_count']==5
             assert row['department_handoffs']['delivered_count']==5
             assert all(item['delivery_state']=='DELIVERED' for item in row['department_handoffs']['items'])
+            assert result['model_context']['finance_handoff']['notification_delivered'] is True
+            assert result['model_context']['finance_handoff']['explicit_receipt_acknowledged'] is None
             assert db.scalar(select(m.Notification).where(
                 m.Notification.title=='项目已正式开工，请核对计划交接'
             ).limit(1))

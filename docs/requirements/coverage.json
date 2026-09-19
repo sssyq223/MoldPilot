@@ -382,13 +382,13 @@
       "agent_responsibility": "Agent 开发开工依据、正式下达、业务状态、合同催补及财务交接；调用已有执行能力前校验开工条件",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "正式开工条件核对同时展示开工通知、销售合同、整套委外合同和计划上下文，明确内部通知与销售合同分别管理",
-        "工具提示合同晚到不必然阻塞已满足条件的项目开工，但需保留依据和后续合同核对",
-        "项目启动链路把销售合同标记为可并行阶段；合同缺失或晚到不会把已经具备独立承接依据的正式开工阶段改写为受阻"
+        "正式开工确认时写入不可变 InternalStartSnapshot，冻结外部订单、客户、客户模具号、机型/物料号、项目、内部模具、合同状态、开工日期、交期和中标接收版本",
+        "新模正式开工前必须已有 ERP 唯一内部模具号关联；已有模具设变必须复用中标接收记录指向的原内部模具号",
+        "销售合同与开工通知仍是独立业务对象；合同未到只要求登记预计到达日期，不阻塞满足客户开工条件的正式开工"
       ],
       "verification_evidence": [
-        "tests/test_start_tools.py 覆盖销售合同与开工条件同时返回；tests/test_contract_tools.py 覆盖合同上下文，外部订单/模具唯一号适配尚未验收",
-        "tests/test_project_kickoff_lifecycle.py 覆盖承接主线与合同并行建议，以及合同阶段与开工阶段不互相冒充"
+        "tests/test_start_tools.py 覆盖确认前卡片、确认后冻结快照、外部订单和内部模具号关联，以及合同缺失不阻塞正式开工",
+        "tests/test_project_kickoff_lifecycle.py 覆盖承接主线与合同并行建议，以及合同阶段与开工阶段不互相冒充；真实 ERP 模具建档仍待联调验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -399,11 +399,13 @@
       "agent_responsibility": "Agent 开发开工依据、正式下达、业务状态、合同催补及财务交接；调用已有执行能力前校验开工条件",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "query_internal_start_readiness 在未见销售合同时给出 warning，说明合同晚到需保留开工依据并后续补合同核对",
-        "query_contract_context 的 late_expected_contracts 可提示预计日期已过但合同记录未生效/关闭"
+        "无生效销售合同时 prepare_internal_start 强制登记 expected_contract_date，并随不可变开工材料保存",
+        "query_internal_start_readiness 和 query_finance_context 计算 PENDING、DUE_TODAY、OVERDUE、RECEIVED_DATE_MISSING、RECEIVED_ATTACHMENT_MISSING 或 RECEIVED 状态",
+        "逾期时生成只读被动预警投影，明确财务、项目负责人及业务/市场跟踪角色；合同登记要求实际到达日期并冻结本轮原件附件"
       ],
       "verification_evidence": [
-        "tests/test_start_tools.py 覆盖未见销售合同时的开工核对 warning；tests/test_contract_tools.py 覆盖晚到合同提示；合同附件上传和催补通知尚未验收"
+        "tests/test_start_tools.py 覆盖缺少预计日期阻断、逾期状态、财务和项目负责人提醒对象；tests/test_contract_tools.py 覆盖实际到达日期和合同附件随 BPM 材料保存",
+        "逾期提醒当前按技术方案第 11 章实现为用户查询触发的被动预警；真实通知渠道与业务/市场人员配置仍待现场验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },
@@ -414,11 +416,13 @@
       "agent_responsibility": "Agent 开发开工依据、正式下达、业务状态、合同催补及财务交接；调用已有执行能力前校验开工条件",
       "latest_decision": "完整保留；具体既有动作复用不抵消本条需求。",
       "implementation_evidence": [
-        "正式开工核对与合同上下文工具分开返回开工通知、合同和付款节点，避免把签收、合同或付款备注误判为财务确认",
-        "工具只读，不维护移模时间、不确认客户付款节点、不替代财务核对"
+        "正式开工生效后向 FINANCE_OWNER 发送包含冻结开工材料的 Agent Core Outbox 交接，query_finance_context 同时返回开工通知、订单/合同材料和独立客户付款节点",
+        "prepare_mold_transfer_receipt 由财务按客户签收日期人工登记 CustomerDeliverySignature(move_type=MOLD_TRANSFER)，确认卡明确签收不等于质量验收",
+        "客户付款节点继续使用 PaymentStage 结构化维护，移模签收与 CustomerAcceptanceRecord 质量验收保持不同实体和不同结论"
       ],
       "verification_evidence": [
-        "tests/test_start_tools.py 覆盖开工通知独立于承接；tests/test_contract_tools.py 覆盖付款节点只读展示，财务取得 BPM 开工通知和移模维护尚未验收"
+        "tests/test_start_tools.py 覆盖正式开工财务角色交接和冻结材料；tests/test_finance_context_tools.py 覆盖结构化付款节点、财务移模签收确认卡、确认后写入及无质量验收副作用",
+        "真实 BPM 人员配置、客户签收单和财务岗位端到端操作仍待现场验收"
       ],
       "acceptance_status": "NOT_VERIFIED"
     },

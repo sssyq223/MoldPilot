@@ -42,6 +42,8 @@ class StartProposalInput(StrictModel):
     effective_date: date = Field(description='正式内部开工生效日期。')
     evidence: str = Field(min_length=1, max_length=4000,
         description='客户开工通知、工艺方案确认或项目负责人下达依据。')
+    expected_contract_date: date | None = Field(default=None,
+        description='销售合同尚未到达时必须填写的预计到达日期；合同晚到不阻塞已满足条件的开工。')
     workflow_definition_id: str = Field(min_length=1, max_length=36,
         description='query_internal_start_readiness 返回或管理员配置的正式开工审批流程 ID。')
 
@@ -283,7 +285,7 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
     if project:
         records=_records(db,user,project.id,allowed_tools)
         from domain_packs.mold.tools.erp.commercial.bid_intake_tools import start_condition_snapshot
-        from domain_packs.mold.erp.project import start_dispatches
+        from domain_packs.mold.erp.project import start_dispatches, start_materials
         start_conditions=start_condition_snapshot(db,user,project.id)
         latest_start=_latest_effective(records,'internal_start','START')
         skipped=[]
@@ -295,6 +297,58 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
         if 'prepare_internal_start' in allowed_tools:
             try:workflows=workflow_options(db,user,project)
             except DomainError as error:limitations.append('当前人员缺少正式开工提交权限，未返回可选开工审批流程：'+error.message)
+        start_material = (
+            start_materials.card(db, latest_start.get('id'))
+            if latest_start and start_conditions.get('visible') else None
+        )
+        contract_visible = 'query_sales_contract' in allowed_tools
+        contract_follow_up = start_materials.contract_follow_up(
+            db, project.id, latest_start.get('id') if latest_start else None,
+            records['sales_contract'] if contract_visible else None,
+        )
+        department_handoffs = start_dispatches.summary(
+            db, latest_start.get('id') if latest_start else None
+        )
+        finance_handoff = next(
+            (item for item in department_handoffs.get('items', [])
+             if item.get('role_key') == 'FINANCE_OWNER'),
+            None,
+        )
+        model_context = {
+            'project': {
+                'code': project.code,
+                'name': project.name,
+                'status': project.status,
+            },
+            'formal_start': {
+                'exists': bool(latest_start),
+                'number': latest_start.get('number') if latest_start else None,
+                'status': latest_start.get('status') if latest_start else None,
+                'effective_date': (
+                    (latest_start.get('detail') or {}).get('effective_date')
+                    if latest_start else None
+                ),
+            },
+            'frozen_start_material': start_materials.frozen_material_model_context(
+                start_material
+            ),
+            'contract_follow_up': start_materials.contract_follow_up_model_context(
+                contract_follow_up
+            ),
+            'finance_handoff': {
+                'overall_status': department_handoffs.get('status'),
+                'delivery_state': finance_handoff.get('delivery_state') if finance_handoff else None,
+                'notification_delivered': bool(
+                    finance_handoff
+                    and finance_handoff.get('delivery_state') == 'DELIVERED'
+                ),
+                # The current dispatch receipt proves notification delivery,
+                # not that a human opened it or completed finance processing.
+                'explicit_receipt_acknowledged': None,
+                'recipient_count': finance_handoff.get('recipient_count') if finance_handoff else 0,
+                'gaps': department_handoffs.get('gaps', []),
+            },
+        }
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':_project_profile(db,user,project.id),
             'quote_acceptance':records['quote_acceptance'],
@@ -309,10 +363,11 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
             'customer_start_conditions':start_conditions,
             'readiness':_readiness(project,records,allowed_tools,start_conditions),
             'business_state':_business_state(project,records,start_conditions),
-            'department_handoffs':start_dispatches.summary(
-                db, latest_start.get('id') if latest_start else None
-            ),
+            'formal_start_material':start_material,
+            'contract_follow_up':contract_follow_up,
+            'department_handoffs':department_handoffs,
             'workflow_options':workflows}],
+            'model_context':model_context,
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),
@@ -382,6 +437,11 @@ def preview_start(db,user,data:StartProposalInput):
             m.BusinessSubject.created_at.desc(),m.BusinessSubject.id).limit(20)))
     except DomainError:
         sales_contract_visible=False
+    from domain_packs.mold.erp.project import start_materials
+    material=start_materials.build(
+        db,project,data.bid_intake_revision_id,data.effective_date,
+        data.expected_contract_date,contract_visibility=sales_contract_visible,
+    )
     plans=[];plan_visible=True
     try:
         require(db,user,'project_plan.read',scope)
@@ -407,6 +467,11 @@ def preview_start(db,user,data:StartProposalInput):
         '中标接收依据':'V'+str(start_conditions['current_version'])+' · '+start_conditions['current_revision_id'],
         '客户工艺方案':'已人工确认 · '+start_conditions['customer_process_confirmation_evidence'],
         '客户外部订单':start_conditions['external_order_number'],
+        '客户及联系人':material['customer'],
+        '客户模具号':material['customer_mold_number'] or '未填写',
+        '机型或物料号':material['customer_model_or_material'] or '未填写',
+        '内部模具号':[row['internal_number'] for row in material['internal_molds']],
+        '业务类型':'已有模具设变' if material['processing_kind']=='MOLD_CHANGE' else '新模',
         '客户开工日期':start_conditions['external_start_date'],
         '客户交期':start_conditions['customer_due_date'],
         '客户开工通知附件':'已核对',
@@ -414,6 +479,7 @@ def preview_start(db,user,data:StartProposalInput):
         '正式开工日期':data.effective_date.isoformat(),
         '开工依据':data.evidence,
         '销售合同':('未授权查看' if not sales_contract_visible else ('已见 '+str(len(sales_contracts))+' 条有效合同' if sales_contracts else '当前未见有效销售合同')),
+        '合同预计到达':data.expected_contract_date.isoformat() if data.expected_contract_date else '已有合同或当前发起人无权核对',
         '项目计划':('未授权查看' if not plan_visible else ('已见 '+str(len(plans))+' 条计划/变更记录' if plans else '当前未见计划记录')),
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '注意事项':warnings or ['承接、合同、内部正式开工和项目计划仍是不同事实；审批生效前不会改变项目状态。'],
@@ -462,6 +528,20 @@ def confirm(db,user,payload):
     detail,_=preview_start(db,user,data)
     subject=domains.create(db,user,s.SubjectInput(kind='internal_start',project_id=data.project_id,
         remark=data.evidence,detail=detail.model_dump(mode='json')))
+    project=db.get(m.Project,data.project_id)
+    try:
+        require(db,user,'sales_contract.read',{'project_id':data.project_id})
+        contract_visibility=True
+    except DomainError:
+        contract_visibility=False
+    from domain_packs.mold.erp.project import start_materials
+    material=start_materials.build(
+        db,project,data.bid_intake_revision_id,data.effective_date,
+        data.expected_contract_date,contract_visibility=contract_visibility,
+    )
+    start_materials.create(
+        db,user,subject,data.bid_intake_revision_id,material,data.expected_contract_date,
+    )
     from domain_packs.mold.tools.erp.commercial.bid_intake_tools import link_lifecycle_subject
     link_lifecycle_subject(
         db,user,data.project_id,subject,'INTERNAL_START',

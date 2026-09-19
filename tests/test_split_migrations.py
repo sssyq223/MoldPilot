@@ -62,7 +62,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
         _run(probe_url, "scripts/migrate.py", "upgrade", "head")
         current = _run(probe_url, "scripts/migrate.py", "current")
         assert "a10c0e000008 (head)" in current
-        assert "ma0d0e000010 (head)" in current
+        assert "mb0d0e000011 (head)" in current
         assert "No new upgrade operations detected" in _run(
             probe_url, "scripts/migrate.py", "check"
         )
@@ -77,7 +77,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                )) == "ma0d0e000010"
+                    )) == "mb0d0e000011"
             revision_columns = set(connection.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema=:schema AND table_name='bid_intake_revision'
@@ -93,7 +93,8 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
                 "supplier_shipment", "quote_inbound_record", "quotation_detail",
                 "quotation_source_link", "quotation_feedback", "bid_intake_case",
                 "bid_intake_revision", "bid_intake_attachment", "bid_intake_lifecycle_link",
-                "internal_start_dispatch"} <= tables
+                "internal_start_dispatch", "internal_start_snapshot",
+                "contract_receipt_evidence"} <= tables
         with probe.connect() as connection:
             immutable = set(connection.execute(text("""
                 SELECT event_object_table FROM information_schema.triggers
@@ -103,7 +104,8 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
                 "contract_settlement_allocation", "quote_inbound_record", "quotation_detail",
                 "quotation_source_link", "quotation_feedback", "bid_intake_case",
                 "bid_intake_revision", "bid_intake_attachment", "bid_intake_lifecycle_link",
-                "internal_start_dispatch"} <= immutable
+                "internal_start_dispatch", "internal_start_snapshot",
+                "contract_receipt_evidence"} <= immutable
         assert "alembic_version" not in tables
 
         _run(probe_url, "scripts/migrate.py", "downgrade", "base")
@@ -160,7 +162,7 @@ def test_existing_legacy_mold_schema_is_adopted_without_rewriting_business_rows(
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                )) == "ma0d0e000010"
+                    )) == "mb0d0e000011"
             assert connection.scalar(text(
                 "SELECT display_name FROM app_user WHERE username='migration-sentinel'"
             )) == "迁移哨兵"

@@ -120,6 +120,15 @@ function updateNotificationPosition(){
  left=Math.max(10,Math.min(left,window.innerWidth-width-10))
  notificationPopoverStyle.value={left:left+'px',top:Math.round(rect.bottom+gap)+'px'}
 }
+let conversationFitFrame=0
+function handleWorkbenchResize(){
+ updateNotificationPosition()
+ if(conversationFitFrame)window.cancelAnimationFrame(conversationFitFrame)
+ conversationFitFrame=window.requestAnimationFrame(()=>{
+  conversationFitFrame=0
+  void nextTick().then(()=>fitInitialConversations())
+ })
+}
 function escapeMenu(e:KeyboardEvent){if(e.key==='Escape'){if(showProfile.value)closeProfile();showNotices.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;if(erpDesignOrdersDialog.value)erpDesignOrdersDialog.value=null;else if(erpDrawingPreviewRow.value)erpDrawingPreviewRow.value=null;else closeErpDesignPreview()}}
 function closeFloatingPanels(e:MouseEvent){
  const target=e.target as Element|null
@@ -128,8 +137,8 @@ function closeFloatingPanels(e:MouseEvent){
  if(modelPopoverOpen.value&&!target?.closest('.model-selector-wrap'))modelPopoverOpen.value=false
  if(approvalModePopoverOpen.value&&!target?.closest('.approval-mode-wrap'))approvalModePopoverOpen.value=false
 }
-onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',updateNotificationPosition)})
-onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',updateNotificationPosition);stopErpDesignPreviewPolling();for(const frame of streamedTextFrames.values())window.cancelAnimationFrame(frame);streamedTextFrames.clear()})
+onMounted(()=>{window.addEventListener('keydown',escapeMenu);window.addEventListener('click',closeFloatingPanels);window.addEventListener('resize',handleWorkbenchResize)})
+onUnmounted(()=>{window.removeEventListener('keydown',escapeMenu);window.removeEventListener('click',closeFloatingPanels);window.removeEventListener('resize',handleWorkbenchResize);if(conversationFitFrame)window.cancelAnimationFrame(conversationFitFrame);stopErpDesignPreviewPolling();for(const frame of streamedTextFrames.values())window.cancelAnimationFrame(frame);streamedTextFrames.clear()})
 async function openNotices(){showProfile.value=false;showNotices.value=false;panel.value='notifications';expanded.value=true;full.value=false;saveLayout();noticeLoading.value=true;try{[notices.value,approvals.value,initiatedApprovals.value,approvalWorkItems.value]=await Promise.all([api('/notifications'),api('/approvals'),api('/approvals/initiated'),api('/approval-work-items')])}catch(e:any){fail(e.message)}finally{noticeLoading.value=false}}
 async function toggleNotificationWorkspace(){if(workspaceOpen.value&&panel.value==='notifications'){collapse();return}await openNotices()}
 const currentTitle=computed(()=>conversations.value.find(c=>c.id===conversation.value)?.title || activeConversationTitle.value || '新对话')
@@ -683,7 +692,9 @@ async function fitInitialConversations(){
   const headingStyle=window.getComputedStyle(heading)
   return total+heading.getBoundingClientRect().height+parseFloat(headingStyle.marginTop||'0')+parseFloat(headingStyle.marginBottom||'0')
  },0)
- const capacity=Math.max(1,Math.floor((list.clientHeight-headingFootprint+.5)/Math.max(1,footprint)))
+ // Fill the final visual row as well. Pure flooring leaves almost one complete
+ // row unused because list/label heights can land on fractional CSS pixels.
+ const capacity=Math.max(1,Math.floor((list.clientHeight-headingFootprint+.5)/Math.max(1,footprint))+1)
  if(conversations.value.length>capacity){conversations.value=conversations.value.slice(0,capacity);conversationHasMore.value=true}
  else if(conversations.value.length<capacity&&conversationHasMore.value)await loadMoreConversations(capacity-conversations.value.length)
  list.scrollTop=0

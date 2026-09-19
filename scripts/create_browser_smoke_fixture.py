@@ -858,6 +858,8 @@ def build_internal_start_handoff(
                 "MANUFACTURING_OWNER",
                 "ASSEMBLY_OWNER",
                 "FINANCE_OWNER",
+                "BUSINESS_OWNER",
+                "MARKETING_OWNER",
             ):
                 existing = db.scalar(select(m.ProjectRoleMember).where(
                     m.ProjectRoleMember.project_id == project.id,
@@ -868,6 +870,27 @@ def build_internal_start_handoff(
                     db.add(m.ProjectRoleMember(
                         project_id=project.id, role_key=role_key, user_id=user.id
                     ))
+            internal_number = f"{project.code}-MOLD-001"
+            mold = db.scalar(
+                select(m.Mold).where(m.Mold.internal_number == internal_number).limit(1)
+            )
+            if mold is None:
+                mold = m.Mold(
+                    internal_number=internal_number,
+                    name=f"{project.name} 内部模具",
+                    status="ACTIVE",
+                )
+                db.add(mold)
+                db.flush()
+            project_mold = db.scalar(
+                select(m.ProjectMold).where(
+                    m.ProjectMold.project_id == project.id,
+                    m.ProjectMold.mold_id == mold.id,
+                )
+            )
+            if project_mold is None:
+                db.add(m.ProjectMold(project_id=project.id, mold_id=mold.id))
+                db.flush()
             start = m.BusinessSubject(
                 kind="internal_start",
                 number=f"{project.code}-START",
@@ -895,6 +918,25 @@ def build_internal_start_handoff(
                 linked_by=user.id,
             ))
             db.flush()
+            from domain_packs.mold.erp.project import start_materials
+
+            expected_contract_date = date.today() - timedelta(days=2)
+            material = start_materials.build(
+                db,
+                project,
+                revision.id,
+                date.today(),
+                expected_contract_date=expected_contract_date,
+                contract_visibility=True,
+            )
+            start_materials.create(
+                db,
+                user,
+                start,
+                revision.id,
+                material,
+                expected_contract_date=expected_contract_date,
+            )
             domains.apply(db, user, start)
             output["start_subject_id"] = start.id
         return output

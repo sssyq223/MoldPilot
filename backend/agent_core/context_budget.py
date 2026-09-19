@@ -50,14 +50,25 @@ def _token_label(tokens: int) -> str:
 
 
 def _compact_sample(value: Any, depth: int = 0) -> Any:
-    if depth > 2:
+    if depth > 4:
         return "…"
     if isinstance(value, str):
         return value if len(value) <= 160 else value[:160] + "…"
     if isinstance(value, list):
         return [_compact_sample(item, depth + 1) for item in value[:3]]
     if isinstance(value, dict):
-        return {str(key): _compact_sample(item, depth + 1) for key, item in list(value.items())[:12]}
+        items = list(value.items())
+        if len(items) > 24:
+            selected = items[:12] + items[-12:]
+        else:
+            selected = items
+        result = {
+            str(key): _compact_sample(item, depth + 1)
+            for key, item in selected
+        }
+        if len(items) > len(selected):
+            result["_omitted_key_count"] = len(items) - len(selected)
+        return result
     return value
 
 
@@ -131,6 +142,11 @@ def _compact_payload(content: str) -> tuple[str, bool]:
         if len(text) <= 600:
             return content, False
         return text[:600] + "…", True
+    # Compaction is deliberately idempotent. Re-compacting an already compact
+    # tool row used to replace its remaining sample with ``null`` on the next
+    # budget pass, leaving the model with an evidence id but no evidence.
+    if all(key in payload for key in ("compact_summary", "data_shape", "sample")):
+        return content, False
     evidence_id = payload.get("evidence_id")
     data = payload.get("data")
     if isinstance(data, list):
@@ -148,9 +164,11 @@ def _compact_payload(content: str) -> tuple[str, bool]:
         "data_shape": data_shape,
         "sample": sample,
     }
-    for key in ("status", "warnings", "suggestions", "record_count"):
+    if "model_context" in payload:
+        compact["model_context"] = _compact_sample(payload["model_context"])
+    for key in ("status", "resolution", "warnings", "suggestions", "record_count", "limitations"):
         if key in payload:
-            compact[key] = payload[key]
+            compact[key] = _compact_sample(payload[key])
     encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     return encoded, len(encoded) < len(content or "")
 

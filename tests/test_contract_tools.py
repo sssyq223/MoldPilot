@@ -189,6 +189,7 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
                 'contract_number':'SC-PREPARE-001','expected_date':date.today().isoformat(),
+                'received_date':date.today().isoformat(),
                 'stages':[{'name':'预付款','amount':'600.00','condition':'合同生效'}],
                 'remark':'客户线下签署合同待审批归档','workflow_definition_id':definition.id,
                 'file_ids':[file.id],'document_source':'PAPER_SCAN'}
@@ -215,6 +216,7 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             detail=db.get(m.ContractDetail,subject.id)
             assert detail.contract_number=='SC-PREPARE-001'
             assert detail.customer_id==args['customer_id']
+            assert db.get(m.ContractReceiptEvidence,subject.id).received_date==date.today()
             stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))
             assert stage.name=='预付款'
             attachment=db.scalar(select(m.ContractAttachment).where(m.ContractAttachment.contract_subject_id==subject.id))
@@ -262,7 +264,8 @@ def test_contract_replacement_preserves_cash_and_closes_predecessor_only_after_a
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
-                'contract_number':'SC-NEW-001','replaces_id':old.id,'relation_type':'REPLACEMENT',
+                'contract_number':'SC-NEW-001','received_date':date.today().isoformat(),
+                'replaces_id':old.id,'relation_type':'REPLACEMENT',
                 'settlement_allocation_evidence':'财务按银行回单逐条核对并转入新合同首款节点',
                 'settlement_allocations':[{'source_record_id':receipt.id,'target_stage_name':'新合同首款'}],
                 'stages':[{'name':'新合同首款','amount':'500.00','condition':'替代合同生效'}],
@@ -363,7 +366,8 @@ def test_contract_addition_stays_independent_and_replacement_of_addition_does_no
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
-                'contract_number':'SC-ADD-001','replaces_id':base.id,'relation_type':'ADDITION',
+                'contract_number':'SC-ADD-001','received_date':date.today().isoformat(),
+                'replaces_id':base.id,'relation_type':'ADDITION',
                 'stages':[{'name':'追加款','amount':'200.00','condition':'追加合同生效'}],
                 'remark':'主合同之外的追加工作','workflow_definition_id':definition.id,
                 'file_ids':[file.id],'document_source':'ELECTRONIC'}
@@ -439,7 +443,8 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
             db.add(m.RunFile(run_id=run.id,file_id=file.id))
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'100.00','currency':'CNY',
-                'contract_number':'SC-DUP','workflow_definition_id':definition.id,
+                'contract_number':'SC-DUP','received_date':date.today().isoformat(),
+                'workflow_definition_id':definition.id,
                 'file_ids':[file.id],'document_source':'ELECTRONIC'}
             with pytest.raises(Exception) as duplicate:
                 execute(db,admin,'prepare_contract_record',args,run=run)
@@ -468,7 +473,8 @@ def test_contract_attachment_requires_current_run_and_blocks_duplicate_content()
             current=uploaded_contract_file(db,admin,conversation,filename='current-contract.pdf',digest='c'*64)
             args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
                 'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
-                'contract_number':'SC-FILE-GUARD','workflow_definition_id':definition.id,
+                'contract_number':'SC-FILE-GUARD','received_date':date.today().isoformat(),
+                'workflow_definition_id':definition.id,
                 'file_ids':[current.id],'document_source':'ELECTRONIC'}
             with pytest.raises(Exception) as unbound:
                 execute(db,admin,'prepare_contract_record',args,run=run)

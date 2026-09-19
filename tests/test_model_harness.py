@@ -307,6 +307,47 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert gateway.saved['active_tool_names'] == ['query_projects']
 
 
+def test_context_pressure_does_not_finalize_before_newly_activated_tool_turn(monkeypatch):
+    exact_plan_search = {'role': 'assistant', 'tool_calls': [{
+        'id': 'search-plan-exact', 'type': 'function',
+        'function': {'name': 'ToolSearch', 'arguments': json.dumps({
+            'query': 'query_project_plan_context',
+        })},
+    }]}
+    real_usage_snapshot = harness_module.usage_snapshot
+
+    def pressured_usage(messages, tools, **kwargs):
+        snapshot = real_usage_snapshot(messages, tools, **kwargs)
+        activated = any(
+            message.get('role') == 'tool'
+            and 'query_project_plan_context' in str(message.get('content') or '')
+            and 'activated' in str(message.get('content') or '')
+            for message in messages
+        )
+        snapshot['used_tokens'] = 950 if activated else 100
+        snapshot['safe_limit'] = 1000
+        return snapshot
+
+    monkeypatch.setattr(harness_module, 'usage_snapshot', pressured_usage)
+    gateway = Gateway()
+    model = InspectingRepliesModel([
+        PROPOSAL,
+        exact_plan_search,
+        PLAN_PROPOSAL,
+        FINAL,
+    ])
+
+    result = run_loop(
+        context(tools=[TOOL, OTHER_TOOL]), model, gateway,
+        context_window=1100, max_output_tokens=100,
+    )
+
+    assert result['summary'] == 'one visible project'
+    assert 'query_project_plan_context' in model.tool_names[2]
+    assert gateway.physical_calls == 2
+    assert gateway.saved['activation_grace'] is False
+
+
 def test_invalid_tool_arguments_request_one_repair_instead_of_failing_the_run():
     malformed = {'role': 'assistant', 'tool_calls': [{
         'id': 'bad-arguments', 'type': 'function',
@@ -1773,6 +1814,103 @@ def test_context_budget_compacts_model_visible_tool_history_before_next_model_ca
     assert result["summary"] == "one visible project"
     assert gateway.saved["context_usage"]["compaction_count"] == 1
     assert gateway.saved["context_compactions"][0]["saved_tokens"] > 0
+
+
+def test_tool_result_compaction_is_idempotent_and_preserves_model_context():
+    model_context = {
+        'project': {'code': 'P-001', 'status': 'ACTIVE'},
+        'frozen_start_material': {
+            'external_order_number': 'ORDER-001',
+            'internal_mold_numbers': ['MOLD-001'],
+            'expected_contract_date': '2026-09-17',
+        },
+        'contract_follow_up': {'state': 'OVERDUE'},
+        'finance_handoff': {'delivery_state': 'DELIVERED'},
+    }
+    messages = [{'role': 'tool', 'tool_call_id': 'tool-1', 'content': json.dumps({
+        'evidence_id': 'e1',
+        'data': [{'detail': '长字段' * 5000}],
+        'model_context': model_context,
+        'resolution': 'RESOLVED',
+    }, ensure_ascii=False)}]
+
+    once, first_record = harness_module.compact_messages_for_model(messages)
+    twice, second_record = harness_module.compact_messages_for_model(once)
+    payload = json.loads(twice[0]['content'])
+
+    assert first_record is not None
+    assert second_record is None
+    assert payload['model_context'] == model_context
+    assert payload['resolution'] == 'RESOLVED'
+
+
+def test_read_only_tool_result_uses_authoritative_model_projection_but_keeps_evidence_link():
+    model_context = {
+        'project': {'code': 'P-001'},
+        'frozen_start_material': {
+            'is_frozen': True,
+            'customer_order_number': 'ORDER-001',
+        },
+    }
+    full = {
+        'evidence_id': 'e1',
+        'resolution': 'RESOLVED',
+        'source': 'agent_db',
+        'data': [{'detail': 'audit-only detail', 'workflow_id': 'workflow-1'}],
+        'model_context': model_context,
+        'limitations': ['read only'],
+    }
+
+    projected = harness_module._tool_result_for_model(
+        full, prefer_model_context=True,
+    )
+
+    assert projected['model_context'] == model_context
+    assert projected['evidence_id'] == 'e1'
+    assert projected['resolution'] == 'RESOLVED'
+    assert projected['limitations'] == ['read only']
+    assert 'data' not in projected
+    assert harness_module._tool_result_for_model(
+        full, prefer_model_context=False,
+    ) is full
+
+
+def test_read_only_harness_feeds_model_context_without_duplicate_full_receipt():
+    class ProjectionGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {
+                'evidence_id': 'e1',
+                'resolution': 'RESOLVED',
+                'data': [{'detail': 'large audit detail' * 1000}],
+                'model_context': {
+                    'frozen_start_material': {
+                        'is_frozen': True,
+                        'customer_order_number': 'ORDER-001',
+                    },
+                },
+            }
+
+    class ProjectionModel:
+        def __init__(self): self.calls = 0
+        def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return copy.deepcopy(PROPOSAL)
+            payload = json.loads(next(
+                message['content'] for message in messages
+                if message.get('role') == 'tool'
+            ))
+            assert payload['model_context']['frozen_start_material']['customer_order_number'] == 'ORDER-001'
+            assert payload['evidence_id'] == 'e1'
+            assert 'data' not in payload
+            return copy.deepcopy(FINAL)
+
+    gateway = ProjectionGateway()
+    result = run_loop(context(prompt='只读查询项目'), ProjectionModel(), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
 
 
 def test_compacted_context_does_not_reuse_stale_provider_prompt_tokens():

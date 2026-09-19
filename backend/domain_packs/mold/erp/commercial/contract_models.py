@@ -1,7 +1,8 @@
-"""Versioned contract documents and settlement lineage owned by mold commercial."""
+"""Versioned contract documents, receipt evidence and settlement lineage."""
+from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agent_core.model_base import Base, IdentityMixin
@@ -23,6 +24,17 @@ class ContractAttachment(IdentityMixin, Base):
         CheckConstraint("version > 0"),
         CheckConstraint("source_kind IN ('ELECTRONIC','PAPER_SCAN','OTHER')"),
     )
+
+
+class ContractReceiptEvidence(Base):
+    """Actual arrival date recorded together with the frozen contract files."""
+
+    __tablename__ = "contract_receipt_evidence"
+    contract_subject_id: Mapped[str] = mapped_column(
+        ForeignKey("business_subject.id"), primary_key=True
+    )
+    received_date: Mapped[date] = mapped_column(Date)
+    recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
 
 
 class ContractSettlementAllocation(IdentityMixin, Base):

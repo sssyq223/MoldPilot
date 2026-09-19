@@ -91,6 +91,7 @@ TOOLS.update({
     'prepare_customer_receipt_confirmation':{'description':'准备客户实际回款确认登记建议；必须使用查询返回的真实项目版本、已生效销售合同和收款节点，本人确认后才写入回款确认台账。','permission':'customer_receipt.confirm'},
     'prepare_supplier_payment_confirmation':{'description':'准备供应商实际付款确认登记建议；必须使用查询返回的真实项目版本、已审批供应商付款申请和授权余额，本人确认后才写入付款确认记录。','permission':'finance.confirm'},
     'prepare_supplier_deduction_settlement':{'description':'准备供应商扣款责任或结算依据登记建议；必须使用查询返回的真实项目版本、供应商、委外合同/工程联络线索和正式依据，本人确认后才写入扣款结算记录。','permission':'finance.confirm'},
+    'prepare_mold_transfer_receipt':{'description':'准备由财务按客户签收日期登记移模时间；必须使用真实项目版本、签收单号、签收人和依据，本人确认后才写入，客户签收不等于质量验收。','permission':'customer_receipt.confirm'},
     'query_governance_context':{'description':'按项目线索核对权限矩阵、审计事件、站内通知、附件版本和 ERP 来源操作状态；只读，不授权、不下载、不导出。','permission':'audit.read'},
     'query_operations_readiness_context':{'description':'核对部署、容量、响应时间、可用性、备份恢复和日志保留等运行交付验收缺口；只读，不承诺未经确认的 SLA 或性能指标。','permission':'audit.read'},
     'query_procurement_price_context':{'description':'按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；只读，不询价、不下单、不入库。','permission':'purchase_price.read'},
@@ -212,8 +213,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
                    'activation_queries':['客户设变','设变承接','工程设变','收费变更','原模具']},
                'finance_context_review':{'name':'财务节点与收付款核对','tools':['query_finance_context'],
-                   'optional_tools':['prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'],
-                   'activation_queries':['财务节点','收付款','回款','付款','发票','结算']},
+                   'optional_tools':['prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'],
+                   'activation_queries':['财务节点','收付款','回款','付款','发票','结算','移模时间','移模签收']},
                'governance_context_review':{'name':'治理权限与来源核对','tools':['query_governance_context'],
                    'activation_queries':['治理上下文','权限矩阵','审计','附件版本','来源治理']},
                'operations_readiness_review':{'name':'运行交付就绪核对','tools':['query_operations_readiness_context'],
@@ -475,6 +476,7 @@ CAPABILITY_NAMES = {
     'prepare_customer_receipt_confirmation': '准备客户回款确认',
     'prepare_supplier_payment_confirmation': '准备供应商实付确认',
     'prepare_supplier_deduction_settlement': '准备供应商扣款结算',
+    'prepare_mold_transfer_receipt': '准备移模客户签收登记',
     'query_governance_context': '读取治理权限与来源上下文',
     'query_operations_readiness_context': '读取运行交付就绪上下文',
     'query_procurement_price_context': '读取采购价格与订单上下文',
@@ -523,6 +525,7 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contract_signing_record': 'finance',
     'contract_context_review': 'finance',
     'query_finance_context': 'finance', 'prepare_customer_receivable_schedule': 'finance', 'prepare_supplier_deduction_settlement': 'finance',
+    'prepare_mold_transfer_receipt': 'finance',
     'finance_context_review': 'finance', 'query_governance_context': 'system',
     'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
@@ -602,6 +605,7 @@ CAPABILITY_TYPES = {
     'prepare_contact_review': 'review', 'prepare_contact_close': 'operation',
     'prepare_contact_set_reviewer': 'operation', 'prepare_contact_cancel_task': 'operation',
     'prepare_customer_receivable_schedule': 'operation', 'prepare_supplier_deduction_settlement': 'operation',
+    'prepare_mold_transfer_receipt': 'operation',
 }
 
 
@@ -773,11 +777,12 @@ def tool_schema(key):
     if key=='query_finance_context':
         from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
-    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
-        from domain_packs.mold.tools.erp.finance.finance_context_tools import customer_receivable_schedule_schema, customer_receipt_schema, supplier_deduction_settlement_schema, supplier_payment_confirmation_schema
+    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
+        from domain_packs.mold.tools.erp.finance.finance_context_tools import customer_receivable_schedule_schema, customer_receipt_schema, mold_transfer_receipt_schema, supplier_deduction_settlement_schema, supplier_payment_confirmation_schema
         parameters=customer_receivable_schedule_schema() if key=='prepare_customer_receivable_schedule' else (
             customer_receipt_schema() if key=='prepare_customer_receipt_confirmation' else (
-            supplier_payment_confirmation_schema() if key=='prepare_supplier_payment_confirmation' else supplier_deduction_settlement_schema()))
+            supplier_payment_confirmation_schema() if key=='prepare_supplier_payment_confirmation' else (
+            supplier_deduction_settlement_schema() if key=='prepare_supplier_deduction_settlement' else mold_transfer_receipt_schema())))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_governance_context':
         from domain_packs.mold.tools.erp.governance.governance_context_tools import GovernanceContextInput
@@ -970,7 +975,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_design_order_approval':
         from domain_packs.mold.tools.erp.design.design_approval_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
+    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
         from domain_packs.mold.tools.erp.finance.finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
     if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:

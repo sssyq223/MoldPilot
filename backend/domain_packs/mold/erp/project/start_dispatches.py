@@ -38,6 +38,9 @@ def _role_people(db, project_id, role_key):
 
 def create_for_internal_start(db, user, subject):
     """Freeze all required handoffs without fabricating missing recipients."""
+    from domain_packs.mold.erp.project import start_materials
+
+    start_notice = start_materials.card(db, subject.id)
     created = []
     for role_key, role_name, department_label in REQUIRED_HANDOFFS:
         existing = db.scalar(
@@ -60,10 +63,12 @@ def create_for_internal_start(db, user, subject):
                 subject.id,
                 {
                     "project_id": subject.project_id,
+                    "start_subject_id": subject.id,
                     "role_key": role_key,
                     "role_name": role_name,
                     "department": department_label,
                     "recipient_snapshot": recipients,
+                    "formal_start_material": start_notice,
                 },
                 [item["user_id"] for item in recipients],
             )

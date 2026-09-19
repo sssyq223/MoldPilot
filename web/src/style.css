@@ -1664,9 +1664,9 @@ html[data-theme="light"] .notification-popover .task-row:hover{background:#f7f9f
 .composer{border-radius:18px!important;box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent),0 1px 0 color-mix(in srgb,#fff 78%,transparent) inset!important}
 .composer:focus-within{box-shadow:0 22px 58px color-mix(in srgb,var(--shadow) 20%,transparent),0 0 0 3px color-mix(in srgb,var(--accent) 9%,transparent)!important}
 .conversation-list{padding-right:3px}
-.conversation-row{min-height:34px!important;border-radius:9px!important;margin:1px 0!important}
+.conversation-row{min-height:30px!important;border-radius:9px!important;margin:0!important}
 .conversation-row:not(.active):hover{background:color-mix(in srgb,var(--accent) 6%,transparent)!important}
-.conversation-main{height:32px!important;padding-left:9px!important;font-size:12.5px!important}
+.conversation-main{height:28px!important;padding-left:9px!important;font-size:12.5px!important}
 .conversation-main svg{opacity:.62}
 .conversation-list::-webkit-scrollbar{width:5px}
 .conversation-list::-webkit-scrollbar-track{background:transparent}

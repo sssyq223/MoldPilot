@@ -1,10 +1,33 @@
-"""Durable handoff evidence created when an internal start becomes effective."""
-from datetime import datetime
+"""Durable formal-start materials and department handoff evidence."""
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agent_core.model_base import Base, IdentityMixin, J
+
+
+class InternalStartSnapshot(Base):
+    """Immutable business material frozen when a start proposal is confirmed.
+
+    The generic harness keeps no mold-specific fields.  This pack-owned record
+    binds the formal notice to the exact intake revision, ERP mold identities,
+    order/customer facts, contract state and dates reviewed by the user.
+    """
+
+    __tablename__ = "internal_start_snapshot"
+
+    start_subject_id: Mapped[str] = mapped_column(
+        ForeignKey("business_subject.id"), primary_key=True
+    )
+    project_id: Mapped[str] = mapped_column(ForeignKey("project.id"), index=True)
+    bid_intake_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("bid_intake_revision.id"), index=True
+    )
+    linked_business: Mapped[dict] = mapped_column(J)
+    expected_contract_date: Mapped[date | None] = mapped_column(Date)
+    frozen_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class InternalStartDispatch(IdentityMixin, Base):
