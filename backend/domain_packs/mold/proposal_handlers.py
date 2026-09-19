@@ -47,6 +47,9 @@ HANDLERS = (
     ProposalHandler("quotation.execute", "domain_packs.mold.tools.erp.commercial.quotation_tools", frozenset({
         "prepare_quotation_version", "prepare_quotation_feedback",
     })),
+    ProposalHandler("bid_intake.execute", "domain_packs.mold.tools.erp.commercial.bid_intake_tools", frozenset({
+        "prepare_bid_intake_draft",
+    })),
     ProposalHandler("contract.execute", "domain_packs.mold.tools.erp.commercial.contract_tools", frozenset({
         "prepare_contract_record", "prepare_contract_signing_record",
     })),

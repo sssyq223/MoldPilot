@@ -70,6 +70,7 @@ from domain_packs.mold import attachment_models as _attachments  # noqa: E402
 from domain_packs.mold import contact_models as _contacts  # noqa: E402
 from domain_packs.mold import domain_models as _domain  # noqa: E402
 from domain_packs.mold.erp.commercial import contract_models as _contract_models  # noqa: E402
+from domain_packs.mold.erp.commercial import bid_intake_models as _bid_intake_models  # noqa: E402
 from domain_packs.mold.erp.commercial import quotation_models as _quotation_models  # noqa: E402
 from domain_packs.mold.erp.design import design_models as _design_models  # noqa: E402
 
@@ -82,6 +83,7 @@ _exports = {
     **_mapped_exports(_contacts),
     **_mapped_exports(_attachments),
     **_mapped_exports(_contract_models),
+    **_mapped_exports(_bid_intake_models),
     **_mapped_exports(_quotation_models),
     **_mapped_exports(_design_models),
 }

@@ -226,6 +226,49 @@ def _acceptance_stage(row, allowed_tools):
     }
 
 
+def _bid_intake_stage(row, allowed_tools):
+    if row is None:
+        return _unavailable_stage("bid_intake", "中标接收", "query_bid_intake_context")
+    intake = row.get("bid_intake")
+    analysis = row.get("analysis") or {}
+    derived = analysis.get("derived_status") or {}
+    current = intake.get("current_revision") if isinstance(intake, dict) else None
+    has_legacy_decision = bool(
+        derived.get("has_effective_acceptance") or derived.get("has_effective_rejection")
+    )
+    blockers = []
+    if current:
+        state = "COMPLETED"
+    elif has_legacy_decision:
+        state = "NOT_APPLICABLE"
+        blockers.append("该历史项目已有承接或拒单事实但没有结构化中标接收记录；不倒推或伪造历史资料。")
+    elif "prepare_bid_intake_draft" in allowed_tools:
+        state = "READY"
+    else:
+        state = "NOT_STARTED"
+        blockers.append("尚无已确认的中标接收草稿，或当前会话未分配资料登记能力。")
+    return {
+        "key": "bid_intake",
+        "name": "中标接收",
+        "state": state,
+        "query_tool": "query_bid_intake_context",
+        "action_tool": "prepare_bid_intake_draft" if state == "READY" else None,
+        "facts": {
+            "case_id": intake.get("id") if isinstance(intake, dict) else None,
+            "current_version": current.get("version") if current else None,
+            "source_kind": current.get("source_kind") if current else None,
+            "source_ref": current.get("source_ref") if current else None,
+            "match_result": current.get("match_result") if current else None,
+            "external_order_number": current.get("external_order_number") if current else None,
+            "external_start_date": current.get("external_start_date") if current else None,
+            "lifecycle_state": derived.get("bid_intake_lifecycle_state"),
+            "can_continue_same_case": bool(derived.get("can_continue_same_intake_case")),
+            "history_count": len((intake or {}).get("revisions") or []),
+        },
+        "blockers": blockers,
+    }
+
+
 def _contract_stage(row, allowed_tools):
     if row is None:
         return _unavailable_stage("contract", "销售合同", "query_contract_context")
@@ -271,6 +314,7 @@ def _start_stage(row, allowed_tools, acceptance_state):
     latest = row.get("latest_internal_start")
     pending = row.get("open_start_requests") or []
     workflows = row.get("workflow_options") or []
+    customer_conditions = row.get("customer_start_conditions") or {}
     blockers = list(readiness.get("known_blockers") or [])
     if readiness.get("has_effective_internal_start") or latest:
         state = "COMPLETED"
@@ -290,12 +334,18 @@ def _start_stage(row, allowed_tools, acceptance_state):
         "state": state,
         "query_tool": "query_internal_start_readiness",
         "action_tool": "prepare_internal_start" if state == "READY" else None,
+        "remediation_tool": (
+            "prepare_bid_intake_draft"
+            if not customer_conditions.get("complete") and "prepare_bid_intake_draft" in allowed_tools
+            else None
+        ),
         "facts": {
             "latest_internal_start": _subject_fact(latest),
             "pending_count": len(pending),
             "workflow_count": len(workflows),
             "project_status": readiness.get("project_status"),
             "can_prepare": bool(readiness.get("can_prepare_start_from_known_facts")),
+            "customer_start_conditions": customer_conditions,
         },
         "blockers": blockers,
     }
@@ -345,6 +395,7 @@ def _recommendations(stages, allowed_tools):
     by_key = {stage["key"]: stage for stage in stages}
     result = []
     quotation = by_key["quotation"]
+    bid_intake = by_key["bid_intake"]
     acceptance = by_key["acceptance"]
     contract = by_key["contract"]
     start = by_key["internal_start"]
@@ -365,6 +416,21 @@ def _recommendations(stages, allowed_tools):
                 "reason": "先形成或核对版本化客户报价；报价资料、成本、工艺、工期、价格与交期需留痕后再做承接决定。",
                 "requires_user_confirmation": tool.startswith("prepare_"),
             })
+    elif (
+        bid_intake["state"] not in {"COMPLETED", "NOT_APPLICABLE", "UNAVAILABLE"}
+        and acceptance["state"] not in {"COMPLETED", "REJECTED"}
+    ):
+        tool = bid_intake.get("action_tool") or (
+            "query_bid_intake_context" if "query_bid_intake_context" in allowed_tools else None
+        )
+        if tool:
+            result.append({
+                "kind": "PRIMARY",
+                "stage": "bid_intake",
+                "tool": tool,
+                "reason": "报价已具备后，先登记或核对中标资料、客户分类、来源附件和匹配结果；后续承接与开工继续引用同一接收记录。",
+                "requires_user_confirmation": tool.startswith("prepare_"),
+            })
     elif acceptance["state"] not in {"COMPLETED", "REJECTED", "DATA_CONFLICT"}:
         tool = acceptance.get("action_tool") or (
             "query_quote_acceptance_context" if "query_quote_acceptance_context" in allowed_tools else None
@@ -378,7 +444,7 @@ def _recommendations(stages, allowed_tools):
                 "requires_user_confirmation": tool.startswith("prepare_"),
             })
     elif acceptance["state"] == "COMPLETED" and start["state"] != "COMPLETED":
-        tool = start.get("action_tool") or (
+        tool = start.get("action_tool") or start.get("remediation_tool") or (
             "query_internal_start_readiness" if "query_internal_start_readiness" in allowed_tools else None
         )
         if tool:
@@ -386,7 +452,11 @@ def _recommendations(stages, allowed_tools):
                 "kind": "PRIMARY",
                 "stage": "internal_start",
                 "tool": tool,
-                "reason": "承接已生效，下一主线是核对并正式下达内部开工。",
+                "reason": (
+                    "承接已生效，但客户工艺确认、外部订单/开工日期/交期或外部开工通知仍需在同一中标接收记录补齐。"
+                    if tool == "prepare_bid_intake_draft"
+                    else "承接已生效且客户开工条件已具备，下一主线是核对并正式下达内部开工。"
+                ),
                 "requires_user_confirmation": tool.startswith("prepare_"),
             })
     elif start["state"] == "COMPLETED" and plan["state"] != "ACTIVE":
@@ -422,7 +492,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     limitations = [
         "只读取当前用户具备项目读取权限的项目；每个业务阶段还必须同时具备对应查询工具与业务权限。",
         "本工具只生成项目启动链路投影和下一步建议，不承接、不登记合同、不正式开工、不创建计划。",
-        "合同晚到不自动阻塞具备独立依据的正式开工；报价、承接、合同、开工和计划仍是五类独立业务事实。",
+        "合同晚到不自动阻塞具备独立依据的正式开工；报价、中标接收、承接、合同、开工和计划仍是六类独立业务事实。",
     ]
     if truncated:
         limitations.append("最多检查前500个可见项目，结果可能未覆盖全部可见范围。")
@@ -467,6 +537,16 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     else:
         access_gaps.append("承接确认")
 
+    if "query_bid_intake_context" in allowed_tools:
+        from domain_packs.mold.tools.erp.commercial.bid_intake_tools import query as bid_intake_query
+        from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
+
+        contexts["bid_intake"] = _first_row(
+            bid_intake_query(db, user, QuoteContextInput(project_id=project_id), allowed_tools)
+        )
+    else:
+        access_gaps.append("中标接收")
+
     if "query_contract_context" in allowed_tools:
         from domain_packs.mold.tools.erp.commercial.contract_tools import ContractContextInput, query as contract_query
 
@@ -496,6 +576,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         access_gaps.append("项目计划")
 
     quotation = _quotation_stage(contexts.get("quotation"), allowed_tools)
+    bid_intake = _bid_intake_stage(contexts.get("bid_intake"), allowed_tools)
     acceptance = _acceptance_stage(contexts.get("acceptance"), allowed_tools)
     contract = _contract_stage(contexts.get("contract"), allowed_tools)
     start = _start_stage(contexts.get("internal_start"), allowed_tools, acceptance["state"])
@@ -505,11 +586,13 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         start["state"],
         project.status,
     )
-    stages = [quotation, acceptance, contract, start, plan]
+    stages = [quotation, bid_intake, acceptance, contract, start, plan]
     if acceptance["state"] == "REJECTED":
         phase = "REJECTED"
     elif quotation["state"] not in {"COMPLETED", "NOT_APPLICABLE", "UNAVAILABLE"}:
         phase = "QUOTATION"
+    elif bid_intake["state"] not in {"COMPLETED", "NOT_APPLICABLE", "UNAVAILABLE"}:
+        phase = "BID_INTAKE"
     elif acceptance["state"] != "COMPLETED":
         phase = "ACCEPTANCE"
     elif start["state"] != "COMPLETED":
@@ -528,7 +611,7 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
         "guardrails": [
             "阶段查询缺失时显示 UNAVAILABLE，不根据其他阶段或历史对话猜测状态。",
             "prepare_* 只生成待确认建议；本人确认后才提交各自 Agent BPM。",
-            "报价材料、承接决定、合同材料、正式开工和项目计划分别保留版本与审批，不合并为一个状态字段。",
+            "报价材料、中标接收草稿、承接决定、合同材料、正式开工和项目计划分别保留版本与审批，不合并为一个状态字段。",
         ],
     }
     if access_gaps:

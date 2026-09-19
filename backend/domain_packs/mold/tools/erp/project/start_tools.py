@@ -35,6 +35,8 @@ class StartProposalInput(StrictModel):
         description='query_internal_start_readiness 返回的项目 row_version。')
     source_subject_id: str = Field(min_length=1, max_length=36,
         description='query_internal_start_readiness 返回的已生效承接记录 ID。')
+    bid_intake_revision_id: str = Field(min_length=1, max_length=36,
+        description='query_internal_start_readiness 返回的当前中标接收版本 ID。')
     execution_mode: Literal['INTERNAL','FULL_OUTSOURCE'] | None = Field(default=None,
         description='最终加工方式；未填时沿用承接记录中的 execution_mode。')
     effective_date: date = Field(description='正式内部开工生效日期。')
@@ -161,7 +163,7 @@ def _open_records(records,kind):
     return [row for row in records.get(kind,[]) if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','REJECTED','APPLY_BLOCKED'}]
 
 
-def _readiness(project,records,allowed_tools):
+def _readiness(project,records,allowed_tools,start_conditions):
     blockers=[];warnings=[];hints=[]
     latest_accept=_latest_effective(records,'quote_acceptance','ACCEPT')
     latest_reject=_latest_effective(records,'quote_acceptance','REJECT')
@@ -170,6 +172,7 @@ def _readiness(project,records,allowed_tools):
     if 'query_quote_acceptance' not in allowed_tools and 'query_quote_acceptance_context' not in allowed_tools:
         warnings.append('未分配报价承接查询工具，不能核对承接依据。')
     elif not latest_accept:blockers.append('当前可见范围未见有效承接记录。')
+    blockers.extend(start_conditions.get('blockers') or [])
     if latest_start:
         hints.append('当前可见范围已有有效正式开工通知，后续应核对计划审批和执行状态。')
     elif project.status=='DRAFT':
@@ -187,7 +190,7 @@ def _readiness(project,records,allowed_tools):
     else:
         warnings.append('当前可见范围未见项目计划；正式开工后仍需按项目计划审批结果执行。')
     return {'known_blockers':blockers,'warnings':warnings,'hints':hints,
-        'can_prepare_start_from_known_facts':bool(latest_accept) and not blockers and not latest_start and project.status=='DRAFT',
+        'can_prepare_start_from_known_facts':bool(latest_accept) and bool(start_conditions.get('complete')) and not blockers and not latest_start and project.status=='DRAFT',
         'has_effective_acceptance':bool(latest_accept),
         'has_effective_rejection':bool(latest_reject),
         'has_effective_internal_start':bool(latest_start),
@@ -202,6 +205,8 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
     if truncated:limitations.append('最多检查前500个可见项目，结果可能未覆盖全部可见范围。')
     if project:
         records=_records(db,user,project.id,allowed_tools)
+        from domain_packs.mold.tools.erp.commercial.bid_intake_tools import start_condition_snapshot
+        start_conditions=start_condition_snapshot(db,user,project.id)
         skipped=[]
         if 'query_quote_acceptance' not in allowed_tools and 'query_quote_acceptance_context' not in allowed_tools:skipped.append('承接依据')
         if 'query_sales_contract' not in allowed_tools:skipped.append('销售合同')
@@ -222,7 +227,8 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
             'sales_contracts':records['sales_contract'],
             'full_outsource_contracts':records['full_outsource_contract'],
             'plans':records['project_plan']+records['plan_change'],
-            'readiness':_readiness(project,records,allowed_tools),
+            'customer_start_conditions':start_conditions,
+            'readiness':_readiness(project,records,allowed_tools,start_conditions),
             'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
@@ -255,6 +261,7 @@ def preview_start(db,user,data:StartProposalInput):
     scope={'project_id':project.id}
     require(db,user,'project.read',scope)
     require(db,user,'quote_acceptance.read',scope)
+    require(db,user,'project.dossier.read',scope)
     require(db,user,'internal_start.read',scope)
     require(db,user,'internal_start.create',scope)
     require(db,user,'internal_start.submit',scope)
@@ -268,6 +275,16 @@ def preview_start(db,user,data:StartProposalInput):
     source_detail=db.get(m.BusinessDecisionDetail,source.id)
     if not source_detail or source_detail.decision!='ACCEPT':
         raise DomainError('NOT_ACCEPTED','前置承接记录不是有效承接决定',409)
+    from domain_packs.mold.tools.erp.commercial.bid_intake_tools import start_condition_snapshot
+    start_conditions=start_condition_snapshot(db,user,project.id)
+    if data.bid_intake_revision_id!=start_conditions.get('current_revision_id'):
+        raise DomainError('BID_INTAKE_VERSION_CONFLICT','中标接收资料已变化，请重新查询当前版本',409)
+    if not start_conditions.get('complete'):
+        raise DomainError(
+            'START_CONDITIONS_MISSING',
+            '客户正式开工条件尚不完整：'+'；'.join(start_conditions.get('blockers') or ['无法核对客户开工条件']),
+            409,
+        )
     execution_mode=data.execution_mode or source_detail.execution_mode
     detail=s.DecisionInput(source_subject_id=source.id,decision='START',execution_mode=execution_mode,
         effective_date=data.effective_date,evidence=data.evidence,amount=None,currency=None)
@@ -304,6 +321,12 @@ def preview_start(db,user,data:StartProposalInput):
         '项目':project.code+' · '+project.name,
         '项目版本':project.row_version,
         '承接依据':source.number+' · 第'+str(source.revision)+'版',
+        '中标接收依据':'V'+str(start_conditions['current_version'])+' · '+start_conditions['current_revision_id'],
+        '客户工艺方案':'已人工确认 · '+start_conditions['customer_process_confirmation_evidence'],
+        '客户外部订单':start_conditions['external_order_number'],
+        '客户开工日期':start_conditions['external_start_date'],
+        '客户交期':start_conditions['customer_due_date'],
+        '客户开工通知附件':'已核对',
         '最终加工方式':execution_mode or '未登记（请核对承接记录）',
         '正式开工日期':data.effective_date.isoformat(),
         '开工依据':data.evidence,
@@ -356,6 +379,11 @@ def confirm(db,user,payload):
     detail,_=preview_start(db,user,data)
     subject=domains.create(db,user,s.SubjectInput(kind='internal_start',project_id=data.project_id,
         remark=data.evidence,detail=detail.model_dump(mode='json')))
+    from domain_packs.mold.tools.erp.commercial.bid_intake_tools import link_lifecycle_subject
+    link_lifecycle_subject(
+        db,user,data.project_id,subject,'INTERNAL_START',
+        source_revision_id=data.bid_intake_revision_id,
+    )
     from domain_packs.mold.erp.core.business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
         agent_permission_mode=agent_permission_mode_from_proposal(proposal))

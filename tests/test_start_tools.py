@@ -59,6 +59,40 @@ def workflow(db,user):
     db.add(row);db.flush();return row
 
 
+def customer_start_conditions(db,project,user,suffix='001'):
+    conversation=m.Conversation(user_id=user.id,title='客户开工条件 '+suffix)
+    db.add(conversation);db.flush()
+    case=m.BidIntakeCase(project_id=project.id,created_by=user.id)
+    db.add(case);db.flush()
+    revision=m.BidIntakeRevision(
+        case_id=case.id,version=1,previous_revision_id=None,source_kind='EMAIL',
+        source_ref='START-MAIL-'+suffix,source_fingerprint=('e'*60+suffix)[-64:],
+        received_date=date.today(),customer_classification='OTHER',
+        classification_evidence='业务人员已人工确认客户分类',classification_confirmed_by=user.id,
+        customer_company='测试客户',customer_contact='客户项目经理',customer_mold_number=None,
+        customer_model_or_material=None,project_name_snapshot=project.name,amount=None,currency=None,
+        our_recipient='项目负责人',external_order_number='EXT-ORDER-'+suffix,
+        external_start_date=date.today(),customer_due_date=date.today(),
+        customer_process_confirmed=True,
+        customer_process_confirmation_evidence='客户工艺方案已经双方人工确认',
+        matched_quotation_subject_id=None,historical_mold_number=None,historical_relation_kind=None,
+        match_result='UNMATCHED',match_evidence='本次不引用历史报价或模具',notes='',recorded_by=user.id,
+    )
+    db.add(revision);db.flush()
+    blob=m.FileObject(
+        owner_id=user.id,conversation_id=conversation.id,request_key='start-condition-'+suffix,
+        filename='customer-start-'+suffix+'.pdf',media_type='application/pdf',size=256,
+        sha256=('d'*60+suffix)[-64:],backend='local',storage_namespace='test',
+        object_key='test/customer-start-'+suffix+'.pdf',storage_version=None,
+    )
+    db.add(blob);db.flush()
+    db.add(m.BidIntakeAttachment(
+        revision_id=revision.id,file_id=blob.id,role='EXTERNAL_START_NOTICE',
+        content_sha256=blob.sha256,title=blob.filename,
+    ))
+    return revision
+
+
 def test_start_readiness_schema_and_can_prepare_from_known_facts():
     engine,Session=factory()
     try:
@@ -66,6 +100,7 @@ def test_start_readiness_schema_and_can_prepare_from_known_facts():
             admin=user(db,'admin',True);p=project(db,'START-M001','正式开工核对项目')
             decision(db,p,admin,'quote_acceptance','QA-START','ACCEPT')
             sales_contract(db,p,admin)
+            customer_start_conditions(db,p,admin,'101')
         schema=tool_schema('query_internal_start_readiness')['function']['parameters']
         assert {'project_id','identifier'} <= set(schema['properties'])
         with Session() as db:
@@ -82,6 +117,24 @@ def test_start_readiness_schema_and_can_prepare_from_known_facts():
         engine.dispose()
 
 
+def test_start_readiness_blocks_acceptance_without_customer_start_conditions():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-MISSING','开工条件缺失项目')
+            decision(db,p,admin,'quote_acceptance','QA-MISSING','ACCEPT')
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-MISSING'})
+            row=result['data'][0]
+            assert row['readiness']['has_effective_acceptance'] is True
+            assert row['readiness']['can_prepare_start_from_known_facts'] is False
+            assert row['customer_start_conditions']['complete'] is False
+            assert '中标接收记录' in ''.join(row['readiness']['known_blockers'])
+    finally:
+        engine.dispose()
+
+
 def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
     engine,Session=factory()
     try:
@@ -89,6 +142,7 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
             admin=user(db,'admin',True);p=project(db,'START-PREPARE','正式开工办理项目')
             accept=decision(db,p,admin,'quote_acceptance','QA-START-PREPARE','ACCEPT',mode='FULL_OUTSOURCE')
             sales_contract(db,p,admin)
+            intake=customer_start_conditions(db,p,admin,'102')
             definition=workflow(db,admin)
             conversation=m.Conversation(user_id=admin.id,title='正式开工')
             db.add(conversation);db.flush()
@@ -97,10 +151,11 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'delegated_auto'})
             db.add(run);db.flush()
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
+                'bid_intake_revision_id':intake.id,
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知与工艺方案已确认',
                 'workflow_definition_id':definition.id}
         schema=tool_schema('prepare_internal_start')['function']['parameters']
-        assert {'project_id','project_version','source_subject_id','workflow_definition_id'} <= set(schema['properties'])
+        assert {'project_id','project_version','source_subject_id','bid_intake_revision_id','workflow_definition_id'} <= set(schema['properties'])
         with Session.begin() as db:
             admin=db.query(m.User).filter_by(username='admin').one()
             run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
@@ -122,6 +177,10 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
             assert detail.source_subject_id==args['source_subject_id']
             assert detail.decision=='START'
             assert detail.execution_mode=='FULL_OUTSOURCE'
+            intake_link=db.scalar(select(m.BidIntakeLifecycleLink).where(
+                m.BidIntakeLifecycleLink.subject_id==start.id
+            ))
+            assert intake_link.source_revision_id==args['bid_intake_revision_id']
             assert db.get(m.Project,args['project_id']).status=='DRAFT'
             assert db.scalar(select(m.ApprovalInstance).where(
                 m.ApprovalInstance.resource_type=='business_subject',
@@ -137,6 +196,7 @@ def test_prepare_internal_start_rejects_stale_project_version():
         with Session.begin() as db:
             admin=user(db,'admin',True);p=project(db,'START-STALE')
             accept=decision(db,p,admin,'quote_acceptance','QA-STALE','ACCEPT')
+            intake=customer_start_conditions(db,p,admin,'103')
             definition=workflow(db,admin)
             conversation=m.Conversation(user_id=admin.id,title='正式开工')
             db.add(conversation);db.flush()
@@ -145,6 +205,7 @@ def test_prepare_internal_start_rejects_stale_project_version():
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
             db.add(run);db.flush()
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
+                'bid_intake_revision_id':intake.id,
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
                 'workflow_definition_id':definition.id}
             p.row_version += 1
@@ -162,6 +223,7 @@ def test_prepare_internal_start_does_not_leak_contract_or_plan_without_permissio
             admin=user(db,'admin',True);operator=user(db,'operator')
             p=project(db,'START-NO-LEAK')
             accept=decision(db,p,admin,'quote_acceptance','QA-NO-LEAK','ACCEPT')
+            intake=customer_start_conditions(db,p,admin,'104')
             sales_contract(db,p,admin)
             plan_subject=m.BusinessSubject(kind='project_plan',number='PLAN-NO-LEAK',project_id=p.id,
                 created_by=admin.id,status='EFFECTIVE')
@@ -174,11 +236,12 @@ def test_prepare_internal_start_does_not_leak_contract_or_plan_without_permissio
                 prompt='准备正式开工',status='SUCCEEDED',
                 checkpoint={'authorization_hash':'pending','agent_permission_mode':'ask'})
             db.add(run)
-            for permission in ('project.read','quote_acceptance.read','internal_start.read','internal_start.create','internal_start.submit'):
+            for permission in ('project.read','project.dossier.read','quote_acceptance.read','internal_start.read','internal_start.create','internal_start.submit'):
                 grant(db,admin,operator,permission,p.id)
             capability(db,operator,'prepare_internal_start')
             run.checkpoint={'authorization_hash':fingerprint(db,operator),'agent_permission_mode':'ask'}
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
+                'bid_intake_revision_id':intake.id,
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
                 'workflow_definition_id':definition.id}
         with Session.begin() as db:
@@ -231,6 +294,31 @@ def test_start_readiness_does_not_leak_acceptance_without_quote_tool():
             assert row['readiness']['can_prepare_start_from_known_facts'] is False
             assert 'SECRET-QA' not in str(result)
             assert '承接依据' in ''.join(result['limitations'])
+    finally:
+        engine.dispose()
+
+
+def test_start_readiness_hides_customer_start_evidence_without_dossier_permission():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);operator=user(db,'limited')
+            p=project(db,'START-HIDDEN')
+            decision(db,p,admin,'quote_acceptance','QA-HIDDEN','ACCEPT')
+            customer_start_conditions(db,p,admin,'105')
+            for permission in ('project.read','quote_acceptance.read','internal_start.read'):
+                grant(db,admin,operator,permission,p.id)
+            capability(db,operator,'query_internal_start_readiness')
+            capability(db,operator,'query_quote_acceptance_context')
+        with Session() as db:
+            operator=db.query(m.User).filter_by(username='limited').one()
+            result=execute(db,operator,'query_internal_start_readiness',{'identifier':'START-HIDDEN'})
+            conditions=result['data'][0]['customer_start_conditions']
+            assert conditions['visible'] is False
+            assert conditions['current_revision_id'] is None
+            assert conditions['external_order_number'] is None
+            assert 'EXT-ORDER-105' not in str(result)
+            assert '客户工艺方案已经双方人工确认' not in str(result)
     finally:
         engine.dispose()
 

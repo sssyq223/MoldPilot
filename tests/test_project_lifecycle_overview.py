@@ -164,8 +164,8 @@ def test_lifecycle_enters_execution_after_core_kickoff_without_hiding_parallel_c
             assert data["recommended_next_steps"][0]["tool"] == "query_project_execution_context"
             assert by_key["kickoff"]["state"] == "COMPLETED"
             assert by_key["kickoff"]["progress"]["completed_count"] == 3
-            assert by_key["kickoff"]["progress"]["stage_count"] == 5
-            assert by_key["kickoff"]["progress"]["not_applicable_count"] == 1
+            assert by_key["kickoff"]["progress"]["stage_count"] == 6
+            assert by_key["kickoff"]["progress"]["not_applicable_count"] == 2
             assert by_key["execution"]["focus"]["key"] == "design_route"
     finally:
         engine.dispose()

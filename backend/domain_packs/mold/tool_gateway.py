@@ -63,6 +63,7 @@ TOOLS.update({
     'prepare_quotation_version':{'description':'使用本轮客户资料准备版本化客户报价；必须结构化填写成本/工艺/工期、初步加工方式、价格、交期和收款条件，本人确认后冻结资料并提交 Agent BPM。','permission':'quotation.create'},
     'prepare_quotation_feedback':{'description':'准备登记指定生效报价版本的客户反馈；本人确认后仅追加反馈事实，不自动承接、拒单或生成新报价。','permission':'quotation.execute'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
+    'prepare_bid_intake_draft':{'description':'使用本轮明确上传的中标、外部开工、合同参考或模具图片资料，准备登记或补充同一条中标接收草稿；可人工登记客户工艺确认、外部订单、开工日期和交期，确认后追加不可变版本，不自动承接、拒单、建正式合同或内部开工。','permission':'quote_acceptance.create'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点和替代关系上下文；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
     'prepare_contract_record':{'description':'使用本轮明确上传的 PDF、图片或 DOCX 原件，准备销售合同或整套委外合同的原始、替代或追加登记审批建议；替代合同必须逐条把前序版本链的历史实收实付归属到新付款节点，追加合同保持独立；必须使用真实项目、项目版本、附件 ID 和流程 ID，本人确认后才冻结附件并提交 Agent BPM。','permission':'project.dossier.read'},
     'prepare_contract_signing_record':{'description':'准备整套委外合同签署文件或签署状态证据登记建议；必须使用真实项目版本、已生效整套委外合同和签署依据，本人确认后才写入签署记录，不发起电子签署。','permission':'full_outsource_contract.execute'},
@@ -137,6 +138,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                        'query_quote_acceptance_context','prepare_quote_acceptance_decision'],
                    'activation_queries':['报价评估','加工方式','成本工艺工期','报价成本','最终加工方式']},
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context'],
+                   'optional_tools':['prepare_bid_intake_draft','query_business_object_candidates'],
                    'activation_queries':['中标接收','客户分类','客户规则','模具关联','开工依据']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context'],
                    'optional_tools':['prepare_contract_record','prepare_contract_signing_record'],
@@ -145,7 +147,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['prepare_internal_start'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工']},
                'project_kickoff_orchestration':{'name':'项目启动链路协调','tools':['query_project_kickoff_context'],
-                   'optional_tools':['query_quote_evaluation_context','prepare_quotation_version',
+                   'optional_tools':['query_bid_intake_context','prepare_bid_intake_draft',
+                       'query_quote_evaluation_context','prepare_quotation_version',
                        'prepare_quotation_feedback','query_quote_acceptance_context','prepare_quote_acceptance_decision',
                        'query_contract_context','prepare_contract_record','query_internal_start_readiness',
                        'prepare_internal_start','query_project_plan_context','prepare_project_plan_baseline'],
@@ -436,6 +439,7 @@ CAPABILITY_NAMES = {
     'prepare_quotation_version': '准备客户报价版本',
     'prepare_quotation_feedback': '准备客户报价反馈',
     'query_bid_intake_context': '读取中标接收上下文',
+    'prepare_bid_intake_draft': '准备中标接收草稿',
     'query_contract_context': '读取合同上下文',
     'prepare_contract_record': '准备合同登记',
     'prepare_contract_signing_record': '准备合同签署记录',
@@ -505,7 +509,8 @@ CAPABILITY_DEPARTMENTS = {
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
     'query_quote_evaluation_context': 'sales', 'prepare_quotation_version': 'sales',
     'prepare_quotation_feedback': 'sales',
-    'query_bid_intake_context': 'sales', 'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
+    'query_bid_intake_context': 'sales', 'prepare_bid_intake_draft': 'sales',
+    'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
     'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'prepare_contract_record': 'finance',
     'prepare_contract_signing_record': 'finance',
     'contract_context_review': 'finance',
@@ -560,6 +565,7 @@ CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
     'prepare_quote_acceptance_decision': 'approval',
     'prepare_quotation_version': 'approval', 'prepare_quotation_feedback': 'operation',
+    'prepare_bid_intake_draft': 'operation',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
     'finance_context_review': 'review', 'governance_context_review': 'review',
@@ -697,9 +703,11 @@ def tool_schema(key):
         from domain_packs.mold.tools.erp.commercial.quotation_tools import quotation_schema, quotation_feedback_schema
         parameters=quotation_schema() if key=='prepare_quotation_version' else quotation_feedback_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
-    if key=='query_bid_intake_context':
+    if key in {'query_bid_intake_context','prepare_bid_intake_draft'}:
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
-        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
+        from domain_packs.mold.tools.erp.commercial.bid_intake_tools import bid_intake_schema
+        parameters=bid_intake_schema() if key=='prepare_bid_intake_draft' else QuoteContextInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_contract_context','prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import ContractContextInput, contract_schema, contract_signing_record_schema
         parameters=contract_schema() if key=='prepare_contract_record' else (
@@ -945,6 +953,9 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_quotation_version','prepare_quotation_feedback'}:
         from domain_packs.mold.tools.erp.commercial.quotation_tools import execute_quotation_tool
         return execute_quotation_tool(db,user,key,arguments,run=run)
+    if key=='prepare_bid_intake_draft':
+        from domain_packs.mold.tools.erp.commercial.bid_intake_tools import execute_bid_intake_tool
+        return execute_bid_intake_tool(db,user,key,arguments,run=run)
     if key in {'prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)

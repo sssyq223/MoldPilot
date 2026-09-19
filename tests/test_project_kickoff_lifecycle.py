@@ -116,6 +116,43 @@ def sales_contract(db, project_row, creator, number="SC-KICKOFF"):
     return subject
 
 
+def quotation(db, project_row, creator, number="Q-KICKOFF"):
+    subject = m.BusinessSubject(
+        kind="quotation",
+        number="SUBJECT-" + number,
+        project_id=project_row.id,
+        created_by=creator.id,
+        status="EFFECTIVE",
+    )
+    db.add(subject)
+    db.flush()
+    db.add(m.QuotationDetail(
+        subject_id=subject.id,
+        previous_id=None,
+        quotation_number=number,
+        version=1,
+        preliminary_execution_mode="INTERNAL",
+        quoted_amount=Decimal("100000.00"),
+        currency="CNY",
+        promised_delivery_date=date.today() + timedelta(days=90),
+        payment_terms="合同生效30%，T0后40%，终验30%",
+        cost_amount=Decimal("70000.00"),
+        cost_evidence="成本核算表",
+        process_analysis="内部设计、加工、装配和试模路线",
+        duration_days=75,
+        duration_evidence="项目工期评估",
+        supplier_quote_amount=None,
+        supplier_delivery_date=None,
+        supplier_requirements=None,
+        supplier_quote_evidence=None,
+        customer_company_snapshot="测试客户",
+        customer_contact_snapshot="王经理",
+        owner_user_id=creator.id,
+        source_summary={},
+    ))
+    return subject
+
+
 def plan(db, project_row, creator, number="PLAN-KICKOFF"):
     subject = m.BusinessSubject(
         kind="project_plan",
@@ -192,8 +229,9 @@ def test_kickoff_moves_from_acceptance_to_start_then_plan_then_execution():
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             assert lifecycle["phase"] == "START_PREPARATION"
             assert stages(result)["quotation"]["state"] == "NOT_APPLICABLE"
-            assert stages(result)["internal_start"]["state"] == "READY"
-            assert lifecycle["recommended_next_steps"][0]["tool"] == "prepare_internal_start"
+            assert stages(result)["bid_intake"]["state"] == "NOT_APPLICABLE"
+            assert stages(result)["internal_start"]["state"] == "NOT_STARTED"
+            assert lifecycle["recommended_next_steps"][0]["tool"] == "prepare_bid_intake_draft"
 
         with Session.begin() as db:
             admin = db.query(m.User).filter_by(username="admin").one()
@@ -232,6 +270,30 @@ def test_kickoff_moves_from_acceptance_to_start_then_plan_then_execution():
         engine.dispose()
 
 
+def test_kickoff_routes_effective_quotation_to_bid_intake_before_acceptance():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            project_row = project(db, "KICKOFF-BID-INTAKE")
+            quotation(db, project_row, admin)
+            for business_type in ("quote_acceptance", "sales_contract", "internal_start", "project_plan"):
+                workflow(db, admin, business_type)
+
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_project_kickoff_context", {"identifier": "KICKOFF-BID-INTAKE"})
+            lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
+            by_key = stages(result)
+            assert lifecycle["phase"] == "BID_INTAKE"
+            assert by_key["quotation"]["state"] == "COMPLETED"
+            assert by_key["bid_intake"]["state"] == "READY"
+            assert lifecycle["recommended_next_steps"][0]["tool"] == "prepare_bid_intake_draft"
+            assert lifecycle["recommended_next_steps"][0]["requires_user_confirmation"] is True
+    finally:
+        engine.dispose()
+
+
 def test_kickoff_keeps_unassigned_stage_tools_unread_and_does_not_leak_numbers():
     engine, Session = factory()
     try:
@@ -249,7 +311,7 @@ def test_kickoff_keeps_unassigned_stage_tools_unread_and_does_not_leak_numbers()
             result = execute(db, operator, "query_project_kickoff_context", {"identifier": "KICKOFF-LIMITED"})
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             assert {row["state"] for row in lifecycle["stages"]} == {"UNAVAILABLE"}
-            assert lifecycle["access_gaps"] == ["客户报价", "承接确认", "销售合同", "正式开工", "项目计划"]
+            assert lifecycle["access_gaps"] == ["客户报价", "承接确认", "中标接收", "销售合同", "正式开工", "项目计划"]
             assert "SECRET-QA" not in str(result)
             assert "SECRET-CONTRACT" not in str(result)
     finally:

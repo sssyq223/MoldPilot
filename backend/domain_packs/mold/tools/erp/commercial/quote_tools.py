@@ -311,6 +311,9 @@ def confirm(db,user,payload):
     detail,_=preview_quote_decision(db,user,data)
     subject=domains.create(db,user,s.SubjectInput(kind='quote_acceptance',project_id=data.project_id,
         remark=data.evidence,detail=detail.model_dump(mode='json')))
+    from domain_packs.mold.tools.erp.commercial.bid_intake_tools import link_lifecycle_subject
+    link_lifecycle_subject(db,user,data.project_id,subject,
+        'ACCEPTANCE' if data.decision=='ACCEPT' else 'REJECTION')
     from domain_packs.mold.erp.core.business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
         agent_permission_mode=agent_permission_mode_from_proposal(proposal))

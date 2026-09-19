@@ -85,6 +85,7 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
         "contract": "销售合同审批（浏览器验收）",
         "contract_relation": "销售合同替代审批（浏览器验收）",
         "quotation": "客户报价版本审批（浏览器验收）",
+        "bid_intake": "正式开工审批（浏览器验收）",
         "closure": "项目终止与关闭审批（浏览器验收）",
         "pause": "项目暂停恢复审批（浏览器验收）",
     }
@@ -673,6 +674,146 @@ def build_quotation(
         engine.dispose()
 
 
+def build_bid_intake(
+    database_url: str,
+    password: str,
+    project_code: str | None = None,
+    username: str = "admin",
+):
+    """Create a six-stage kickoff fixture with complete customer start conditions."""
+    _require_postgresql(database_url)
+    engine = make_engine(database_url)
+    parsed = urlsplit(database_url)
+    run_key = now().strftime("%m%d%H%M%S")
+    project_code = project_code or f"SMOKE-BID-INTAKE-{run_key}"
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            user = db.scalar(select(m.User).where(m.User.username == username).limit(1))
+            if user is None or not user.active:
+                raise SystemExit(f"Smoke user {username!r} is missing or inactive.")
+            project = _upsert_one(
+                db, m.Project, [m.Project.code == project_code],
+                {"code": project_code, "name": "浏览器中标接收与开工条件验收项目", "status": "DRAFT"},
+            )
+            customer = _upsert_one(
+                db, m.Customer, [m.Customer.code == f"{project_code}-CUSTOMER"],
+                {"code": f"{project_code}-CUSTOMER", "name": "浏览器验收客户", "rule_key": "standard", "active": True},
+            )
+            profile = db.get(m.ProjectProfile, project.id)
+            if profile is None:
+                db.add(m.ProjectProfile(
+                    project_id=project.id, customer_id=customer.id, owner_user_id=user.id,
+                    execution_mode="INTERNAL", customer_due_date=date.today() + timedelta(days=90),
+                ))
+            else:
+                profile.customer_id = customer.id
+                profile.owner_user_id = user.id
+                profile.execution_mode = "INTERNAL"
+                profile.customer_due_date = date.today() + timedelta(days=90)
+
+            quotation = m.BusinessSubject(
+                kind="quotation", number=f"{project_code}-QUOTE-SUBJECT", project_id=project.id,
+                created_by=user.id, status="EFFECTIVE",
+            )
+            db.add(quotation); db.flush()
+            db.add(m.QuotationDetail(
+                subject_id=quotation.id, previous_id=None, quotation_number=f"{project_code}-QUOTE",
+                version=1, preliminary_execution_mode="INTERNAL", quoted_amount=Decimal("128000.00"),
+                currency="CNY", promised_delivery_date=date.today() + timedelta(days=90),
+                payment_terms="合同生效30%，首轮试模40%，终验30%", cost_amount=Decimal("92000.00"),
+                cost_evidence="浏览器验收合成成本清单", process_analysis="设计、采购、制造、装配和试模",
+                duration_days=75, duration_evidence="浏览器验收合成工期评估",
+                supplier_quote_amount=None, supplier_delivery_date=None, supplier_requirements=None,
+                supplier_quote_evidence=None, customer_company_snapshot=customer.name,
+                customer_contact_snapshot="客户项目经理", owner_user_id=user.id, source_summary={},
+            ))
+
+            conversation = m.Conversation(user_id=user.id, title=f"{project_code} 中标接收与开工条件验收")
+            db.add(conversation); db.flush()
+            pdf = (
+                b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                b"2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+                + f"% bid intake browser smoke {run_key}\n".encode()
+            )
+            digest = sha256(pdf).hexdigest()
+            key = uuid4().hex + "/" + digest
+            storage = object_storage.put(key, pdf, "application/pdf")
+            blob = m.FileObject(
+                owner_id=user.id, conversation_id=conversation.id, request_key=str(uuid4()),
+                filename=f"{project_code}-客户开工通知.pdf", media_type="application/pdf",
+                size=len(pdf), sha256=digest, object_key=key, **storage,
+            )
+            db.add(blob); db.flush()
+
+            case = m.BidIntakeCase(project_id=project.id, created_by=user.id)
+            db.add(case); db.flush()
+            revision = m.BidIntakeRevision(
+                case_id=case.id, version=1, previous_revision_id=None, source_kind="EMAIL",
+                source_ref=f"browser-bid-intake-{run_key}", source_fingerprint=sha256(
+                    f"{project.id}:{run_key}".encode()
+                ).hexdigest(), received_date=date.today(), customer_classification="OTHER",
+                classification_evidence="销售人员已按客户档案人工确认", classification_confirmed_by=user.id,
+                customer_company=customer.name, customer_contact="客户项目经理",
+                customer_mold_number=f"{project_code}-MOLD", customer_model_or_material="MODEL-SMOKE",
+                project_name_snapshot=project.name, amount=Decimal("128000.00"), currency="CNY",
+                our_recipient="项目负责人", external_order_number=f"{project_code}-ORDER",
+                external_start_date=date.today(), customer_due_date=date.today() + timedelta(days=90),
+                customer_process_confirmed=True,
+                customer_process_confirmation_evidence="客户工艺方案已由双方项目负责人人工确认",
+                matched_quotation_subject_id=quotation.id, historical_mold_number=None,
+                historical_relation_kind=None, match_result="MATCHED",
+                match_evidence="项目编号、客户模号和报价版本均已人工核对一致",
+                notes="仅用于浏览器验收", recorded_by=user.id,
+            )
+            db.add(revision); db.flush()
+            db.add(m.BidIntakeAttachment(
+                revision_id=revision.id, file_id=blob.id, role="EXTERNAL_START_NOTICE",
+                content_sha256=blob.sha256, title=blob.filename,
+            ))
+
+            acceptance = m.BusinessSubject(
+                kind="quote_acceptance", number=f"{project_code}-ACCEPT", project_id=project.id,
+                created_by=user.id, status="EFFECTIVE",
+            )
+            db.add(acceptance); db.flush()
+            db.add(m.BusinessDecisionDetail(
+                subject_id=acceptance.id, source_subject_id=quotation.id, decision="ACCEPT",
+                execution_mode="INTERNAL", effective_date=date.today(),
+                evidence="中标资料与客户开工条件已由项目负责人核对",
+                amount=Decimal("128000.00"), currency="CNY",
+            ))
+            db.add(m.BidIntakeLifecycleLink(
+                case_id=case.id, subject_id=acceptance.id, source_revision_id=revision.id,
+                link_kind="ACCEPTANCE", linked_by=user.id,
+            ))
+            _build_workflow(db, user.id, "internal_start", "bid_intake")
+
+            run = m.Run(
+                conversation_id=conversation.id, user_id=user.id, security_version=user.security_version,
+                prompt=f"只读核对 {project_code} 的项目启动链路和正式开工条件。",
+                status="SUCCEEDED", checkpoint={"authorization_hash": fingerprint(db, user)},
+                result={
+                    "response_kind": "BUSINESS",
+                    "summary": (
+                        f"{project_code} 已有生效报价、中标接收 V1、有效承接和完整客户开工条件；"
+                        "尚未正式下达内部开工，销售合同可并行补齐。"
+                    ),
+                    "evidence_ids": [],
+                    "suggestions": ["可在新会话中只读查询项目启动链路，验证六阶段投影与开工门禁。"],
+                    "evidence": [],
+                },
+            )
+            db.add(run)
+            return {
+                "database": parsed.path.lstrip("/"), "host": parsed.hostname, "port": parsed.port,
+                "username": user.username, "password": password, "project_code": project_code,
+                "conversation_id": conversation.id,
+            }
+    finally:
+        engine.dispose()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--database-url", default="", help="PostgreSQL SQLAlchemy DSN. Defaults to AGENT_DATABASE_URL from env/.env.")
@@ -680,12 +821,14 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation", "bid_intake"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
     url = _database_url(args.env_file, args.url_key, args.database_url)
     if args.scenario == "quotation":
         print(build_quotation(url, args.password, args.project_code or None, args.username))
+    elif args.scenario == "bid_intake":
+        print(build_bid_intake(url, args.password, args.project_code or None, args.username))
     else:
         print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))
