@@ -42,7 +42,9 @@ def test_design_route_skill_exposes_optional_plan_change_bridge_without_hard_dep
     assert item["type"] == "review"
     assert item["mode"] == "read_only"
     assert item["dependencies"] == ["query_design_route_context"]
-    assert item["optional_dependencies"] == ["query_project_plan_context", "prepare_project_plan_change"]
+    assert item["optional_dependencies"] == [
+        "query_project_plan_context", "prepare_project_plan_change", "prepare_design_order_approval",
+    ]
 
 
 def test_contract_signing_record_tool_is_human_confirmed_operation_in_contract_pack():

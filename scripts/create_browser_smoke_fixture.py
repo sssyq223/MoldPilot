@@ -100,7 +100,14 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
     )
 
 
-def build(database_url: str, password: str, scenario: str = "pause", project_code: str | None = None, username: str = "admin"):
+def build(
+    database_url: str,
+    password: str,
+    scenario: str = "pause",
+    project_code: str | None = None,
+    username: str = "admin",
+    pdf_file: str | None = None,
+):
     _require_postgresql(database_url)
     engine = make_engine(database_url)
     parsed = urlsplit(database_url)
@@ -282,10 +289,20 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
                     "active": True,
                 },
             )
-            pdf = (
-                b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-                b"2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
-            ) + f"% browser-smoke {run_key}\n".encode()
+            pdf_path = Path(pdf_file).resolve() if pdf_file else None
+            if pdf_path:
+                if not pdf_path.is_file():
+                    raise SystemExit(f"PDF file does not exist: {pdf_path}")
+                pdf = pdf_path.read_bytes()
+                if not pdf.startswith(b"%PDF-"):
+                    raise SystemExit(f"File is not a PDF: {pdf_path}")
+                pdf_filename = pdf_path.name
+            else:
+                pdf = (
+                    b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                    b"2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+                ) + f"% browser-smoke {run_key}\n".encode()
+                pdf_filename = f"{project_code}-销售合同原件.pdf"
             digest = sha256(pdf).hexdigest()
             key = uuid4().hex + "/" + digest
             storage = object_storage.put(key, pdf, "application/pdf")
@@ -293,7 +310,7 @@ def build(database_url: str, password: str, scenario: str = "pause", project_cod
                 owner_id=user.id,
                 conversation_id=conversation.id,
                 request_key=str(uuid4()),
-                filename=f"{project_code}-销售合同原件.pdf",
+                filename=pdf_filename,
                 media_type="application/pdf",
                 size=len(pdf),
                 sha256=digest,
@@ -403,6 +420,7 @@ if __name__ == "__main__":
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
     parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
+    parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
     url = _database_url(args.env_file, args.url_key, args.database_url)
-    print(build(url, args.password, args.scenario, args.project_code or None, args.username))
+    print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))

@@ -417,8 +417,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计主管确认内部设计或设计委外并提交审批，记录负责人、时间、费用及适用的供应商信息。当前设计排产以线下安排、线上进度记录为基础；供应商不适用于内部设计时不强制虚填。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
-- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；prepare_design_order_approval 固定读取一条 ERP 设计订单并在用户确认后冻结来源、原生版本、时点、哈希、摘要、原始快照及当前对话附件，提交 Agent BPM 而非 ERP 设计审批；确认时再次读取 ERP，快照变化会阻止提交；design_route_context_review 与 erp_design_order_approval 两个 Skill 分离查询和审批职责
+- 验证证据：tests/test_design_tools.py 覆盖设计上下文与权限隔离；tests/test_design_approval_tools.py 覆盖 ERP 订单证据、附件和审批快照冻结，并覆盖确认前 ERP 版本变化阻断且不创建业务材料
 - 验收状态：NOT_VERIFIED
 
 ### FR-044
@@ -426,8 +426,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 内部设计按工艺分析、结构设计、出图、设计确认推进。设计委外记录任务下达、成果接收、审核及整改结果，由设计主管组织排期和确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
-- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
+- 实现证据：query_design_route_context 保留内部/委外设计的本地上下文；prepare_design_order_approval 把 ERP 设计订单作为不可变材料提交可配置 Agent BPM，并锁定复核人、图纸版本和当前对话附件。当前实现尚未补齐设计委外供应商、费用、任务下达/成果整改全流程
+- 验证证据：tests/test_design_tools.py 覆盖设计/BOM/路线查询；tests/test_design_approval_tools.py 覆盖可配置流程提交、来源快照和附件版本冻结
 - 验收状态：NOT_VERIFIED
 
 ### FR-045
@@ -435,8 +435,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计确认后形成正式设计版本，管理对应BOM、工艺路线、零件清单及后续任务；设计人员上传需采购物料、零件和加工任务清单。成果产生方式按适配确认，正式版本的项目、模具和任务关联必须保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
-- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
+- 实现证据：prepare_design_order_approval 冻结 ERP 设计订单的原生版本或内容版本、图纸版本、订单明细和本轮附件，ApprovalInstance.snapshot 保留 `erp_order_material` 与精确文件版本；审批详情在材料弹窗显示证据，实时图纸/BOM/密度/标准件仍由 ERP 封装工具读取
+- 验证证据：tests/test_design_approval_tools.py 覆盖精确 ERP 版本、快照、订单明细、附件 file_id/version/SHA-256 和 Agent BPM 实例快照；mold/template 前端构建覆盖审批材料渲染
 - 验收状态：NOT_VERIFIED
 
 ### FR-046
@@ -444,8 +444,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 图纸或工艺路线改版保留旧版，评估对采购、加工和其他任务的影响。工程联络单转设计时创建或关联设计订单，继承客户、项目、模具、料号、责任、紧急程度、方案、要求日期及附件审批信息。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
-- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
+- 实现证据：现有 query_design_route_context 继续输出改版影响；ERP 设计审批材料现保留旧审批快照和附件版本，新确认前还会检测 ERP 订单变化。工程联络转设计订单和后续计划变更审批联动仍未完成，不能把本次材料冻结误报为该闭环
+- 验证证据：tests/test_design_tools.py 覆盖版本影响分析；tests/test_design_approval_tools.py 覆盖材料版本变化阻断和旧材料不可覆盖基础契约
 - 验收状态：NOT_VERIFIED
 
 ### FR-047

@@ -18,7 +18,21 @@ def active_user(db,user_id):
 def detail_data(db,subject):
     from domain_packs.mold.erp.core.domains import values,rows
     detail=values(db.get(TABLES[subject.kind],subject.id),('subject_id',))
-    if subject.kind=='design_route':detail['items']=[values(r) for r in rows(db,m.DesignItem,design_id=subject.id)]
+    if subject.kind=='design_route':
+        detail['items']=[values(r) for r in rows(db,m.DesignItem,design_id=subject.id)]
+        from domain_packs.mold.erp.design import design_documents
+        detail['attachments']=design_documents.cards(db,subject.id)
+        if detail.get('source_snapshot'):
+            detail['erp_order_material']={
+                'source_system':detail.get('source_system'),
+                'resource_type':detail.get('source_resource_type'),
+                'resource_id':detail.get('source_resource_id'),
+                'resource_version':detail.get('source_resource_version'),
+                'as_of':detail.get('source_as_of'),
+                'snapshot_hash':detail.get('source_snapshot_hash'),
+                'document_revision':subject.revision,
+                **(detail.get('source_summary') or {}),
+            }
     if subject.kind=='trial_request':detail['results']=[values(r) for r in rows(db,m.TrialResult,trial_id=subject.id)]
     if subject.kind=='assembly_issue':detail['execution']=[values(r) for r in rows(db,m.AssemblyExecution,assembly_id=subject.id)]
     return detail

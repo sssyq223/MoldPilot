@@ -47,6 +47,9 @@ HANDLERS = (
     ProposalHandler("contract.execute", "domain_packs.mold.tools.erp.commercial.contract_tools", frozenset({
         "prepare_contract_record", "prepare_contract_signing_record",
     })),
+    ProposalHandler("design_approval.execute", "domain_packs.mold.tools.erp.design.design_approval_tools", frozenset({
+        "prepare_design_order_approval",
+    })),
     ProposalHandler("full_outsource.execute", "domain_packs.mold.tools.erp.procurement.full_outsource_tools", frozenset({
         "prepare_supplier_material_handoff", "prepare_supplier_material_verification",
         "prepare_supplier_progress_policy",

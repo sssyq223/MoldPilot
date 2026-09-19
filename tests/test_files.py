@@ -47,7 +47,9 @@ def test_upload_private_original_retry_and_download(client,data):
     assert upload(client,PDF+b'changed',key=key).status_code==409
     r=client.get('/api/files/'+blob['id']+'/content');assert r.content==PDF
     assert r.headers['content-disposition'].startswith('attachment;') and r.headers['x-content-type-options']=='nosniff'
-    assert client.get('/api/files/'+blob['id']+'/content?preview=true').status_code==400
+    preview=client.get('/api/files/'+blob['id']+'/content?preview=true')
+    assert preview.status_code==200 and preview.content==PDF
+    assert preview.headers['content-disposition'].startswith('inline;')
     sign_in(client,'test_buyer')
     assert client.get('/api/files/'+blob['id']+'/content').status_code==404
     assert client.get('/api/conversations/'+blob['conversation_id']+'/files').status_code==404

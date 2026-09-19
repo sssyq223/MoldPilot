@@ -143,7 +143,7 @@ def conversation_files(cid:str,user=Depends(current_user),db=Depends(get_db)):
 @router.get('/api/files/{fid}/content')
 def content(fid:str,preview:bool=False,user=Depends(current_user),db=Depends(get_db)):
     blob=load(db,user,fid)
-    if preview and blob.media_type not in {'image/png','image/jpeg'}:raise DomainError('PREVIEW_UNSUPPORTED','此格式请下载原件查看')
+    if preview and blob.media_type not in {'application/pdf','image/png','image/jpeg'}:raise DomainError('PREVIEW_UNSUPPORTED','此格式暂不支持在线预览，请下载原件查看')
     data=object_storage.read(blob)
     record(db,user,'file.previewed' if preview else 'file.downloaded',blob.id);db.commit()
     return Response(data,media_type=blob.media_type,headers={

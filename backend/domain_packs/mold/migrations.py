@@ -56,3 +56,20 @@ LEGACY_TABLES = frozenset({
     "trial_detail", "trial_result", "warehouse", "wf_timer", "workflow_calendar",
     "workflow_category", "workflow_definition", "workflow_escalation_task",
 })
+
+# Model objects added after the split may live on a table owned by the frozen
+# legacy snapshot.  They belong exclusively to the authoritative domain stage
+# and must not be reported as drift while an old all-in-one database is being
+# adopted.  Keep this list explicit so the compatibility check cannot silently
+# ignore unrelated model changes.
+LEGACY_MODEL_EXCLUSIONS = frozenset({
+    ("column", "design_detail", "source_system"),
+    ("column", "design_detail", "source_resource_type"),
+    ("column", "design_detail", "source_resource_id"),
+    ("column", "design_detail", "source_resource_version"),
+    ("column", "design_detail", "source_as_of"),
+    ("column", "design_detail", "source_snapshot_hash"),
+    ("column", "design_detail", "source_summary"),
+    ("column", "design_detail", "source_snapshot"),
+    ("index", "design_detail", "ix_design_detail_source_resource"),
+})

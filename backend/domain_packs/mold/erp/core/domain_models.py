@@ -797,6 +797,18 @@ class DesignDetail(Base):
     drawing_revision: Mapped[str] = mapped_column(String(100))
     drawing_evidence: Mapped[str] = mapped_column(Text)
     reviewer_id: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    source_system: Mapped[str | None] = mapped_column(String(80))
+    source_resource_type: Mapped[str | None] = mapped_column(String(80))
+    source_resource_id: Mapped[str | None] = mapped_column(String(160))
+    source_resource_version: Mapped[str | None] = mapped_column(String(200))
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    source_summary: Mapped[dict | None] = mapped_column(J)
+    source_snapshot: Mapped[dict | None] = mapped_column(J)
+    __table_args__ = (Index(
+        "ix_design_detail_source_resource",
+        "source_system", "source_resource_type", "source_resource_id",
+    ),)
 
 
 class DesignItem(IdentityMixin, Base):

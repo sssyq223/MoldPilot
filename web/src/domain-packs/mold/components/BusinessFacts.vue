@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {fieldName,valueText} from '../uiText'
-const props=defineProps<{value:any;highlightsOnly?:boolean}>()
-const hidden=new Set(['id','subject_id','plan_id','created_at','source_line_id','case_id','department_id','plan_subject_id','source_pause_subject_id','pause_id','task_id','closure_case_id','source_termination_subject_id','opened_by','closed_by','updated_by','analysis'])
+const props=defineProps<{value:any;highlightsOnly?:boolean;contractNumber?:string}>()
+const hidden=new Set(['id','subject_id','plan_id','created_at','source_line_id','case_id','department_id','plan_subject_id','source_pause_subject_id','pause_id','task_id','closure_case_id','source_termination_subject_id','opened_by','closed_by','updated_by','analysis','attachments','source_snapshot','source_summary','erp_order_material','source_system','source_resource_type','source_resource_id','source_resource_version','source_as_of','source_snapshot_hash'])
 const milestoneNames:Record<string,string>={design:'设计/工艺/出图',purchase:'采购',machining:'加工',assembly:'装配',trial:'试模/调试',delivery:'交付/验收'}
 function tasks(){return props.value?.analysis?.tasks||[]}
 function milestoneCoverage(){return props.value?.analysis?.milestone_coverage}
@@ -19,6 +19,15 @@ function taskList(tasks:any[]){return (tasks||[]).map(task=>task.name||task.key)
 function changeSummary(){
  const summary=revisionImpact()?.summary||{}
  return `新增 ${summary.added||0}，移除 ${summary.removed||0}，变化 ${summary.changed||0}，未变 ${summary.unchanged||0}`
+}
+function displayValue(key:string,value:any){
+ const currency=String(props.value?.currency||'')
+ const amount=Number(value)
+ if((key==='amount'||key.endsWith('_amount'))&&currency&&Number.isFinite(amount)){
+  try{return new Intl.NumberFormat('zh-CN',{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2}).format(amount)}catch{}
+ }
+ if(key==='currency'&&currency)return `${valueText(key,value)}（${currency}）`
+ return valueText(key,value)
 }
 
 </script>
@@ -52,7 +61,7 @@ function changeSummary(){
     <p class="muted small">{{candidate.guardrail}}</p>
   </div>
 </section><template v-if="!props.highlightsOnly"><template v-for="(item,key) in value" :key="String(key)"><section v-if="!hidden.has(String(key))&&item!==null&&item!==undefined&&item!==''">
-  <template v-if="Array.isArray(item)"><h4>{{fieldName(String(key))}}</h4><div v-for="(row,index) in item" :key="index" class="surface"><BusinessFacts v-if="row&&typeof row==='object'" :value="row"/><span v-else>{{valueText(String(key),row)}}</span></div><p v-if="!item.length" class="muted">暂无记录</p></template>
-  <BusinessFacts v-else-if="item&&typeof item==='object'" :value="item"/>
-  <div v-else class="fact-line"><span class="muted">{{fieldName(String(key))}}</span><span>{{valueText(String(key),item)}}</span></div>
+  <template v-if="Array.isArray(item)"><h4>{{fieldName(String(key))}}</h4><div v-for="(row,index) in item" :key="index" class="surface"><BusinessFacts v-if="row&&typeof row==='object'" :value="row" :contract-number="props.contractNumber"/><span v-else>{{displayValue(String(key),row)}}</span></div><p v-if="!item.length" class="muted">暂无记录</p></template>
+  <BusinessFacts v-else-if="item&&typeof item==='object'" :value="item" :contract-number="props.contractNumber"/>
+  <div v-else class="fact-line"><span class="muted">{{fieldName(String(key))}}</span><span>{{String(key)==='contract_id'?(props.contractNumber||'当前合同'):displayValue(String(key),item)}}</span></div>
 </section></template></template></div></template>

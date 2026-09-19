@@ -67,6 +67,7 @@ TOOLS.update({
     'prepare_project_plan_change':{'description':'准备项目计划变更审批建议；必须使用查询返回的真实项目、当前计划和节点清单，本人确认后才提交 Agent BPM。','permission':'plan_change.create'},
     'prepare_plan_department_confirmation':{'description':'准备计划变更生效后的部门影响确认；只能使用计划上下文返回的待确认项 ID 和版本，本人确认后仅记录本部门已核对。','permission':'plan_change.execute'},
     'query_design_route_context':{'description':'按项目、设计单、图纸、BOM物料或任务线索核对设计、BOM、加工路线、计划任务和工程联络影响；只读，不生成图纸或重复ERP设计模块。','permission':'design_route.read'},
+    'prepare_design_order_approval':{'description':'读取指定 ERP 设计订单的当前详情，冻结来源版本、证据快照及本轮附件，并准备提交 Agent 通用 BPM；不调用 ERP 设计审批。','permission':'design_route.create'},
     'query_manufacturing_quality_context':{'description':'按项目或工序线索核对制造计划任务、报工事实、设计路线、装配/试模、质检和整改上下文；只读，不登记报工或检验。','permission':'project_plan.read'},
     'query_assembly_trial_context':{'description':'按项目、装配任务或试模线索核对齐套前置、装配工单、完工确认、试模资源、试模报告和异常整改上下文；只读，不替代 ERP 装配/试模执行。','permission':'assembly_issue.read'},
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
@@ -131,7 +132,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'optional_tools':['prepare_project_plan_change','prepare_plan_department_confirmation'],
                    'activation_queries':['项目计划变更','计划变更','节点顺延','部门影响确认']},
                'design_route_context_review':{'name':'设计BOM与路线上下文核对','tools':['query_design_route_context'],
-                   'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
+                   'optional_tools':['query_project_plan_context','prepare_project_plan_change','prepare_design_order_approval'],
                    'activation_queries':['设计BOM','加工路线','图纸','设计路线','BOM路线']},
                'manufacturing_quality_review':{'name':'制造工序与质检上下文核对','tools':['query_manufacturing_quality_context'],
                    'activation_queries':['制造工序','现场报工','质检报告','整改复检','生产进度']},
@@ -256,6 +257,14 @@ SKILLS.update({
         'optional_tools': ['erp_design_get_record', 'erp_design_compare_drawing_versions'],
         'activation_queries': ['ERP图纸版本', '查询图纸版本', '查看图纸版本', '图纸版本对比'],
     },
+    'erp_design_order_approval': {
+        'name': 'ERP 设计订单 Agent 审批',
+        'tools': ['erp_design_query_orders', 'erp_design_get_record'],
+        'optional_tools': ['prepare_design_order_approval'],
+        'activation_tools': ['erp_design_query_orders', 'erp_design_get_record', 'prepare_design_order_approval'],
+        'activation_queries': ['设计订单去审批', '提交设计订单审批', '新模设计审批', '改模设计审批',
+                               '设计上传审批', '设计订单审批材料'],
+    },
     'erp_design_order_adjustment': {
         'name': 'ERP 设计订单明细调整',
         'tools': ['erp_design_query_orders', 'erp_design_get_record'],
@@ -378,6 +387,7 @@ CAPABILITY_NAMES = {
     'prepare_project_plan_change': '准备项目计划变更',
     'prepare_plan_department_confirmation': '准备计划部门影响确认',
     'query_design_route_context': '读取设计BOM与路线上下文',
+    'prepare_design_order_approval': '准备设计订单 Agent 审批',
     'query_manufacturing_quality_context': '读取制造质检上下文',
     'query_assembly_trial_context': '读取装配试模上下文',
     'query_delivery_logistics_context': '读取交付物流上下文',
@@ -443,7 +453,7 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_project_plan_baseline': 'project',
     'prepare_project_plan_change': 'project', 'prepare_plan_department_confirmation': 'project',
     'project_plan_context_review': 'project', 'project_plan_change': 'project',
-    'query_design_route_context': 'design',
+    'query_design_route_context': 'design', 'prepare_design_order_approval': 'design',
     'design_route_context_review': 'design', 'query_manufacturing_quality_context': 'project',
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
@@ -491,7 +501,7 @@ CAPABILITY_TYPES = {
     'prepare_internal_start': 'approval',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
     'prepare_project_plan_baseline': 'approval',
-    'design_route_context_review': 'review',
+    'design_route_context_review': 'review', 'prepare_design_order_approval': 'approval',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
     'delivery_logistics_review': 'review', 'prepare_logistics_route': 'operation',
     'prepare_logistics_quote': 'approval', 'full_outsource_review': 'review',
@@ -625,6 +635,9 @@ def tool_schema(key):
     if key=='query_design_route_context':
         from domain_packs.mold.tools.erp.design.design_tools import DesignRouteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DesignRouteContextInput.model_json_schema()}}
+    if key=='prepare_design_order_approval':
+        from domain_packs.mold.tools.erp.design.design_approval_tools import schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema()}}
     if key=='query_manufacturing_quality_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_assembly_trial_context':
@@ -841,6 +854,9 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)
+    if key=='prepare_design_order_approval':
+        from domain_packs.mold.tools.erp.design.design_approval_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
     if key in {'prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement'}:
         from domain_packs.mold.tools.erp.finance.finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
