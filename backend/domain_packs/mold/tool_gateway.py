@@ -237,20 +237,24 @@ SKILLS.update({
     'erp_design_workspace_review': {
         'name': 'ERP 设计资料核对',
         'tools': ['erp_design_query_orders'],
-        'optional_tools': ['erp_design_query_drawing_versions', 'erp_design_query_bom',
-                           'erp_design_query_bom_report', 'erp_design_query_changes',
-                           'erp_design_query_standard_hardware', 'erp_design_query_densities',
-                           'erp_design_query_group_rules', 'erp_design_query_group_keywords',
-                           'erp_design_get_record', 'erp_design_compare_drawing_versions',
-                           'erp_design_analyze_change', 'erp_design_get_mold_repair_approval',
-                           'erp_design_get_mold_repair_outsource_approval',
-                           'erp_design_get_mold_repair_processor_response'],
-        'activation_queries': ['ERP设计订单', 'ERP图纸版本', 'ERP BOM', 'ERP设变', 'ERP设计资料',
+        # Keep a plain order-table request bounded to the order reader.  BOM
+        # readers remain available for the explicit combined material-list
+        # aliases below; drawing versions, changes and master data have their
+        # own intent groups so an order ID is never guessed as another resource.
+        'optional_tools': ['erp_design_query_bom', 'erp_design_query_bom_report'],
+        'activation_queries': ['ERP设计订单', '查看设计订单', '打开设计订单', '设计订单表格', '设计订单可视化',
+                               'ERP BOM', 'ERP设计资料',
                                '设计与物料清单', '钢料清单', '五金清单', '模具物料'],
         # management-system uses this mold-number shape as its stable design
         # order lookup key. The Harness treats the matching ERP workspace as
         # authoritative before considering the local design-route context.
         'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
+    },
+    'erp_design_drawing_version_review': {
+        'name': 'ERP 图纸版本查询与对比',
+        'tools': ['erp_design_query_drawing_versions'],
+        'optional_tools': ['erp_design_get_record', 'erp_design_compare_drawing_versions'],
+        'activation_queries': ['ERP图纸版本', '查询图纸版本', '查看图纸版本', '图纸版本对比'],
     },
     'erp_design_order_adjustment': {
         'name': 'ERP 设计订单明细调整',
@@ -289,7 +293,7 @@ SKILLS.update({
                   'erp_design_query_change_items'],
         'optional_tools': ['erp_design_analyze_change', 'erp_design_manage_change',
                            'erp_design_manage_change_items'],
-        'activation_queries': ['ERP设计变更', 'ERP设变申请', 'ERP设变明细'],
+        'activation_queries': ['ERP设计变更', 'ERP设变', 'ERP设变申请', 'ERP设变明细'],
     },
     'erp_design_order_lifecycle': {
         'name': 'ERP 设计订单生命周期办理',

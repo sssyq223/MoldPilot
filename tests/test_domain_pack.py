@@ -95,6 +95,8 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
             "erp" / "design" / "erp_design_mcp.py").is_file()
     assert (project_root / "backend" / "domain_packs" / "mold" / "skills" /
             "erp" / "design" / "erp_design_workspace_review" / "SKILL.md").is_file()
+    assert (project_root / "backend" / "domain_packs" / "mold" / "skills" /
+            "erp" / "design" / "erp_design_drawing_version_review" / "SKILL.md").is_file()
     assert callable(product.install)
     assert core_gateway.TOOLS is host_gateway.TOOLS
     assert core_gateway.SKILLS is host_gateway.SKILLS

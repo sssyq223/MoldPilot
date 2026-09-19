@@ -4,8 +4,7 @@ import type { DxfViewer as DxfViewerInstance } from 'dxf-viewer'
 import type { ErpDesignRow } from '../erpDesignPreview'
 
 const props = defineProps<{
-  sessionId?: number
-  previewUrl?: string
+  sessionId: number
   row: ErpDesignRow
 }>()
 
@@ -31,7 +30,6 @@ const drawingId = computed(() => Number(
 const drawingName = computed(() => String(
   props.row.drawing_file_name
   ?? props.row.drawingFileName
-  ?? props.row.fileName
   ?? props.row.item_code_full
   ?? props.row.itemCodeFull
   ?? '图纸预览',
@@ -83,9 +81,9 @@ async function loadDrawing() {
   error.value = ''
   progress.value = '正在读取 ERP 图纸…'
   try {
-    if (!drawingId.value && !props.previewUrl) throw new Error('该行没有可预览的图纸编号')
+    if (!drawingId.value) throw new Error('该行没有可预览的图纸编号')
     const response = await fetch(
-      props.previewUrl || `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`,
+      `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`,
       { credentials: 'same-origin' },
     )
     if (!response.ok) {
@@ -152,7 +150,7 @@ async function loadDrawing() {
   }
 }
 
-watch(() => [props.sessionId, props.previewUrl, drawingId.value], () => void loadDrawing(), { immediate: true })
+watch(() => [props.sessionId, drawingId.value], () => void loadDrawing(), { immediate: true })
 onBeforeUnmount(cleanup)
 </script>
 

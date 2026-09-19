@@ -508,7 +508,7 @@ def test_erp_design_mcp_read_tool_is_registered_and_forwarded(monkeypatch):
             repair = execute(db, user, "erp_design_get_mold_repair_approval", {"batch_id": 18})
             skills = {item["key"] for item in skill_context(db, user)}
         assert calls == [
-            ("query_erp_design_orders", {"query": {"moldNo": "M250238-P4"}}),
+            ("query_erp_design_orders", {"query": {"keyword": "M250238-P4"}}),
             ("query_erp_bom", {"query": {"moldNo": "M250238-P4"}}),
             ("get_erp_mold_repair_approval", {"batchId": 18}),
         ]

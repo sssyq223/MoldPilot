@@ -1202,6 +1202,25 @@ def test_erp_material_list_alias_activates_erp_design_workspace():
     assert matched_groups == ['erp_design_workspace_review']
 
 
+def test_explicit_erp_design_order_view_activates_only_the_order_reader():
+    from domain_packs.mold.tool_gateway import SKILLS, tool_schema
+
+    skill = SKILLS['erp_design_workspace_review']
+    names = [*skill['tools'], *skill['optional_tools']]
+    deferred = {name: tool_schema(name) for name in names}
+    groups = harness_module._skill_tool_groups([
+        {'key': 'erp_design_workspace_review'},
+    ], deferred)
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        'ERP设计订单', deferred, groups,
+        current_prompt='查看 M250238-P4 的设计订单')
+
+    assert matches == ['erp_design_workspace_review']
+    assert activated == ['erp_design_query_orders']
+    assert matched_groups == ['erp_design_workspace_review']
+
+
 def test_tolerance_search_activates_only_the_single_tolerance_tool():
     deferred = {
         'erp_design_parse_new_mold_upload': {'type': 'function', 'function': {

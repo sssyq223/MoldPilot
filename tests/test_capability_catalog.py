@@ -219,7 +219,15 @@ def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
 def test_erp_design_workspace_has_material_list_aliases_and_mold_priority():
     skill = SKILLS["erp_design_workspace_review"]
     assert {"设计与物料清单", "钢料清单", "五金清单", "模具物料"} <= set(skill["activation_queries"])
+    assert {"查看设计订单", "打开设计订单", "设计订单表格", "设计订单可视化"} <= set(skill["activation_queries"])
     assert skill["priority_patterns"] == [r"(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])"]
+    assert skill["optional_tools"] == ["erp_design_query_bom", "erp_design_query_bom_report"]
+
+
+def test_erp_drawing_versions_require_an_explicit_drawing_version_intent():
+    skill = SKILLS["erp_design_drawing_version_review"]
+    assert skill["tools"] == ["erp_design_query_drawing_versions"]
+    assert {"查询图纸版本", "查看图纸版本", "图纸版本对比"} <= set(skill["activation_queries"])
 
 
 def test_design_mold_repair_skill_exposes_dedicated_erp_operations():

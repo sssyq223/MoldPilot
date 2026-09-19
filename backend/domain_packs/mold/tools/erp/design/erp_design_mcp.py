@@ -1532,6 +1532,23 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
     if key in READ_TOOL_MAP:
         if key == "erp_design_query_bom_report":
             arguments = {"report": data.report, "query": data.query}
+        elif key == "erp_design_query_orders":
+            # The management-system order list searches mold numbers through
+            # its generic ``keyword`` parameter.  QueryInput intentionally
+            # accepts a short string for model ergonomics and normalizes it to
+            # ``moldNo`` for the other ERP catalogues, so translate the common
+            # mold aliases at this boundary instead of letting the ERP silently
+            # ignore them and return an unfiltered page.
+            query = dict(data.query)
+            if not str(query.get("keyword") or "").strip():
+                for alias in ("moldNo", "mold_no", "moldCode", "mold_code"):
+                    candidate = str(query.get(alias) or "").strip()
+                    if candidate:
+                        query["keyword"] = candidate
+                        break
+            for alias in ("moldNo", "mold_no", "moldCode", "mold_code"):
+                query.pop(alias, None)
+            arguments = {"query": query}
         elif key == "erp_design_get_record":
             arguments = {"resource": data.resource, "id": data.id}
         elif key == "erp_design_compare_drawing_versions":
