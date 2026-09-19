@@ -1,5 +1,7 @@
-"""Versioned contract documents owned by the mold commercial domain."""
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
+"""Versioned contract documents and settlement lineage owned by mold commercial."""
+from decimal import Decimal
+
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agent_core.model_base import Base, IdentityMixin
@@ -20,4 +22,34 @@ class ContractAttachment(IdentityMixin, Base):
         UniqueConstraint("contract_subject_id", "file_id"),
         CheckConstraint("version > 0"),
         CheckConstraint("source_kind IN ('ELECTRONIC','PAPER_SCAN','OTHER')"),
+    )
+
+
+class ContractSettlementAllocation(IdentityMixin, Base):
+    """An immutable link from one confirmed cash fact into a replacement contract.
+
+    Cash facts remain on their original contract.  This link only states which
+    replacement payment stage consumes that history, preventing the same fact
+    from disappearing or being counted as new cash.
+    """
+    __tablename__ = "contract_settlement_allocation"
+    target_contract_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), index=True)
+    source_contract_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), index=True)
+    target_stage_id: Mapped[str] = mapped_column(ForeignKey("payment_stage.id"), index=True)
+    record_type: Mapped[str] = mapped_column(String(30))
+    source_record_id: Mapped[str] = mapped_column(String(36), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str] = mapped_column(String(3))
+    evidence: Mapped[str] = mapped_column(Text)
+    recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    __table_args__ = (
+        UniqueConstraint(
+            "target_contract_id", "record_type", "source_record_id",
+            name="contract_settlement_allocation_unique_record",
+        ),
+        CheckConstraint("amount <> 0", name="contract_settlement_allocation_nonzero"),
+        CheckConstraint(
+            "record_type IN ('CUSTOMER_RECEIPT','SUPPLIER_PAYMENT')",
+            name="contract_settlement_allocation_record_type",
+        ),
     )

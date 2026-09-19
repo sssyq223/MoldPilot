@@ -406,7 +406,21 @@ class ContractDetail(Base):
     contract_number: Mapped[str] = mapped_column(String(100))
     expected_date: Mapped[date | None] = mapped_column(Date)
     replaces_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
-    __table_args__ = (CheckConstraint('amount > 0'),)
+    relation_type: Mapped[str] = mapped_column(String(20), default='ORIGINAL')
+    settlement_allocation_evidence: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        CheckConstraint('amount > 0'),
+        CheckConstraint(
+            "relation_type IN ('ORIGINAL','REPLACEMENT','ADDITION')",
+            name='contract_relation_type',
+        ),
+        CheckConstraint(
+            "(relation_type = 'ORIGINAL' AND replaces_id IS NULL AND settlement_allocation_evidence IS NULL) "
+            "OR (relation_type = 'ADDITION' AND replaces_id IS NOT NULL AND settlement_allocation_evidence IS NULL) "
+            "OR (relation_type = 'REPLACEMENT' AND replaces_id IS NOT NULL AND settlement_allocation_evidence IS NOT NULL)",
+            name='contract_relation_fields',
+        ),
+    )
 
 
 class ContractSigningRecord(IdentityMixin, Base):

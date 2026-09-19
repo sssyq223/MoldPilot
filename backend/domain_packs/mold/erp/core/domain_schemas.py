@@ -42,7 +42,23 @@ class ContractInput(StrictModel):
     contract_number: str = Field(min_length=1, max_length=100)
     expected_date: date | None = None
     replaces_id: str | None = None
+    relation_type: Literal['ORIGINAL','REPLACEMENT','ADDITION'] = 'ORIGINAL'
+    settlement_allocation_evidence: str | None = Field(default=None, min_length=1, max_length=4000)
     stages: list[StageInput] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode='after')
+    def validate_relation(self):
+        if self.relation_type == 'ORIGINAL':
+            if self.replaces_id or self.settlement_allocation_evidence:
+                raise ValueError('原始合同不能填写前序合同或历史收付款分配依据')
+        elif self.relation_type == 'ADDITION':
+            if not self.replaces_id:
+                raise ValueError('追加合同必须关联前序合同')
+            if self.settlement_allocation_evidence:
+                raise ValueError('追加合同不迁移历史收付款，不应填写分配依据')
+        elif not self.replaces_id or not self.settlement_allocation_evidence:
+            raise ValueError('替代合同必须关联前序合同并填写历史收付款分配依据')
+        return self
 
 
 class PaymentInput(StrictModel):

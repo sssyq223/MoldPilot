@@ -261,7 +261,8 @@ def _contract_context(rows, role):
                 ),
             }
             stages.append(node)
-            payment_nodes.append(node)
+            if row.get("status") == "EFFECTIVE":
+                payment_nodes.append(node)
         result.append(
             {
                 "id": row.get("id"),
@@ -273,6 +274,9 @@ def _contract_context(rows, role):
                 "currency": detail.get("currency"),
                 "expected_date": detail.get("expected_date"),
                 "replaces_id": detail.get("replaces_id"),
+                "relation_type": detail.get("relation_type") or ("REPLACEMENT" if detail.get("replaces_id") else "ORIGINAL"),
+                "settlement_allocation_evidence_present": bool(detail.get("settlement_allocation_evidence")),
+                "settlement_allocations": detail.get("settlement_allocations") or [],
                 "stage_count": len(stages),
                 "stages": stages,
             }
@@ -344,6 +348,7 @@ def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
         return {"receipts": [], "confirmed_totals": [], "by_stage": [], "unallocated_receipts": []}, True
 
     visible_contract_ids = {contract.get("id") for contract in sales_contracts if contract.get("id")}
+    all_nodes = [node for contract in sales_contracts for node in contract.get("stages") or []]
     stage_map = {
         node.get("stage_id"): {
             "contract_id": node.get("contract_id"),
@@ -354,7 +359,7 @@ def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
             "stage_amount": node.get("amount"),
             "currency": node.get("currency"),
         }
-        for node in customer_nodes
+        for node in all_nodes
         if node.get("stage_id")
     }
     receipts = []
@@ -367,11 +372,12 @@ def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
         if receipt.contract_subject_id not in visible_contract_ids:
             continue
         stage = stage_map.get(receipt.stage_id, {})
+        contract = next((row for row in sales_contracts if row.get("id") == receipt.contract_subject_id), {})
         receipts.append(
             {
                 "id": receipt.id,
                 "contract_id": receipt.contract_subject_id,
-                "contract_number": stage.get("contract_number"),
+                "contract_number": stage.get("contract_number") or contract.get("contract_number"),
                 "stage_id": receipt.stage_id,
                 "stage_name": stage.get("stage_name"),
                 "amount": str(receipt.amount),
@@ -391,11 +397,27 @@ def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
         if stage_receipts:
             by_stage.append({**stage, "confirmed_totals": _money_total(stage_receipts), "receipt_count": len(stage_receipts)})
     unallocated = [row for row in receipts if not row.get("stage_id")]
+    allocated_by_stage = []
+    for contract in sales_contracts:
+        if contract.get("status") != "EFFECTIVE":
+            continue
+        for allocation in contract.get("settlement_allocations") or []:
+            if allocation.get("record_type") != "CUSTOMER_RECEIPT":
+                continue
+            allocated_by_stage.append({
+                "target_contract_id": contract.get("id"),
+                "target_stage_id": allocation.get("target_stage_id"),
+                "source_contract_id": allocation.get("source_contract_id"),
+                "source_record_id": allocation.get("source_record_id"),
+                "amount": allocation.get("amount"),
+                "currency": allocation.get("currency"),
+            })
     return {
         "receipts": receipts,
         "confirmed_totals": _money_total(receipts),
         "by_stage": by_stage,
         "unallocated_receipts": unallocated,
+        "allocated_to_current_stages": allocated_by_stage,
     }, False
 
 
@@ -406,6 +428,7 @@ def _receivable_schedule(customer_nodes, customer_receipts, as_of_date):
     evidence remains an explicit state instead of being guessed by the Agent.
     """
     receipts = customer_receipts.get("receipts") or []
+    allocations = customer_receipts.get("allocated_to_current_stages") or []
     rows = []
     counts = defaultdict(int)
     reminders = []
@@ -415,7 +438,11 @@ def _receivable_schedule(customer_nodes, customer_receipts, as_of_date):
         stage_amount = _as_decimal(node.get("amount")) or Decimal(0)
         stage_receipts = [receipt for receipt in receipts if receipt.get("stage_id") == stage_id]
         matching_receipts = [receipt for receipt in stage_receipts if receipt.get("currency") == currency]
-        received_amount = sum((_as_decimal(receipt.get("amount")) or Decimal(0) for receipt in matching_receipts), Decimal(0))
+        stage_allocations = [allocation for allocation in allocations
+            if allocation.get("target_stage_id") == stage_id and allocation.get("currency") == currency]
+        direct_amount = sum((_as_decimal(receipt.get("amount")) or Decimal(0) for receipt in matching_receipts), Decimal(0))
+        allocated_amount = sum((_as_decimal(item.get("amount")) or Decimal(0) for item in stage_allocations), Decimal(0))
+        received_amount = direct_amount + allocated_amount
         outstanding_amount = max(stage_amount - received_amount, Decimal(0))
         currency_mismatches = sorted({str(receipt.get("currency")) for receipt in stage_receipts if receipt.get("currency") != currency})
         trigger_date = date.fromisoformat(node["trigger_date"]) if node.get("trigger_date") else None
@@ -454,6 +481,8 @@ def _receivable_schedule(customer_nodes, customer_receipts, as_of_date):
             "confirmed_received_amount": str(received_amount),
             "outstanding_amount": str(outstanding_amount),
             "receipt_count": len(matching_receipts),
+            "allocated_history_count": len(stage_allocations),
+            "allocated_history_amount": str(allocated_amount),
             "currency_mismatches": currency_mismatches,
             "days_until_due": days_until_due,
             "days_overdue": days_overdue,
@@ -479,6 +508,54 @@ def _receivable_schedule(customer_nodes, customer_receipts, as_of_date):
         "state_counts": dict(sorted(counts.items())),
         "reminders": reminders,
         "reminder_count": len(reminders),
+    }
+
+
+def _current_contract_balances(sales_contracts, customer_receipts, outsource_contracts, supplier_payments):
+    receipt_rows = customer_receipts.get("receipts") or []
+    payment_requests = supplier_payments.get("requests") or []
+
+    def rows_for(contracts, role):
+        result = []
+        for contract in contracts:
+            if contract.get("status") != "EFFECTIVE":
+                continue
+            amount = _as_decimal(contract.get("amount")) or Decimal(0)
+            currency = contract.get("currency")
+            if role == "CUSTOMER_RECEIVABLE":
+                direct = sum((_as_decimal(row.get("amount")) or Decimal(0) for row in receipt_rows
+                    if row.get("contract_id") == contract.get("id") and row.get("currency") == currency), Decimal(0))
+                allocation_type = "CUSTOMER_RECEIPT"
+            else:
+                direct = sum((_as_decimal(payment.get("amount")) or Decimal(0)
+                    for request in payment_requests if request.get("contract_id") == contract.get("id")
+                    for payment in request.get("payment_confirmations") or [] if payment.get("currency") == currency), Decimal(0))
+                allocation_type = "SUPPLIER_PAYMENT"
+            allocated = sum((_as_decimal(row.get("amount")) or Decimal(0)
+                for row in contract.get("settlement_allocations") or []
+                if row.get("record_type") == allocation_type and row.get("currency") == currency), Decimal(0))
+            settled = direct + allocated
+            result.append({
+                "contract_id": contract.get("id"),
+                "contract_number": contract.get("contract_number"),
+                "relation_type": contract.get("relation_type"),
+                "currency": currency,
+                "effective_contract_amount": str(amount),
+                "direct_confirmed_amount": str(direct),
+                "allocated_historical_amount": str(allocated),
+                "confirmed_settlement_amount": str(settled),
+                "outstanding_amount": str(max(amount-settled, Decimal(0))),
+                "settlement_overflow": settled > amount,
+            })
+        return result
+
+    sales = rows_for(sales_contracts, "CUSTOMER_RECEIVABLE")
+    supplier = rows_for(outsource_contracts, "SUPPLIER_PAYABLE")
+    return {
+        "customer_receivable": sales,
+        "supplier_payable": supplier,
+        "customer_receivable_totals": _money_total(sales, "outstanding_amount"),
+        "supplier_payable_totals": _money_total(supplier, "outstanding_amount"),
     }
 
 
@@ -560,7 +637,7 @@ def _closure_finance_items(db, user, project_id):
     return rows
 
 
-def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items):
+def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, contract_balances, corrections, cost_impacts, closure_items):
     open_reservation = bool(supplier_payments["outstanding_reservations"])
     supplier_paid = bool(supplier_payments["confirmed_totals"])
     customer_received = bool(customer_receipts["confirmed_totals"])
@@ -568,6 +645,9 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
     schedule_pending = [node for node in receivable_schedule["nodes"] if node.get("due_state") in {"SCHEDULE_PENDING", "PARTIALLY_RECEIVED_SCHEDULE_PENDING"}]
     trigger_pending = [node for node in receivable_schedule["nodes"] if node.get("due_state") in {"UNTRIGGERED", "PARTIALLY_RECEIVED_UNTRIGGERED"}]
     currency_mismatches = [node for node in receivable_schedule["nodes"] if node.get("currency_mismatches")]
+    settlement_overflows = [row for group in (
+        contract_balances["customer_receivable"], contract_balances["supplier_payable"])
+        for row in group if row.get("settlement_overflow")]
     invoice_done = any(item.get("item_key") == "INVOICE" and item.get("status") == "DONE" for item in closure_items)
     customer_receipt_done = any(item.get("item_key") == "CUSTOMER_RECEIPT" and item.get("status") == "DONE" for item in closure_items)
     supplier_settlement_done = any(item.get("item_key") == "SUPPLIER_SETTLEMENT" and item.get("status") == "DONE" for item in closure_items)
@@ -591,6 +671,8 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         warnings.append("存在已配置但尚无触发日期依据的客户收款节点；仅保留未触发状态，不生成到期或逾期提醒。")
     if currency_mismatches:
         warnings.append("存在回款币种与合同节点币种不一致的记录；未纳入对应节点已收金额，需财务核对归属。")
+    if settlement_overflows:
+        warnings.append("存在当前有效合同的历史分配与直接实收实付合计超过合同金额，需暂停继续登记并核对合同替代关系。")
     if receivable_schedule["reminder_count"]:
         warnings.append("存在到期或逾期未收节点；提醒仅依据财务确认的触发日期、账期、到期日和实际回款记录，不代表自动催款或特殊认定。")
     if any(request.get("status") == "EFFECTIVE" for request in supplier_payments["requests"]):
@@ -615,6 +697,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         "customer_receipt_summary": customer_receipts,
         "full_outsource_contracts": outsource_contracts,
         "supplier_payment_summary": supplier_payments,
+        "current_effective_contract_balances": contract_balances,
         "finance_corrections": corrections,
         "cost_and_change_impacts": cost_impacts,
         "closure_finance_items": closure_items,
@@ -631,6 +714,11 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
             "has_supplier_payment_request": bool(supplier_payments["requests"]),
             "has_confirmed_supplier_payment": supplier_paid,
             "has_open_supplier_payment_reservation": open_reservation,
+            "has_contract_replacement_or_addition": any(
+                row.get("relation_type") in {"REPLACEMENT", "ADDITION"}
+                for row in sales_contracts + outsource_contracts
+            ),
+            "has_settlement_allocation_overflow": bool(settlement_overflows),
             "has_finance_correction": bool(corrections),
             "has_cost_or_deduction_signal": bool(cost_tasks),
             "has_supplier_settlement_closure_evidence": supplier_settlement_done,
@@ -1081,6 +1169,8 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
         receivable_schedule = _receivable_schedule(customer_nodes, customer_receipts, now().date())
         outsource_contracts, _ = _contract_context(rows["full_outsource_contract"], "SUPPLIER_PAYABLE")
         supplier_payments = _supplier_payments(rows["supplier_payment"], sales_contracts, outsource_contracts)
+        contract_balances = _current_contract_balances(
+            sales_contracts, customer_receipts, outsource_contracts, supplier_payments)
         corrections = _corrections(rows["finance_correction"])
         cost_impacts = _cost_impacts(db, user, project.id, allowed_tools)
         closure_items = _closure_finance_items(db, user, project.id)
@@ -1104,7 +1194,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                 {
                     "project": _project_card(db, user, project, alternatives or ("项目定位",)),
                     "profile": profile,
-                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items),
+                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, contract_balances, corrections, cost_impacts, closure_items),
                 }
             ],
             "source": "agent_db",

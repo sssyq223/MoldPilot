@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 from datetime import date, timedelta
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -81,6 +82,7 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
     names = {
         "contact": "工程联络处理方案审批（浏览器验收）",
         "contract": "销售合同审批（浏览器验收）",
+        "contract_relation": "销售合同替代审批（浏览器验收）",
         "closure": "项目终止与关闭审批（浏览器验收）",
         "pause": "项目暂停恢复审批（浏览器验收）",
     }
@@ -184,7 +186,7 @@ def build(
 
         business_type = (
             "contact_resolution" if scenario == "contact"
-            else "sales_contract" if scenario == "contract"
+            else "sales_contract" if scenario in {"contract", "contract_relation"}
             else "project_close" if scenario == "closure"
             else "pause_resume"
         )
@@ -193,6 +195,7 @@ def build(
             user_id=user.id,
             title=(
                 "工程联络影响项验收" if scenario == "contact"
+                else "销售合同替代与历史回款验收" if scenario == "contract_relation"
                 else "销售合同附件审批验收" if scenario == "contract"
                 else "项目终止业务流验收" if scenario == "closure"
                 else "项目暂停业务流验收"
@@ -207,6 +210,8 @@ def build(
             prompt=(
                 "请将受影响图纸纳入工程联络单，明确返工、交期与费用影响。"
                 if scenario == "contact"
+                else f"请替代 {project_code} 的原销售合同，并把历史回款明确归属到新合同节点。"
+                if scenario == "contract_relation"
                 else f"请把本轮上传的销售合同原件绑定到 {project_code} 并提交审批。"
                 if scenario == "contract"
                 else f"请根据客户终止通知终止 {project_code} 项目，并转入处置和终止结算。"
@@ -277,7 +282,7 @@ def build(
             result = contact_tools.execute_tool(db, user, tool, arguments)
             summary = "已按当前联络单资料准备结构化影响与责任事项，请核对对象、返工动作、交期、金额和来源后确认。"
             suggestions = ["确认后只新增联络协作事项；方案审批、实际执行和独立复验仍分别办理。"]
-        elif scenario == "contract":
+        elif scenario in {"contract", "contract_relation"}:
             customer = _upsert_one(
                 db,
                 m.Customer,
@@ -321,6 +326,55 @@ def build(
             db.flush()
             db.add(m.RunFile(run_id=run.id, file_id=blob.id))
             db.flush()
+            predecessor = None
+            receipt = None
+            if scenario == "contract_relation":
+                predecessor = m.BusinessSubject(
+                    kind="sales_contract",
+                    number=f"{project_code}-SC-OLD-SUBJECT",
+                    project_id=project.id,
+                    created_by=user.id,
+                    status="EFFECTIVE",
+                )
+                db.add(predecessor)
+                db.flush()
+                db.add(m.ContractDetail(
+                    subject_id=predecessor.id,
+                    customer_id=customer.id,
+                    supplier_id=None,
+                    amount=Decimal("100000.00"),
+                    currency="CNY",
+                    contract_number=f"{project_code}-SC-OLD",
+                    expected_date=date.today(),
+                    replaces_id=None,
+                    relation_type="ORIGINAL",
+                    settlement_allocation_evidence=None,
+                ))
+                predecessor_stage = m.PaymentStage(
+                    contract_id=predecessor.id,
+                    name="原合同首款",
+                    amount=Decimal("100000.00"),
+                    currency="CNY",
+                    condition="原合同审批生效",
+                )
+                db.add(predecessor_stage)
+                db.flush()
+                receipt = m.CustomerReceiptConfirmation(
+                    project_id=project.id,
+                    contract_subject_id=predecessor.id,
+                    stage_id=predecessor_stage.id,
+                    amount=Decimal("30000.00"),
+                    currency="CNY",
+                    received_date=date.today(),
+                    reference=f"{project_code}-RCPT-001",
+                    evidence="浏览器验收合成银行回单",
+                    confirmed_by=user.id,
+                    source_system="MANUAL",
+                    source_ref=f"{project_code}-BANK-001",
+                    note="浏览器验收合成历史回款",
+                )
+                db.add(receipt)
+                db.flush()
             tool = "prepare_contract_record"
             arguments = {
                 "project_id": project.id,
@@ -328,22 +382,45 @@ def build(
                 "contract_kind": "sales_contract",
                 "customer_id": customer.id,
                 "supplier_id": None,
-                "amount": "128000.00",
+                "amount": "120000.00" if scenario == "contract_relation" else "128000.00",
                 "currency": "CNY",
                 "contract_number": f"{project_code}-SC-{run_key}",
                 "expected_date": date.today().isoformat(),
-                "stages": [
+                "replaces_id": predecessor.id if predecessor else None,
+                "relation_type": "REPLACEMENT" if predecessor else "ORIGINAL",
+                "settlement_allocation_evidence": (
+                    "浏览器验收：财务按原银行回单确认历史回款归属" if predecessor else None
+                ),
+                "settlement_allocations": ([{
+                    "source_record_id": receipt.id,
+                    "target_stage_name": "替代合同首款",
+                }] if receipt else []),
+                "stages": ([
+                    {"name": "替代合同首款", "amount": "50000.00", "condition": "替代合同审批生效"},
+                    {"name": "替代合同验收款", "amount": "70000.00", "condition": "客户验收完成"},
+                ] if predecessor else [
                     {"name": "预付款", "amount": "38400.00", "condition": "合同审批生效"},
                     {"name": "验收款", "amount": "89600.00", "condition": "客户验收完成"},
-                ],
-                "remark": "浏览器验收合成合同；仅用于验证附件随审批快照展示。",
+                ]),
+                "remark": (
+                    "浏览器验收合成替代合同；仅用于验证历史回款归属。"
+                    if predecessor else "浏览器验收合成合同；仅用于验证附件随审批快照展示。"
+                ),
                 "workflow_definition_id": workflow.id,
                 "file_ids": [blob.id],
                 "document_source": "ELECTRONIC",
             }
             result = contract_tools.execute_contract_tool(db, user, tool, arguments, run=run)
-            summary = "已按当前对话上传的合同原件准备销售合同登记，请核对合同字段和附件后确认提交审批。"
-            suggestions = ["确认后合同原件会冻结进审批快照；审批生效前不视为正式合同。"]
+            summary = (
+                "替代合同已审批生效；原合同保留为历史版本，历史回款仍在原凭证并按新合同节点计入一次。"
+                if predecessor else
+                "已按当前对话上传的合同原件准备销售合同登记，请核对合同字段和附件后确认提交审批。"
+            )
+            suggestions = ([
+                "这是浏览器验收合成数据；可查询合同关系、当前有效金额与历史回款归属。"
+            ] if predecessor else [
+                "确认后合同原件会冻结进审批快照；审批生效前不视为正式合同。"
+            ])
             confirm_contract = True
         elif scenario == "closure":
             tool = "prepare_project_termination"
@@ -390,7 +467,29 @@ def build(
         if confirm_contract:
             payload = {"step_id": step.id, "proposal_hash": content_hash(result["proposal"])}
             intent = business.create_intent(db, user, "contract.execute", step.id, payload)
-            business.confirm_intent(db, user, intent["id"], intent["challenge"])
+            submitted = business.confirm_intent(db, user, intent["id"], intent["challenge"])
+            if scenario == "contract_relation":
+                instance = db.get(m.ApprovalInstance, submitted["instance_id"])
+                seat = db.scalar(select(m.ApprovalSeat).where(
+                    m.ApprovalSeat.instance_id == instance.id,
+                    m.ApprovalSeat.user_id == user.id,
+                    m.ApprovalSeat.status == "PENDING",
+                ))
+                decision = {
+                    "instance_id": instance.id,
+                    "seat_id": seat.id,
+                    "seat_version": seat.version,
+                    "version": instance.version,
+                    "snapshot_hash": instance.snapshot_hash,
+                    "decision": "APPROVE",
+                    "comment": "浏览器验收合成审批：合同替代及历史回款归属已核对",
+                }
+                approval_intent = business.create_intent(
+                    db, user, "approval.decide", instance.id, decision
+                )
+                business.confirm_intent(
+                    db, user, approval_intent["id"], approval_intent["challenge"]
+                )
         run.result = {
             "response_kind": "BUSINESS",
             "summary": summary,
@@ -418,7 +517,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()

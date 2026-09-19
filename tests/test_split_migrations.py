@@ -62,7 +62,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
         _run(probe_url, "scripts/migrate.py", "upgrade", "head")
         current = _run(probe_url, "scripts/migrate.py", "current")
         assert "a10c0e000008 (head)" in current
-        assert "m40d0e000004 (head)" in current
+        assert "m50d0e000005 (head)" in current
         assert "No new upgrade operations detected" in _run(
             probe_url, "scripts/migrate.py", "check"
         )
@@ -77,15 +77,17 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                )) == "m40d0e000004"
+                )) == "m50d0e000005"
         assert {"app_user", "approval_instance", "project", "purchase_request",
-                "contact_case", "contract_attachment", "supplier_shipment"} <= tables
+                "contact_case", "contract_attachment", "contract_settlement_allocation",
+                "supplier_shipment"} <= tables
         with probe.connect() as connection:
             immutable = set(connection.execute(text("""
                 SELECT event_object_table FROM information_schema.triggers
                 WHERE trigger_name LIKE '%_immutable' AND event_object_schema=:schema
             """), {"schema": schema}).scalars())
-        assert {"file_object", "agent_run_file", "contact_attachment", "contract_attachment"} <= immutable
+        assert {"file_object", "agent_run_file", "contact_attachment", "contract_attachment",
+                "contract_settlement_allocation"} <= immutable
         assert "alembic_version" not in tables
 
         _run(probe_url, "scripts/migrate.py", "downgrade", "base")
@@ -142,7 +144,7 @@ def test_existing_legacy_mold_schema_is_adopted_without_rewriting_business_rows(
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                )) == "m40d0e000004"
+                )) == "m50d0e000005"
             assert connection.scalar(text(
                 "SELECT display_name FROM app_user WHERE username='migration-sentinel'"
             )) == "迁移哨兵"

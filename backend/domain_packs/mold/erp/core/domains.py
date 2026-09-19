@@ -49,7 +49,9 @@ def typed_detail(db,subject):
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
         detail['stages']=[values(stage) for stage in rows(db,m.PaymentStage,contract_id=subject.id)]
         from domain_packs.mold.erp.commercial import contract_documents
+        from domain_packs.mold.erp.commercial.contract_relations import allocation_cards
         detail['attachments']=contract_documents.cards(db,subject.id)
+        detail['settlement_allocations']=allocation_cards(db,subject.id)
     elif kind=='supplier_payment':
         detail=values(db.get(m.PaymentRequestDetail,subject.id),('subject_id',))
         detail['payments']=[values(p) for p in rows(db,m.PaymentConfirmation,request_id=subject.id)]
@@ -270,9 +272,8 @@ def create(db,user,payload):
                 raise DomainError('PARTY_INVALID','委外合同须关联委外责任域与有效委外供应商')
         if sum((stage.amount for stage in detail.stages),Decimal(0))>detail.amount:
             raise DomainError('STAGE_OVERFLOW','合同阶段金额合计超出合同金额')
-        if detail.replaces_id:
+        if detail.relation_type!='ORIGINAL':
             require_source(db,detail.replaces_id,project.id,{kind})
-            raise DomainError('ALLOCATION_REQUIRED','替代合同须先完成财务归属核对，当前禁止直接覆盖旧合同')
         db.add(m.ContractDetail(subject_id=subject.id,**detail.model_dump(exclude={'stages'})))
         for stage in detail.stages:db.add(m.PaymentStage(contract_id=subject.id,currency=detail.currency,**stage.model_dump()))
     elif isinstance(detail,s.PaymentInput):
@@ -348,6 +349,9 @@ def before_submit(db,user,subject):
         from domain_packs.mold.erp.change.contact_lifecycle import ensure_materials
         ensure_materials(db,db.get(m.ContactResolution,subject.id))
     if subject.kind=='supplier_payment':payment_reserve(db,subject)
+    elif subject.kind in {'sales_contract','full_outsource_contract'}:
+        from domain_packs.mold.erp.commercial.contract_relations import validate_relation
+        validate_relation(db,subject,lock=True)
     elif subject.kind=='project_close':
         from domain_packs.mold.erp.project.project_closure import validate_close_detail
         validate_close_detail(db,project,db.get(m.ProjectClosureDetail,subject.id),subject.id)
@@ -389,9 +393,19 @@ def apply(db,user,subject):
         source=require_source(db,detail.source_subject_id,project.id,{'quote_acceptance'})
         if db.get(m.BusinessDecisionDetail,source.id).decision!='ACCEPT':raise DomainError('NOT_ACCEPTED','未确认承接')
         project.status='ACTIVE';project.row_version+=1
-    elif kind=='full_outsource_contract':
-        profile=db.get(m.ProjectProfile,project.id)
-        if not profile or profile.execution_mode!='FULL_OUTSOURCE':raise DomainError('MODE_CONFLICT','整套委外合同要求项目确认为整套委外',409)
+    elif kind in {'sales_contract','full_outsource_contract'}:
+        if kind=='full_outsource_contract':
+            profile=db.get(m.ProjectProfile,project.id)
+            if not profile or profile.execution_mode!='FULL_OUTSOURCE':raise DomainError('MODE_CONFLICT','整套委外合同要求项目确认为整套委外',409)
+        from domain_packs.mold.erp.commercial.contract_relations import apply_relation
+        relation=apply_relation(db,subject)
+        if relation['relation_type']!='ORIGINAL':
+            record(db,user,'contract.relation.effective',subject.id,{
+                'relation_type':relation['relation_type'],
+                'predecessor_id':relation['predecessor'].id,
+                'allocation_total':str(relation['allocation_total']),
+                'allocation_count':relation['allocation_count'],
+            },[subject.created_by])
     elif kind in {'project_plan','plan_change'}:
         if project.status!='ACTIVE':raise DomainError('PROJECT_BLOCKED','项目未处于执行状态',409)
         prior=db.get(m.PlanDetail,subject.id).previous_id

@@ -63,12 +63,34 @@ def uploaded_contract_file(db, owner, conversation, filename='sales-contract.pdf
     db.add(row);db.flush();return row
 
 
+def approve_instance(db, actor, instance_id):
+    instance = db.get(m.ApprovalInstance, instance_id)
+    seat = db.scalar(select(m.ApprovalSeat).where(
+        m.ApprovalSeat.instance_id == instance_id,
+        m.ApprovalSeat.user_id == actor.id,
+        m.ApprovalSeat.status == 'PENDING',
+    ))
+    payload = {
+        'instance_id': instance.id,
+        'seat_id': seat.id,
+        'seat_version': seat.version,
+        'version': instance.version,
+        'snapshot_hash': instance.snapshot_hash,
+        'decision': 'APPROVE',
+        'comment': '合同关系与历史收付款分配已人工核对',
+    }
+    intent = business.create_intent(db, actor, 'approval.decide', instance.id, payload)
+    return business.confirm_intent(db, actor, intent['id'], intent['challenge'])
+
+
 def contract(db,project,user,kind,number,status='EFFECTIVE',amount='1000.00',expected=None,replaces_id=None):
     subject=m.BusinessSubject(kind=kind,number='SUBJECT-'+number,project_id=project.id,
         created_by=user.id,status=status,category='outsource' if kind=='full_outsource_contract' else None)
     db.add(subject);db.flush()
     db.add(m.ContractDetail(subject_id=subject.id,customer_id=None,supplier_id=None,amount=Decimal(amount),
-        currency='CNY',contract_number=number,expected_date=expected,replaces_id=replaces_id))
+        currency='CNY',contract_number=number,expected_date=expected,replaces_id=replaces_id,
+        relation_type='REPLACEMENT' if replaces_id else 'ORIGINAL',
+        settlement_allocation_evidence='测试合同替代依据' if replaces_id else None))
     db.add(m.PaymentStage(contract_id=subject.id,name='预付款',amount=Decimal(amount)/Decimal(2),
         currency='CNY',condition='合同生效'))
     return subject
@@ -81,6 +103,7 @@ def test_contract_context_resolves_by_contract_number_and_summarizes_nodes():
             admin=user(db,'admin',True);p=project(db,'CONTRACT-M001')
             old=contract(db,p,admin,'sales_contract','SC-OLD',amount='800.00')
             contract(db,p,admin,'sales_contract','SC-NEW',amount='1200.00',replaces_id=old.id)
+            old.status='CLOSED'
             contract(db,p,admin,'full_outsource_contract','FO-001',amount='5000.00')
         schema=tool_schema('query_contract_context')['function']['parameters']
         assert {'project_id','identifier'} <= set(schema['properties'])
@@ -95,6 +118,7 @@ def test_contract_context_resolves_by_contract_number_and_summarizes_nodes():
             assert row['derived_status']['has_replacement_relation'] is True
             assert row['sales_contracts'][0]['detail']['stages'][0]['name']=='预付款'
             assert row['contract_totals']['sales_contract'][0]['contract_amount']=='2000.00'
+            assert row['current_effective_contract_totals']['sales_contract'][0]['contract_amount']=='1200.00'
             assert any(link['contract_number']=='SC-NEW' and link['replaces_number']=='SC-OLD'
                 for link in row['replacement_links'])
     finally:
@@ -202,6 +226,182 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             ))
             assert instance.snapshot['detail']['attachments'][0]['filename']=='sales-contract.pdf'
             assert instance.snapshot['detail']['attachments'][0]['sha256']=='a'*64
+    finally:
+        engine.dispose()
+
+
+def test_contract_replacement_preserves_cash_and_closes_predecessor_only_after_approval():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-REPLACE','合同替代项目')
+            c=customer(db,'C-REPLACE','替代合同客户')
+            definition=workflow(db,admin,'sales_contract')
+            old=m.BusinessSubject(kind='sales_contract',number='SUBJECT-SC-OLD-001',project_id=p.id,
+                created_by=admin.id,status='EFFECTIVE')
+            db.add(old);db.flush()
+            db.add(m.ContractDetail(subject_id=old.id,customer_id=c.id,supplier_id=None,
+                amount=Decimal('1000.00'),currency='CNY',contract_number='SC-OLD-001',
+                expected_date=None,replaces_id=None,relation_type='ORIGINAL',
+                settlement_allocation_evidence=None))
+            old_stage=m.PaymentStage(contract_id=old.id,name='原首款',amount=Decimal('1000.00'),
+                currency='CNY',condition='合同生效')
+            db.add(old_stage);db.flush()
+            receipt=m.CustomerReceiptConfirmation(project_id=p.id,contract_subject_id=old.id,
+                stage_id=old_stage.id,amount=Decimal('300.00'),currency='CNY',
+                received_date=date.today(),reference='RCPT-REPLACE-001',evidence='银行回单',
+                confirmed_by=admin.id,source_system='MANUAL',source_ref='BANK-REPLACE-001',note='原合同首款')
+            db.add(receipt);db.flush()
+            conversation=m.Conversation(user_id=admin.id,title='合同替代')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备替代销售合同并保留历史回款',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            file=uploaded_contract_file(db,admin,conversation,filename='replace.pdf',digest='e'*64)
+            db.add(m.RunFile(run_id=run.id,file_id=file.id))
+            args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
+                'customer_id':c.id,'supplier_id':None,'amount':'1200.00','currency':'CNY',
+                'contract_number':'SC-NEW-001','replaces_id':old.id,'relation_type':'REPLACEMENT',
+                'settlement_allocation_evidence':'财务按银行回单逐条核对并转入新合同首款节点',
+                'settlement_allocations':[{'source_record_id':receipt.id,'target_stage_name':'新合同首款'}],
+                'stages':[{'name':'新合同首款','amount':'500.00','condition':'替代合同生效'}],
+                'remark':'客户书面确认以新合同替代原合同','workflow_definition_id':definition.id,
+                'file_ids':[file.id],'document_source':'ELECTRONIC'}
+
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            old=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.number=='SUBJECT-SC-OLD-001'))
+            with pytest.raises(Exception) as incomplete:
+                execute(db,admin,'prepare_contract_record',{**args,'settlement_allocations':[]},run=run)
+            assert getattr(incomplete.value,'code',None)=='CONTRACT_SETTLEMENT_ALLOCATION_INCOMPLETE'
+            evidence=execute(db,admin,'prepare_contract_record',args,run=run)
+            display=evidence['proposal']['display']
+            assert display['合同关系']=='替代合同'
+            assert display['前序合同']=='SC-OLD-001'
+            assert display['历史实收实付分配'][0]['来源记录']==args['settlement_allocations'][0]['source_record_id']
+            assert old.status=='EFFECTIVE'
+            assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.number!='SUBJECT-SC-OLD-001',
+                m.BusinessSubject.kind=='sales_contract')) is None
+
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_contract_record',request_hash='replace-hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'contract.execute',step.id,payload)
+            submitted=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            replacement=db.get(m.BusinessSubject,submitted['subject_id'])
+            assert replacement.status=='SUBMITTED'
+            assert old.status=='EFFECTIVE'
+            allocation=db.scalar(select(m.ContractSettlementAllocation).where(
+                m.ContractSettlementAllocation.target_contract_id==replacement.id))
+            assert allocation.source_contract_id==old.id
+            assert allocation.source_record_id==args['settlement_allocations'][0]['source_record_id']
+            assert allocation.amount==Decimal('300.00')
+            assert db.get(m.CustomerReceiptConfirmation,allocation.source_record_id).contract_subject_id==old.id
+
+            before=execute(db,admin,'query_finance_context',{'project_id':old.project_id})['data'][0]['analysis']
+            assert before['current_effective_contract_balances']['customer_receivable'][0]['contract_number']=='SC-OLD-001'
+            assert before['current_effective_contract_balances']['customer_receivable'][0]['direct_confirmed_amount']=='300.00'
+
+            approved=approve_instance(db,admin,submitted['instance_id'])
+            assert approved['business_status']=='EFFECTIVE'
+            assert replacement.status=='EFFECTIVE'
+            assert old.status=='CLOSED'
+            assert db.get(m.CustomerReceiptConfirmation,allocation.source_record_id).contract_subject_id==old.id
+
+            after=execute(db,admin,'query_finance_context',{'project_id':old.project_id})['data'][0]['analysis']
+            balance=after['current_effective_contract_balances']['customer_receivable'][0]
+            assert balance['contract_number']=='SC-NEW-001'
+            assert balance['effective_contract_amount']=='1200.00'
+            assert balance['direct_confirmed_amount']=='0'
+            assert balance['allocated_historical_amount']=='300.00'
+            assert balance['confirmed_settlement_amount']=='300.00'
+            assert balance['outstanding_amount']=='900.00'
+            node=after['customer_receivable_schedule']['nodes'][0]
+            assert node['contract_number']=='SC-NEW-001'
+            assert node['confirmed_received_amount']=='300.00'
+            assert node['allocated_history_count']==1
+            assert node['outstanding_amount']=='200.00'
+            assert after['customer_receipt_summary']['confirmed_totals']==[{'currency':'CNY','amount':'300.00'}]
+            audit=db.scalar(select(m.AuditEvent).where(
+                m.AuditEvent.action=='contract.relation.effective',
+                m.AuditEvent.resource_id==replacement.id))
+            assert audit and audit.detail['predecessor_id']==old.id
+    finally:
+        engine.dispose()
+
+
+def test_contract_addition_stays_independent_and_replacement_of_addition_does_not_absorb_base_cash():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'CONTRACT-ADD','合同追加项目')
+            c=customer(db,'C-ADD','追加合同客户')
+            definition=workflow(db,admin,'sales_contract')
+            base=m.BusinessSubject(kind='sales_contract',number='SUBJECT-BASE',project_id=p.id,
+                created_by=admin.id,status='EFFECTIVE')
+            db.add(base);db.flush()
+            db.add(m.ContractDetail(subject_id=base.id,customer_id=c.id,supplier_id=None,
+                amount=Decimal('1000.00'),currency='CNY',contract_number='SC-BASE',expected_date=None,
+                replaces_id=None,relation_type='ORIGINAL',settlement_allocation_evidence=None))
+            base_stage=m.PaymentStage(contract_id=base.id,name='主合同款',amount=Decimal('1000.00'),
+                currency='CNY',condition='合同生效')
+            db.add(base_stage);db.flush()
+            base_receipt=m.CustomerReceiptConfirmation(project_id=p.id,contract_subject_id=base.id,
+                stage_id=base_stage.id,amount=Decimal('400.00'),currency='CNY',received_date=date.today(),
+                reference='RCPT-BASE',evidence='主合同银行回单',confirmed_by=admin.id,
+                source_system='MANUAL',source_ref='BANK-BASE',note='主合同回款')
+            db.add(base_receipt);db.flush()
+            conversation=m.Conversation(user_id=admin.id,title='追加合同')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备追加销售合同',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            file=uploaded_contract_file(db,admin,conversation,filename='addition.pdf',digest='f'*64)
+            db.add(m.RunFile(run_id=run.id,file_id=file.id))
+            args={'project_id':p.id,'project_version':p.row_version,'contract_kind':'sales_contract',
+                'customer_id':c.id,'supplier_id':None,'amount':'200.00','currency':'CNY',
+                'contract_number':'SC-ADD-001','replaces_id':base.id,'relation_type':'ADDITION',
+                'stages':[{'name':'追加款','amount':'200.00','condition':'追加合同生效'}],
+                'remark':'主合同之外的追加工作','workflow_definition_id':definition.id,
+                'file_ids':[file.id],'document_source':'ELECTRONIC'}
+
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            base=db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.number=='SUBJECT-BASE'))
+            evidence=execute(db,admin,'prepare_contract_record',args,run=run)
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_contract_record',request_hash='add-hash',result=evidence)
+            db.add(step);db.flush()
+            payload={'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])}
+            intent=business.create_intent(db,admin,'contract.execute',step.id,payload)
+            submitted=business.confirm_intent(db,admin,intent['id'],intent['challenge'])
+            addition=db.get(m.BusinessSubject,submitted['subject_id'])
+            assert base.status=='EFFECTIVE' and addition.status=='SUBMITTED'
+            assert approve_instance(db,admin,submitted['instance_id'])['business_status']=='EFFECTIVE'
+            assert base.status=='EFFECTIVE' and addition.status=='EFFECTIVE'
+            assert db.scalar(select(m.ContractSettlementAllocation).where(
+                m.ContractSettlementAllocation.target_contract_id==addition.id)) is None
+
+            context=execute(db,admin,'query_contract_context',{'project_id':p.id})['data'][0]
+            assert context['current_effective_contract_totals']['sales_contract']==[{
+                'currency':'CNY','contract_amount':'1200.00','stage_amount':'1200.00','contract_count':2}]
+            finance=execute(db,admin,'query_finance_context',{'project_id':p.id})['data'][0]['analysis']
+            balances={row['contract_number']:row for row in finance['current_effective_contract_balances']['customer_receivable']}
+            assert balances['SC-BASE']['confirmed_settlement_amount']=='400.00'
+            assert balances['SC-ADD-001']['confirmed_settlement_amount']=='0'
+
+            addition_stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id==addition.id))
+            addition_receipt=m.CustomerReceiptConfirmation(project_id=p.id,contract_subject_id=addition.id,
+                stage_id=addition_stage.id,amount=Decimal('50.00'),currency='CNY',received_date=date.today(),
+                reference='RCPT-ADD',evidence='追加合同银行回单',confirmed_by=admin.id,
+                source_system='MANUAL',source_ref='BANK-ADD',note='追加合同回款')
+            db.add(addition_receipt);db.flush()
+            from domain_packs.mold.erp.commercial import contract_relations
+            records=contract_relations.settlement_records(db,addition)
+            assert [row['source_record_id'] for row in records]==[addition_receipt.id]
     finally:
         engine.dispose()
 

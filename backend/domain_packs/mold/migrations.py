@@ -86,4 +86,8 @@ LEGACY_MODEL_EXCLUSIONS = frozenset({
     ("check_constraint", "payment_stage", "payment_stage_due_after_trigger"),
     ("check_constraint", "payment_stage", "payment_stage_confirmed_schedule_fields"),
     ("check_constraint", "payment_stage", "payment_stage_trigger_evidence"),
+    ("column", "contract_detail", "relation_type"),
+    ("column", "contract_detail", "settlement_allocation_evidence"),
+    ("check_constraint", "contract_detail", "contract_relation_type"),
+    ("check_constraint", "contract_detail", "contract_relation_fields"),
 })
