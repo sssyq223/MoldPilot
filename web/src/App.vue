@@ -270,7 +270,7 @@ function toolSearchStatus(item:any){
 }
 function hasBusinessFactHighlights(row:any){
  const analysis=row?.analysis
- return Boolean(analysis?.kickoff_lifecycle||analysis?.execution_lifecycle||analysis?.completion_lifecycle||analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
+ return Boolean(analysis?.project_lifecycle||analysis?.kickoff_lifecycle||analysis?.execution_lifecycle||analysis?.completion_lifecycle||analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
 }
 function runTrace(run:any){
  if(Array.isArray(run.trace)&&run.trace.length)return run.trace

@@ -53,6 +53,7 @@ TOOLS.update({f'query_{key}': {'description':f'查询当前人员授权范围内
 TOOLS['query_engineering_change']['description']='查询已有工程联络方案审批材料及生效状态；独立联络协作、责任部门和人员进度请使用工程联络协作查询工具。'
 TOOLS.update({
     'query_business_object_candidates':{'description':'按项目号、项目名、模具号、合同号、订单号等线索查询当前权限内候选业务对象；只返回候选和来源，不自动匹配或创建。','permission':'project.dossier.read'},
+    'query_project_lifecycle_context':{'description':'按项目线索读取从启动、执行到收尾关闭的全生命周期三段摘要与当前分段；只读，后续按总览逐层展开，不一次暴露全部业务工具。','permission':'project.read'},
     'query_project_kickoff_context':{'description':'按项目线索一次核对承接、销售合同、正式开工和基线计划四个独立阶段，返回阻塞项与下一步工具；只读，不自动跨阶段办理。','permission':'project.read'},
     'query_project_execution_context':{'description':'按项目线索一次核对基线计划、设计/BOM、采购或整套委外、制造质检、装配试模、交付签收与客户验收，返回当前执行焦点；只读，不自动写回或跨阶段办理。','permission':'project.read'},
     'query_project_completion_context':{'description':'按项目线索一次核对交付验收、发票回款、供应商结算、异常关闭、全过程归档和最终关闭，区分正常关闭与终止结算；只读，不登记或关闭项目。','permission':'project.read'},
@@ -115,6 +116,15 @@ for action,(_,permission,title) in contact_tools.SPECS.items():
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
+               'project_lifecycle_orchestration':{'name':'项目全生命周期协调','tools':['query_project_lifecycle_context'],
+                   'optional_tools':['query_project_kickoff_context','query_project_execution_context',
+                       'query_project_completion_context','query_project_control_context'],
+                   'activation_tools':['query_project_lifecycle_context'],
+                   'activation_queries':['项目全生命周期','项目全流程','从接单到结项','从接单到关闭',
+                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度'],
+                   'auto_activation_queries':['项目全生命周期','项目全流程','从接单到结项','从接单到关闭',
+                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度'],
+                   'suppress_tool_search_on_auto_activation':True},
                'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context'],
                    'optional_tools':['prepare_quote_acceptance_decision'],
                    'activation_queries':['报价承接','报价拒单','承接','拒单','客户反馈']},
@@ -409,6 +419,7 @@ CAPABILITY_NAMES = {
     'query_projects': '查询项目资料',
     'query_purchase_requests': '查询采购申请',
     'query_business_object_candidates': '查询业务对象候选',
+    'query_project_lifecycle_context': '读取项目全生命周期',
     'query_project_kickoff_context': '读取项目启动链路',
     'query_project_execution_context': '读取项目执行链路',
     'query_project_completion_context': '读取项目收尾链路',
@@ -476,6 +487,7 @@ CAPABILITY_NAMES = {
 
 CAPABILITY_DEPARTMENTS = {
     'query_projects': 'project', 'query_project_dossier': 'project', 'query_business_object_candidates': 'project',
+    'query_project_lifecycle_context': 'project', 'project_lifecycle_orchestration': 'project',
     'query_project_kickoff_context': 'project', 'project_kickoff_orchestration': 'project',
     'query_project_execution_context': 'project', 'project_execution_orchestration': 'project',
     'query_project_completion_context': 'project', 'project_completion_orchestration': 'project',
@@ -650,6 +662,9 @@ def tool_schema(key):
     if key=='query_business_object_candidates':
         from domain_packs.mold.erp.core.business_matching import BusinessMatchInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':BusinessMatchInput.model_json_schema()}}
+    if key=='query_project_lifecycle_context':
+        from domain_packs.mold.tools.erp.project.lifecycle_overview_tools import ProjectLifecycleContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectLifecycleContextInput.model_json_schema()}}
     if key=='query_project_kickoff_context':
         from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import ProjectKickoffContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectKickoffContextInput.model_json_schema()}}
@@ -930,6 +945,10 @@ def execute(db, user, key, arguments, run=None):
         from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput,query
         try:data=ProjectDossierInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','项目档案查询参数无效：'+error.errors()[0]['msg']) from None
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_project_lifecycle_context':
+        from domain_packs.mold.tools.erp.project.lifecycle_overview_tools import parse, query
+        data=parse(arguments)
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_project_kickoff_context':
         from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import parse, query

@@ -115,6 +115,10 @@ Object.assign(auditNames,{'contact.resolution_submitted':'提交联络方案审�
 Object.assign(auditNames,{'plan.change.effective':'项目计划变更已生效'})
 
 Object.assign(capabilityNames,{query_project_kickoff_context:'读取项目启动链路',project_kickoff_orchestration:'项目启动链路协调',prepare_quote_acceptance_decision:'准备报价承接/拒单',prepare_contract_record:'准备合同登记',prepare_internal_start:'准备正式开工',prepare_project_plan_baseline:'准备项目基线计划'})
+Object.assign(capabilityNames,{query_project_lifecycle_context:'读取项目全生命周期',project_lifecycle_orchestration:'项目全生命周期协调'})
+Object.assign(capabilityDepartments,{query_project_lifecycle_context:'project',project_lifecycle_orchestration:'project'})
+Object.assign(capabilityTypes,{project_lifecycle_orchestration:'review'})
+Object.assign(fields,{project_lifecycle:'项目全生命周期',segments:'生命周期分段',current_segment:'当前生命周期分段',consistency_warnings:'资料矛盾'})
 Object.assign(capabilityDepartments,{query_project_kickoff_context:'project',project_kickoff_orchestration:'project'})
 Object.assign(capabilityTypes,{project_kickoff_orchestration:'review'})
 Object.assign(fields,{kickoff_lifecycle:'项目启动链路',phase:'当前阶段',stages:'业务阶段',recommended_next_steps:'建议下一步',access_gaps:'未读取能力',guardrails:'业务边界'})

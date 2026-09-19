@@ -142,9 +142,9 @@ def main():
              '状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。', '',
              '生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。', '',
              '## 跨阶段执行编排证据', '',
-             '- `query_project_kickoff_context` 已把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。三个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
-             '- 三个主线 Skill 首轮均只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。',
-             '- `tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。', '']
+             '- `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
+             '- 总 Skill 首轮只开放全生命周期协调器，随后只展开一个分段协调器；三个分段 Skill 首轮也只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。',
+             '- `tests/test_project_lifecycle_overview.py` 覆盖分层注册、启动转执行、暂停路由、资料矛盾、权限隔离和候选不合并；`tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。', '']
     last = None
     for row in requirements:
         if row['module'] != last:

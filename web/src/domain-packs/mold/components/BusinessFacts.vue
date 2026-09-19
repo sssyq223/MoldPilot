@@ -4,6 +4,7 @@ const props=defineProps<{value:any;highlightsOnly?:boolean;contractNumber?:strin
 const hidden=new Set(['id','subject_id','plan_id','created_at','source_line_id','case_id','department_id','plan_subject_id','source_pause_subject_id','pause_id','task_id','closure_case_id','source_termination_subject_id','opened_by','closed_by','updated_by','analysis','attachments','source_snapshot','source_summary','erp_order_material','source_system','source_resource_type','source_resource_id','source_resource_version','source_as_of','source_snapshot_hash'])
 const milestoneNames:Record<string,string>={design:'设计/工艺/出图',purchase:'采购',machining:'加工',assembly:'装配',trial:'试模/调试',delivery:'交付/验收'}
 function tasks(){return props.value?.analysis?.tasks||[]}
+function projectLifecycle(){return props.value?.analysis?.project_lifecycle}
 function kickoffLifecycle(){return props.value?.analysis?.kickoff_lifecycle}
 function executionLifecycle(){return props.value?.analysis?.execution_lifecycle}
 function completionLifecycle(){return props.value?.analysis?.completion_lifecycle}
@@ -11,7 +12,7 @@ function milestoneCoverage(){return props.value?.analysis?.milestone_coverage}
 function revisionImpact(){return props.value?.analysis?.revision_impact}
 function planChangeCandidates(){return props.value?.analysis?.plan_change_candidates||[]}
 function statusName(value:string){return valueText('status',value)}
-const phaseNames:Record<string,string>={REJECTED:'已拒绝承接',ACCEPTANCE:'承接确认',START_PREPARATION:'正式开工准备',PLAN_APPROVAL:'基线计划审批',EXECUTION:'项目执行',PLAN_HANDOFF:'基线计划交接',DESIGN_ENGINEERING:'设计与工艺',PROCUREMENT:'采购执行',FULL_OUTSOURCE:'整套委外协同',MANUFACTURING_QUALITY:'制造与质检',ASSEMBLY_TRIAL:'装配与试模',DELIVERY_ACCEPTANCE:'交付与客户验收',EXECUTION_COMPLETED:'执行链路已完成',EXECUTION_VISIBILITY_GAP:'执行链路可见性不足',CUSTOMER_SETTLEMENT:'客户财务结算',SUPPLIER_SETTLEMENT:'供应商结算',ISSUE_RESOLUTION:'异常关闭',ARCHIVE_READINESS:'全过程归档',FINAL_CLOSE:'最终关闭',PROJECT_CLOSED:'项目已关闭',COMPLETION_VISIBILITY_GAP:'收尾链路可见性不足'}
+const phaseNames:Record<string,string>={REJECTED:'已拒绝承接',ACCEPTANCE:'承接确认',START_PREPARATION:'正式开工准备',PLAN_APPROVAL:'基线计划审批',EXECUTION:'项目执行',PLAN_HANDOFF:'基线计划交接',DESIGN_ENGINEERING:'设计与工艺',PROCUREMENT:'采购执行',FULL_OUTSOURCE:'整套委外协同',MANUFACTURING_QUALITY:'制造与质检',ASSEMBLY_TRIAL:'装配与试模',DELIVERY_ACCEPTANCE:'交付与客户验收',EXECUTION_COMPLETED:'执行链路已完成',EXECUTION_VISIBILITY_GAP:'执行链路可见性不足',CUSTOMER_SETTLEMENT:'客户财务结算',SUPPLIER_SETTLEMENT:'供应商结算',ISSUE_RESOLUTION:'异常关闭',ARCHIVE_READINESS:'全过程归档',FINAL_CLOSE:'最终关闭',PROJECT_CLOSED:'项目已关闭',COMPLETION_VISIBILITY_GAP:'收尾链路可见性不足',PAUSED:'项目已暂停'}
 const stageFactNames:Record<string,string>={latest_acceptance:'承接',latest_rejection:'拒单',effective_contract:'合同',latest_internal_start:'开工通知',active_plan:'基线计划',latest_effective_design:'生效设计',pending_count:'待审',open_count:'进行中',workflow_count:'可选流程',history_count:'历史合同',late_expected_count:'逾期补齐',task_count:'计划任务',project_status:'项目状态',can_prepare:'可准备开工',missing_milestones:'缺少大节点',route_counts:'路线构成',warning_count:'风险提示',execution_mode:'加工方式',process_task_count:'工序任务',started_count:'已开工',done_count:'已完工',has_effective_price:'有效价格',has_design_procurement_need:'采购需求',has_purchase_request:'采购申请',has_purchase_order:'采购订单',has_unshipped_order_line:'未完全发货',has_effective_contract:'生效合同',has_signed_contract_file:'签署文件',has_supplier_progress_policy:'供应商上报规则',has_supplier_progress_report:'供应商节点上报',has_supplier_shipment_or_receipt:'供应商发货/收货',has_independent_quality_report:'独立质检报告',has_assembly_plan_node:'装配节点',has_assembly_order:'装配工单',has_assembly_done:'装配完工',has_trial_request:'试模安排',has_trial_result:'试模报告',has_trial_passed:'试模通过',has_delivery_plan_node:'交付节点',has_stock_out_movement:'出库记录',has_customer_signature:'客户签收',has_customer_acceptance:'客户验收',has_customer_recheck_passed:'客户复验通过',has_structured_logistics_price:'物流价格依据',delivery_item_status:'交付清单',acceptance_item_status:'验收清单',has_customer_actual_receipt_ledger:'客户实收台账',has_finance_correction:'财务冲正',has_cost_or_deduction_signal:'费用/扣款线索',invoice_status:'发票清单',customer_receipt_status:'回款清单',customer_settlement_status:'客户终止结算',receivable_payable_status:'终止收付款',has_supplier_payment_request:'供应商付款申请',has_confirmed_supplier_payment:'供应商实付',has_open_supplier_payment_reservation:'付款授权占用',supplier_settlement_item_status:'供应商结算清单',open_contact_cases:'未关闭工程联络',open_issues_item_status:'异常关闭清单',archive_required_count:'应归档分类',archive_completed_count:'已归档分类',archive_pending_keys:'待归档分类',closure_mode:'关闭方式',closure_case_status:'结项清单状态',closure_case_version:'结项清单版本',closure_blocker_count:'结项阻塞数'}
 function compactSubject(value:any){return [value?.number,value?.contract_number,value?.status&&statusName(value.status)].filter(Boolean).join(' · ')||'—'}
 function stageObjectText(key:string,value:any){
@@ -29,6 +30,14 @@ function stageFactText(facts:any){
  return parts.join('；')||'尚无可展示事实'
 }
 function stageNextTool(stage:any){return stage?.action_tool||stage?.query_tool}
+function segmentProgress(segment:any){
+ const progress=segment?.progress||{}
+ const parts=[`${progress.completed_count||0}/${progress.stage_count||0} 已完成`]
+ if(progress.not_applicable_count)parts.push(`${progress.not_applicable_count} 不适用`)
+ if(progress.unavailable_count)parts.push(`${progress.unavailable_count} 未读取`)
+ return parts.join(' · ')
+}
+function segmentGaps(segment:any){return (segment?.access_gaps||[]).join('、')}
 function milestoneList(items:any[]){return (items||[]).map(item=>item.name||item.key).filter(Boolean).join('、')||'—'}
 function designRevisionLabel(){
  const impact=revisionImpact()||{}
@@ -52,7 +61,26 @@ function displayValue(key:string,value:any){
 }
 
 </script>
-<template><div class="business-facts"><section v-if="kickoffLifecycle()" class="surface lifecycle-surface">
+<template><div class="business-facts"><section v-if="projectLifecycle()" class="surface lifecycle-surface">
+  <h4>项目全生命周期</h4>
+  <div class="fact-line"><span class="muted">项目状态</span><span>{{statusName(projectLifecycle().project_status)}}</span></div>
+  <div class="fact-line"><span class="muted">当前分段</span><span>{{projectLifecycle().current_segment?.name||'待核对'}} · {{statusName(projectLifecycle().current_segment?.state)}}</span></div>
+  <div v-if="projectLifecycle().current_segment?.focus" class="fact-line"><span class="muted">当前焦点</span><span>{{projectLifecycle().current_segment.focus.name}} · {{statusName(projectLifecycle().current_segment.focus.state)}}</span></div>
+  <div class="table-scroll lifecycle-table"><table><thead><tr><th>生命周期分段</th><th>状态</th><th>当前焦点</th><th>进度</th><th>阻塞或权限缺口</th><th>展开能力</th></tr></thead><tbody>
+    <tr v-for="segment in projectLifecycle().segments||[]" :key="segment.key">
+      <td data-label="生命周期分段">{{segment.name}}</td><td data-label="状态">{{statusName(segment.state)}}</td>
+      <td data-label="当前焦点">{{segment.focus?.name||'待核对'}} · {{statusName(segment.focus?.state)}}</td><td data-label="进度">{{segmentProgress(segment)}}</td>
+      <td data-label="阻塞或权限缺口">{{(segment.blockers||[]).join('；')||segmentGaps(segment)||'—'}}</td>
+      <td data-label="展开能力">{{segment.query_tool?capabilityName(segment.query_tool):'—'}}</td>
+    </tr>
+  </tbody></table></div>
+  <div v-if="projectLifecycle().recommended_next_steps?.length" class="business-facts">
+    <h4>建议下一步</h4>
+    <div v-for="item in projectLifecycle().recommended_next_steps" :key="item.segment+item.tool" class="fact-line"><span class="muted">当前分段</span><span>{{capabilityName(item.tool)}} · {{item.reason}}</span></div>
+  </div>
+  <p v-if="projectLifecycle().consistency_warnings?.length" class="lifecycle-warning small">资料矛盾：{{projectLifecycle().consistency_warnings.join('；')}}</p>
+  <p v-if="projectLifecycle().guardrails?.length" class="muted small">{{projectLifecycle().guardrails.join(' ')}}</p>
+</section><section v-if="kickoffLifecycle()" class="surface lifecycle-surface">
   <h4>项目启动链路</h4>
   <div class="fact-line"><span class="muted">当前阶段</span><span>{{phaseNames[kickoffLifecycle().phase]||kickoffLifecycle().phase}}</span></div>
   <div class="table-scroll lifecycle-table"><table><thead><tr><th>业务阶段</th><th>状态</th><th>已知事实</th><th>阻塞或说明</th><th>下一步能力</th></tr></thead><tbody>
