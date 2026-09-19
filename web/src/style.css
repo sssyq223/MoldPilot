@@ -1624,6 +1624,7 @@ html[data-theme="light"] .notification-popover .task-row:hover{background:#f7f9f
 .conversation-list::-webkit-scrollbar-track{background:transparent}
 .conversation-list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 28%,transparent);border-radius:999px}
 .conversation-list:hover::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 42%,transparent)}
+.conversation-loading{text-align:center;padding:8px 4px!important;margin:0!important}
 html[data-theme="light"] .chat{background:
 radial-gradient(circle at 50% 18%,#eef2f6 0,transparent 30%),
 linear-gradient(180deg,#fbfcfd,#f7f8fa 62%,#f5f7fa)!important}
@@ -1811,6 +1812,30 @@ html[data-theme="light"] .workspace-tabs .object-tab{background:#f6f8fa!importan
 .notification-item-meta>time:only-child{margin-left:0}
 .notification-empty{margin:2px 4px 5px!important;font-size:11px!important}
 html[data-theme="light"] .notification-popover .task-row:hover{background:#f3f6f9!important}
+
+/* Notification center lives in the workspace so large queues remain readable. */
+.workspace-notification-refresh{flex:0 0 auto;height:32px;margin-left:auto!important;padding:0 11px!important;border:1px solid var(--border)!important;border-radius:8px!important;background:var(--surface)!important;color:var(--text)!important;font-size:11px!important}
+.workspace-notification-refresh:hover{background:color-mix(in srgb,var(--accent) 7%,var(--surface))!important;border-color:color-mix(in srgb,var(--accent) 24%,var(--border))!important}
+.notification-center{max-width:980px;min-width:0;margin:0 auto;overflow-x:hidden}
+.notification-categories{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:0 0 18px}
+.notification-categories button{min-width:0;justify-content:space-between;padding:10px 11px;border-radius:10px;background:color-mix(in srgb,var(--surface) 92%,var(--bg));border-color:color-mix(in srgb,var(--border) 72%,transparent);color:var(--muted);font-size:12px}
+.notification-categories button:hover{background:color-mix(in srgb,var(--accent) 7%,var(--surface));color:var(--text)}
+.notification-categories button.active{background:#172334;border-color:#172334;color:#fff;box-shadow:0 8px 22px color-mix(in srgb,var(--shadow) 14%,transparent)}
+.notification-categories button strong{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:color-mix(in srgb,currentColor 12%,transparent);font-size:11px}
+.notification-categories button.active strong{background:#ffffff24}
+.notification-workspace-list{display:flex;flex-direction:column;gap:7px}
+.notification-workspace-row{width:100%;min-height:62px;justify-content:flex-start;padding:12px 14px;border-radius:12px;background:var(--surface);border-color:color-mix(in srgb,var(--border) 72%,transparent);text-align:left;box-shadow:0 5px 18px color-mix(in srgb,var(--shadow) 5%,transparent)}
+.notification-workspace-row:hover{background:color-mix(in srgb,var(--accent) 6%,var(--surface));border-color:color-mix(in srgb,var(--accent) 20%,var(--border))}
+.notification-workspace-row>svg{margin-left:auto;color:var(--muted)}
+.notification-workspace-row .notification-item-copy>strong{display:block;overflow:hidden;color:var(--text);font-size:13px;font-weight:650;line-height:20px;text-overflow:ellipsis;white-space:nowrap}
+.notification-workspace-row .notification-item-meta{margin-top:4px!important;font-size:11px!important}
+.notification-workspace-row.unread{border-color:color-mix(in srgb,var(--accent) 30%,var(--border));background:color-mix(in srgb,var(--accent) 5%,var(--surface))}
+.notification-workspace-row .unread-dot{flex:0 0 auto;margin-right:2px;background:#2d78c4}
+.notification-center-state{display:grid;place-items:center;min-height:220px;margin:0;color:var(--muted);font-size:13px;text-align:center}
+html[data-theme="light"] .notification-categories button{background:#f8fafc;border-color:#dce4ec;color:#52667b}
+html[data-theme="light"] .notification-categories button.active{background:#172334;border-color:#172334;color:#fff}
+html[data-theme="light"] .notification-workspace-row{background:#fff;border-color:#dbe3ec;box-shadow:0 5px 18px #52667d0a}
+html[data-theme="light"] .notification-workspace-row:hover{background:#f7faff;border-color:#c7d7e7}
 
 /* Approval workspace: one continuous document instead of a stack of large cards. */
 .workspace-content .approval-head{

@@ -108,13 +108,15 @@ AGENT_WORKER_SECRET=替换为本地随机密钥
 
 如需运行 Agent，再配置模型服务，并将 `AGENT_LLM_ENABLED` 设为 `true`。旧版 `MOLD_*` 宿主变量仍可读取，但新部署统一使用 `AGENT_*`；Mold 领域策略和 ERP 连接仍使用 `MOLD_*`。完整字段和示例见 [`.env.example`](.env.example)。请勿提交包含真实凭据的 `.env`。
 
-请先在 PostgreSQL 中创建名为 `moldpilot` 的空数据库。Redis 可以使用本机服务；也可以通过仓库中的 Compose 文件启动：
+请先在 PostgreSQL 中创建名为 `moldpilot` 的空数据库。本项目默认复用本机 Redis 服务（`127.0.0.1:6379`），不要求 Docker。可先只读检查状态；需要时再显式启动并初始化业务 stream：
 
 ```powershell
-docker compose -f docker-compose.redis.yml up -d
+.venv\Scripts\python.exe scripts\dev_redis.py status
+.venv\Scripts\python.exe scripts\dev_redis.py start --execute
+.venv\Scripts\python.exe scripts\dev_redis.py init-stream --execute
 ```
 
-Compose 服务监听 `127.0.0.1:56379`，使用它时请将 `.env` 中的 `AGENT_REDIS_URL` 改为 `redis://127.0.0.1:56379/0`。
+`MOLD_REDIS_HOME` 可指向本机 Redis 安装目录；当前开发机使用 `D:\Redis`。仓库中的 Compose 文件只保留为其他环境显式选择的备用方案，不是默认启动路径。
 
 ### 3. 安装后端依赖并初始化数据库
 

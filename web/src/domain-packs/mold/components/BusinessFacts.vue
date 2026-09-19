@@ -5,19 +5,24 @@ const hidden=new Set(['id','subject_id','plan_id','created_at','source_line_id',
 const milestoneNames:Record<string,string>={design:'设计/工艺/出图',purchase:'采购',machining:'加工',assembly:'装配',trial:'试模/调试',delivery:'交付/验收'}
 function tasks(){return props.value?.analysis?.tasks||[]}
 function kickoffLifecycle(){return props.value?.analysis?.kickoff_lifecycle}
+function executionLifecycle(){return props.value?.analysis?.execution_lifecycle}
 function milestoneCoverage(){return props.value?.analysis?.milestone_coverage}
 function revisionImpact(){return props.value?.analysis?.revision_impact}
 function planChangeCandidates(){return props.value?.analysis?.plan_change_candidates||[]}
 function statusName(value:string){return valueText('status',value)}
-const phaseNames:Record<string,string>={REJECTED:'已拒绝承接',ACCEPTANCE:'承接确认',START_PREPARATION:'正式开工准备',PLAN_APPROVAL:'基线计划审批',EXECUTION:'项目执行'}
-const stageFactNames:Record<string,string>={latest_acceptance:'承接',latest_rejection:'拒单',effective_contract:'合同',latest_internal_start:'开工通知',active_plan:'基线计划',pending_count:'待审',workflow_count:'可选流程',history_count:'历史合同',late_expected_count:'逾期补齐',task_count:'计划任务',project_status:'项目状态',can_prepare:'可准备开工',missing_milestones:'缺少大节点'}
+const phaseNames:Record<string,string>={REJECTED:'已拒绝承接',ACCEPTANCE:'承接确认',START_PREPARATION:'正式开工准备',PLAN_APPROVAL:'基线计划审批',EXECUTION:'项目执行',PLAN_HANDOFF:'基线计划交接',DESIGN_ENGINEERING:'设计与工艺',PROCUREMENT:'采购执行',FULL_OUTSOURCE:'整套委外协同',MANUFACTURING_QUALITY:'制造与质检',ASSEMBLY_TRIAL:'装配与试模',DELIVERY_ACCEPTANCE:'交付与客户验收',EXECUTION_COMPLETED:'执行链路已完成',EXECUTION_VISIBILITY_GAP:'执行链路可见性不足'}
+const stageFactNames:Record<string,string>={latest_acceptance:'承接',latest_rejection:'拒单',effective_contract:'合同',latest_internal_start:'开工通知',active_plan:'基线计划',latest_effective_design:'生效设计',pending_count:'待审',open_count:'进行中',workflow_count:'可选流程',history_count:'历史合同',late_expected_count:'逾期补齐',task_count:'计划任务',project_status:'项目状态',can_prepare:'可准备开工',missing_milestones:'缺少大节点',route_counts:'路线构成',warning_count:'风险提示',execution_mode:'加工方式',process_task_count:'工序任务',started_count:'已开工',done_count:'已完工',has_effective_price:'有效价格',has_design_procurement_need:'采购需求',has_purchase_request:'采购申请',has_purchase_order:'采购订单',has_unshipped_order_line:'未完全发货',has_effective_contract:'生效合同',has_signed_contract_file:'签署文件',has_supplier_progress_policy:'供应商上报规则',has_supplier_progress_report:'供应商节点上报',has_supplier_shipment_or_receipt:'供应商发货/收货',has_independent_quality_report:'独立质检报告',has_assembly_plan_node:'装配节点',has_assembly_order:'装配工单',has_assembly_done:'装配完工',has_trial_request:'试模安排',has_trial_result:'试模报告',has_trial_passed:'试模通过',has_delivery_plan_node:'交付节点',has_stock_out_movement:'出库记录',has_customer_signature:'客户签收',has_customer_acceptance:'客户验收',has_structured_logistics_price:'物流价格依据'}
 function compactSubject(value:any){return [value?.number,value?.contract_number,value?.status&&statusName(value.status)].filter(Boolean).join(' · ')||'—'}
+function stageObjectText(key:string,value:any){
+ if(key==='route_counts')return Object.entries(value||{}).map(([route,count])=>`${valueText('route',route)} ${count}`).join('、')||'—'
+ return compactSubject(value)
+}
 function stageFactText(facts:any){
  const parts:string[]=[]
  for(const [key,value] of Object.entries(facts||{})){
   if(value===null||value===undefined||value===''||(Array.isArray(value)&&!value.length))continue
   const label=stageFactNames[key]||fieldName(key)
-  const text=typeof value==='object'&&!Array.isArray(value)?compactSubject(value):Array.isArray(value)?value.map(item=>key==='missing_milestones'?(milestoneNames[item]||item):item).join('、'):typeof value==='boolean'?(value?'是':'否'):key==='project_status'?statusName(String(value)):key.endsWith('_count')?String(value):valueText(key,value)
+  const text=typeof value==='object'&&!Array.isArray(value)?stageObjectText(key,value):Array.isArray(value)?value.map(item=>key==='missing_milestones'?(milestoneNames[item]||item):item).join('、'):typeof value==='boolean'?(value?'是':'否'):key==='project_status'?statusName(String(value)):key.endsWith('_count')?String(value):valueText(key,value)
   parts.push(`${label} ${text}`)
  }
  return parts.join('；')||'尚无可展示事实'
@@ -65,6 +70,26 @@ function displayValue(key:string,value:any){
   </div>
   <p v-if="kickoffLifecycle().access_gaps?.length" class="muted small">未读取：{{kickoffLifecycle().access_gaps.join('、')}}</p>
   <p v-if="kickoffLifecycle().guardrails?.length" class="muted small">{{kickoffLifecycle().guardrails.join(' ')}}</p>
+</section><section v-if="executionLifecycle()" class="surface">
+  <h4>项目执行链路</h4>
+  <div class="fact-line"><span class="muted">当前阶段</span><span>{{phaseNames[executionLifecycle().phase]||executionLifecycle().phase}}</span></div>
+  <div class="fact-line"><span class="muted">当前焦点</span><span>{{executionLifecycle().current_focus?.name||'待核对'}} · {{statusName(executionLifecycle().current_focus?.state)}}</span></div>
+  <div class="fact-line"><span class="muted">加工方式</span><span>{{executionLifecycle().execution_mode?valueText('execution_mode',executionLifecycle().execution_mode):'当前可见范围未确定'}}</span></div>
+  <div class="table-scroll"><table><thead><tr><th>执行阶段</th><th>状态</th><th>已知事实</th><th>阻塞或说明</th><th>展开能力</th></tr></thead><tbody>
+    <tr v-for="stage in executionLifecycle().stages||[]" :key="stage.key">
+      <td>{{stage.name}}</td><td>{{statusName(stage.state)}}</td><td>{{stageFactText(stage.facts)}}</td>
+      <td>{{(stage.blockers||[]).join('；')||(stage.conditional?'按加工方式或业务事实适用':'—')}}</td>
+      <td>{{stage.query_tool?capabilityName(stage.query_tool):'—'}}</td>
+    </tr>
+  </tbody></table></div>
+  <div v-if="executionLifecycle().recommended_next_steps?.length" class="business-facts">
+    <h4>建议下一步</h4>
+    <div v-for="item in executionLifecycle().recommended_next_steps" :key="item.kind+item.stage" class="fact-line">
+      <span class="muted">当前焦点</span><span>{{capabilityName(item.tool)}} · {{item.reason}}</span>
+    </div>
+  </div>
+  <p v-if="executionLifecycle().access_gaps?.length" class="muted small">未读取：{{executionLifecycle().access_gaps.join('、')}}</p>
+  <p v-if="executionLifecycle().guardrails?.length" class="muted small">{{executionLifecycle().guardrails.join(' ')}}</p>
 </section><section v-if="tasks().length" class="surface">
   <h4>项目大节点 / 计划任务表</h4>
   <div class="table-scroll"><table><thead><tr><th>节点</th><th>状态</th><th>计划开始</th><th>计划结束</th><th>前置</th></tr></thead><tbody>

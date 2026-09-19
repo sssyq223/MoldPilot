@@ -6,6 +6,12 @@
 
 生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。
 
+## 跨阶段执行编排证据
+
+- `query_project_kickoff_context` 已把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收。两者只协调现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。
+- 项目执行 Skill 首轮只开放协调器，阶段查询均为可选依赖。阶段能力未分配时返回 `UNAVAILABLE`，已读取加工方式证明分支不适用时才返回 `NOT_APPLICABLE`；后续阶段已有事实不会被前序缺口覆盖。
+- `tests/test_project_execution_lifecycle.py` 覆盖工具/Skill 注册、空项目当前焦点、整套委外替代内部制造/装配、交付仍独立保留、未授权阶段不泄漏事实及多项目候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于所有 FR 的真实 ERP 联调或业务验收完成。
+
 ## 业务对象与匹配
 
 Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实体，不复制实时台账
@@ -323,8 +329,8 @@ Agent 开发大节点维护、部门确认、审批、依赖、日期、计划�
 正式启动后，项目部当天制定项目大节点计划，组织设计、采购、加工、装配、调试及品质等部门确认完成时间。可执行时按审批流程批准；不能按期完成时，由项目部重编并再次确认。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认；项目启动链路只有在正式开工已经生效后才把基线计划作为主线下一步；已存在有效计划时只显示 ACTIVE 和任务/大节点事实，不重复准备计划
-- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收；tests/test_project_kickoff_lifecycle.py 覆盖开工生效后建议准备基线计划、有效计划存在后进入 EXECUTION，以及已有计划但缺承接时仍揭示数据矛盾而不倒推承接已完成
+- 实现证据：query_project_plan_context 汇总项目有效计划、计划变更和任务依赖，可识别未完成计划变更申请和当前有效版本；具备计划变更 prepare 能力且权限满足时，query_project_plan_context 返回 workflow_options，并可读取当前有效 plan_change 作为变更基线；带资料模板的计划变更流程会标记 material_required；prepare_project_plan_change 要求使用查询返回的真实项目、项目版本、当前有效计划 previous_id 和任务清单生成会话提案，本人确认后才创建 plan_change 并提交 Agent BPM；当审批模板绑定资料模板时，prepare_project_plan_change 必须传入本人已确认且与模板匹配的 material_review_id，确认提交后由 submit_subject 冻结资料绑定和 material_data；计划变更仍走领域校验和审批生效规则；审批生效前不关闭原计划、不修改执行任务，不代替部门确认；项目启动链路只有在正式开工已经生效后才把基线计划作为主线下一步；已存在有效计划时只显示 ACTIVE 和任务/大节点事实，不重复准备计划；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_plan_tools.py 覆盖有效计划分析、未完成计划变更权限边界、计划变更 Skill 查询返回有效 plan_change 与 workflow_options，以及计划变更 proposal 不写业务、确认后提交 BPM、delegated_auto 传递到 submit_subject；并覆盖资料模板流程缺少已确认核对包时阻断、带核对包确认后冻结为 material_binding；真实部门确认尚未验收；tests/test_project_kickoff_lifecycle.py 覆盖开工生效后建议准备基线计划、有效计划存在后进入 EXECUTION，以及已有计划但缺承接时仍揭示数据矛盾而不倒推承接已完成；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-034
@@ -417,8 +423,8 @@ Agent 开发设计审批、资料协同及工程联络单关联；设计上传/B
 设计主管确认内部设计或设计委外并提交审批，记录负责人、时间、费用及适用的供应商信息。当前设计排产以线下安排、线上进度记录为基础；供应商不适用于内部设计时不强制虚填。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题
-- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning
+- 实现证据：query_design_route_context 只读工具按项目、设计单、图纸版本、BOM物料、计划任务或工程联络线索核对设计/BOM/加工路线语境；design_route_context_review Skill 要求模型先查询真实设计路线证据，不生成图纸、不上传成果、不替代ERP设计/BOM登记；工具返回 route_summary、linked_plan_tasks、engineering_contact_impacts、warnings 和 derived_status，区分无生效设计、未完成审批、路线未关联计划和工程联络影响；工具在缺少项目计划或工程联络查询能力时写入 limitations，不通过设计上下文泄露隐藏计划任务或联络标题；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_design_tools.py 覆盖生效设计BOM路线、计划任务和工程联络影响聚合；tests/test_design_tools.py 覆盖无计划/联络工具时权限隔离，不泄露隐藏任务和联络标题；tests/test_design_tools.py 覆盖多项目候选要求指定对象，以及无生效设计版本的 warning；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-044
@@ -466,8 +472,8 @@ Agent 开发辅材、办公用品、试模料新增需求及全部适用审批�
 辅料和刀具先建正式料品档案，包含料号、分类、名称、规格型号、单位、库存方式、默认供应商、参考价格及启停状态。普通采购必须引用正式料品，不长期使用临时名称代替料号；分类和编码规则支持维护。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请
-- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning
+- 实现证据：query_procurement_price_context 只读工具按项目、料号、价格单、供应商、采购申请或订单线索核对料品、采购价格、设计采购需求和订单跟踪上下文；procurement_price_context_review Skill 要求模型先查询真实采购价格和订单证据，不把历史报价、草稿价格或聊天记录说成可直接下单依据；工具返回 effective_prices、open_price_reviews、design_procurement_needs_without_visible_price、order_tracking、warnings 和 derived_status，区分无有效采购价、未完成价格审批、未匹配价格、未完全发货和供应商异常；工具在缺少设计路线、采购申请或正式订单能力时写入 limitations，不通过采购价格上下文泄露隐藏订单号或采购申请；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_procurement_tools.py 覆盖有效价格、设计采购需求、采购申请、正式订单、发货、收货、检验和异常聚合；tests/test_procurement_tools.py 覆盖无订单/采购申请工具时权限隔离，不泄露隐藏订单号；tests/test_procurement_tools.py 覆盖多候选要求指定对象，以及无有效价格的 warning；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-049
@@ -564,8 +570,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 按项目计划及设备、人员安排工序任务，现场人员报工并记录任务进度、实际耗时和异常。工序完成进入适用的检验环节，后续流转依据检验及任务依赖条件执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_manufacturing_quality_context 按项目线索核对项目计划任务、加工/工序类任务、实际开始/完成日期、设计内部加工路线、装配/试模和工程联络异常上下文；工具将计划任务实际日期作为当前 Agent 可见报工事实，同时明确结构化工时、设备、人员班组和现场异常报工明细仍需专门业务记录；任务依赖和后续流转仍以项目计划、检验结论和对应业务回执为准，工具只读不创建工单、不登记报工、不确认检验
-- 验证证据：tests/test_manufacturing_quality_tools.py 覆盖制造任务实际开工、未完工状态、制造上下文缺口和多候选不自动决定；完整 ERP 制造报工、工时设备人员明细和检验流转尚未验收
+- 实现证据：query_manufacturing_quality_context 按项目线索核对项目计划任务、加工/工序类任务、实际开始/完成日期、设计内部加工路线、装配/试模和工程联络异常上下文；工具将计划任务实际日期作为当前 Agent 可见报工事实，同时明确结构化工时、设备、人员班组和现场异常报工明细仍需专门业务记录；任务依赖和后续流转仍以项目计划、检验结论和对应业务回执为准，工具只读不创建工单、不登记报工、不确认检验；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_manufacturing_quality_tools.py 覆盖制造任务实际开工、未完工状态、制造上下文缺口和多候选不自动决定；完整 ERP 制造报工、工时设备人员明细和检验流转尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-059
@@ -604,8 +610,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 系统显示适用的齐套进度，钳工主管确认装配条件后分配任务并下达装配工单。装配完成后确认完工，无异常由钳工主管发起试模申请；有异常关联质检及工程联络单，定位责任任务处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_assembly_trial_context 按项目、装配任务或试模线索核对计划节点、设计BOM路线、装配任务下发、装配开工/完工、试模申请、试模结果和工程联络异常上下文；analysis.derived_status 区分 has_assembly_order、has_assembly_started、has_assembly_done、has_trial_request、has_trial_result、has_open_assembly_or_trial_issue，避免把装配完成误判为试模完成或异常关闭；工具 limitations 明确实际装配/试模执行复用 ERP 或正式业务回执，Agent 不下达装配工单、不登记开完工、不修改 ERP 执行数据
-- 验证证据：tests/test_assembly_trial_tools.py 覆盖装配计划节点、设计BOM路线、装配完工、试模未通过、工程联络异常聚合；真实 ERP 齐套率、关键件口径、钳工主管确认和装配工单联调尚未验收
+- 实现证据：query_assembly_trial_context 按项目、装配任务或试模线索核对计划节点、设计BOM路线、装配任务下发、装配开工/完工、试模申请、试模结果和工程联络异常上下文；analysis.derived_status 区分 has_assembly_order、has_assembly_started、has_assembly_done、has_trial_request、has_trial_result、has_open_assembly_or_trial_issue，避免把装配完成误判为试模完成或异常关闭；工具 limitations 明确实际装配/试模执行复用 ERP 或正式业务回执，Agent 不下达装配工单、不登记开完工、不修改 ERP 执行数据；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_assembly_trial_tools.py 覆盖装配计划节点、设计BOM路线、装配完工、试模未通过、工程联络异常聚合；真实 ERP 齐套率、关键件口径、钳工主管确认和装配工单联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-063
@@ -626,8 +632,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 对模具、零件及出厂件按要求进行质量检测和出厂验收，保存结果与确认人。满足组装、检验和验收条件后办理入库、出库及发货记录，不能将工序合格直接等同于整套模具交付合格。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 按项目、发货、物流、签收或验收线索核对交付计划节点、正式订单发货、仓库收货、入库检验、库存移动、试模结果、结项清单和工程联络异常上下文；analysis.derived_status 区分 has_supplier_shipment、has_goods_receipt、has_receipt_inspection、has_stock_out_movement、has_trial_passed、has_customer_signature、has_customer_acceptance，防止把工序合格、供应商发货或试模通过等同于整套模具交付合格；工具 limitations 明确采购发货、仓库收货、入库检验、出库、客户签收和客户验收是不同事实，不能相互替代
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖供应商发货、仓库收货、入库检验、出库移动、试模通过、客户验收清单和质量联络异常聚合；真实出厂件检测、ERP 出入库/发货执行和客户验收联调尚未验收
+- 实现证据：query_delivery_logistics_context 按项目、发货、物流、签收或验收线索核对交付计划节点、正式订单发货、仓库收货、入库检验、库存移动、试模结果、结项清单和工程联络异常上下文；analysis.derived_status 区分 has_supplier_shipment、has_goods_receipt、has_receipt_inspection、has_stock_out_movement、has_trial_passed、has_customer_signature、has_customer_acceptance，防止把工序合格、供应商发货或试模通过等同于整套模具交付合格；工具 limitations 明确采购发货、仓库收货、入库检验、出库、客户签收和客户验收是不同事实，不能相互替代；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖供应商发货、仓库收货、入库检验、出库移动、试模通过、客户验收清单和质量联络异常聚合；真实出厂件检测、ERP 出入库/发货执行和客户验收联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-065
@@ -684,8 +690,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 按中标承接确认及后续审批变更后的有效加工方式进入整套委外路径，不重复下达整套内部制造任务。原报价中的委外价格、周期和要求作为评估参考及合同核对依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 读取项目档案 execution_mode、有效 quote_acceptance 承接决定和 full_outsource_contract 上下文，derived_status.has_full_outsource_mode 区分整套委外路径依据；工具 limitations 明确报价委外金额、整套委外合同、供应商节点上报、我方收货、客户验收、扣款和结算是不同事实，不能相互替代
-- 验证证据：tests/test_full_outsource_tools.py 覆盖有效整套委外加工方式、合同与委外计划节点聚合；不重复下达内部制造任务和真实 ERP 加工方式变更审批尚未验收
+- 实现证据：query_full_outsource_context 读取项目档案 execution_mode、有效 quote_acceptance 承接决定和 full_outsource_contract 上下文，derived_status.has_full_outsource_mode 区分整套委外路径依据；工具 limitations 明确报价委外金额、整套委外合同、供应商节点上报、我方收货、客户验收、扣款和结算是不同事实，不能相互替代；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
+- 验证证据：tests/test_full_outsource_tools.py 覆盖有效整套委外加工方式、合同与委外计划节点聚合；不重复下达内部制造任务和真实 ERP 加工方式变更审批尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
 - 验收状态：NOT_VERIFIED
 
 ### FR-071

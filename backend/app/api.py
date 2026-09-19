@@ -1127,9 +1127,15 @@ def audit(offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50), user
 
 
 @app.get("/api/conversations")
-def conversations(archived: bool = Query(False), user=Depends(current_user), db=Depends(get_db)):
+def conversations(
+    archived: bool = Query(False),
+    limit: int = Query(100, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user=Depends(current_user),
+    db=Depends(get_db),
+):
     rows = list(db.scalars(select(m.Conversation).where(m.Conversation.user_id == user.id, m.Conversation.archived == archived)
-                           .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).limit(100)))
+                           .order_by(m.Conversation.pinned.desc(), m.Conversation.created_at.desc()).offset(offset).limit(limit)))
     result = []
     for c in rows:
         waiting = False

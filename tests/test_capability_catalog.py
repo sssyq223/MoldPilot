@@ -155,6 +155,30 @@ def test_project_kickoff_skill_starts_with_one_coordinator_and_keeps_stage_tools
     } == set(skill["optional_dependencies"])
 
 
+def test_project_execution_skill_starts_with_one_coordinator_and_keeps_stage_reads_optional():
+    tool = capability_descriptor("TOOL", "query_project_execution_context", TOOLS["query_project_execution_context"])
+    assert tool["name"] == "读取项目执行链路"
+    assert tool["department"] == "project"
+    assert tool["type"] == "query"
+    assert tool["mode"] == "read_only"
+
+    skill = capability_descriptor("SKILL", "project_execution_orchestration", SKILLS["project_execution_orchestration"])
+    assert skill["name"] == "项目执行链路协调"
+    assert skill["department"] == "project"
+    assert skill["type"] == "review"
+    assert skill["dependencies"] == ["query_project_execution_context"]
+    assert skill["activation_dependencies"] == ["query_project_execution_context"]
+    assert {
+        "query_project_plan_context",
+        "query_design_route_context",
+        "query_procurement_price_context",
+        "query_full_outsource_context",
+        "query_manufacturing_quality_context",
+        "query_assembly_trial_context",
+        "query_delivery_logistics_context",
+    } == set(skill["optional_dependencies"])
+
+
 def test_erp_design_tools_expose_curated_chinese_titles():
     assert set(TOOL_NAMES) == {key for key in TOOLS if key.startswith("erp_design_")}
     for key, title in TOOL_NAMES.items():

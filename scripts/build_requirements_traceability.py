@@ -43,6 +43,21 @@ OVERRIDES = {
     'FR-117': '按权威来源直接查询/调用，不采用 ERP 镜像、CDC、投影、先本地后 ERP 的查找策略。',
 }
 
+CROSS_PHASE_IMPLEMENTATION = {
+    key: (
+        'query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、'
+        '装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据'
+    )
+    for key in ('FR-033', 'FR-043', 'FR-048', 'FR-058', 'FR-062', 'FR-064', 'FR-070')
+}
+CROSS_PHASE_VERIFICATION = {
+    key: (
+        'tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、'
+        '内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并'
+    )
+    for key in CROSS_PHASE_IMPLEMENTATION
+}
+
 
 def parse_source(text):
     rows = {}
@@ -82,12 +97,18 @@ def main():
             raise ValueError(f'Requirement must have exactly one coverage group: {key}')
         _, _, module, responsibility = matches[0]
         old = previous.get(key, {})
+        implementation_evidence = list(old.get('implementation_evidence', []))
+        verification_evidence = list(old.get('verification_evidence', []))
+        if key in CROSS_PHASE_IMPLEMENTATION and CROSS_PHASE_IMPLEMENTATION[key] not in implementation_evidence:
+            implementation_evidence.append(CROSS_PHASE_IMPLEMENTATION[key])
+        if key in CROSS_PHASE_VERIFICATION and CROSS_PHASE_VERIFICATION[key] not in verification_evidence:
+            verification_evidence.append(CROSS_PHASE_VERIFICATION[key])
         requirements.append({
             'id': key, 'source_text': content, 'module': module,
             'agent_responsibility': responsibility,
             'latest_decision': OVERRIDES.get(key, '完整保留；具体既有动作复用不抵消本条需求。'),
-            'implementation_evidence': old.get('implementation_evidence', []),
-            'verification_evidence': old.get('verification_evidence', []),
+            'implementation_evidence': implementation_evidence,
+            'verification_evidence': verification_evidence,
             'acceptance_status': old.get('acceptance_status', 'NOT_VERIFIED'),
         })
     document = {
@@ -101,7 +122,11 @@ def main():
     lines = ['# V1.1 全量需求开发覆盖表', '',
              '本表保留 FR-001～118、AT-01～18、AD-01～13 原文。报价、中标、合同上传及项目大节点维护明确属于 Agent 开发；ERP 具体业务动作复用不代表整项需求已满足。', '',
              '状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。', '',
-             '生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。', '']
+             '生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。', '',
+             '## 跨阶段执行编排证据', '',
+             '- `query_project_kickoff_context` 已把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收。两者只协调现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
+             '- 项目执行 Skill 首轮只开放协调器，阶段查询均为可选依赖。阶段能力未分配时返回 `UNAVAILABLE`，已读取加工方式证明分支不适用时才返回 `NOT_APPLICABLE`；后续阶段已有事实不会被前序缺口覆盖。',
+             '- `tests/test_project_execution_lifecycle.py` 覆盖工具/Skill 注册、空项目当前焦点、整套委外替代内部制造/装配、交付仍独立保留、未授权阶段不泄漏事实及多项目候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于所有 FR 的真实 ERP 联调或业务验收完成。', '']
     last = None
     for row in requirements:
         if row['module'] != last:
