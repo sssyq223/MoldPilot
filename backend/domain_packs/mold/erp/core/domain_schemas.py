@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, model_validator
 from domain_packs.mold.ports.schemas import StrictModel
 
 Amount = Decimal
@@ -11,6 +11,27 @@ class StageInput(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     condition: str = Field(min_length=1, max_length=2000)
+    ratio_percent: Decimal | None = Field(default=None, gt=0, le=100, max_digits=7, decimal_places=4)
+    trigger_event: str | None = Field(default=None, min_length=1, max_length=120)
+    trigger_date: date | None = None
+    credit_days: int | None = Field(default=None, ge=0, le=3650)
+    expected_due_date: date | None = None
+    schedule_evidence: str | None = Field(default=None, min_length=1, max_length=4000)
+    trigger_evidence: str | None = Field(default=None, min_length=1, max_length=4000)
+    special_mark: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode='after')
+    def validate_schedule(self):
+        if self.trigger_date and not self.trigger_evidence:
+            raise ValueError('填写触发日期时必须同时填写触发依据')
+        if self.trigger_date and self.expected_due_date and self.expected_due_date < self.trigger_date:
+            raise ValueError('预计到期日期不能早于触发日期')
+        if self.trigger_date and self.credit_days is not None:
+            derived = self.trigger_date + timedelta(days=self.credit_days)
+            if self.expected_due_date is not None and self.expected_due_date != derived:
+                raise ValueError('预计到期日期必须与触发日期加账期天数一致')
+            self.expected_due_date = derived
+        return self
 
 
 class ContractInput(StrictModel):

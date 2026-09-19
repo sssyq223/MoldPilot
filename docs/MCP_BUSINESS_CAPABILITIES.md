@@ -69,6 +69,14 @@ MCP 不提供确认执行工具。POST /api/contact-proposals/{step_id}/intent �
 
 当同一编号命中多个可见项目时返回 `AMBIGUOUS` 候选，模型必须请用户指定项目 ID 后再继续。`risk_signals` 只代表当前已见的计划逾期、开放联络或供应商上报异常等事实信号，不能直接下整体延期、成本超支或回款完成结论。
 
+## 客户收款节点账期与提醒
+
+`query_finance_context` 把合同收款节点、财务确认的结构化账期、系统提醒和客户实际回款保持为不同事实。`PaymentStage` 可保存节点比例或固定金额、触发事件、触发日期、账期天数、预计到期日、确认依据和财务特殊标记；`customer_receivable_schedule` 再把每个节点投影为待配置、未触发、未到期、今日到期、逾期、部分回款或已回款，并返回已收、未收、距到期/逾期天数和提醒清单。
+
+到期算法只使用经财务确认的结构化字段和 `CustomerReceiptConfirmation` 实际回款记录，不解析“DFM 后 15 天”等自由文本，也不把 T0、试模、签收、验收或 15/30/40 天示例套给其他合同。缺少正式触发依据时保持未触发；缺少结构化账期时保持待配置；回款币种与节点不一致时不并入该节点并提示核对。
+
+`prepare_customer_receivable_schedule` 只根据已查询的真实项目版本、已生效销售合同、节点 ID 和合同/触发依据准备确认卡。本人确认后才更新结构化账期并写审计；它不修改合同金额、不登记实际回款、不自动催款。实际回款仍必须另经 `prepare_customer_receipt_confirmation` 和本人确认，以每笔凭证独立入账并按节点汇总。
+
 ## 工程联络结构化影响与执行边界
 
 `query_contact_cases` 与 `query_contact_context` 现在返回联络主数据、责任事项的受影响对象/原生编号、处置动作、交期和金额，以及反馈后的实际时间、工时、金额、证据与来源。`prepare_contact_create`、`prepare_contact_task`、`prepare_contact_response` 要求同样的结构化材料；引用 ERP 事实时必须带 `source_ref` 与 `source_as_of`，不能用自然语言摘要替代原系统回执。

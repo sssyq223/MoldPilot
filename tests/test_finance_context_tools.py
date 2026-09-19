@@ -215,6 +215,111 @@ def test_finance_context_keeps_customer_receivable_nodes_separate_without_receip
         engine.dispose()
 
 
+def test_finance_context_projects_structured_due_state_from_confirmed_terms_and_receipts():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-DUE-PARTIAL", with_customer_receipt=True)
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "sales_contract"))
+            stage = db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id == contract.id))
+            stage.ratio_percent = Decimal("30.0000")
+            stage.trigger_event = "DFM认证通过"
+            stage.trigger_date = date.today() - timedelta(days=20)
+            stage.credit_days = 15
+            stage.expected_due_date = date.today() - timedelta(days=5)
+            stage.schedule_confirmed = True
+            stage.schedule_evidence = "销售合同付款条款"
+            stage.trigger_evidence = "客户DFM认证记录"
+            stage.special_mark = "财务重点跟踪"
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_finance_context", {"identifier": "FIN-DUE-PARTIAL"})
+            schedule = result["data"][0]["analysis"]["customer_receivable_schedule"]
+            assert schedule["reminder_count"] == 1
+            node = schedule["nodes"][0]
+            assert node["due_state"] == "PARTIALLY_RECEIVED_OVERDUE"
+            assert node["confirmed_received_amount"] == "12000.00"
+            assert node["outstanding_amount"] == "18000.00"
+            assert node["days_overdue"] == 5
+            assert node["reminder"] == "OVERDUE"
+            assert node["special_mark"] == "财务重点跟踪"
+            assert schedule["reminders"][0]["stage_name"] == "DFM认证款"
+    finally:
+        engine.dispose()
+
+
+def test_finance_context_does_not_infer_due_date_from_condition_text():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            seed_finance_project(db, "FIN-DUE-UNKNOWN", with_customer_receipt=False)
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_finance_context", {"identifier": "FIN-DUE-UNKNOWN"})
+            analysis = result["data"][0]["analysis"]
+            node = analysis["customer_receivable_schedule"]["nodes"][0]
+            assert node["due_state"] == "SCHEDULE_PENDING"
+            assert node["effective_due_date"] is None
+            assert analysis["customer_receivable_schedule"]["reminder_count"] == 0
+            assert "不会从条件文字猜测" in "".join(analysis["gaps"])
+    finally:
+        engine.dispose()
+
+
+def test_prepare_customer_receivable_schedule_requires_confirmation_then_updates_stage():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin, p = seed_finance_project(db, "FIN-SCHEDULE", with_customer_receipt=False)
+            contract = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.project_id == p.id, m.BusinessSubject.kind == "sales_contract"))
+            stage = db.scalar(select(m.PaymentStage).where(m.PaymentStage.contract_id == contract.id))
+            conversation = m.Conversation(user_id=admin.id, title="客户收款节点账期确认")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+                prompt="准备确认客户收款节点账期", status="SUCCEEDED",
+                checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+            db.add(run)
+            db.flush()
+            args = {
+                "project_id": p.id,
+                "project_version": p.row_version,
+                "contract_subject_id": contract.id,
+                "stage_id": stage.id,
+                "ratio_percent": "30.0000",
+                "trigger_event": "DFM认证通过",
+                "trigger_date": (date.today() - timedelta(days=15)).isoformat(),
+                "credit_days": 15,
+                "schedule_evidence": "销售合同收款条款第3条",
+                "trigger_evidence": "客户DFM认证邮件",
+                "special_mark": "重点客户",
+            }
+        schema = tool_schema("prepare_customer_receivable_schedule")["function"]["parameters"]
+        assert {"project_id", "contract_subject_id", "stage_id", "trigger_event", "schedule_evidence"} <= set(schema["properties"])
+        with Session.begin() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+            evidence = execute(db, admin, "prepare_customer_receivable_schedule", args, run=run)
+            assert evidence["proposal"]["kind"] == "customer_receivable_schedule"
+            assert evidence["proposal"]["display"]["预计到期日"] == date.today().isoformat()
+            stage = db.get(m.PaymentStage, args["stage_id"])
+            assert stage.schedule_confirmed is False
+            step = m.Step(run_id=run.id, sequence=0, tool="prepare_customer_receivable_schedule", request_hash="hash", result=evidence)
+            db.add(step)
+            db.flush()
+            payload = {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])}
+            intent = business.create_intent(db, admin, "finance.execute", step.id, payload)
+            receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            assert receipt["status"] == "CONFIRMED"
+            stage = db.get(m.PaymentStage, args["stage_id"])
+            assert stage.schedule_confirmed is True
+            assert stage.trigger_event == "DFM认证通过"
+            assert stage.expected_due_date == date.today()
+            assert stage.special_mark == "重点客户"
+    finally:
+        engine.dispose()
+
+
 def test_finance_context_does_not_leak_amounts_without_finance_permissions():
     engine, Session = factory()
     try:

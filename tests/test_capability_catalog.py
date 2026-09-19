@@ -195,8 +195,9 @@ def test_project_completion_skill_starts_with_one_coordinator_and_keeps_stage_ac
     assert {
         "query_delivery_logistics_context",
         "query_finance_context",
-        "query_project_closure_context",
-        "prepare_customer_receipt_confirmation",
+            "query_project_closure_context",
+            "prepare_customer_receivable_schedule",
+            "prepare_customer_receipt_confirmation",
         "prepare_supplier_payment_confirmation",
         "prepare_supplier_deduction_settlement",
         "prepare_project_closure_checklist",

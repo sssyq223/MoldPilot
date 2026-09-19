@@ -360,7 +360,16 @@ def preview_contract(db,user,data:ContractProposalInput,run):
     options=workflow_options(db,user,project,data.contract_kind)
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
-    stages=[{'名称':stage.name,'金额':str(stage.amount)+' '+detail.currency,'条件':stage.condition} for stage in detail.stages]
+    stages=[{
+        '名称':stage.name,
+        '金额':str(stage.amount)+' '+detail.currency,
+        '比例':(str(stage.ratio_percent)+'%') if stage.ratio_percent is not None else '按固定金额',
+        '条件':stage.condition,
+        '触发事件':stage.trigger_event or '待财务结构化确认',
+        '触发日期':stage.trigger_date.isoformat() if stage.trigger_date else '尚未触发',
+        '账期':(str(stage.credit_days)+'天') if stage.credit_days is not None else '未登记',
+        '预计到期日':stage.expected_due_date.isoformat() if stage.expected_due_date else '待触发或待确认',
+    } for stage in detail.stages]
     party=_party_display(db,data)
     display={'操作':'登记销售合同' if data.contract_kind=='sales_contract' else '登记整套委外合同',
         '项目':project.code+' · '+project.name,

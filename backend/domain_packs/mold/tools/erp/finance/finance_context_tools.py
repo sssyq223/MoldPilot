@@ -1,10 +1,10 @@
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from sqlalchemy import select
 
 from domain_packs.mold import models as m
@@ -14,6 +14,7 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import get_db, now
 from domain_packs.mold.erp.core.domain_commands import CustomerReceipt, Payment, validate_customer_receipt, validate_supplier_payment
 from domain_packs.mold.ports.errors import DomainError
+from domain_packs.mold.ports.events import record
 from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.ports.security import current_user
@@ -21,10 +22,41 @@ from domain_packs.mold.ports.security import current_user
 
 FINANCE_KINDS = {"sales_contract", "full_outsource_contract", "supplier_payment", "finance_correction", "project_close", "internal_start"}
 FINANCE_PROPOSAL_TOOLS = {
+    "prepare_customer_receivable_schedule",
     "prepare_customer_receipt_confirmation",
     "prepare_supplier_payment_confirmation",
     "prepare_supplier_deduction_settlement",
 }
+
+
+class CustomerReceivableScheduleProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    stage_id: str = Field(min_length=1, max_length=36)
+    ratio_percent: Decimal | None = Field(default=None, gt=0, le=100, max_digits=7, decimal_places=4)
+    trigger_event: str = Field(min_length=1, max_length=120)
+    trigger_date: date | None = None
+    credit_days: int | None = Field(default=None, ge=0, le=3650)
+    expected_due_date: date | None = None
+    schedule_evidence: str = Field(min_length=1, max_length=4000)
+    trigger_evidence: str | None = Field(default=None, min_length=1, max_length=4000)
+    special_mark: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        if self.credit_days is None and self.expected_due_date is None:
+            raise ValueError("账期天数和预计到期日期至少填写一项")
+        if self.trigger_date and not self.trigger_evidence:
+            raise ValueError("填写触发日期时必须同时填写触发依据")
+        if self.trigger_date and self.expected_due_date and self.expected_due_date < self.trigger_date:
+            raise ValueError("预计到期日期不能早于触发日期")
+        if self.trigger_date and self.credit_days is not None:
+            derived = self.trigger_date + timedelta(days=self.credit_days)
+            if self.expected_due_date is not None and self.expected_due_date != derived:
+                raise ValueError("预计到期日期必须与触发日期加账期天数一致")
+            self.expected_due_date = derived
+        return self
 
 
 class CustomerReceiptProposalInput(StrictModel):
@@ -213,7 +245,20 @@ def _contract_context(rows, role):
                 "condition": stage.get("condition"),
                 "condition_confirmed": stage.get("condition_confirmed"),
                 "condition_evidence_present": bool(stage.get("condition_evidence")),
-                "status": "CONDITION_CONFIRMED" if stage.get("condition_confirmed") else "CONDITION_PENDING",
+                "ratio_percent": stage.get("ratio_percent"),
+                "trigger_event": stage.get("trigger_event"),
+                "trigger_date": stage.get("trigger_date"),
+                "credit_days": stage.get("credit_days"),
+                "expected_due_date": stage.get("expected_due_date"),
+                "schedule_confirmed": bool(stage.get("schedule_confirmed")),
+                "schedule_evidence_present": bool(stage.get("schedule_evidence")),
+                "trigger_evidence_present": bool(stage.get("trigger_evidence")),
+                "special_mark": stage.get("special_mark"),
+                "status": (
+                    "SCHEDULE_CONFIRMED"
+                    if role == "CUSTOMER_RECEIVABLE" and stage.get("schedule_confirmed")
+                    else "CONDITION_CONFIRMED" if stage.get("condition_confirmed") else "CONDITION_PENDING"
+                ),
             }
             stages.append(node)
             payment_nodes.append(node)
@@ -354,6 +399,89 @@ def _customer_receipts(db, user, project_id, sales_contracts, customer_nodes):
     }, False
 
 
+def _receivable_schedule(customer_nodes, customer_receipts, as_of_date):
+    """Project customer receivable state from structured terms and confirmed cash facts.
+
+    No date or trigger is inferred from free-form condition text. Missing structured
+    evidence remains an explicit state instead of being guessed by the Agent.
+    """
+    receipts = customer_receipts.get("receipts") or []
+    rows = []
+    counts = defaultdict(int)
+    reminders = []
+    for node in customer_nodes:
+        stage_id = node.get("stage_id")
+        currency = node.get("currency")
+        stage_amount = _as_decimal(node.get("amount")) or Decimal(0)
+        stage_receipts = [receipt for receipt in receipts if receipt.get("stage_id") == stage_id]
+        matching_receipts = [receipt for receipt in stage_receipts if receipt.get("currency") == currency]
+        received_amount = sum((_as_decimal(receipt.get("amount")) or Decimal(0) for receipt in matching_receipts), Decimal(0))
+        outstanding_amount = max(stage_amount - received_amount, Decimal(0))
+        currency_mismatches = sorted({str(receipt.get("currency")) for receipt in stage_receipts if receipt.get("currency") != currency})
+        trigger_date = date.fromisoformat(node["trigger_date"]) if node.get("trigger_date") else None
+        due_date = date.fromisoformat(node["expected_due_date"]) if node.get("expected_due_date") else None
+        if due_date is None and trigger_date is not None and node.get("credit_days") is not None:
+            due_date = trigger_date + timedelta(days=int(node["credit_days"]))
+
+        partial = received_amount > 0 and received_amount < stage_amount
+        if stage_amount > 0 and received_amount >= stage_amount:
+            due_state = "RECEIVED"
+        elif not node.get("schedule_confirmed"):
+            due_state = "PARTIALLY_RECEIVED_SCHEDULE_PENDING" if partial else "SCHEDULE_PENDING"
+        elif trigger_date is None:
+            due_state = "PARTIALLY_RECEIVED_UNTRIGGERED" if partial else "UNTRIGGERED"
+        elif due_date is None:
+            due_state = "PARTIALLY_RECEIVED_DUE_DATE_UNKNOWN" if partial else "DUE_DATE_UNKNOWN"
+        elif as_of_date < due_date:
+            due_state = "PARTIALLY_RECEIVED_NOT_DUE" if partial else "NOT_DUE"
+        elif as_of_date == due_date:
+            due_state = "PARTIALLY_RECEIVED_DUE" if partial else "DUE_UNPAID"
+        else:
+            due_state = "PARTIALLY_RECEIVED_OVERDUE" if partial else "OVERDUE_UNPAID"
+
+        days_until_due = (due_date - as_of_date).days if due_date and due_date >= as_of_date else None
+        days_overdue = (as_of_date - due_date).days if due_date and due_date < as_of_date else None
+        reminder = None
+        if due_state in {"DUE_UNPAID", "PARTIALLY_RECEIVED_DUE"}:
+            reminder = "DUE_TODAY"
+        elif due_state in {"OVERDUE_UNPAID", "PARTIALLY_RECEIVED_OVERDUE"}:
+            reminder = "OVERDUE"
+        row = {
+            **node,
+            "effective_due_date": due_date.isoformat() if due_date else None,
+            "due_state": due_state,
+            "due_state_as_of": as_of_date.isoformat(),
+            "confirmed_received_amount": str(received_amount),
+            "outstanding_amount": str(outstanding_amount),
+            "receipt_count": len(matching_receipts),
+            "currency_mismatches": currency_mismatches,
+            "days_until_due": days_until_due,
+            "days_overdue": days_overdue,
+            "reminder": reminder,
+        }
+        rows.append(row)
+        counts[due_state] += 1
+        if reminder:
+            reminders.append({
+                "stage_id": stage_id,
+                "contract_number": node.get("contract_number"),
+                "stage_name": node.get("name"),
+                "currency": currency,
+                "outstanding_amount": str(outstanding_amount),
+                "effective_due_date": row["effective_due_date"],
+                "due_state": due_state,
+                "days_overdue": days_overdue,
+                "special_mark": node.get("special_mark"),
+            })
+    return {
+        "as_of_date": as_of_date.isoformat(),
+        "nodes": rows,
+        "state_counts": dict(sorted(counts.items())),
+        "reminders": reminders,
+        "reminder_count": len(reminders),
+    }
+
+
 def _corrections(rows):
     result = []
     for row in rows:
@@ -432,11 +560,14 @@ def _closure_finance_items(db, user, project_id):
     return rows
 
 
-def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items):
+def _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items):
     open_reservation = bool(supplier_payments["outstanding_reservations"])
     supplier_paid = bool(supplier_payments["confirmed_totals"])
     customer_received = bool(customer_receipts["confirmed_totals"])
-    condition_pending = [node for node in customer_nodes if not node.get("condition_confirmed")]
+    condition_pending = [node for node in customer_nodes if not node.get("condition_confirmed") and not node.get("schedule_confirmed")]
+    schedule_pending = [node for node in receivable_schedule["nodes"] if node.get("due_state") in {"SCHEDULE_PENDING", "PARTIALLY_RECEIVED_SCHEDULE_PENDING"}]
+    trigger_pending = [node for node in receivable_schedule["nodes"] if node.get("due_state") in {"UNTRIGGERED", "PARTIALLY_RECEIVED_UNTRIGGERED"}]
+    currency_mismatches = [node for node in receivable_schedule["nodes"] if node.get("currency_mismatches")]
     invoice_done = any(item.get("item_key") == "INVOICE" and item.get("status") == "DONE" for item in closure_items)
     customer_receipt_done = any(item.get("item_key") == "CUSTOMER_RECEIPT" and item.get("status") == "DONE" for item in closure_items)
     supplier_settlement_done = any(item.get("item_key") == "SUPPLIER_SETTLEMENT" and item.get("status") == "DONE" for item in closure_items)
@@ -454,6 +585,14 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         warnings.append("客户实际回款确认与关闭清单均存在；仍须按合同节点、发票和财务口径核对，不能用单次回款代表项目已结束。")
     if condition_pending:
         warnings.append("存在付款/收款节点条件未由财务确认，不能作为到期或付款依据。")
+    if schedule_pending:
+        gaps.append("存在客户收款节点尚未由财务确认结构化触发事件、账期或预计到期日；系统不会从条件文字猜测到期状态。")
+    if trigger_pending:
+        warnings.append("存在已配置但尚无触发日期依据的客户收款节点；仅保留未触发状态，不生成到期或逾期提醒。")
+    if currency_mismatches:
+        warnings.append("存在回款币种与合同节点币种不一致的记录；未纳入对应节点已收金额，需财务核对归属。")
+    if receivable_schedule["reminder_count"]:
+        warnings.append("存在到期或逾期未收节点；提醒仅依据财务确认的触发日期、账期、到期日和实际回款记录，不代表自动催款或特殊认定。")
     if any(request.get("status") == "EFFECTIVE" for request in supplier_payments["requests"]):
         warnings.append("存在已审批供应商付款申请；审批通过不等于已付款或全部付清，仍须以财务实际付款确认汇总。")
     if open_reservation:
@@ -472,6 +611,7 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
         },
         "sales_contracts": sales_contracts,
         "customer_receivable_nodes": customer_nodes,
+        "customer_receivable_schedule": receivable_schedule,
         "customer_receipt_summary": customer_receipts,
         "full_outsource_contracts": outsource_contracts,
         "supplier_payment_summary": supplier_payments,
@@ -484,6 +624,8 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
             "project_status": project.status,
             "has_effective_start_notice": bool(starts),
             "has_sales_contract_payment_nodes": bool(customer_nodes),
+            "has_confirmed_receivable_schedule": any(node.get("schedule_confirmed") for node in customer_nodes),
+            "customer_receivable_reminder_count": receivable_schedule["reminder_count"],
             "has_customer_actual_receipt_ledger": customer_received,
             "has_invoice_or_customer_receipt_closure_evidence": invoice_done or customer_receipt_done,
             "has_supplier_payment_request": bool(supplier_payments["requests"]),
@@ -496,6 +638,10 @@ def _analysis(project, profile, starts, sales_contracts, customer_nodes, custome
     }
 
 
+def customer_receivable_schedule_schema():
+    return CustomerReceivableScheduleProposalInput.model_json_schema()
+
+
 def customer_receipt_schema():
     return CustomerReceiptProposalInput.model_json_schema()
 
@@ -506,6 +652,13 @@ def supplier_payment_confirmation_schema():
 
 def supplier_deduction_settlement_schema():
     return SupplierDeductionSettlementProposalInput.model_json_schema()
+
+
+def parse_customer_receivable_schedule(arguments):
+    try:
+        return CustomerReceivableScheduleProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "客户收款节点账期参数不完整或不符合要求："+error.errors()[0]["msg"]) from None
 
 
 def parse_customer_receipt(arguments):
@@ -538,6 +691,73 @@ def _receipt_payload(data: CustomerReceiptProposalInput):
     return CustomerReceipt(amount=data.amount, currency=data.currency, received_date=data.received_date,
         reference=data.reference, evidence=data.evidence, stage_id=data.stage_id,
         source_ref=data.source_ref, note=data.note)
+
+
+def preview_customer_receivable_schedule(db, user, data: CustomerReceivableScheduleProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "sales_contract.read", scope)
+    require(db, user, "customer_receipt.confirm", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    if not contract or contract.project_id != project.id or contract.kind != "sales_contract":
+        raise DomainError("NOT_FOUND", "销售合同不存在或不属于该项目", 404)
+    if contract.status != "EFFECTIVE":
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "只能为已生效销售合同确认收款节点账期", 409)
+    stage = db.get(m.PaymentStage, data.stage_id)
+    if not stage or stage.contract_id != contract.id:
+        raise DomainError("STAGE_UNKNOWN", "收款节点不存在或不属于该销售合同", 404)
+    detail = db.get(m.ContractDetail, contract.id)
+    due_date = data.expected_due_date
+    if due_date is None and data.trigger_date is not None and data.credit_days is not None:
+        due_date = data.trigger_date + timedelta(days=data.credit_days)
+    display = {
+        "操作": "确认客户收款节点触发事件与账期",
+        "项目": project.code+" · "+project.name,
+        "项目版本": project.row_version,
+        "销售合同": detail.contract_number if detail else contract.number,
+        "收款节点": stage.name,
+        "节点金额": str(stage.amount)+" "+stage.currency,
+        "节点比例": (str(data.ratio_percent)+"%") if data.ratio_percent is not None else "按固定金额",
+        "触发事件": data.trigger_event,
+        "触发日期": data.trigger_date.isoformat() if data.trigger_date else "尚未触发",
+        "账期": (str(data.credit_days)+" 天") if data.credit_days is not None else "按明确到期日",
+        "预计到期日": due_date.isoformat() if due_date else "触发后按账期计算",
+        "合同/账期依据": data.schedule_evidence,
+        "触发依据": data.trigger_evidence or "尚未触发",
+        "财务特殊标记": data.special_mark or "无",
+        "说明": "本人确认后仅更新该合同收款节点的结构化触发事件、账期和到期依据；不会登记实际回款、自动催款或修改合同金额。",
+    }
+    return project, contract, stage, due_date, display
+
+
+def confirm_customer_receivable_schedule(db, user, data: CustomerReceivableScheduleProposalInput):
+    project, contract, stage, due_date, _ = preview_customer_receivable_schedule(db, user, data)
+    stage.ratio_percent = data.ratio_percent
+    stage.trigger_event = data.trigger_event
+    stage.trigger_date = data.trigger_date
+    stage.credit_days = data.credit_days
+    stage.expected_due_date = due_date
+    stage.schedule_confirmed = True
+    stage.schedule_evidence = data.schedule_evidence
+    stage.trigger_evidence = data.trigger_evidence
+    stage.special_mark = data.special_mark
+    record(db, user, "customer_receivable_schedule.confirm", stage.id, {
+        "project_id": project.id,
+        "contract_subject_id": contract.id,
+        "stage_id": stage.id,
+        "trigger_event": data.trigger_event,
+        "trigger_date": data.trigger_date.isoformat() if data.trigger_date else None,
+        "credit_days": data.credit_days,
+        "expected_due_date": due_date.isoformat() if due_date else None,
+        "special_mark": data.special_mark,
+    }, [contract.created_by])
+    db.flush()
+    return stage
 
 
 def _supplier_payment_payload(data: SupplierPaymentConfirmationProposalInput):
@@ -722,7 +942,14 @@ def preview_supplier_payment_confirmation(db, user, data: SupplierPaymentConfirm
 def execute_finance_tool(db, user, key, arguments, run=None):
     if key not in FINANCE_PROPOSAL_TOOLS:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
-    if key == "prepare_customer_receipt_confirmation":
+    if key == "prepare_customer_receivable_schedule":
+        data = parse_customer_receivable_schedule(arguments)
+        _, _, _, _, display = preview_customer_receivable_schedule(db, user, data)
+        proposal = {"kind": "customer_receivable_schedule", "action": "confirm_customer_receivable_schedule",
+            "requires_approval": False, "input": data.model_dump(mode="json"), "display": display,
+            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False)}
+        limitations = ["仅准备客户收款节点结构化账期确认；本人确认后才更新节点，不登记实际回款、不自动催款、不修改合同金额。"]
+    elif key == "prepare_customer_receipt_confirmation":
         data = parse_customer_receipt(arguments)
         _, display = preview_customer_receipt(db, user, data)
         proposal = {"kind": "customer_receipt", "action": "confirm_customer_receipt",
@@ -768,7 +995,10 @@ def validate_intent(db, user, payload):
     proposal = source(db, user, payload["step_id"])
     if content_hash(proposal) != payload["proposal_hash"]:
         raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
-    if proposal.get("kind") == "customer_receipt":
+    if proposal.get("kind") == "customer_receivable_schedule":
+        data = parse_customer_receivable_schedule(proposal["input"])
+        _, _, _, _, display = preview_customer_receivable_schedule(db, user, data)
+    elif proposal.get("kind") == "customer_receipt":
         data = parse_customer_receipt(proposal["input"])
         _, display = preview_customer_receipt(db, user, data)
     elif proposal.get("kind") == "supplier_payment_confirmation":
@@ -787,6 +1017,10 @@ def validate_intent(db, user, payload):
 def confirm(db, user, payload):
     from domain_packs.mold.erp.core.domain_commands import execute_command
     proposal, data = validate_intent(db, user, payload)
+    if proposal.get("kind") == "customer_receivable_schedule":
+        stage = confirm_customer_receivable_schedule(db, user, data)
+        return {"project_id": data.project_id, "contract_subject_id": data.contract_subject_id,
+            "stage_id": stage.id, "action": "customer_receivable_schedule_confirm", "status": "CONFIRMED"}
     if proposal.get("kind") == "customer_receipt":
         receipt = _receipt_payload(data)
         result = execute_command(db, user, "customer_receipt.confirm", data.contract_subject_id, receipt.model_dump(mode="json"))
@@ -844,6 +1078,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                 )
         sales_contracts, customer_nodes = _contract_context(rows["sales_contract"], "CUSTOMER_RECEIVABLE")
         customer_receipts, receipts_skipped = _customer_receipts(db, user, project.id, sales_contracts, customer_nodes)
+        receivable_schedule = _receivable_schedule(customer_nodes, customer_receipts, now().date())
         outsource_contracts, _ = _contract_context(rows["full_outsource_contract"], "SUPPLIER_PAYABLE")
         supplier_payments = _supplier_payments(rows["supplier_payment"], sales_contracts, outsource_contracts)
         corrections = _corrections(rows["finance_correction"])
@@ -857,6 +1092,8 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
             limitations.append("未分配工程联络查询工具，未汇总设变费用、扣款或额外工时线索。")
         if "prepare_customer_receipt_confirmation" in allowed_tools:
             limitations.append("可在取得真实销售合同和收款节点后准备客户实际回款确认；该操作仍需本人核对卡片后才写入。")
+        if "prepare_customer_receivable_schedule" in allowed_tools:
+            limitations.append("可在取得真实销售合同、收款节点和合同依据后准备结构化账期确认；该操作仍需本人核对卡片后才更新节点，不会从条件文字猜测日期。")
         if "prepare_supplier_payment_confirmation" in allowed_tools:
             limitations.append("可在取得已审批供应商付款申请和授权余额后准备供应商实际付款确认；该操作仍需本人核对卡片后才写入。")
         if "prepare_supplier_deduction_settlement" in allowed_tools:
@@ -867,7 +1104,7 @@ def query(db, user, data: ProjectDossierInput, allowed_tools: set[str]):
                 {
                     "project": _project_card(db, user, project, alternatives or ("项目定位",)),
                     "profile": profile,
-                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items),
+                    "analysis": _analysis(project, profile, starts, sales_contracts, customer_nodes, customer_receipts, receivable_schedule, outsource_contracts, supplier_payments, corrections, cost_impacts, closure_items),
                 }
             ],
             "source": "agent_db",

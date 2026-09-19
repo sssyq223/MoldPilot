@@ -443,7 +443,23 @@ class PaymentStage(IdentityMixin, Base):
     condition: Mapped[str] = mapped_column(Text)
     condition_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     condition_evidence: Mapped[str | None] = mapped_column(Text)
-    __table_args__ = (CheckConstraint('amount > 0'),)
+    ratio_percent: Mapped[Decimal | None] = mapped_column(Numeric(7,4))
+    trigger_event: Mapped[str | None] = mapped_column(String(120))
+    trigger_date: Mapped[date | None] = mapped_column(Date)
+    credit_days: Mapped[int | None] = mapped_column(Integer)
+    expected_due_date: Mapped[date | None] = mapped_column(Date)
+    schedule_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule_evidence: Mapped[str | None] = mapped_column(Text)
+    trigger_evidence: Mapped[str | None] = mapped_column(Text)
+    special_mark: Mapped[str | None] = mapped_column(String(200))
+    __table_args__ = (
+        CheckConstraint('amount > 0'),
+        CheckConstraint('ratio_percent IS NULL OR (ratio_percent > 0 AND ratio_percent <= 100)', name='payment_stage_ratio_percent'),
+        CheckConstraint('credit_days IS NULL OR credit_days >= 0', name='payment_stage_credit_days'),
+        CheckConstraint('trigger_date IS NULL OR expected_due_date IS NULL OR expected_due_date >= trigger_date', name='payment_stage_due_after_trigger'),
+        CheckConstraint("NOT schedule_confirmed OR (trigger_event IS NOT NULL AND schedule_evidence IS NOT NULL AND (credit_days IS NOT NULL OR expected_due_date IS NOT NULL))", name='payment_stage_confirmed_schedule_fields'),
+        CheckConstraint('trigger_date IS NULL OR trigger_evidence IS NOT NULL', name='payment_stage_trigger_evidence'),
+    )
 
 
 class PaymentRequestDetail(Base):

@@ -980,8 +980,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 收款节点单独结构化保存，至少包含条件或事件、比例或金额、账期、预计到期日期、确认依据和状态。支持3-3-3-1、DFM认证、试模、签收或验收等不同约定；具体比例及事件以对应合同经财务确认的结果为准。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContractDetail/PaymentStage 独立保存合同金额、节点名称、条件、金额、币种、条件确认状态和依据；query_finance_context 将销售合同收款节点作为 customer_receivable_nodes 返回，明确节点条件需以合同和财务确认为准
-- 验证证据：tests/test_finance_context_tools.py 覆盖 DFM 认证收款节点、金额、条件和未确认状态读取
+- 实现证据：ContractDetail/PaymentStage 独立保存合同金额、节点名称、条件、金额、币种、比例、触发事件、触发日期、账期天数、预计到期日、确认依据、特殊标记和确认状态；query_finance_context 将销售合同收款节点作为 customer_receivable_nodes 和 customer_receivable_schedule 返回，明确节点条件需以合同和财务确认为准；prepare_customer_receivable_schedule 通过会话确认卡维护既有生效销售合同节点的结构化账期；本人确认前不写库，确认后保留审计，不修改合同金额或登记实际回款
+- 验证证据：tests/test_finance_context_tools.py 覆盖 DFM 认证节点、比例/金额、触发事件、账期、到期日、确认依据、特殊标记以及确认卡写入边界
 - 验收状态：NOT_VERIFIED
 
 ### FR-101
@@ -989,8 +989,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 按合同适用节点、触发事件、账期和到期日提醒。T0试模、DFM认证、移模签收或验收仅在合同采用时触发；试模后15、30、40天等为合同示例，不作为所有项目统一账期。未到期、到期未收和逾期未收分别记录，特殊标记由财务核实。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_finance_context 按合同实际 PaymentStage 条件返回节点，不把 T0、DFM、试模、签收、验收或账期示例套用为统一规则；工具 warnings 标识未确认条件和未接入客户实际回款台账，区分节点条件、提醒和实际收款
-- 验证证据：tests/test_finance_context_tools.py 覆盖合同节点条件未确认时的派生告警；到期提醒算法和真实回款状态联调待完成
+- 实现证据：query_finance_context 按合同实际 PaymentStage 条件返回节点，不把 T0、DFM、试模、签收、验收或账期示例套用为统一规则；工具 warnings 标识未确认条件和未接入客户实际回款台账，区分节点条件、提醒和实际收款；customer_receivable_schedule 只按财务确认的结构化触发日期、账期/到期日和实际回款汇总计算未触发、未到期、到期未收、逾期未收、部分回款和已回款；自由文本缺字段时保持待配置，不解析示例天数；到期或逾期节点输出结构化 reminder、未收金额和逾期天数；提醒不执行自动催款，特殊标记只能经财务确认卡保存
+- 验证证据：tests/test_finance_context_tools.py 覆盖自由文本不推断日期、结构化节点结合分次实际回款计算部分回款逾期、提醒清单和未收金额；真实 ERP 回款来源联调及正式财务验收仍待完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-102
@@ -998,8 +998,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 客户实际回款由财务人工确认，保存日期、金额、合同节点、凭证和对应项目关系。系统提醒或识别结果不替代实际回款确认；分次回款均留独立记录，并按确认关系汇总。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_finance_context 将客户付款节点与客户实际回款台账明确分离，derived_status.has_customer_actual_receipt_ledger 当前为 false；finance_context_review Skill 要求未接入客户实际回款台账时不得声称客户已回款
-- 验证证据：tests/test_finance_context_tools.py 验证客户合同节点存在但 has_customer_actual_receipt_ledger 为 false，并输出未接入实际回款台账限制
+- 实现证据：query_finance_context 将客户付款节点、到期提醒与 CustomerReceiptConfirmation 实际回款台账明确分离，并按合同节点和币种汇总分次回款；prepare_customer_receipt_confirmation 只在财务本人确认后保存日期、金额、合同节点、凭证和项目关系；系统提醒不替代实际回款确认；finance_context_review Skill 要求没有实际回款确认时不得声称客户已回款
+- 验证证据：tests/test_finance_context_tools.py 覆盖无实际回款时保持 false、确认卡确认前不写库、确认后写入独立凭证、按节点汇总分次回款并参与未收金额计算
 - 验收状态：NOT_VERIFIED
 
 ### FR-103
