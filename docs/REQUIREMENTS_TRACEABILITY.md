@@ -204,8 +204,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 客户工艺方案确认并收到客户开工通知后，满足正式启动条件。项目负责人正式下达内部开工通知，通知设计、采购、生产、装配、财务等相关部门。承接确认、客户开工条件和内部正式下达分别留存依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：bid_intake_revision 以不可变版本分别保存客户工艺方案人工确认及其依据、外部订单号、客户开工日期和客户交期；EXTERNAL_START_NOTICE 附件独立留存，不把承接决定当作客户开工条件；query_internal_start_readiness 返回 customer_start_conditions，只在当前中标接收版本和历史附件中同时具备客户工艺确认、外部订单、客户开工日期、客户交期和外部开工通知时才允许准备正式开工；prepare_internal_start 强制引用当前 bid_intake_revision_id 和已生效承接记录；任一开工条件缺失或中标版本变化均拒绝创建材料，确认后仍只提交独立 Agent BPM；bid_intake_lifecycle_link.source_revision_id 把内部正式开工材料冻结关联到所依据的中标接收版本；合同仍作为并行事实，不替代承接、客户开工条件或内部正式下达
-- 验证证据：tests/test_start_tools.py 覆盖仅有承接时阻塞、客户工艺与外部开工条件齐备后才可准备、正式开工引用冻结中标版本、已有正式开工不重复准备和合同/计划权限隔离；tests/test_bid_intake_tools.py 覆盖同一中标接收 case 的连续版本、外部开工通知附件和客户工艺确认字段；实际部门通知矩阵与真实角色端到端验收仍未完成
+- 实现证据：bid_intake_revision 以不可变版本分别保存客户工艺方案人工确认及其依据、外部订单号、客户开工日期和客户交期；EXTERNAL_START_NOTICE 附件独立留存，不把承接决定当作客户开工条件；query_internal_start_readiness 返回 customer_start_conditions，只在当前中标接收版本和历史附件中同时具备客户工艺确认、外部订单、客户开工日期、客户交期和外部开工通知时才允许准备正式开工；prepare_internal_start 强制引用当前 bid_intake_revision_id 和已生效承接记录；任一开工条件缺失或中标版本变化均拒绝创建材料，确认后仍只提交独立 Agent BPM；bid_intake_lifecycle_link.source_revision_id 把内部正式开工材料冻结关联到所依据的中标接收版本；合同仍作为并行事实，不替代承接、客户开工条件或内部正式下达；正式开工审批生效后生成五条不可变 internal_start_dispatch 交接证据，分别对应设计、采购、生产制造、装配和财务项目角色；人员缺失保留 UNASSIGNED 缺口，不猜测或伪造接收人；每个已分配交接通过 Agent Core outbox/Redis/notification 链路投递，查询实时区分待投递、已送达、部分送达和被当前权限过滤；不会据此创建设计、采购、生产、装配或试模执行任务
+- 验证证据：tests/test_start_tools.py 覆盖仅有承接时阻塞、客户工艺与外部开工条件齐备后才可准备、正式开工引用冻结中标版本、已有正式开工不重复准备和合同/计划权限隔离；tests/test_bid_intake_tools.py 覆盖同一中标接收 case 的连续版本、外部开工通知附件和客户工艺确认字段；tests/test_start_tools.py 覆盖五类项目角色交接、站内通知实际消费、角色缺失不伪造人员以及不生成执行任务；真实组织角色配置与业务用户验收仍待交付阶段完成
 - 验收状态：NOT_VERIFIED
 
 ### FR-021
@@ -213,8 +213,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 正式下达前允许匹配数据、准备草稿和项目计划草案，并按业务需要开展开工前的工艺评估及客户确认；不得下达或执行生产、采购、装配、试模任务。正式下达后，部门任务仍应按项目计划审批结果执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行
-- 验证证据：tests/test_start_tools.py 验证工具只读核对与 can_prepare_start_from_known_facts；开工前草稿准备和正式任务门禁全流程尚未验收
+- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行；正式开工生效的唯一自动副作用是项目状态、不可变部门交接证据和站内通知；没有创建 PlanTask、PurchaseRequest 或其他 ERP 执行单据；计划草稿可在通用业务材料层先保存，但提交审批仍由 before_submit 强制要求项目已正式开工；生效计划前不会把项目投影为执行中
+- 验证证据：tests/test_start_tools.py 验证工具只读核对、can_prepare_start_from_known_facts、正式开工生效不生成计划任务或采购申请，以及计划生效前后状态切换；真实 ERP 各执行动作的联合门禁仍待联调验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-022
@@ -222,8 +222,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 内部开工业务状态为：待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中。中标接收、匹配等处理动作另留记录；拒单记录原因后结束，暂停和终止按第12章管理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态；query_project_kickoff_context 将承接、正式开工和项目基线计划投影为 ACCEPTANCE、START_PREPARATION、PLAN_APPROVAL、EXECUTION 或 REJECTED 阶段；每个阶段仍引用自己的业务材料，不合并状态或自动推进
-- 验证证据：tests/test_start_tools.py 覆盖有效承接、有效开工和多候选；完整内部开工业务状态机仍未验收；tests/test_project_kickoff_lifecycle.py 覆盖无承接、承接已生效、正式开工已生效和基线计划已生效时的阶段迁移，并验证多候选不合并项目事实
+- 实现证据：query_internal_start_readiness 返回 project_status、有效承接、有效拒单、有效开工和开放开工申请，帮助会话判断待承接/待开工/已开工状态；暂停、终止和拒单场景通过 blocker/warning 提示，不自动推进状态；query_project_kickoff_context 将承接、正式开工和项目基线计划投影为 ACCEPTANCE、START_PREPARATION、PLAN_APPROVAL、EXECUTION 或 REJECTED 阶段；每个阶段仍引用自己的业务材料，不合并状态或自动推进；query_internal_start_readiness.business_state 明确返回待承接确认、已承接待开工条件、待正式下达、已正式下达、待计划审批、执行中六段顺序及每段 DONE/CURRENT/PENDING 状态；拒单、暂停、终止和关闭保持独立结果
+- 验证证据：tests/test_start_tools.py 覆盖从无承接、开工条件缺失、条件齐备、正式下达、计划待审批到计划生效执行中的完整六段状态迁移，并覆盖有效开工和多候选；tests/test_project_kickoff_lifecycle.py 覆盖无承接、承接已生效、正式开工已生效和基线计划已生效时的阶段迁移，并验证多候选不合并项目事实
 - 验收状态：NOT_VERIFIED
 
 ### FR-023

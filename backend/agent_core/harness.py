@@ -554,11 +554,11 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         activated = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt,
                                       tool_annotations)
         return [group["key"]], activated, [group["key"]]
-    if normalized in deferred_tools:
-        if _is_write_capable_tool(normalized, tool_annotations) and not action_intent:
-            return [], [], []
-        return [normalized], [normalized], []
-    tool_groups = _route_skill_groups(" ".join([current_prompt, normalized]), tool_groups or [])
+    # Domain priority is evaluated against the complete current request before
+    # folder routing considers the model's abbreviated search query.  Otherwise
+    # a longer but unrelated term introduced by the model can hide the very
+    # scene boundary the domain pack declared authoritative.
+    tool_groups = tool_groups or []
     priority_groups = [group for group in tool_groups
                        if _group_priority_matches(current_prompt, group)
                        and any(name in deferred_tools for name in group["tools"])]
@@ -571,6 +571,15 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         activated = _rank_group_tools((current_prompt or normalized).strip().lower(), group, deferred_tools,
                                       action_intent, current_prompt, tool_annotations)
         return [group["key"]], activated, [group["key"]]
+    tool_groups = _route_skill_groups(" ".join([current_prompt, normalized]), tool_groups)
+    # An exact tool name is authoritative only when the domain has not marked
+    # the user's complete current prompt as a stronger scene boundary.  This
+    # prevents a model-shortened ToolSearch query from replacing the user's
+    # actual request with an unrelated capability that merely shares one noun.
+    if normalized in deferred_tools:
+        if _is_write_capable_tool(normalized, tool_annotations) and not action_intent:
+            return [], [], []
+        return [normalized], [normalized], []
     alias_scores = []
     for group in tool_groups:
         aliases = [str(alias).strip().lower() for alias in group.get("activation_queries", []) if str(alias).strip()]

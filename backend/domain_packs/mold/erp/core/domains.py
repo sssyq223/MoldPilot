@@ -471,6 +471,8 @@ def apply(db,user,subject):
         source=require_source(db,detail.source_subject_id,project.id,{'quote_acceptance'})
         if db.get(m.BusinessDecisionDetail,source.id).decision!='ACCEPT':raise DomainError('NOT_ACCEPTED','未确认承接')
         project.status='ACTIVE';project.row_version+=1
+        from domain_packs.mold.erp.project import start_dispatches
+        start_dispatches.create_for_internal_start(db,user,subject)
     elif kind in {'sales_contract','full_outsource_contract'}:
         if kind=='full_outsource_contract':
             profile=db.get(m.ProjectProfile,project.id)

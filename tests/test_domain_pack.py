@@ -128,6 +128,16 @@ def test_skill_directory_hierarchy_is_a_retrieval_boundary():
     assert _route_skill_groups("继续处理", groups) == groups
 
 
+def test_formal_start_conversation_title_wins_over_generic_notification_word():
+    from domain_packs.mold.manifest import conversation_title
+
+    title = conversation_title(
+        "查询 BROWSER-START-HANDOFF-001 的正式开工和五部门通知投递结果"
+    )
+
+    assert title == "BROWSER-START-HANDOFF-001 开工条件核对"
+
+
 def test_tool_implementations_are_categorized_beside_skills():
     project_root = Path(__file__).resolve().parents[1]
     tool_root = project_root / "backend" / "domain_packs" / "mold" / "tools"

@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import select
 
 from app import bpm, business, models as m
+from app.message_worker import deliver
 from app.authorization import PERMISSIONS, fingerprint
+from domain_packs.mold.erp.core import domains
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
 
@@ -338,6 +340,138 @@ def test_start_readiness_reports_multiple_candidates_without_deciding():
             assert result['resolution']=='MULTIPLE_CANDIDATES'
             assert {row['code'] for row in result['data']}=={'START-A','START-B'}
             assert '请使用项目 ID' in ''.join(result['limitations'])
+    finally:
+        engine.dispose()
+
+
+def test_effective_internal_start_creates_role_handoffs_and_delivers_notifications():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-HANDOFF','正式开工部门交接')
+            accept=decision(db,p,admin,'quote_acceptance','QA-HANDOFF','ACCEPT')
+            customer_start_conditions(db,p,admin,'201')
+            role_rows=[]
+            for index,role_key in enumerate((
+                'DESIGN_OWNER','PURCHASE_OWNER','MANUFACTURING_OWNER','ASSEMBLY_OWNER','FINANCE_OWNER'
+            ),start=1):
+                person=user(db,f'handoff-{index}',True)
+                role_rows.append(m.ProjectRoleMember(
+                    project_id=p.id,role_key=role_key,user_id=person.id
+                ))
+            db.add_all(role_rows)
+            start=decision(
+                db,p,admin,'internal_start','START-HANDOFF-001','START',
+                status='APPROVED',source_subject_id=accept.id,
+            )
+            domains.apply(db,admin,start)
+            db.flush()
+            dispatches=list(db.scalars(select(m.InternalStartDispatch).where(
+                m.InternalStartDispatch.start_subject_id==start.id
+            )))
+            event_ids=[row.event_id for row in dispatches if row.event_id]
+            assert len(dispatches)==5
+            assert len(event_ids)==5
+            assert {row.dispatch_status for row in dispatches}=={'QUEUED'}
+            assert db.get(m.Project,p.id).status=='ACTIVE'
+            assert db.get(m.BusinessSubject,start.id).status=='EFFECTIVE'
+            assert db.scalar(select(m.PlanTask).limit(1)) is None
+            assert db.scalar(select(m.PurchaseRequest).limit(1)) is None
+            assert set(db.scalars(select(m.BusinessSubject.kind)))=={
+                'quote_acceptance','internal_start'
+            }
+        for event_id in event_ids:
+            assert deliver(Session,event_id)=='DELIVERED'
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-HANDOFF'})
+            row=result['data'][0]
+            assert row['business_state']['key']=='FORMALLY_ISSUED'
+            assert row['department_handoffs']['status']=='DELIVERED'
+            assert row['department_handoffs']['required_count']==5
+            assert row['department_handoffs']['assigned_count']==5
+            assert row['department_handoffs']['delivered_count']==5
+            assert all(item['delivery_state']=='DELIVERED' for item in row['department_handoffs']['items'])
+            assert db.scalar(select(m.Notification).where(
+                m.Notification.title=='项目已正式开工，请核对计划交接'
+            ).limit(1))
+    finally:
+        engine.dispose()
+
+
+def test_effective_internal_start_records_unassigned_handoff_gaps_without_fabricating_people():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-GAPS','开工交接缺口')
+            accept=decision(db,p,admin,'quote_acceptance','QA-GAPS','ACCEPT')
+            designer=user(db,'designer',True)
+            db.add(m.ProjectRoleMember(
+                project_id=p.id,role_key='DESIGN_OWNER',user_id=designer.id
+            ))
+            start=decision(
+                db,p,admin,'internal_start','START-GAPS-001','START',
+                status='APPROVED',source_subject_id=accept.id,
+            )
+            domains.apply(db,admin,start)
+            db.flush()
+            dispatches=list(db.scalars(select(m.InternalStartDispatch).where(
+                m.InternalStartDispatch.start_subject_id==start.id
+            ).order_by(m.InternalStartDispatch.role_key)))
+            assert len(dispatches)==5
+            assert sum(row.dispatch_status=='QUEUED' for row in dispatches)==1
+            assert sum(row.dispatch_status=='UNASSIGNED' for row in dispatches)==4
+            assert all(row.recipient_snapshot==[] for row in dispatches if row.dispatch_status=='UNASSIGNED')
+            assert all(row.event_id is None for row in dispatches if row.dispatch_status=='UNASSIGNED')
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-GAPS'})
+            handoffs=result['data'][0]['department_handoffs']
+            assert handoffs['status']=='RECIPIENT_CONFIGURATION_REQUIRED'
+            assert handoffs['assigned_count']==1
+            assert len(handoffs['gaps'])==4
+            assert all(gap['reason']=='项目角色尚未配置有效人员' for gap in handoffs['gaps'])
+    finally:
+        engine.dispose()
+
+
+def test_internal_start_business_state_follows_six_stage_sequence():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-STATES','开工状态链')
+            first=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            assert first['data'][0]['business_state']['key']=='AWAITING_ACCEPTANCE'
+
+            accept=decision(db,p,admin,'quote_acceptance','QA-STATES','ACCEPT')
+            second=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            assert second['data'][0]['business_state']['key']=='ACCEPTED_AWAITING_START_CONDITIONS'
+
+            customer_start_conditions(db,p,admin,'202')
+            third=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            assert third['data'][0]['business_state']['key']=='AWAITING_FORMAL_ISSUE'
+
+            start=decision(db,p,admin,'internal_start','START-STATES-001','START',source_subject_id=accept.id)
+            p.status='ACTIVE';p.row_version+=1
+            fourth=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            assert fourth['data'][0]['business_state']['key']=='FORMALLY_ISSUED'
+
+            plan=m.BusinessSubject(kind='project_plan',number='PLAN-STATES-001',project_id=p.id,
+                created_by=admin.id,status='DRAFT')
+            db.add(plan);db.flush();db.add(m.PlanDetail(subject_id=plan.id,reason='基线计划待审批'))
+            fifth=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            assert fifth['data'][0]['business_state']['key']=='AWAITING_PLAN_APPROVAL'
+
+            plan.status='EFFECTIVE';db.flush()
+            sixth=execute(db,admin,'query_internal_start_readiness',{'identifier':'START-STATES'})
+            state=sixth['data'][0]['business_state']
+            assert state['key']=='EXECUTING'
+            assert [item['name'] for item in state['sequence']]==[
+                '待承接确认','已承接待开工条件','待正式下达','已正式下达','待计划审批','执行中'
+            ]
+            assert all(item['status']=='DONE' for item in state['sequence'][:-1])
+            assert state['sequence'][-1]['status']=='CURRENT'
+            assert start.id==sixth['data'][0]['latest_internal_start']['id']
     finally:
         engine.dispose()
 

@@ -10,8 +10,10 @@ def record(db, user, action, resource_id, detail=None, recipients=None):
         resource_id=resource_id,
         detail=detail or {},
     ))
-    db.add(models.Outbox(
+    event = models.Outbox(
         kind=action,
         resource_id=resource_id,
         payload={"recipients": recipients or [], "action": action},
-    ))
+    )
+    db.add(event)
+    return event

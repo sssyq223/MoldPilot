@@ -197,6 +197,83 @@ def _readiness(project,records,allowed_tools,start_conditions):
         'project_status':project.status}
 
 
+START_STATE_SEQUENCE = (
+    ("AWAITING_ACCEPTANCE", "待承接确认"),
+    ("ACCEPTED_AWAITING_START_CONDITIONS", "已承接待开工条件"),
+    ("AWAITING_FORMAL_ISSUE", "待正式下达"),
+    ("FORMALLY_ISSUED", "已正式下达"),
+    ("AWAITING_PLAN_APPROVAL", "待计划审批"),
+    ("EXECUTING", "执行中"),
+)
+
+
+def _business_state(project, records, start_conditions):
+    latest_accept = _latest_effective(records, "quote_acceptance", "ACCEPT")
+    latest_reject = _latest_effective(records, "quote_acceptance", "REJECT")
+    latest_start = _latest_effective(records, "internal_start", "START")
+    plans = records.get("project_plan", []) + records.get("plan_change", [])
+    effective_plan = next(
+        (row for row in plans if row.get("status") == "EFFECTIVE"), None
+    )
+    pending_plan = next(
+        (
+            row
+            for row in plans
+            if row.get("status")
+            in {"DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"}
+        ),
+        None,
+    )
+
+    if latest_reject and not latest_accept:
+        return {
+            "key": "REJECTED",
+            "name": "已拒单结束",
+            "reason": "当前有效承接决定为拒单；原因保留在独立拒单材料中。",
+            "sequence": [
+                {"key": key, "name": name, "status": "NOT_APPLICABLE"}
+                for key, name in START_STATE_SEQUENCE
+            ],
+        }
+    if project.status == "PAUSED":
+        key, reason = "PAUSED", "项目已暂停，恢复后继续按正式开工和计划事实执行。"
+    elif project.status == "TERMINATED":
+        key, reason = "TERMINATED", "项目已终止，后续按终止结算与关闭流程处理。"
+    elif project.status == "CLOSED":
+        key, reason = "CLOSED", "项目已关闭。"
+    elif effective_plan and latest_start:
+        key, reason = "EXECUTING", "正式开工与生效项目计划均已具备。"
+    elif pending_plan and latest_start:
+        key, reason = "AWAITING_PLAN_APPROVAL", "正式开工已生效，项目计划尚未生效。"
+    elif latest_start:
+        key, reason = "FORMALLY_ISSUED", "正式开工已生效，下一步应准备项目计划审批。"
+    elif latest_accept and start_conditions.get("complete"):
+        key, reason = "AWAITING_FORMAL_ISSUE", "承接与客户开工条件齐备，尚待正式下达。"
+    elif latest_accept:
+        key, reason = (
+            "ACCEPTED_AWAITING_START_CONDITIONS",
+            "承接已生效，客户工艺确认或外部开工条件尚未齐备。",
+        )
+    else:
+        key, reason = "AWAITING_ACCEPTANCE", "尚未见有效承接决定。"
+
+    index = {item[0]: position for position, item in enumerate(START_STATE_SEQUENCE)}
+    current_index = index.get(key)
+    sequence = []
+    for position, (state_key, name) in enumerate(START_STATE_SEQUENCE):
+        if current_index is None:
+            status = "SUSPENDED" if state_key == "EXECUTING" else "RECORDED"
+        elif position < current_index:
+            status = "DONE"
+        elif position == current_index:
+            status = "CURRENT"
+        else:
+            status = "PENDING"
+        sequence.append({"key": state_key, "name": name, "status": status})
+    return {"key": key, "name": dict(START_STATE_SEQUENCE).get(key, key),
+            "reason": reason, "sequence": sequence}
+
+
 def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
     project,alternatives,truncated=_resolve(db,user,data,allowed_tools)
     limitations=['只读取当前用户可见且具备正式开工读取权限的项目。',
@@ -206,7 +283,9 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
     if project:
         records=_records(db,user,project.id,allowed_tools)
         from domain_packs.mold.tools.erp.commercial.bid_intake_tools import start_condition_snapshot
+        from domain_packs.mold.erp.project import start_dispatches
         start_conditions=start_condition_snapshot(db,user,project.id)
+        latest_start=_latest_effective(records,'internal_start','START')
         skipped=[]
         if 'query_quote_acceptance' not in allowed_tools and 'query_quote_acceptance_context' not in allowed_tools:skipped.append('承接依据')
         if 'query_sales_contract' not in allowed_tools:skipped.append('销售合同')
@@ -222,13 +301,17 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
             'latest_acceptance':_latest_effective(records,'quote_acceptance','ACCEPT'),
             'latest_rejection':_latest_effective(records,'quote_acceptance','REJECT'),
             'internal_starts':records['internal_start'],
-            'latest_internal_start':_latest_effective(records,'internal_start','START'),
+            'latest_internal_start':latest_start,
             'open_start_requests':_open_records(records,'internal_start'),
             'sales_contracts':records['sales_contract'],
             'full_outsource_contracts':records['full_outsource_contract'],
             'plans':records['project_plan']+records['plan_change'],
             'customer_start_conditions':start_conditions,
             'readiness':_readiness(project,records,allowed_tools,start_conditions),
+            'business_state':_business_state(project,records,start_conditions),
+            'department_handoffs':start_dispatches.summary(
+                db, latest_start.get('id') if latest_start else None
+            ),
             'workflow_options':workflows}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:

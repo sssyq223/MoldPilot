@@ -10,6 +10,7 @@ TITLES = {
     "approval.timer.failed": "审批定时事件需要处理",
     "approval.incident.retried": "审批事件已重新处理",
     "business.effective": "业务单据已生效",
+    "internal_start.department_handoff": "项目已正式开工，请核对计划交接",
     "order.execution.draft.created": "采购执行草稿已生成",
     "contact.created": "有新的工程联络单待协调",
     "contact.task_created": "工程联络事项待分派",

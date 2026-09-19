@@ -145,7 +145,15 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'activation_queries':['合同','合同登记','销售合同','整套委外合同','合同号','付款节点','补齐合同','替代合同','合同签署','签署文件']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start'],
-                   'activation_queries':['正式开工','开工通知','开工条件','内部开工']},
+                   'activation_queries':['正式开工','开工通知','开工条件','内部开工'],
+                   # A formal-start question has one authoritative read boundary.
+                   # Activate it before the model sees other department terms such
+                   # as procurement or finance in the same handoff question.  A
+                   # positive operation request still keeps ToolSearch available
+                   # so prepare_internal_start remains strictly on demand.
+                   'auto_activation_queries':['正式开工','开工通知','开工条件','内部开工'],
+                   'suppress_tool_search_on_auto_activation':True,
+                   'priority_patterns':['正式开工|开工通知|开工条件|内部开工']},
                'project_kickoff_orchestration':{'name':'项目启动链路协调','tools':['query_project_kickoff_context'],
                    'optional_tools':['query_bid_intake_context','prepare_bid_intake_draft',
                        'query_quote_evaluation_context','prepare_quotation_version',

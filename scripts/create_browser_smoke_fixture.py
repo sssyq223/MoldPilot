@@ -31,6 +31,7 @@ from domain_packs.mold.tools.erp.commercial import contract_tools
 from domain_packs.mold.tools.erp.commercial import quotation_tools
 from domain_packs.mold.tools.erp.project import project_closure_tools as closure_tools
 from domain_packs.mold.tools.erp.project import project_control_tools as pause_tools
+from domain_packs.mold.erp.core import domains
 
 
 def _database_url(env_file: str, url_key: str, explicit_url: str) -> str:
@@ -814,6 +815,93 @@ def build_bid_intake(
         engine.dispose()
 
 
+def build_internal_start_handoff(
+    database_url: str,
+    password: str,
+    project_code: str | None = None,
+    username: str = "admin",
+):
+    """Create an effective formal start with all five role handoffs."""
+    output = build_bid_intake(
+        database_url, password, project_code=project_code, username=username
+    )
+    engine = make_engine(database_url)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            user = db.scalar(select(m.User).where(m.User.username == username).limit(1))
+            project = db.scalar(
+                select(m.Project).where(m.Project.code == output["project_code"]).limit(1)
+            )
+            acceptance = db.scalar(
+                select(m.BusinessSubject)
+                .where(
+                    m.BusinessSubject.project_id == project.id,
+                    m.BusinessSubject.kind == "quote_acceptance",
+                    m.BusinessSubject.status == "EFFECTIVE",
+                )
+                .order_by(m.BusinessSubject.created_at.desc())
+                .limit(1)
+            )
+            case = db.scalar(
+                select(m.BidIntakeCase).where(m.BidIntakeCase.project_id == project.id)
+            )
+            revision = db.scalar(
+                select(m.BidIntakeRevision)
+                .where(m.BidIntakeRevision.case_id == case.id)
+                .order_by(m.BidIntakeRevision.version.desc())
+                .limit(1)
+            )
+            for role_key in (
+                "DESIGN_OWNER",
+                "PURCHASE_OWNER",
+                "MANUFACTURING_OWNER",
+                "ASSEMBLY_OWNER",
+                "FINANCE_OWNER",
+            ):
+                existing = db.scalar(select(m.ProjectRoleMember).where(
+                    m.ProjectRoleMember.project_id == project.id,
+                    m.ProjectRoleMember.role_key == role_key,
+                    m.ProjectRoleMember.user_id == user.id,
+                ))
+                if not existing:
+                    db.add(m.ProjectRoleMember(
+                        project_id=project.id, role_key=role_key, user_id=user.id
+                    ))
+            start = m.BusinessSubject(
+                kind="internal_start",
+                number=f"{project.code}-START",
+                project_id=project.id,
+                created_by=user.id,
+                status="APPROVED",
+            )
+            db.add(start)
+            db.flush()
+            db.add(m.BusinessDecisionDetail(
+                subject_id=start.id,
+                source_subject_id=acceptance.id,
+                decision="START",
+                execution_mode="INTERNAL",
+                effective_date=date.today(),
+                evidence="浏览器验收：客户开工通知、工艺方案和项目负责人正式下达均已核对",
+                amount=None,
+                currency=None,
+            ))
+            db.add(m.BidIntakeLifecycleLink(
+                case_id=case.id,
+                subject_id=start.id,
+                source_revision_id=revision.id,
+                link_kind="INTERNAL_START",
+                linked_by=user.id,
+            ))
+            db.flush()
+            domains.apply(db, user, start)
+            output["start_subject_id"] = start.id
+        return output
+    finally:
+        engine.dispose()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--database-url", default="", help="PostgreSQL SQLAlchemy DSN. Defaults to AGENT_DATABASE_URL from env/.env.")
@@ -821,7 +909,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation", "bid_intake"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
@@ -830,5 +918,7 @@ if __name__ == "__main__":
         print(build_quotation(url, args.password, args.project_code or None, args.username))
     elif args.scenario == "bid_intake":
         print(build_bid_intake(url, args.password, args.project_code or None, args.username))
+    elif args.scenario == "internal_start_handoff":
+        print(build_internal_start_handoff(url, args.password, args.project_code or None, args.username))
     else:
         print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))

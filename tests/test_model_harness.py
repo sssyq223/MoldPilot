@@ -1001,6 +1001,84 @@ def test_unambiguous_master_data_lookup_auto_activates_the_single_reader():
     assert gateway.physical_calls == 1
 
 
+def test_formal_start_handoff_query_activates_start_reader_despite_department_terms():
+    start = {'type': 'function', 'function': {
+        'name': 'query_internal_start_readiness',
+        'description': '按项目线索核对正式开工条件、六段状态和部门交接通知；只读。'}}
+    prepare = {'type': 'function', 'function': {
+        'name': 'prepare_internal_start',
+        'description': '准备正式开工审批建议。'}}
+    purchase = {'type': 'function', 'function': {
+        'name': 'query_procurement_price_context',
+        'description': '读取采购价格与订单上下文；只读。'}}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'start-1', 'type': 'function',
+        'function': {'name': 'query_internal_start_readiness', 'arguments': json.dumps({
+            'identifier': 'BROWSER-START-HANDOFF-001',
+        })},
+    }]}
+    gateway = Gateway()
+    model = InspectingRepliesModel([call, FINAL])
+
+    result = run_loop(context(
+        prompt=('只读查询 BROWSER-START-HANDOFF-001 的正式开工业务状态、六段状态链和设计、采购、'
+                '生产制造、装配、财务五类部门交接通知投递结果。不要准备或执行任何操作。'),
+        core_tool_names=[],
+        tools=[start, prepare, purchase],
+        skills=[{
+            'key': 'internal_start_readiness',
+            'tools': ['query_internal_start_readiness'],
+            'optional_tools': ['prepare_internal_start'],
+            'activation_queries': ['正式开工', '开工通知', '开工条件', '内部开工'],
+            'auto_activation_queries': ['正式开工', '开工通知', '开工条件', '内部开工'],
+            'suppress_tool_search_on_auto_activation': True,
+        }, {
+            'key': 'procurement_price_context_review',
+            'tools': ['query_procurement_price_context'],
+            'activation_queries': ['采购价格', '采购订单'],
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert model.tool_names[0] == ['query_internal_start_readiness']
+    assert gateway.saved['active_tool_names'] == ['query_internal_start_readiness']
+    assert gateway.physical_calls == 1
+
+
+def test_formal_start_scene_overrides_model_shortened_exact_purchase_tool_search():
+    start = {'type': 'function', 'function': {
+        'name': 'query_internal_start_readiness',
+        'description': '按项目线索核对正式开工条件、六段状态和部门交接通知；只读。'}}
+    purchase = {'type': 'function', 'function': {
+        'name': 'query_purchase_orders',
+        'description': '查询采购订单；只读。'}}
+    prompt = ('只读查询 BROWSER-START-HANDOFF-001 的正式开工业务状态、六段状态链和设计、采购、'
+              '生产制造、装配、财务五类部门交接通知投递结果。不要准备或执行任何操作。')
+    deferred = {tool['function']['name']: tool for tool in (start, purchase)}
+    groups = harness_module._skill_tool_groups([{
+        'key': 'internal_start_readiness',
+        'tools': ['query_internal_start_readiness'],
+        'activation_queries': ['正式开工'],
+        'priority_patterns': ['正式开工|开工通知|开工条件|内部开工'],
+        'skill_layer': 'erp',
+        'skill_domain': 'project',
+        'route_terms': ['开工'],
+    }, {
+        'key': 'business_status_review',
+        'tools': ['query_purchase_orders'],
+        'skill_layer': 'agent',
+        'skill_domain': 'procurement',
+        'route_terms': ['业务状态'],
+    }], deferred)
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        'query_purchase_orders', deferred, groups, current_prompt=prompt)
+
+    assert matches == ['internal_start_readiness']
+    assert activated == ['query_internal_start_readiness']
+    assert matched_groups == ['internal_start_readiness']
+
+
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():
     risk_tool = {'type': 'function', 'function': {'name': 'analyze_delivery_risk',
                                                   'description': '分析供应商发货延期和临期风险。'}}
