@@ -123,6 +123,11 @@ Object.assign(capabilityDepartments,{query_project_execution_context:'project',p
 Object.assign(capabilityTypes,{project_execution_orchestration:'review'})
 Object.assign(fields,{execution_lifecycle:'项目执行链路',execution_mode:'加工方式',current_focus:'当前执行焦点'})
 Object.assign(optionNames,{INTERNAL:'内部加工',FULL_OUTSOURCE:'整套委外',CONFLICT:'资料冲突',PURCHASE:'采购',OUTSOURCE:'局部委外'})
+Object.assign(capabilityNames,{query_project_completion_context:'读取项目收尾链路',project_completion_orchestration:'项目收尾链路协调'})
+Object.assign(capabilityDepartments,{query_project_completion_context:'project',project_completion_orchestration:'project'})
+Object.assign(capabilityTypes,{project_completion_orchestration:'review'})
+Object.assign(fields,{completion_lifecycle:'项目收尾链路',closure_mode:'关闭方式',current_focus:'当前收尾焦点'})
+Object.assign(optionNames,{NORMAL:'正常关闭',TERMINATION:'终止结算'})
 
 export function numberText(value:string=''){return value.replace(/^CONTACT_RESOLUTI-/, '联络方案-')}
 export function capabilityExample(detail:{kind:'tool'|'skill';item:any}|null){

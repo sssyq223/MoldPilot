@@ -55,6 +55,7 @@ TOOLS.update({
     'query_business_object_candidates':{'description':'按项目号、项目名、模具号、合同号、订单号等线索查询当前权限内候选业务对象；只返回候选和来源，不自动匹配或创建。','permission':'project.dossier.read'},
     'query_project_kickoff_context':{'description':'按项目线索一次核对承接、销售合同、正式开工和基线计划四个独立阶段，返回阻塞项与下一步工具；只读，不自动跨阶段办理。','permission':'project.read'},
     'query_project_execution_context':{'description':'按项目线索一次核对基线计划、设计/BOM、采购或整套委外、制造质检、装配试模、交付签收与客户验收，返回当前执行焦点；只读，不自动写回或跨阶段办理。','permission':'project.read'},
+    'query_project_completion_context':{'description':'按项目线索一次核对交付验收、发票回款、供应商结算、异常关闭、全过程归档和最终关闭，区分正常关闭与终止结算；只读，不登记或关闭项目。','permission':'project.read'},
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
     'prepare_quote_acceptance_decision':{'description':'准备报价承接或拒单审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'quote_acceptance.create'},
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
@@ -134,7 +135,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'activation_tools':['query_project_kickoff_context'],
                    'activation_queries':['项目启动链路','接单到计划','合同开工计划','项目推进到哪一步',
                        '项目下一步','继续推进项目','从承接到开工','从开工到计划']},
-               'project_execution_orchestration':{'name':'项目执行链路协调','tools':['query_project_execution_context'],
+                'project_execution_orchestration':{'name':'项目执行链路协调','tools':['query_project_execution_context'],
                    'optional_tools':['query_project_plan_context','query_design_route_context',
                        'query_procurement_price_context','query_full_outsource_context',
                        'query_manufacturing_quality_context','query_assembly_trial_context',
@@ -145,9 +146,21 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    # A full-chain question has one unambiguous read boundary. Expose
                    # only the coordinator first; it can recommend one stage reader
                    # after it has established the project's actual branch and focus.
-                   'auto_activation_queries':['项目执行链路','计划之后各环节','设计采购制造装配交付',
-                       '项目执行到哪里','项目执行卡在哪','继续推进项目执行','完整执行进度'],
-                   'suppress_tool_search_on_auto_activation':True},
+                    'auto_activation_queries':['项目执行链路','计划之后各环节','设计采购制造装配交付',
+                        '项目执行到哪里','项目执行卡在哪','继续推进项目执行','完整执行进度'],
+                    'suppress_tool_search_on_auto_activation':True},
+                'project_completion_orchestration':{'name':'项目收尾链路协调','tools':['query_project_completion_context'],
+                    'optional_tools':['query_delivery_logistics_context','query_finance_context',
+                        'query_project_closure_context','prepare_customer_receipt_confirmation',
+                        'prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement',
+                        'prepare_project_closure_checklist','prepare_project_closure_item',
+                        'prepare_project_normal_close','prepare_project_settlement_close'],
+                    'activation_tools':['query_project_completion_context'],
+                    'activation_queries':['项目收尾链路','交付后结算关闭','项目收尾到哪里','能否关闭项目',
+                        '客户验收后还有什么','终止结算完成了吗','结算到归档关闭'],
+                    'auto_activation_queries':['项目收尾链路','交付后结算关闭','项目收尾到哪里','能否关闭项目',
+                        '客户验收后还有什么','终止结算完成了吗','结算到归档关闭'],
+                    'suppress_tool_search_on_auto_activation':True},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_baseline'],
                    'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度']},
@@ -398,6 +411,7 @@ CAPABILITY_NAMES = {
     'query_business_object_candidates': '查询业务对象候选',
     'query_project_kickoff_context': '读取项目启动链路',
     'query_project_execution_context': '读取项目执行链路',
+    'query_project_completion_context': '读取项目收尾链路',
     'query_quote_acceptance_context': '读取报价承接上下文',
     'prepare_quote_acceptance_decision': '准备报价承接/拒单',
     'query_quote_evaluation_context': '读取报价评估上下文',
@@ -464,6 +478,7 @@ CAPABILITY_DEPARTMENTS = {
     'query_projects': 'project', 'query_project_dossier': 'project', 'query_business_object_candidates': 'project',
     'query_project_kickoff_context': 'project', 'project_kickoff_orchestration': 'project',
     'query_project_execution_context': 'project', 'project_execution_orchestration': 'project',
+    'query_project_completion_context': 'project', 'project_completion_orchestration': 'project',
     'project_dossier_review': 'project', 'business_object_matching': 'project',
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
     'query_quote_evaluation_context': 'sales',
@@ -526,6 +541,7 @@ CAPABILITY_TYPES = {
     'finance_context_review': 'review', 'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
     'project_kickoff_orchestration': 'review', 'project_execution_orchestration': 'review',
+    'project_completion_orchestration': 'review',
     'prepare_internal_start': 'approval',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
     'prepare_project_plan_baseline': 'approval',
@@ -640,6 +656,9 @@ def tool_schema(key):
     if key=='query_project_execution_context':
         from domain_packs.mold.tools.erp.project.execution_lifecycle_tools import ProjectExecutionContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectExecutionContextInput.model_json_schema()}}
+    if key=='query_project_completion_context':
+        from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import ProjectCompletionContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectCompletionContextInput.model_json_schema()}}
     if key in {'query_quote_acceptance_context','prepare_quote_acceptance_decision'}:
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput, quote_decision_schema
         parameters=quote_decision_schema() if key=='prepare_quote_acceptance_decision' else QuoteContextInput.model_json_schema()
@@ -740,6 +759,12 @@ def skill_context(db, user):
                            "agent_description": skill_agent_description(content),
                            "tools": spec["tools"], "optional_tools": spec.get("optional_tools", []),
                            "activation_tools": spec.get("activation_tools"),
+                           "activation_queries": spec.get("activation_queries", []),
+                           "auto_activation_queries": spec.get("auto_activation_queries", []),
+                           "suppress_tool_search_on_auto_activation": bool(
+                               spec.get("suppress_tool_search_on_auto_activation", False)
+                           ),
+                           "priority_patterns": spec.get("priority_patterns", []),
                            "skill_layer": route["layer"], "skill_domain": route["domain"],
                            "route_terms": route["route_terms"]})
     return result
@@ -754,7 +779,7 @@ def skill_paths():
         ("agent", "procurement"): ["业务状态", "审批状态", "执行状态"],
         ("agent", "governance"): ["权限", "审计", "来源治理", "授权"],
         ("agent", "operations"): ["部署", "容量", "备份", "恢复", "运行交付", "日志保留"],
-        ("erp", "project"): ["项目计划", "开工", "启动链路", "执行链路", "项目推进", "执行进度", "暂停", "恢复", "结项", "终止", "项目档案"],
+        ("erp", "project"): ["项目计划", "开工", "启动链路", "执行链路", "收尾链路", "项目收尾", "最终关闭", "项目推进", "执行进度", "暂停", "恢复", "结项", "终止", "项目档案"],
         ("erp", "design"): ["设计", "图纸", "BOM", "工艺", "修模", "改模"],
         ("erp", "procurement"): ["采购", "供应商", "委外", "采购价格", "采购订单"],
         ("erp", "manufacturing"): ["制造", "加工", "质检", "装配", "试模"],
@@ -912,6 +937,10 @@ def execute(db, user, key, arguments, run=None):
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_project_execution_context':
         from domain_packs.mold.tools.erp.project.execution_lifecycle_tools import parse, query
+        data=parse(arguments)
+        return query(db,user,data,set(available_tools(db,user)))
+    if key=='query_project_completion_context':
+        from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import parse, query
         data=parse(arguments)
         return query(db,user,data,set(available_tools(db,user)))
     if key=='query_business_object_candidates':

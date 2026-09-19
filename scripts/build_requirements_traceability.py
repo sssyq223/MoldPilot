@@ -57,6 +57,20 @@ CROSS_PHASE_VERIFICATION = {
     )
     for key in CROSS_PHASE_IMPLEMENTATION
 }
+COMPLETION_IMPLEMENTATION = {
+    key: (
+        'query_project_completion_context 把交付与客户验收、发票与客户回款、供应商结算、异常关闭、'
+        '全过程归档和最终关闭保持为独立阶段，并按正常关闭或终止结算清单投影当前焦点；只读协调现有能力，不复制 ERP 台账'
+    )
+    for key in ('FR-094', 'FR-095', 'FR-096', 'FR-097', 'FR-098')
+}
+COMPLETION_VERIFICATION = {
+    key: (
+        'tests/test_project_completion_lifecycle.py 覆盖协调器注册、正常关闭逐阶段满足、终止项目交付/验收明确不适用、'
+        '财务未完成不被推断、阶段能力不泄漏及多项目候选不合并'
+    )
+    for key in COMPLETION_IMPLEMENTATION
+}
 
 
 def parse_source(text):
@@ -103,6 +117,10 @@ def main():
             implementation_evidence.append(CROSS_PHASE_IMPLEMENTATION[key])
         if key in CROSS_PHASE_VERIFICATION and CROSS_PHASE_VERIFICATION[key] not in verification_evidence:
             verification_evidence.append(CROSS_PHASE_VERIFICATION[key])
+        if key in COMPLETION_IMPLEMENTATION and COMPLETION_IMPLEMENTATION[key] not in implementation_evidence:
+            implementation_evidence.append(COMPLETION_IMPLEMENTATION[key])
+        if key in COMPLETION_VERIFICATION and COMPLETION_VERIFICATION[key] not in verification_evidence:
+            verification_evidence.append(COMPLETION_VERIFICATION[key])
         requirements.append({
             'id': key, 'source_text': content, 'module': module,
             'agent_responsibility': responsibility,
@@ -124,9 +142,9 @@ def main():
              '状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。', '',
              '生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。', '',
              '## 跨阶段执行编排证据', '',
-             '- `query_project_kickoff_context` 已把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收。两者只协调现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
-             '- 项目执行 Skill 首轮只开放协调器，阶段查询均为可选依赖。阶段能力未分配时返回 `UNAVAILABLE`，已读取加工方式证明分支不适用时才返回 `NOT_APPLICABLE`；后续阶段已有事实不会被前序缺口覆盖。',
-             '- `tests/test_project_execution_lifecycle.py` 覆盖工具/Skill 注册、空项目当前焦点、整套委外替代内部制造/装配、交付仍独立保留、未授权阶段不泄漏事实及多项目候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于所有 FR 的真实 ERP 联调或业务验收完成。', '']
+             '- `query_project_kickoff_context` 已把承接、合同、正式开工和基线计划保持为四类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。三个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。',
+             '- 三个主线 Skill 首轮均只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。',
+             '- `tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。', '']
     last = None
     for row in requirements:
         if row['module'] != last:
