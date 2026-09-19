@@ -1,7 +1,9 @@
 from functools import lru_cache
+import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 from types import SimpleNamespace
 from typing import Literal
 from uuid import uuid4
@@ -17,6 +19,19 @@ def _compatible(name: str, default, **constraints):
         validation_alias=AliasChoices(f"AGENT_{upper}", f"MOLD_{upper}"),
         **constraints,
     )
+
+
+def _default_worker_scope() -> str:
+    """Return a stable, installation-local queue scope.
+
+    The hostname separates machines connected to one database.  The code root
+    digest also separates two checkouts (and therefore potentially two runtime
+    versions) on the same machine.  Deployments can override this with
+    AGENT_WORKER_SCOPE when API and worker processes use different paths.
+    """
+    code_root = str(Path(__file__).resolve().parents[2]).casefold()
+    root_digest = hashlib.sha256(code_root.encode("utf-8")).hexdigest()[:12]
+    return f"{socket.gethostname()}:{root_digest}"
 
 
 class Settings(BaseSettings):
@@ -48,7 +63,7 @@ class Settings(BaseSettings):
     llm_proxy_url: str | None = _compatible("llm_proxy_url", None)
     llm_tls_max_version: Literal["auto", "1.2"] = _compatible("llm_tls_max_version", "auto")
     llm_tls_key_exchange: Literal["auto", "x25519"] = _compatible("llm_tls_key_exchange", "auto")
-    llm_connect_timeout: float = _compatible("llm_connect_timeout", 10, gt=0, le=20)
+    llm_connect_timeout: float = _compatible("llm_connect_timeout", 20, gt=0, le=20)
     llm_read_timeout: float = _compatible("llm_read_timeout", 60, gt=0, le=75)
     llm_model: str = _compatible("llm_model", "")
     llm_max_turns: int = _compatible("llm_max_turns", 12)
@@ -56,6 +71,7 @@ class Settings(BaseSettings):
     llm_context_window: int = _compatible("llm_context_window", 8192)
     llm_enabled: bool = _compatible("llm_enabled", False)
     worker_secret: str = _compatible("worker_secret", "")
+    worker_scope: str = _compatible("worker_scope", _default_worker_scope(), min_length=1, max_length=160)
     api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8000")
     file_backend: Literal['local','s3'] = _compatible("file_backend", "local")
     file_local_root: str = _compatible("file_local_root", ".local/files")

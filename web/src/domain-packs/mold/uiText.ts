@@ -114,6 +114,7 @@ Object.assign(capabilityNames,{prepare_contact_attach:"准备关联联络单附�
 
 Object.assign(verbs,{attach:"关联附件",upload:"上传本人会话附件"})
 Object.assign(auditNames,{"file.uploaded":"上传会话附件","file.downloaded":"下载附件原件","file.previewed":"在线预览附件","contact.attachment_added":"关联联络单附件版本","contract.attachment_linked":"关联合同附件版本"})
+Object.assign(auditNames,{"agent.run.file_referenced":"引用历史会话附件"})
 
 Object.assign(businessNames,{contact_resolution:'联络单处理方案'})
 Object.assign(verbs,{plan:'提交处理方案',review:'复验处理结果',set_reviewer:'指定验收负责人',cancel_task:'撤销未反馈事项'})

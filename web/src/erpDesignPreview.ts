@@ -57,6 +57,7 @@ export type ErpDesignPreviewSession = {
   canImport: boolean
   additionalProcessingFeeRules: Record<string, any>[]
   techRequirements: Record<string, any> | null
+  toleranceEvaluation: Record<string, any> | null
 }
 
 export type ErpDesignImportReceipt = {
@@ -64,6 +65,31 @@ export type ErpDesignImportReceipt = {
   requestNo: string
   message: string
   importedAt: string
+}
+
+export type ErpDesignParameterResult = {
+  sessionId: number
+  sheetType: string
+  moldCode: string
+  fileName: string
+  rowCount: number
+  matchedCount: number
+  tableThreshold: number
+  renderAsTable: boolean
+  previewRows: ErpDesignRow[]
+}
+
+export type ErpDesignTechnicalRequirementRow = {
+  seq: number
+  spec: string
+  lengthTolerance: string
+  thicknessTolerance: string
+  diagonalTolerance: string
+}
+
+export type ErpDesignTechnicalRequirements = {
+  requirements: string[]
+  toleranceRows: ErpDesignTechnicalRequirementRow[]
 }
 
 export type ErpDesignColumn = {
@@ -76,14 +102,27 @@ export type ErpDesignColumn = {
 }
 
 const ERP_DESIGN_UPLOAD_PAGE = 'http://127.0.0.1:18080/design/upload/index'
+const ERP_DESIGN_TOLERANCE_TOOL = 'erp_design_evaluate_tolerances'
+const ERP_DESIGN_PARAMETER_TOOL = 'erp_design_query_upload_parameters'
+const ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL = 'erp_design_get_technical_requirements'
 const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING'])
 const TERMINAL_RUN_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
+export const ERP_READONLY_INLINE_ROW_LIMIT = 8
+
+export function erpDesignReadOnlyTableNeedsDisclosure(
+  rowCount: number,
+  threshold = ERP_READONLY_INLINE_ROW_LIMIT,
+): boolean {
+  const count = Number.isFinite(Number(rowCount)) ? Math.max(0, Number(rowCount)) : 0
+  const limit = Number.isFinite(Number(threshold)) ? Math.max(0, Number(threshold)) : ERP_READONLY_INLINE_ROW_LIMIT
+  return count > limit
+}
+
 const DESIGN_UPLOAD_TOOLS = new Set([
   'erp_design_parse_new_mold_upload',
   'erp_design_get_drawing_status',
   'erp_design_get_upload_result',
   'erp_design_validate_rows',
-  'erp_design_evaluate_tolerances',
 ])
 
 const commonColumns: ErpDesignColumn[] = [
@@ -145,6 +184,36 @@ const steelColumns: ErpDesignColumn[] = [
   { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
 ]
 
+const toleranceColumns: ErpDesignColumn[] = [
+  commonColumns[0],
+  commonColumns[1],
+  { key: 'material', label: '材质', fields: ['material_mark', 'materialMark'], width: 105 },
+  commonColumns[2],
+  { key: 'technology', label: '加工工艺', fields: ['processing_technology', 'processingTechnology'], width: 140 },
+  { key: 'toleranceTier', label: '公差档位', fields: ['tolerance_tier', 'toleranceTier'], width: 125 },
+  { key: 'lengthRange', label: '长度允许范围', fields: ['length_allowed_range', 'lengthAllowedRange'], width: 145 },
+  { key: 'widthRange', label: '宽度允许范围', fields: ['width_allowed_range', 'widthAllowedRange'], width: 145 },
+  { key: 'thicknessRange', label: '厚度允许范围', fields: ['thickness_allowed_range', 'thicknessAllowedRange'], width: 145 },
+  { key: 'diagonalTolerance', label: '对角公差', fields: ['diagonal_tolerance', 'diagonalTolerance'], width: 115 },
+  { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
+]
+
+const parameterColumns: ErpDesignColumn[] = [
+  { key: 'code', label: '编码', fields: ['item_code_full', 'itemCodeFull'], width: 150 },
+  { key: 'name', label: '名称', fields: ['item_name', 'itemName'], width: 130 },
+  { key: 'material', label: '材质', fields: ['material_mark', 'materialMark'], width: 100 },
+  { key: 'spec', label: '规格', fields: ['spec_raw', 'specRaw'], width: 175 },
+  { key: 'shape', label: '料型', fields: ['material_shape', 'materialShape'], width: 90 },
+  { key: 'purchaseQty', label: '采购数量', fields: ['purchase_quantity', 'purchaseQuantity'], width: 105 },
+  { key: 'length', label: '长(L)', fields: ['length'], width: 95, decimals: 4 },
+  { key: 'width', label: '宽(W)', fields: ['width'], width: 95, decimals: 4 },
+  { key: 'height', label: '厚(T)', fields: ['height', 'thickness'], width: 95, decimals: 4 },
+  { key: 'outer', label: '外径(Φ)', fields: ['outer_diameter', 'outerDiameter'], width: 100, decimals: 4 },
+  { key: 'inner', label: '内径(Φ)', fields: ['inner_diameter', 'innerDiameter'], width: 100, decimals: 4 },
+  { key: 'technology', label: '加工工艺', fields: ['processing_technology', 'processingTechnology'], width: 130 },
+  { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
+]
+
 function record(value: unknown): Record<string, any> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, any>
@@ -155,6 +224,11 @@ function payload(value: unknown): Record<string, any> | null {
   const source = record(value)
   const nested = record(source?.data)
   return nested && (nested.sessionId != null || nested.session_id != null) ? nested : source
+}
+
+function nestedPayload(value: unknown): Record<string, any> | null {
+  const source = record(value)
+  return record(source?.data) ?? source
 }
 
 function rows(source: Record<string, any> | null): ErpDesignRow[] {
@@ -214,6 +288,8 @@ export function normalizeErpDesignPreview(
         ? source.additional_processing_fee_rules
         : (fallback?.additionalProcessingFeeRules ?? [])),
     techRequirements: record(source?.techRequirements ?? source?.tech_requirements) ?? fallback?.techRequirements ?? null,
+    toleranceEvaluation: record(source?.toleranceEvaluation ?? source?.tolerance_evaluation)
+      ?? fallback?.toleranceEvaluation ?? null,
   }
 }
 
@@ -223,6 +299,7 @@ export function erpDesignSessionFromTool(item: any): ErpDesignPreviewSession | n
 }
 
 export function erpDesignSessionFromRun(run: any): ErpDesignPreviewSession | null {
+  if (String(run?.status || '') !== 'SUCCEEDED') return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const session = erpDesignSessionFromTool(trace[index])
@@ -240,6 +317,109 @@ export function shouldOpenErpDesignPreview(previousRun: any, currentRun: any): b
   )
 }
 
+export function erpDesignToleranceFromTool(item: any): ErpDesignPreviewSession | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_TOLERANCE_TOOL) return null
+  return normalizeErpDesignPreview(item?.data)
+}
+
+export function erpDesignToleranceFromRun(run: any): ErpDesignPreviewSession | null {
+  // ERP tool evidence remains valid when only the later model-summary turn
+  // fails. Keep cancelled/running tasks hidden, but do not discard a completed
+  // read receipt merely because the provider timed out during final wording.
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const tolerance = erpDesignToleranceFromTool(trace[index])
+    if (tolerance) return tolerance
+  }
+  return null
+}
+
+export function normalizeErpDesignTechnicalRequirements(
+  value: unknown,
+): ErpDesignTechnicalRequirements | null {
+  const source = nestedPayload(value)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_technical_requirements') return null
+  const technical = record(source?.techRequirements ?? source?.tech_requirements)
+  const requirements = Array.isArray(technical?.requirements)
+    ? technical.requirements
+      .flatMap(item => String(item ?? '').split(/\r?\n|(?=\d+\s*[.、．](?!\d))/g))
+      .map(item => item.trim().replace(/^\d+\s*[.、．]\s*/, ''))
+      .filter(Boolean)
+    : []
+  const sourceRows = Array.isArray(technical?.tolerance_table)
+    ? technical.tolerance_table
+    : (Array.isArray(technical?.toleranceTable) ? technical.toleranceTable : [])
+  const toleranceRows = sourceRows
+    .filter(row => record(row))
+    .map((row, index) => {
+      const item = record(row)!
+      return {
+        seq: Number(item.seq ?? index + 1) || index + 1,
+        spec: String(item.spec ?? ''),
+        lengthTolerance: String(item.length_tol ?? item.lengthTolerance ?? ''),
+        thicknessTolerance: String(item.thick_tol ?? item.thicknessTolerance ?? ''),
+        diagonalTolerance: String(item.diag_tol ?? item.diagonalTolerance ?? ''),
+      }
+    })
+  if (!requirements.length && !toleranceRows.length) return null
+  return { requirements, toleranceRows }
+}
+
+export function erpDesignTechnicalRequirementsFromTool(
+  item: any,
+): ErpDesignTechnicalRequirements | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL) return null
+  return normalizeErpDesignTechnicalRequirements(item?.data)
+}
+
+export function erpDesignTechnicalRequirementsFromRun(
+  run: any,
+): ErpDesignTechnicalRequirements | null {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const result = erpDesignTechnicalRequirementsFromTool(trace[index])
+    if (result) return result
+  }
+  return null
+}
+
+export function normalizeErpDesignParameterResult(value: unknown): ErpDesignParameterResult | null {
+  const source = payload(value)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_parameters') return null
+  const sessionId = Number(source?.sessionId ?? source?.session_id ?? 0)
+  if (!Number.isInteger(sessionId) || sessionId < 1) return null
+  const previewRows = rows(source)
+  const tableThreshold = Number(source?.tableThreshold ?? source?.table_threshold ?? 8) || 8
+  return {
+    sessionId,
+    sheetType: String(source?.sheetType ?? source?.sheet_type ?? 'steel'),
+    moldCode: String(source?.moldCode ?? source?.mold_code ?? ''),
+    fileName: String(source?.fileName ?? source?.file_name ?? ''),
+    rowCount: previewRows.length,
+    matchedCount: Number(source?.matchedCount ?? source?.matched_count ?? previewRows.length) || 0,
+    tableThreshold,
+    renderAsTable: Boolean(source?.renderAsTable ?? source?.render_as_table ?? previewRows.length > tableThreshold),
+    previewRows,
+  }
+}
+
+export function erpDesignParametersFromTool(item: any): ErpDesignParameterResult | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_PARAMETER_TOOL) return null
+  return normalizeErpDesignParameterResult(item?.data)
+}
+
+export function erpDesignParametersFromRun(run: any): ErpDesignParameterResult | null {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const result = erpDesignParametersFromTool(trace[index])
+    if (result) return result
+  }
+  return null
+}
+
 export function erpDesignPreviewUrl(session: ErpDesignPreviewSession): string {
   const url = new URL(ERP_DESIGN_UPLOAD_PAGE)
   url.searchParams.set('sessionId', String(session.sessionId))
@@ -252,8 +432,21 @@ export function erpDesignSheetLabel(sheetType: string): string {
   return sheetType === 'hardware' ? '五金清单' : '钢料清单'
 }
 
+export function erpDesignUploadStatusLabel(sheetType: string, imported = false): string {
+  const sheetLabel = erpDesignSheetLabel(sheetType)
+  return imported ? `${sheetLabel}已成功导入` : `${sheetLabel}上传已就绪`
+}
+
 export function erpDesignColumns(sheetType: string): ErpDesignColumn[] {
   return sheetType === 'hardware' ? hardwareColumns : steelColumns
+}
+
+export function erpDesignToleranceColumns(): ErpDesignColumn[] {
+  return toleranceColumns
+}
+
+export function erpDesignParameterColumns(): ErpDesignColumn[] {
+  return parameterColumns
 }
 
 function firstPresent(row: ErpDesignRow, fields: string[]): unknown {
@@ -360,4 +553,18 @@ export function erpDesignCell(
     return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
   }
   return String(value) || '-'
+}
+
+export function erpDesignToleranceCell(row: ErpDesignRow, column: ErpDesignColumn): string {
+  const value = firstPresent(row, column.fields)
+  if (value === null) return '-'
+  if (typeof value === 'number') {
+    if (column.decimals != null) return value.toFixed(column.decimals)
+    return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
+  }
+  return String(value) || '-'
+}
+
+export function erpDesignParameterCell(row: ErpDesignRow, column: ErpDesignColumn): string {
+  return erpDesignToleranceCell(row, column)
 }

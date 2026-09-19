@@ -8,7 +8,8 @@ from .confirmation_policy import proposal_confirmation_policy
 from .config import model_settings, settings
 from .db import get_db, now
 from .events import record
-from .files import conversation_files, metadata as file_metadata, uploaded_file, validate_file
+from .files import (conversation_files, metadata as file_metadata, reference_run_file,
+                    reference_run_files, uploaded_file, validate_file)
 from .security import current_user
 
 
@@ -31,6 +32,8 @@ PORTS = HostPorts(
     current_user=current_user,
     conversation_files=conversation_files,
     uploaded_file=uploaded_file,
+    reference_run_file=reference_run_file,
+    reference_run_files=reference_run_files,
     file_metadata=file_metadata,
     validate_file=validate_file,
 )

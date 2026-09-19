@@ -12,6 +12,14 @@ def uploaded_file(db, user, file_id):
     return host_ports().uploaded_file(db, user, file_id)
 
 
+def reference_run_file(db, user, run, file_id):
+    return host_ports().reference_run_file(db, user, run, file_id)
+
+
+def reference_run_files(db, user, run, file_ids):
+    return host_ports().reference_run_files(db, user, run, file_ids)
+
+
 def metadata(blob):
     return host_ports().file_metadata(blob)
 
@@ -21,7 +29,8 @@ def validate_file(filename, data):
 
 
 class AttachInput(c.Mutation):
-    file_id:str=Field(min_length=1,max_length=36)
+    file_id:str=Field(min_length=1,max_length=36,
+        description='本轮明确附加或当前会话历史中被用户明确引用的附件 ID')
     title:str=Field(min_length=1,max_length=150)
     previous_id:str|None=Field(default=None,max_length=36,description='替换某个附件时传入其当前版本标识；新增附件为 null')
 
@@ -32,9 +41,10 @@ class AttachInput(c.Mutation):
         return v.strip()
 
 
-def validate_attachment(db,user,case,data):
+def validate_attachment(db,user,case,data,run=None):
     c.require(db,user,'attach',case)
-    blob=uploaded_file(db,user,data.file_id)
+    blob=(reference_run_file(db,user,run,data.file_id) if run
+          else uploaded_file(db,user,data.file_id))
     duplicate=db.scalar(select(m.ContactAttachment).join(m.FileObject).where(m.ContactAttachment.case_id==case.id,m.FileObject.sha256==blob.sha256))
     if duplicate:raise DomainError('ATTACHMENT_DUPLICATE','该原件已关联当前联络单，请查看已有版本',409)
     previous=None
@@ -46,8 +56,8 @@ def validate_attachment(db,user,case,data):
     return blob,previous
 
 
-def attach_preview(db,user,case,data):
-    blob,previous=validate_attachment(db,user,case,data)
+def attach_preview(db,user,case,data,run=None):
+    blob,previous=validate_attachment(db,user,case,data,run)
     return {'材料名称':data.title,'原始文件':blob.filename,'文件大小（字节）':blob.size,'原件摘要':blob.sha256,
             '关联方式':'保存为新版本，保留原版本' if previous else '新增附件','附件版本':previous.version+1 if previous else 1}
 

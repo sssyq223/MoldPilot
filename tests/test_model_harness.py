@@ -1203,6 +1203,42 @@ def test_design_upload_attachment_exposes_tool_search():
              InspectingModel([]), Gateway())
 
 
+def test_design_upload_followup_uses_historical_attachment_context():
+    class InspectingModel(Model):
+        def generate(self, messages, tools):
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
+            transcript='\n'.join(str(message.get('content') or '') for message in messages)
+            assert '历史用户消息（仅用于连续对话和指代解析）：\n111' in transcript
+            assert 'M250238-P4料单.XLSX' in transcript
+            assert '文件已保存，尚未解析' in transcript
+            assert transcript.rstrip().endswith('解析这个清单')
+            return {'content': json.dumps({'response_kind': 'CLARIFICATION',
+                                           'summary': '历史附件已经进入本轮上下文。',
+                                           'evidence_ids': [], 'suggestions': []})}
+
+    historical_file={
+        'id':'historical-file-1','filename':'M250238-P4料单.XLSX',
+        'media_type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }
+    run_loop(context(
+        prompt='解析这个清单',core_tool_names=[],files=[],
+        conversation_history=[{
+            'run_id':'prior-run','status':'SUCCEEDED','created_at':'2026-09-19T09:15:00+08:00',
+            'user':{'content':'111','attachments':[historical_file]},
+            'assistant':{'response_kind':'CONVERSATION','summary':'文件已保存，尚未解析','suggestions':[]},
+        }],
+        conversation_files=[historical_file],
+        tools=[{'type':'function','function':{
+            'name':'erp_design_parse_new_mold_upload',
+            'description':'解析并上传当前新模钢料或五金清单附件。',
+        }}],
+        skills=[{'key':'erp_new_mold_design_upload','name':'ERP 新模设计上传流程',
+                 'tools':['erp_design_parse_new_mold_upload'],
+                 'activation_tools':['erp_design_parse_new_mold_upload'],
+                 'activation_queries':['上传新模钢料表']}],
+    ),InspectingModel([]),Gateway())
+
+
 def test_csv_design_upload_attachment_exposes_tool_search():
     assert harness_module._business_tool_activation_allowed({
         'prompt': '解析当前附件',
@@ -1363,6 +1399,204 @@ def test_tolerance_search_activates_only_the_single_tolerance_tool():
     assert matched_groups == ['erp_design_tolerance_evaluation']
 
 
+def test_tolerance_prompt_directly_activates_authoritative_reader_without_tool_search():
+    tolerance_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_evaluate_tolerances',
+        'description': '读取 ERP 上传会话并返回逐行公差明细',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已展示 ERP 公差明细。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([final])
+
+    result = run_loop(context(
+        prompt='上面料单的公差表', core_tool_names=[], tools=[tolerance_tool],
+        skills=[{
+            'key': 'erp_design_tolerance_evaluation',
+            'tools': ['erp_design_evaluate_tolerances'],
+            'activation_tools': ['erp_design_evaluate_tolerances'],
+            'auto_activation_queries': ['公差', '公差表'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '已展示 ERP 公差明细。'
+    assert model.tool_names == [[]]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['finalizing'] is True
+
+
+def test_technical_requirements_prompt_is_host_invoked_without_model_arguments():
+    technical_requirements_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_get_technical_requirements',
+        'description': '读取 ERP 固定钢料技术要求和公差指标',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已展示 ERP 固定技术要求。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([final])
+
+    result = run_loop(context(
+        prompt='技术要求', core_tool_names=[], tools=[technical_requirements_tool],
+        skills=[{
+            'key': 'erp_design_technical_requirements_review',
+            'tools': ['erp_design_get_technical_requirements'],
+            'activation_tools': ['erp_design_get_technical_requirements'],
+            'auto_activation_queries': ['技术要求', '公差表'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '已展示 ERP 固定技术要求。'
+    assert model.tool_names == [[]]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['attempted_tools'] == ['erp_design_get_technical_requirements']
+
+
+def test_parsed_list_tolerance_context_wins_over_fixed_requirements_alias():
+    tolerance_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_evaluate_tolerances',
+        'description': '读取当前 ERP 上传会话并返回逐行公差明细',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    fixed_requirements_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_get_technical_requirements',
+        'description': '读取 ERP 固定钢料技术要求和公差指标',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已展示这份料单的逐行公差。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([final])
+
+    result = run_loop(context(
+        prompt='我上面解析的料单的公差是多少',
+        core_tool_names=[],
+        tools=[tolerance_tool, fixed_requirements_tool],
+        skills=[
+            {
+                'key': 'erp_design_tolerance_evaluation',
+                'tools': ['erp_design_evaluate_tolerances'],
+                'activation_tools': ['erp_design_evaluate_tolerances'],
+                'auto_activation_queries': ['料单的公差'],
+                'priority_patterns': [r'(?:料单|清单|上传结果|解析结果).{0,8}(?:的)?公差'],
+                'suppress_tool_search_on_auto_activation': True,
+                'requires_tool_evidence': True,
+                'host_auto_invoke_empty_arguments': True,
+            },
+            {
+                'key': 'erp_design_technical_requirements_review',
+                'tools': ['erp_design_get_technical_requirements'],
+                'activation_tools': ['erp_design_get_technical_requirements'],
+                'auto_activation_queries': ['公差是多少'],
+                'suppress_tool_search_on_auto_activation': True,
+                'requires_tool_evidence': True,
+                'host_auto_invoke_empty_arguments': True,
+            },
+        ],
+    ), model, gateway)
+
+    assert result['summary'] == '已展示这份料单的逐行公差。'
+    assert model.tool_names == [[]]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['attempted_tools'] == ['erp_design_evaluate_tolerances']
+
+
+def test_host_auto_invoke_refuses_a_reader_with_required_arguments():
+    required_tool = {'type': 'function', 'function': {
+        'name': 'query_required_reader',
+        'description': '必须提供对象编号的权威只读查询',
+        'parameters': {
+            'type': 'object',
+            'properties': {'object_id': {'type': 'string'}},
+            'required': ['object_id'],
+            'additionalProperties': False,
+        },
+    }}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'required-reader-call', 'type': 'function',
+        'function': {'name': 'query_required_reader',
+                     'arguments': json.dumps({'object_id': 'OBJ-1'})},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已读取 OBJ-1。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([call, final])
+
+    result = run_loop(context(
+        prompt='查询对象公差', core_tool_names=[], tools=[required_tool],
+        skills=[{
+            'key': 'required_reader_skill',
+            'tools': ['query_required_reader'],
+            'activation_tools': ['query_required_reader'],
+            'auto_activation_queries': ['公差'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '已读取 OBJ-1。'
+    assert model.tool_names == [['query_required_reader'], []]
+    assert gateway.physical_calls == 1
+
+
+def test_upload_parameter_prompt_directly_activates_authoritative_reader_without_tool_search():
+    parameter_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_query_upload_parameters',
+        'description': '读取 ERP 上传结果中的采购数量、料型和尺寸参数',
+        'parameters': {'type': 'object', 'properties': {
+            'identifiers': {'type': 'array', 'items': {'type': 'string'}},
+        }, 'additionalProperties': False},
+    }}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'parameter-call', 'type': 'function',
+        'function': {'name': 'erp_design_query_upload_parameters',
+                     'arguments': json.dumps({'identifiers': ['DIE-01']})},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': 'DIE-01｜下模板｜方料｜采购数量 2｜长 706.526 × 宽 705.79 × 厚 70.46 mm',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([call, final])
+
+    result = run_loop(context(
+        prompt='上面料单中 DIE-01 的长是多少', core_tool_names=[], tools=[parameter_tool],
+        skills=[{
+            'key': 'erp_design_upload_parameter_review',
+            'tools': ['erp_design_query_upload_parameters'],
+            'activation_tools': ['erp_design_query_upload_parameters'],
+            'auto_activation_queries': ['长是多少', '采购数量', '圆料'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'].startswith('DIE-01｜下模板｜方料')
+    assert model.tool_names == [
+        ['erp_design_query_upload_parameters'],
+        [],
+    ]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['finalizing'] is True
+
+
 def test_erp_mold_number_overrides_model_shortened_local_design_search():
     deferred = {
         'query_design_route_context': {'type': 'function', 'function': {
@@ -1469,11 +1703,62 @@ def test_unregistered_tool_is_not_executed():
     assert gateway.physical_calls == 0
 
 
-def test_fabricated_evidence_is_rejected():
+def test_fabricated_evidence_requests_repair_then_uses_a_real_tool_receipt():
     gateway = Gateway()
     bad = {'content': json.dumps({'summary':'fake','evidence_ids':['foreign-run']})}
-    with pytest.raises(RuntimeError, match='EVIDENCE_INVALID'): run_loop(context(), Model([bad]), gateway)
-    assert gateway.final is None
+    model = TranscriptModel([bad, PROPOSAL, FINAL])
+
+    result = run_loop(context(), model, gateway)
+
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.physical_calls == 1
+    assert gateway.saved['protocol_repairs'] == 1
+    assert '附件 ID、会话 ID、业务对象 ID' in model.transcripts[1][0]['content']
+
+
+@pytest.mark.parametrize(('prompt', 'tool_name', 'arguments', 'skill_key'), [
+    ('45#的材质密度是多少', 'erp_design_query_densities', {'material_mark': '45#'},
+     'erp_design_density_review'),
+    ('M250238-P4当前图纸版本是什么', 'erp_design_query_drawing_versions',
+     {'query': 'M250238-P4'}, 'erp_design_drawing_version_review'),
+])
+def test_authoritative_erp_reads_cannot_fall_back_to_model_knowledge(
+        prompt, tool_name, arguments, skill_key):
+    tool = {'type': 'function', 'function': {
+        'name': tool_name,
+        'description': '从 ERP 权威业务库读取当前数据。',
+    }}
+    unsupported_answer = {'content': json.dumps({
+        'response_kind': 'CONVERSATION',
+        'summary': '根据通用知识直接回答。',
+        'evidence_ids': [],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    tool_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'authoritative-read',
+        'type': 'function',
+        'function': {'name': tool_name, 'arguments': json.dumps(arguments, ensure_ascii=False)},
+    }]}
+    gateway = Gateway()
+    model = InspectingRepliesModel([unsupported_answer, tool_call, FINAL])
+
+    result = run_loop(context(
+        prompt=prompt,
+        core_tool_names=[],
+        tools=[tool],
+        skills=[{
+            'key': skill_key,
+            'tools': [tool_name],
+            'activation_tools': [tool_name],
+        }],
+    ), model, gateway)
+
+    assert result['evidence_ids'] == ['e1']
+    assert model.tool_names == [[tool_name], [tool_name], []]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['evidence_tools'] == [tool_name]
+    assert gateway.saved['attempted_tools'] == [tool_name]
+    assert gateway.saved['protocol_repairs'] == 1
 
 
 @pytest.mark.parametrize('kind',['CONVERSATION','CLARIFICATION'])
@@ -1956,6 +2241,52 @@ def test_compacted_context_does_not_reuse_stale_provider_prompt_tokens():
     assert gateway.physical_calls == 2
     assert model.calls == 3
     assert gateway.saved['context_usage']['used_tokens'] <= gateway.saved['context_usage']['safe_limit']
+
+
+def test_context_budget_compacts_old_dialogue_but_keeps_attachment_index_and_current_request():
+    history = []
+    for index in range(18):
+        attachments = []
+        if index == 0:
+            attachments = [{
+                'id': 'old-file-id', 'filename': '最早的模具清单.xlsx',
+                'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'size': 13636,
+            }]
+        history.append({
+            'run_id': f'run-{index}', 'created_at': f'2026-09-19T09:{index:02d}:00',
+            'status': 'SUCCEEDED',
+            'user': {'content': f'历史问题{index}：' + ('详细上下文' * 900), 'attachments': attachments},
+            'assistant': {
+                'response_kind': 'CONVERSATION',
+                'summary': f'历史回答{index}：' + ('分析结果' * 900),
+                'suggestions': [],
+            },
+        })
+
+    class InspectingModel:
+        last_metrics = {}
+
+        def generate(self, messages, tools):
+            transcript = json.dumps(messages, ensure_ascii=False)
+            assert '历史对话压缩摘要' in transcript
+            assert 'old-file-id' in transcript
+            assert '最早的模具清单.xlsx' in transcript
+            assert messages[-1]['content'].endswith('解析最早那份清单')
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CLARIFICATION', 'summary': '已识别历史附件',
+                'evidence_ids': [], 'suggestions': [],
+            }, ensure_ascii=False)}
+
+    gateway = Gateway()
+    result = run_loop(
+        context(core_tool_names=[], prompt='解析最早那份清单', conversation_history=history),
+        InspectingModel(), gateway, context_window=9000, max_output_tokens=1024,
+    )
+
+    assert result['summary'] == '已识别历史附件'
+    assert gateway.saved['context_usage']['used_tokens'] <= gateway.saved['context_usage']['safe_limit']
+    assert gateway.saved['context_compactions'][0]['strategy'] == 'tool-and-conversation-summary'
 
 
 

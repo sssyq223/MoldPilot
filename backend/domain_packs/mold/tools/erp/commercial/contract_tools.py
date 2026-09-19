@@ -62,7 +62,7 @@ class ContractProposalInput(StrictModel):
     remark: str = Field(default='', max_length=4000)
     workflow_definition_id: str = Field(min_length=1, max_length=36)
     file_ids: list[str] = Field(min_length=1, max_length=10,
-        description='本轮任务中明确上传的合同原件文件 ID；审批将冻结这些文件版本。')
+        description='本轮明确附加或当前会话历史中被用户明确引用的合同原件文件 ID；审批将冻结这些文件版本。')
     document_source: Literal['ELECTRONIC','PAPER_SCAN','OTHER'] = 'ELECTRONIC'
     material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
@@ -103,7 +103,8 @@ class ContractSigningRecordProposalInput(StrictModel):
     signing_method: Literal['MANUAL','OFFLINE_FILE','IMPORT','ERP','OTHER'] = 'OFFLINE_FILE'
     status: Literal['DRAFT','UNDER_REVIEW','SIGNED','REJECTED','CANCELLED'] = 'SIGNED'
     signed_date: date | None = None
-    signed_file_id: str | None = Field(default=None, max_length=36)
+    signed_file_id: str | None = Field(default=None, max_length=36,
+        description='本轮明确附加或当前会话历史中被用户明确引用的签署文件 ID')
     signed_file_title: str = Field(default='', max_length=200)
     supplier_signer: str = Field(default='', max_length=120)
     evidence: str = Field(min_length=1, max_length=4000)
@@ -493,7 +494,7 @@ def preview_contract(db,user,data:ContractProposalInput,run):
     return detail,display,blobs,allocation_cards
 
 
-def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalInput):
+def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalInput,run=None):
     project=db.get(m.Project,data.project_id)
     if not project:raise DomainError('NOT_FOUND','项目不存在',404)
     scope={'project_id':project.id,'category':'outsource'}
@@ -512,8 +513,9 @@ def preview_contract_signing_record(db,user,data:ContractSigningRecordProposalIn
     if data.status=='SIGNED' and contract.status not in {'EFFECTIVE','CLOSED'}:
         raise DomainError('CONTRACT_NOT_EFFECTIVE','只有已生效或已关闭的整套委外合同才能登记已签署文件',409)
     if data.signed_file_id:
-        from domain_packs.mold.ports.files import uploaded_file
-        uploaded_file(db,user,data.signed_file_id)
+        from domain_packs.mold.ports.files import reference_run_file,uploaded_file
+        (reference_run_file(db,user,run,data.signed_file_id) if run
+         else uploaded_file(db,user,data.signed_file_id))
     if data.source_ref and db.scalar(select(m.ContractSigningRecord.id).where(
         m.ContractSigningRecord.contract_subject_id==contract.id,
         m.ContractSigningRecord.status==data.status,
@@ -557,7 +559,7 @@ def execute_contract_tool(db,user,key,arguments,run=None):
         limitations=['仅准备合同登记建议；本人确认后才冻结本轮合同原件、创建业务材料并提交审批，审批完成前不代表正式合同或收付款事实。替代合同的历史实收实付只建立不可变归属，不复制、删除或改写原财务记录；追加合同保持独立有效。']
     elif key=='prepare_contract_signing_record':
         data=parse_contract_signing_record(arguments)
-        _,display=preview_contract_signing_record(db,user,data)
+        _,display=preview_contract_signing_record(db,user,data,run)
         proposal={'kind':'contract_signing_record','action':'contract_signing_record',
             'requires_approval':False,'input':data.model_dump(mode='json'),'display':display,
             'confirmation_policy':proposal_confirmation_policy(run,requires_approval=False)}
@@ -587,7 +589,7 @@ def validate_intent(db,user,payload):
     if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
     if proposal.get('kind')=='contract_signing_record':
         data=parse_contract_signing_record(proposal['input'])
-        _,display=preview_contract_signing_record(db,user,data)
+        _,display=preview_contract_signing_record(db,user,data,run)
     else:
         data=parse_contract(proposal['input'])
         _,display,_,_=preview_contract(db,user,data,run)

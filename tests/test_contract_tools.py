@@ -457,7 +457,7 @@ def test_prepare_contract_rejects_duplicates_and_invalid_party():
         engine.dispose()
 
 
-def test_contract_attachment_requires_current_run_and_blocks_duplicate_content():
+def test_contract_attachment_reuses_same_conversation_file_and_blocks_duplicate_content():
     engine,Session=factory()
     try:
         with Session.begin() as db:
@@ -476,11 +476,9 @@ def test_contract_attachment_requires_current_run_and_blocks_duplicate_content()
                 'contract_number':'SC-FILE-GUARD','received_date':date.today().isoformat(),
                 'workflow_definition_id':definition.id,
                 'file_ids':[current.id],'document_source':'ELECTRONIC'}
-            with pytest.raises(Exception) as unbound:
-                execute(db,admin,'prepare_contract_record',args,run=run)
-            assert getattr(unbound.value,'code',None)=='FILE_CONTEXT_INVALID'
-
-            db.add(m.RunFile(run_id=run.id,file_id=current.id))
+            proposal=execute(db,admin,'prepare_contract_record',args,run=run)
+            assert proposal['proposal']['input']['file_ids']==[current.id]
+            assert db.get(m.RunFile,(run.id,current.id)) is not None
             prior=contract(db,p,admin,'sales_contract','SC-FILE-PRIOR')
             prior_file=uploaded_contract_file(db,admin,conversation,filename='prior-contract.pdf',digest='c'*64)
             db.add(m.ContractAttachment(contract_subject_id=prior.id,file_id=prior_file.id,
@@ -592,4 +590,3 @@ def test_prepare_contract_signing_record_rejects_duplicate_and_missing_signed_da
             assert getattr(invalid.value,'code',None)=='INVALID_TOOL_INPUT'
     finally:
         engine.dispose()
-

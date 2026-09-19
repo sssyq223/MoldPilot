@@ -1,9 +1,10 @@
 """Resume an Agent run after a trusted human decision on a prepared proposal."""
 import json
 
-from .config import model_settings
+from .config import model_settings, settings
 from .errors import DomainError
 from .models import Run, Step
+from agent_core.run_status import RUNNING_STATUSES, SCOPED_QUEUED
 
 
 def _final_snapshot(result):
@@ -37,7 +38,7 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
     # A proposal can become visible in the persisted trace while the harness is
     # still completing the same run. Do not invalidate that worker lease.
-    if run.status == "RUNNING":
+    if run.status in RUNNING_STATUSES:
         return False
 
     checkpoint = dict(run.checkpoint or {})
@@ -135,5 +136,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     run.checkpoint = checkpoint
     run.result = None
     run.lease_until = None
-    run.status = "QUEUED" if model_settings().llm_enabled else "WAITING_CONFIGURATION"
+    if model_settings().llm_enabled:
+        checkpoint["worker_scope"] = settings().worker_scope
+        run.checkpoint = checkpoint
+        run.status = SCOPED_QUEUED
+    else:
+        run.status = "WAITING_CONFIGURATION"
     return True

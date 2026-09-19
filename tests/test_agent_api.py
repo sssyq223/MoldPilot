@@ -7,6 +7,7 @@ from app.config import settings
 from app.db import now
 from app.models import Grant, Run, Step, User
 from app.agent_resume import queue_after_proposal_decision
+from agent_core.run_status import SCOPED_QUEUED
 from conftest import sign_in
 
 
@@ -45,6 +46,28 @@ def test_run_persists_agent_permission_mode_for_worker_context(client, data, mon
                        json={'epoch': claimed['epoch'], 'checkpoint': {'turn': 1}}).status_code == 200
     history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
     assert history[0]['agent_permission_mode'] == 'delegated_auto'
+
+
+def test_new_run_is_only_claimed_by_its_creating_worker_scope(client, data, monkeypatch):
+    _, factory = data
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-a')
+    sign_in(client, 'test_buyer')
+
+    created = client.post('/api/runs', json={'prompt': '解析本会话附件'}).json()
+    assert created['status'] == 'QUEUED'
+    with factory() as db:
+        stored = db.get(Run, created['id'])
+        assert stored.status == SCOPED_QUEUED
+        assert stored.checkpoint['worker_scope'] == 'desktop-a'
+
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-b')
+    assert client.post('/internal/runs/claim', headers=worker_headers()).json()['run'] is None
+
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-a')
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert claimed['id'] == created['id']
+    assert claimed['worker_scope'] == 'desktop-a'
 
 
 def test_worker_checkpoint_preserves_proposal_resume_history(client, data, monkeypatch):
@@ -120,7 +143,8 @@ def test_confirmed_proposal_is_requeued_as_a_new_model_turn(monkeypatch):
 
     assert queue_after_proposal_decision(FakeDb(), SimpleNamespace(id='user-1'),
                                          step.id, 'approved', receipt) is True
-    assert run.status == 'QUEUED'
+    assert run.status == SCOPED_QUEUED
+    assert run.checkpoint['worker_scope'] == settings().worker_scope
     assert run.result is None
     assert 'completed_at' not in run.checkpoint
     assert run.checkpoint['protocol_repairs'] == 0

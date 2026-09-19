@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -56,6 +57,90 @@ def test_new_mold_design_upload_accepts_legacy_xls_attachment(monkeypatch, tmp_p
     assert selected is source
     assert path.name == 'M250238-P4钢料.xls'
     assert path.read_bytes() == content
+
+
+def test_new_mold_design_upload_references_unique_historical_attachment(monkeypatch, tmp_path):
+    from domain_packs.mold import erp_design_mcp
+
+    file_id=uuid4()
+    content=b'historical workbook'
+    source=SimpleNamespace(id=file_id,filename='M250238-P4料单.xlsx')
+    db=SimpleNamespace(scalars=lambda _statement: [])
+    user=SimpleNamespace(id='user-1')
+    run=SimpleNamespace(id='run-2',user_id='user-1',conversation_id='conversation-1')
+    directory=tmp_path/'historical-design-upload'
+    directory.mkdir()
+    referenced=[]
+
+    monkeypatch.setattr(erp_design_mcp,'_host',SimpleNamespace(conversation_files=lambda *_args:[{
+        'id':str(file_id),'filename':source.filename,
+        'media_type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }]))
+    monkeypatch.setattr(erp_design_mcp.files,'reference_run_file',
+                        lambda _db,_user,_run,selected: referenced.append(selected) or source)
+    monkeypatch.setattr(erp_design_mcp.files,'validate_file',lambda filename,_data:(filename,'application/test'))
+    monkeypatch.setattr(erp_design_mcp.object_storage,'read',lambda _source:content)
+    monkeypatch.setattr(erp_design_mcp.tempfile,'mkdtemp',lambda **_kwargs:str(directory))
+
+    result_dir,path,selected=erp_design_mcp._temporary_design_file(db,user,run,None)
+
+    assert result_dir==directory and selected is source
+    assert referenced==[str(file_id)]
+    assert path.read_bytes()==content
+
+
+def test_new_mold_design_upload_requires_selection_for_multiple_historical_attachments(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    db=SimpleNamespace(scalars=lambda _statement: [])
+    user=SimpleNamespace(id='user-1')
+    run=SimpleNamespace(id='run-2',user_id='user-1',conversation_id='conversation-1')
+    referenced=[]
+    monkeypatch.setattr(erp_design_mcp,'_host',SimpleNamespace(conversation_files=lambda *_args:[
+        {'id':str(uuid4()),'filename':'A清单.xlsx'},
+        {'id':str(uuid4()),'filename':'B清单.csv'},
+    ]))
+    monkeypatch.setattr(erp_design_mcp.files,'reference_run_file',
+                        lambda *_args: referenced.append(_args[-1]))
+
+    with pytest.raises(DomainError,match='A清单.xlsx、B清单.csv'):
+        erp_design_mcp._temporary_design_file(db,user,run,None)
+
+    assert referenced==[]
+
+
+def test_new_mold_design_upload_matches_named_historical_attachment_without_leading_m(monkeypatch, tmp_path):
+    from domain_packs.mold import erp_design_mcp
+
+    selected_id=uuid4()
+    other_id=uuid4()
+    content=b'named historical workbook'
+    source=SimpleNamespace(id=selected_id,filename='M250238-P4料单.xlsx')
+    db=SimpleNamespace(scalars=lambda _statement: [])
+    user=SimpleNamespace(id='user-1')
+    run=SimpleNamespace(
+        id='run-named-history',user_id='user-1',conversation_id='conversation-1',
+        prompt='解析一下250238-P4这个料单',
+    )
+    directory=tmp_path/'named-historical-design-upload'
+    directory.mkdir()
+    referenced=[]
+
+    monkeypatch.setattr(erp_design_mcp,'_host',SimpleNamespace(conversation_files=lambda *_args:[
+        {'id':str(other_id),'filename':'M250999-P1料单.xlsx'},
+        {'id':str(selected_id),'filename':source.filename},
+    ]))
+    monkeypatch.setattr(erp_design_mcp.files,'reference_run_file',
+                        lambda _db,_user,_run,selected: referenced.append(selected) or source)
+    monkeypatch.setattr(erp_design_mcp.files,'validate_file',lambda filename,_data:(filename,'application/test'))
+    monkeypatch.setattr(erp_design_mcp.object_storage,'read',lambda _source:content)
+    monkeypatch.setattr(erp_design_mcp.tempfile,'mkdtemp',lambda **_kwargs:str(directory))
+
+    result_dir,path,selected=erp_design_mcp._temporary_design_file(db,user,run,None)
+
+    assert result_dir==directory and selected is source
+    assert referenced==[str(selected_id)]
+    assert path.read_bytes()==content
 
 
 def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_path):
@@ -470,18 +555,204 @@ def test_agent_tolerance_tool_reads_erp_rules_and_evaluates_rows_in_one_call(mon
 
         assert calls == [("get_new_mold_upload_result", {"sessionId": 273})]
         square, round_stock = result["data"]["previewRows"]
+        assert result["data"]["displayMode"] == "design_tolerances"
         assert square["toleranceTier"] == "500-800(含)"
         assert square["lengthAllowedRange"] == "706.826～707.326"
         assert square["widthAllowedRange"] == "706.09～706.59"
         assert square["thicknessAllowedRange"] == "71.06～71.36"
         assert square["diagonalTolerance"] == "0~0.5"
         assert round_stock["toleranceTier"] == "-"
+        assert "unit_price" not in square
+        assert "total_price" not in square
+        assert "drawing_preview_url" not in square
         assert result["data"]["toleranceEvaluation"] == {
             "evaluatedCount": 1,
             "rowCount": 2,
             "ruleCount": 3,
             "source": "ERP techRequirements.tolerance_table",
         }
+    finally:
+        engine.dispose()
+
+
+def test_agent_tolerance_tool_reuses_latest_steel_session_in_same_conversation(monkeypatch):
+    from app.events import record
+    from domain_packs.mold import erp_design_mcp
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(engine, expire_on_commit=False)
+    calls = []
+
+    def fake_mcp(name, arguments):
+        calls.append((name, arguments))
+        return {
+            "sessionId": 316,
+            "sheetType": "steel",
+            "previewRows": [{
+                "rowIndex": 1, "item_code_full": "DIE-01", "material_shape": "方料",
+                "length": 706.526, "width": 705.79, "height": 70.46,
+            }],
+        }
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_mcp)
+    base = datetime(2026, 9, 19, 13, 20, tzinfo=timezone.utc)
+    try:
+        with Session.begin() as db:
+            user = m.User(username="erp_tolerance_followup", display_name="公差追问用户",
+                          password_hash="test", super_admin=True)
+            db.add(user); db.flush()
+            conversation = m.Conversation(user_id=user.id, title="钢料公差")
+            db.add(conversation); db.flush()
+            parsed = m.Run(
+                conversation_id=conversation.id, user_id=user.id, security_version=user.security_version,
+                prompt="解析上面的钢料", status="SUCCEEDED", checkpoint={}, result={}, created_at=base,
+            )
+            current = m.Run(
+                conversation_id=conversation.id, user_id=user.id, security_version=user.security_version,
+                prompt="上面料单的公差表", status="RUNNING", checkpoint={}, result=None,
+                created_at=base + timedelta(seconds=1),
+            )
+            db.add_all([parsed, current]); db.flush()
+            db.add(m.Step(
+                run_id=parsed.id, sequence=0, tool="erp_design_parse_new_mold_upload",
+                request_hash="a" * 64,
+                result={"data": {
+                    "sessionId": 316, "sheetType": "steel", "moldCode": "M250238-P4",
+                    "previewRows": [{"rowIndex": 1}],
+                    "techRequirements": {"tolerance_table": [{
+                        "seq": 2, "spec": "500-800(含)", "length_tol": "+0.3~+0.8",
+                        "thick_tol": "+0.6~+0.9", "diag_tol": "0~0.5",
+                    }]},
+                }},
+            ))
+            record(db, user, "erp_design_mcp.parsed", "316", {"sheet_type": "steel"})
+            current_id = current.id
+        with Session() as db:
+            user = db.query(m.User).filter_by(username="erp_tolerance_followup").one()
+            current = db.get(m.Run, current_id)
+            result = execute(db, user, "erp_design_evaluate_tolerances", {}, run=current)
+
+        assert calls == [("get_new_mold_upload_result", {"sessionId": 316})]
+        assert result["data"]["sessionId"] == 316
+        assert result["data"]["previewRows"][0]["toleranceTier"] == "500-800(含)"
+    finally:
+        engine.dispose()
+
+
+def test_agent_technical_requirements_reader_is_fixed_and_requires_no_business_object(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    monkeypatch.setattr(
+        erp_design_mcp,
+        "call_mcp",
+        lambda *_args, **_kwargs: pytest.fail("固定技术要求不应查询 ERP 订单或会话接口"),
+    )
+    technical_requirements = {
+        "requirements": [
+            "1.铣六面平面度0.2以内，铣六研二平面度0.1以内，垂直度0.15以内；",
+            "2.注明倒角的四周按注明数倒角，未注明数据的不可以倒角；",
+            "3.供货商的材料的材质，规格必须严格按上述要求，否则视对本厂造成损失的程度进行适当的扣款或索赔；",
+            "4.在模板厚度左侧必须打钢印，内容为：模具编号+模板代码+材质+规格，字体高度8mm；",
+            "5.单位：mm。",
+        ],
+        "tolerance_table": [
+            {"seq": 1, "spec": "500(含)以下", "length_tol": "+0.3~+0.6", "thick_tol": "+0.3~+0.5", "diag_tol": "0~0.5"},
+            {"seq": 2, "spec": "500-800(含)", "length_tol": "+0.3~+0.8", "thick_tol": "+0.6~+0.9", "diag_tol": "0~0.5"},
+            {"seq": 3, "spec": "800以上", "length_tol": "+0.3~+1.0", "thick_tol": "+0.7~+1.0", "diag_tol": "0~0.5"},
+        ],
+    }
+    result = erp_design_mcp.execute_tool(None, None, "erp_design_get_technical_requirements", {})
+
+    assert result["data"] == {
+        "displayMode": "design_technical_requirements",
+        "techRequirements": technical_requirements,
+    }
+    assert result["source"] == "management-system ERP fixed design-upload technical requirements"
+    schema = tool_schema("erp_design_get_technical_requirements")["function"]["parameters"]
+    assert schema.get("properties") == {}
+    assert not schema.get("required")
+
+
+def test_upload_parameter_reader_reuses_conversation_session_and_projects_only_display_fields(monkeypatch):
+    from app.events import record
+    from domain_packs.mold import erp_design_mcp
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(engine, expire_on_commit=False)
+    calls = []
+
+    def fake_mcp(name, arguments):
+        calls.append((name, arguments))
+        return {
+            "sessionId": 417,
+            "previewRows": [
+                {
+                    "rowIndex": 1, "item_code_full": "B2-05", "item_name": "下垫脚",
+                    "material_mark": "45#", "material_shape": "圆环料", "qty": 1,
+                    "outer_diameter": 201, "inner_diameter": 20, "height": 10,
+                    "unit_price": 7.85, "total_price": 99,
+                },
+                {
+                    "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
+                    "material_mark": "CR12MOV", "material_shape": "方料", "qty": 2,
+                    "length": 706.526, "width": 705.79, "height": 70.46,
+                    "calculation_process": "price-only evidence",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_mcp)
+    base = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+    try:
+        with Session.begin() as db:
+            user = m.User(username="erp_parameter_followup", display_name="参数追问用户",
+                          password_hash="test", super_admin=True)
+            db.add(user); db.flush()
+            conversation = m.Conversation(user_id=user.id, title="设计参数")
+            db.add(conversation); db.flush()
+            parsed = m.Run(
+                conversation_id=conversation.id, user_id=user.id, security_version=user.security_version,
+                prompt="解析这个料单", status="SUCCEEDED", checkpoint={}, result={}, created_at=base,
+            )
+            current = m.Run(
+                conversation_id=conversation.id, user_id=user.id, security_version=user.security_version,
+                prompt="DIE-01 的长是多少", status="RUNNING", checkpoint={}, result=None,
+                created_at=base + timedelta(seconds=1),
+            )
+            db.add_all([parsed, current]); db.flush()
+            db.add(m.Step(
+                run_id=parsed.id, sequence=0, tool="erp_design_parse_new_mold_upload",
+                request_hash="b" * 64,
+                result={"data": {
+                    "sessionId": 417, "sheetType": "steel", "moldCode": "M250238-P4",
+                    "fileName": "M250238-P4料单.xlsx", "previewRows": [{"rowIndex": 1}],
+                }},
+            ))
+            record(db, user, "erp_design_mcp.parsed", "417", {"sheet_type": "steel"})
+            current_id = current.id
+        with Session() as db:
+            user = db.query(m.User).filter_by(username="erp_parameter_followup").one()
+            current = db.get(m.Run, current_id)
+            result = execute(db, user, "erp_design_query_upload_parameters", {
+                "identifiers": ["DIE-01"],
+            }, run=current)
+
+        assert calls == [("get_new_mold_upload_result", {"sessionId": 417})]
+        assert result["data"]["moldCode"] == "M250238-P4"
+        assert result["data"]["displayMode"] == "design_parameters"
+        assert result["data"]["renderAsTable"] is False
+        assert result["data"]["matchedCount"] == 1
+        assert result["data"]["previewRows"] == [{
+            "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
+            "material_mark": "CR12MOV", "spec_raw": "", "material_shape": "方料",
+            "purchase_quantity": 2, "unit": "", "length": 706.526, "width": 705.79,
+            "height": 70.46, "outer_diameter": None, "inner_diameter": None,
+            "processing_technology": "", "remark": "",
+        }]
+        assert "unit_price" not in result["data"]["previewRows"][0]
+        assert "calculation_process" not in result["data"]["previewRows"][0]
     finally:
         engine.dispose()
 
@@ -524,7 +795,8 @@ def test_erp_design_mcp_read_tool_is_registered_and_forwarded(monkeypatch):
         assert "erp_design_workspace_review" in SKILLS
         assert {"erp_new_mold_design_upload", "erp_design_modify_mold_upload", "erp_design_workspace_review",
                 "erp_design_price_calculation", "erp_design_drawing_preview",
-                "erp_design_drawing_auto_correction", "erp_design_tolerance_evaluation"} <= skills
+                "erp_design_drawing_auto_correction", "erp_design_tolerance_evaluation",
+                "erp_design_upload_parameter_review"} <= skills
         assert tool_schema("erp_design_query_bom")["function"]["name"] == "erp_design_query_bom"
     finally:
         engine.dispose()
@@ -571,6 +843,16 @@ def test_erp_design_master_data_query_aggregates_the_related_read_catalogues(mon
 
         assert calls == [("query_erp_design_densities", {"query": {"materialMark": "CR12MOV"}})]
         assert set(narrow["data"]) == {"densities"}
+
+        calls.clear()
+        with Session() as db:
+            user = db.query(m.User).filter_by(username="erp_master_data_admin").one()
+            direct = execute(db, user, "erp_design_query_densities", {
+                "material_mark": "45#",
+            })
+
+        assert calls == [("query_erp_design_densities", {"query": {"materialMark": "45#"}})]
+        assert direct["data"]["rows"][0]["source"] == "query_erp_design_densities"
     finally:
         engine.dispose()
 
@@ -642,11 +924,16 @@ def test_erp_design_master_data_crud_is_grouped_by_resource():
     assert not legacy.intersection(TOOLS)
     assert SKILLS["erp_design_master_data_maintenance"]["tools"] == ["erp_design_query_master_data"]
     assert SKILLS["erp_design_master_data_maintenance"]["activation_tools"] == [
-        "erp_design_query_master_data", "erp_design_manage_density",
-        "erp_design_manage_group_rule", "erp_design_manage_group_keyword",
+        "erp_design_query_master_data", "erp_design_manage_group_rule",
+        "erp_design_manage_group_keyword",
     ]
+    assert SKILLS["erp_design_density_review"]["tools"] == ["erp_design_query_densities"]
+    assert SKILLS["erp_design_density_review"]["activation_tools"] == [
+        "erp_design_query_densities", "erp_design_manage_density",
+    ]
+    assert SKILLS["erp_design_density_review"]["requires_tool_evidence"] is True
     assert set(SKILLS["erp_design_master_data_maintenance"]["optional_tools"]) == {
-        "erp_design_get_record", *grouped,
+        "erp_design_get_record", "erp_design_manage_group_rule", "erp_design_manage_group_keyword",
     }
 
 

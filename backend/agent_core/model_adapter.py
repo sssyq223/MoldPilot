@@ -27,7 +27,7 @@ def tls_context(max_version: str = "auto", key_exchange: str = "auto") -> ssl.SS
 
 class ModelAdapter:
     def __init__(self, base_url, key, model, max_output_tokens=2048, proxy=None,
-                 tls_max_version="auto", connect_timeout=10, read_timeout=60,
+                 tls_max_version="auto", connect_timeout=20, read_timeout=60,
                  transport=None, tls_key_exchange="auto", trusted_http_origin=""):
         url = httpx.URL(base_url)
         if url.username or url.password or url.query or url.fragment or not url.host:

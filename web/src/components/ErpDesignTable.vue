@@ -7,7 +7,6 @@ import {
   erpDesignAgingTreatmentSupported,
   erpDesignCell,
   erpDesignColumns,
-  erpDesignSheetLabel,
   normalizeErpDesignTreatments,
   type ErpDesignColumn,
   type ErpDesignPreviewSession,
@@ -674,7 +673,6 @@ const toleranceRows = computed(() => {
         <span>共 {{localRows.length}} 项，请购数量 {{quantity}}</span>
       </div>
       <div class="erp-design-table-actions">
-        <span class="erp-design-sheet-badge">{{erpDesignSheetLabel(preview.sheetType)}}</span>
         <button v-if="preview.sheetType==='steel'" type="button" :disabled="repricing||loading||!localRows.length" @click="$emit('reprice',localRows)">
           {{repricing?'正在核算…':'重新核算价格'}}
         </button>

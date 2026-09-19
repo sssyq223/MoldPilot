@@ -2,12 +2,12 @@
 import {computed,nextTick,onUnmounted,ref,shallowRef,watch} from 'vue'
 import type {PDFDocumentLoadingTask,PDFDocumentProxy} from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import {Download,Eye,FileText,Minus,Plus,X} from 'lucide-vue-next'
+import {Download,Eye,FileText,Minus,Paperclip,Plus,X} from 'lucide-vue-next'
 
 const DOCX='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-const props=defineProps<{file:any}>()
+const props=defineProps<{file:any,reusable?:boolean}>()
 const isDocx=computed(()=>props.file.media_type===DOCX||String(props.file.filename||'').toLowerCase().endsWith('.docx'))
-const emit=defineEmits<{error:[message:string]}>()
+const emit=defineEmits<{error:[message:string],reuse:[file:any]}>()
 const busy=ref(false),previewOpen=ref(false),previewBusy=ref(false),previewError=ref('')
 const previewKind=ref<'docx'|'image'|'pdf'|''>(''),previewUrl=ref('')
 const docxHost=ref<HTMLElement|null>(null)
@@ -128,7 +128,7 @@ async function openPreview(){
 <article class="file-material">
  <div class="file-material-main">
   <div class="file-material-heading"><FileText :size="18"/><div><strong>{{file.title||file.filename}}</strong><small>{{file.title?file.filename+' · ':''}}{{Math.ceil(file.size/1024)}} KB<span v-if="file.version"> · 第 {{file.version}} 版 · {{file.is_current?'当前版本':'历史版本'}}</span></small></div></div>
-  <div class="file-material-actions"><button type="button" :disabled="busy" @click="openPreview"><Eye :size="14"/>在线预览</button></div>
+  <div class="file-material-actions"><button type="button" :disabled="busy" @click="openPreview"><Eye :size="14"/>在线预览</button><button v-if="reusable" type="button" :disabled="busy" @click="emit('reuse',file)"><Paperclip :size="14"/>引用到新消息</button></div>
  </div>
  <Teleport to="body">
   <div v-if="previewOpen" class="approval-file-preview-shade" @click.self="closePreview">

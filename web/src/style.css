@@ -562,7 +562,6 @@ html[data-theme="light"] .final-answer-title{color:#14283f}
 .erp-design-table-actions .erp-design-import-button:disabled{border-color:var(--border);background:color-mix(in srgb,var(--surface) 80%,var(--bg));color:var(--muted)}
 .erp-design-table-toolbar strong{font-size:14px;font-weight:600}
 .erp-design-table-toolbar span{color:var(--muted);font-size:12px}
-.erp-design-sheet-badge{flex:none;padding:3px 9px;border:1px solid color-mix(in srgb,var(--accent) 22%,var(--border));border-radius:999px;background:color-mix(in srgb,var(--accent) 7%,var(--surface));color:var(--text)!important}
 .erp-design-table-scroll{min-height:0;flex:1;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
 .erp-design-table-scroll table{width:max-content;min-width:100%;font-size:12px;table-layout:auto}
 .erp-design-table-scroll th{position:sticky;top:0;z-index:2;height:42px;padding:9px 10px;background:color-mix(in srgb,var(--surface) 82%,var(--bg));color:var(--muted);text-align:left}
@@ -2252,3 +2251,7 @@ html[data-theme="dark"] input:focus-visible,
 html[data-theme="dark"] textarea:focus-visible,
 html[data-theme="dark"] select:focus-visible,
 html[data-theme="dark"] [tabindex]:focus-visible{outline-color:#a9bdd4}
+
+/* Wide ERP detail tables scroll inside their modal instead of widening the chat. */
+.chat-scroll{overflow-x:hidden}
+.conversation-turn{width:min(860px,100%);min-width:0}

@@ -164,5 +164,33 @@ def bind_run_files(db,user,run,file_ids):
         db.add(m.RunFile(run_id=run.id,file_id=blob.id))
 
 
+def reference_run_file(db,user,run,file_id):
+    """Make an existing same-conversation upload explicit for this Run.
+
+    Conversation history may identify an upload from an earlier turn, but
+    domain tools still execute against an exact Run/file boundary.  Resolving
+    the reference here preserves that boundary instead of granting tools broad
+    access to every historical upload in the conversation.
+    """
+    if not run or run.user_id!=user.id:
+        raise DomainError('FILE_CONTEXT_INVALID','附件引用须绑定当前本人任务',403)
+    blob=uploaded_file(db,user,str(file_id))
+    if blob.conversation_id!=run.conversation_id:
+        raise DomainError('FILE_CONTEXT_INVALID','只能引用当前会话中的附件',403)
+    existing=db.scalar(select(m.RunFile).where(m.RunFile.run_id==run.id,m.RunFile.file_id==blob.id))
+    if not existing:
+        db.add(m.RunFile(run_id=run.id,file_id=blob.id))
+        record(db,user,'agent.run.file_referenced',run.id,{
+            'file_id':blob.id,'filename':blob.filename,'source':'conversation_history'})
+    return blob
+
+
+def reference_run_files(db,user,run,file_ids):
+    requested=[str(value) for value in file_ids]
+    if len(requested)!=len(set(requested)):
+        raise DomainError('FILE_CONTEXT_INVALID','附件引用不能重复',409)
+    return [reference_run_file(db,user,run,file_id) for file_id in requested]
+
+
 def run_files(db,user,run):
     return jsonable_encoder([metadata(blob) for blob in db.scalars(select(m.FileObject).join(m.RunFile).where(m.RunFile.run_id==run.id)) if readable(db,user,blob)])

@@ -16,6 +16,10 @@ from typing import Any
 
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
+HISTORICAL_USER_PREFIX = "历史用户消息（仅用于连续对话和指代解析）：\n"
+HISTORICAL_ASSISTANT_PREFIX = "历史助手答复（不是当前业务事实）：\n"
+HISTORICAL_SUMMARY_PREFIX = "历史对话压缩摘要（完整记录仍保存在会话中，仅供连续对话和指代解析）：\n"
+HISTORICAL_ATTACHMENT_MARKER = "\n该历史消息附件（元数据）："
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -173,7 +177,135 @@ def _compact_payload(content: str) -> tuple[str, bool]:
     return encoded, len(encoded) < len(content or "")
 
 
-def compact_messages_for_model(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+def _bounded_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit < 24:
+        return text[:limit]
+    head = max(1, limit * 2 // 3)
+    tail = max(1, limit - head - 1)
+    return text[:head] + "…" + text[-tail:]
+
+
+def _attachment_manifest(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    selected = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            key: item[key]
+            for key in ("id", "file_id", "filename", "name", "media_type", "content_type", "size")
+            if item.get(key) is not None
+        }
+        if compact:
+            selected.append(compact)
+    return selected
+
+
+def _historical_entries(message: dict[str, Any], text_limit: int) -> list[dict[str, Any]]:
+    content = str(message.get("content") or "")
+    if content.startswith(HISTORICAL_SUMMARY_PREFIX):
+        try:
+            payload = json.loads(content[len(HISTORICAL_SUMMARY_PREFIX):])
+        except (TypeError, ValueError):
+            return [{"role": "summary", "content": _bounded_text(content, text_limit)}]
+        entries = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            return [{"role": "summary", "content": _bounded_text(content, text_limit)}]
+        normalized = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            entry = {"role": str(item.get("role") or "history")}
+            text = _bounded_text(item.get("content"), text_limit)
+            if text:
+                entry["content"] = text
+            attachments = _attachment_manifest(item.get("attachments"))
+            if attachments:
+                entry["attachments"] = attachments
+            normalized.append(entry)
+        return normalized
+    if content.startswith(HISTORICAL_USER_PREFIX):
+        body = content[len(HISTORICAL_USER_PREFIX):]
+        raw_attachments = None
+        if HISTORICAL_ATTACHMENT_MARKER in body:
+            body, encoded = body.split(HISTORICAL_ATTACHMENT_MARKER, 1)
+            try:
+                raw_attachments = json.loads(encoded)
+            except (TypeError, ValueError):
+                raw_attachments = None
+        entry: dict[str, Any] = {"role": "user"}
+        text = _bounded_text(body, text_limit)
+        if text:
+            entry["content"] = text
+        attachments = _attachment_manifest(raw_attachments)
+        if attachments:
+            entry["attachments"] = attachments
+        return [entry]
+    if content.startswith(HISTORICAL_ASSISTANT_PREFIX):
+        body = content[len(HISTORICAL_ASSISTANT_PREFIX):]
+        try:
+            payload = json.loads(body)
+        except (TypeError, ValueError):
+            payload = {"summary": body}
+        if isinstance(payload, dict):
+            safe = {
+                key: payload[key]
+                for key in ("response_kind", "summary", "suggestions", "message", "error_code", "proposal_decision")
+                if key in payload
+            }
+            safe = _compact_sample(safe)
+            if isinstance(safe, dict):
+                for key in ("summary", "message"):
+                    if key in safe:
+                        safe[key] = _bounded_text(safe[key], text_limit)
+            body = json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
+        return [{"role": "assistant", "content": _bounded_text(body, max(text_limit, 40))}]
+    return []
+
+
+def _is_historical_message(message: dict[str, Any]) -> bool:
+    content = str(message.get("content") or "")
+    return content.startswith((HISTORICAL_USER_PREFIX, HISTORICAL_ASSISTANT_PREFIX, HISTORICAL_SUMMARY_PREFIX))
+
+
+def _collapse_historical_messages(
+    messages: list[dict[str, Any]], *, keep_recent: int, text_limit: int,
+) -> list[dict[str, Any]]:
+    positions = [index for index, message in enumerate(messages) if _is_historical_message(message)]
+    collapse = positions[:-keep_recent] if keep_recent else positions
+    if not collapse:
+        return messages
+    entries: list[dict[str, Any]] = []
+    for position in collapse:
+        entries.extend(_historical_entries(messages[position], text_limit))
+    if not entries:
+        return messages
+    summary = {
+        "role": "user",
+        "content": HISTORICAL_SUMMARY_PREFIX + json.dumps(
+            {"messages": entries}, ensure_ascii=False, separators=(",", ":")
+        ),
+    }
+    first = collapse[0]
+    removed = set(collapse)
+    result = []
+    for index, message in enumerate(messages):
+        if index == first:
+            result.append(summary)
+        if index not in removed:
+            result.append(message)
+    return result
+
+
+def compact_messages_for_model(
+    messages: list[dict[str, Any]], *, required_savings: int = 0,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     compacted = deepcopy(messages)
     changed = 0
     before = estimate_json_tokens(messages)
@@ -187,15 +319,40 @@ def compact_messages_for_model(messages: list[dict[str, Any]]) -> tuple[list[dic
     # If tool results were already compact, trim older assistant prose.  Keep tool
     # calls themselves so provider message ordering remains valid.
     for message in compacted[:-2]:
-        if message.get("role") == "assistant" and isinstance(message.get("content"), str) and len(message["content"]) > 800:
+        if (message.get("role") == "assistant"
+                and not _is_historical_message(message)
+                and isinstance(message.get("content"), str)
+                and len(message["content"]) > 800):
             message["content"] = message["content"][:800] + "…"
             changed += 1
+    target = max(0, before - max(0, required_savings))
+    history_compacted = False
+    # Full conversation data remains durable in Run records.  Only when the
+    # provider window is tight do we replace older model-visible turns with a
+    # deterministic summary.  Attachment ids and filenames are retained so a
+    # later request can still resolve and securely rebind the original file.
+    if required_savings and estimate_json_tokens(compacted) > target:
+        best = compacted
+        best_tokens = estimate_json_tokens(best)
+        for keep_recent, text_limit in ((12, 320), (8, 240), (4, 160), (0, 120), (0, 40), (0, 0)):
+            candidate = _collapse_historical_messages(
+                compacted, keep_recent=keep_recent, text_limit=text_limit,
+            )
+            candidate_tokens = estimate_json_tokens(candidate)
+            if candidate_tokens < best_tokens:
+                best, best_tokens = candidate, candidate_tokens
+            if candidate_tokens <= target:
+                break
+        if best_tokens < estimate_json_tokens(compacted):
+            changed += sum(1 for message in compacted if _is_historical_message(message))
+            compacted = best
+            history_compacted = True
     after = estimate_json_tokens(compacted)
     if not changed or after >= before:
         return messages, None
     record = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "strategy": "tool-result-summary",
+        "strategy": "tool-and-conversation-summary" if history_compacted else "tool-result-summary",
         "before_tokens": before,
         "after_tokens": after,
         "saved_tokens": max(0, before - after),
