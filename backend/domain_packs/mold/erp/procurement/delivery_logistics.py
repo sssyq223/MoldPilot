@@ -29,7 +29,9 @@ now = _host.now
 
 DELIVERY_KEYWORDS = ("交付", "出库", "发货", "物流", "签收", "验收", "delivery", "shipment", "acceptance", "logistics")
 QUALITY_SOURCES = {"QUALITY_ISSUE", "TRIAL_ISSUE", "ASSEMBLY_ISSUE", "SUPPLIER_QUALITY"}
-DELIVERY_LOGISTICS_PROPOSAL_TOOLS = {"prepare_logistics_route", "prepare_logistics_quote"}
+DELIVERY_LOGISTICS_PROPOSAL_TOOLS = {
+    "prepare_logistics_route", "prepare_logistics_quote", "prepare_customer_acceptance",
+}
 
 
 class LogisticsRouteProposalInput(StrictModel):
@@ -67,6 +69,29 @@ class LogisticsQuoteProposalInput(StrictModel):
     reconciliation_basis: str = Field(min_length=1, max_length=4000)
     source_ref: str = Field(min_length=1, max_length=120)
     supersedes_quote_id: str | None = Field(default=None, max_length=36)
+
+
+class CustomerAcceptanceProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    signature_id: str | None = Field(default=None, max_length=36)
+    acceptance_type: Literal["INITIAL", "RECHECK"] = "INITIAL"
+    result: Literal["PASSED", "FAILED", "CONDITIONALLY_PASSED"]
+    accepted_date: date
+    issue_description: str = Field(default="", max_length=4000)
+    responsibility: Literal["CUSTOMER", "SUPPLIER", "INTERNAL", "SHARED", "UNKNOWN"] = "UNKNOWN"
+    corrective_due_date: date | None = None
+    contact_case_id: str | None = Field(default=None, max_length=36)
+    supplier_id: str | None = Field(default=None, max_length=36)
+    deduction_amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    schedule_impact_days: int = Field(default=0, ge=0, le=3650)
+    contract_change_required: bool = False
+    evidence: str = Field(min_length=1, max_length=4000)
+
+
+def customer_acceptance_schema():
+    return CustomerAcceptanceProposalInput.model_json_schema()
 
 
 def logistics_route_schema():
@@ -108,6 +133,26 @@ def parse_logistics_quote(arguments):
         raise DomainError("LOGISTICS_COMPARISON_REQUIRED", "多家比价必须填写参与方与比较结论摘要")
     if bool(data.settlement_for_project_id) != bool(data.project_version):
         raise DomainError("INVALID_TOOL_INPUT", "本次项目结算价格必须同时填写项目和当前项目版本")
+    return data
+
+
+def parse_customer_acceptance(arguments):
+    try:
+        data = CustomerAcceptanceProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "客户验收参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.accepted_date > now().date():
+        raise DomainError("DATE_INVALID", "客户验收日期不能在未来")
+    if data.result == "FAILED" and not data.issue_description.strip():
+        raise DomainError("ACCEPTANCE_ISSUE_REQUIRED", "客户验收未通过时必须填写问题描述")
+    if data.corrective_due_date and data.corrective_due_date < data.accepted_date:
+        raise DomainError("DATE_INVALID", "整改期限不能早于客户验收日期")
+    if data.deduction_amount is not None and not data.currency:
+        raise DomainError("CURRENCY_REQUIRED", "验收扣款必须填写币种")
+    if data.deduction_amount is not None and data.responsibility == "UNKNOWN":
+        raise DomainError("RESPONSIBILITY_REQUIRED", "验收扣款必须明确责任归属")
+    if data.responsibility == "SUPPLIER" and not data.supplier_id:
+        raise DomainError("SUPPLIER_REQUIRED", "供应商责任必须关联供应商")
     return data
 
 
@@ -1012,6 +1057,97 @@ def create_logistics_quote(db, user, data: LogisticsQuoteProposalInput):
     return row
 
 
+def preview_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "project_close.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备客户验收", 409)
+
+    signature = None
+    if data.signature_id:
+        signature = db.get(m.CustomerDeliverySignature, data.signature_id)
+        if not signature or signature.project_id != project.id:
+            raise DomainError("SIGNATURE_NOT_FOUND", "客户签收记录不存在或不属于该项目", 404)
+        if signature.sign_status != "SIGNED":
+            raise DomainError("SIGNATURE_NOT_CONFIRMED", "客户签收记录尚未确认，不能作为验收依据", 409)
+
+    if data.acceptance_type == "RECHECK":
+        failed = db.scalar(select(m.CustomerAcceptanceRecord.id).where(
+            m.CustomerAcceptanceRecord.project_id == project.id,
+            m.CustomerAcceptanceRecord.result == "FAILED",
+        ))
+        if not failed:
+            raise DomainError("RECHECK_WITHOUT_FAILURE", "没有已登记的客户验收未通过记录，不能直接登记复验")
+    duplicate = db.scalar(select(m.CustomerAcceptanceRecord.id).where(
+        m.CustomerAcceptanceRecord.project_id == project.id,
+        m.CustomerAcceptanceRecord.acceptance_type == data.acceptance_type,
+        m.CustomerAcceptanceRecord.accepted_date == data.accepted_date,
+        m.CustomerAcceptanceRecord.evidence == data.evidence,
+    ))
+    if duplicate:
+        raise DomainError("CUSTOMER_ACCEPTANCE_DUPLICATE", "相同客户验收依据已经登记", 409)
+
+    supplier = None
+    if data.supplier_id:
+        supplier = db.get(m.Supplier, data.supplier_id)
+        if not supplier or not supplier.active:
+            raise DomainError("SUPPLIER_INVALID", "验收责任供应商不存在或已停用", 409)
+    if data.contact_case_id:
+        case = db.get(m.ContactCase, data.contact_case_id)
+        if not case or case.project_id != project.id:
+            raise DomainError("CONTACT_NOT_FOUND", "验收关联工程联络单不存在或不属于该项目", 404)
+
+    display = {
+        "操作": "登记客户质量验收结果",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "客户签收依据": signature.shipment_reference if signature else "未关联签收记录",
+        "验收类型": "初次验收" if data.acceptance_type == "INITIAL" else "整改复验",
+        "验收结果": data.result,
+        "验收日期": data.accepted_date.isoformat(),
+        "问题描述": data.issue_description or "无",
+        "责任归属": data.responsibility,
+        "责任供应商": supplier.name if supplier else "不适用",
+        "整改期限": data.corrective_due_date.isoformat() if data.corrective_due_date else "未设置",
+        "验收扣款": (f"{data.deduction_amount:.2f} {data.currency}" if data.deduction_amount is not None else "无"),
+        "计划影响天数": data.schedule_impact_days,
+        "需要合同变化": "是" if data.contract_change_required else "否",
+        "工程联络单": data.contact_case_id or "未关联",
+        "验收依据": data.evidence,
+        "说明": "本人确认后仅登记客户质量验收事实；不自动关闭项目、不自动扣款、不替代整改复验或合同变更审批。",
+    }
+    return project, display
+
+
+def create_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput):
+    project, _ = preview_customer_acceptance(db, user, data)
+    row = m.CustomerAcceptanceRecord(
+        project_id=project.id,
+        signature_id=data.signature_id,
+        acceptance_type=data.acceptance_type,
+        result=data.result,
+        accepted_date=data.accepted_date,
+        issue_description=data.issue_description,
+        responsibility=data.responsibility,
+        corrective_due_date=data.corrective_due_date,
+        contact_case_id=data.contact_case_id,
+        supplier_id=data.supplier_id,
+        deduction_amount=data.deduction_amount,
+        currency=data.currency,
+        schedule_impact_days=data.schedule_impact_days,
+        contract_change_required=data.contract_change_required,
+        evidence=data.evidence,
+        confirmed_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def execute_delivery_logistics_tool(db, user, key, arguments, run=None):
     if key == "prepare_logistics_route":
         data = parse_logistics_route(arguments)
@@ -1025,6 +1161,12 @@ def execute_delivery_logistics_tool(db, user, key, arguments, run=None):
         kind = "logistics_quote"
         action = "confirm_logistics_quote"
         limitation = "仅准备物流报价或项目结算价格确认；本人确认后才登记生效价格，不执行发货、付款或财务对账。"
+    elif key == "prepare_customer_acceptance":
+        data = parse_customer_acceptance(arguments)
+        _, display = preview_customer_acceptance(db, user, data)
+        kind = "customer_acceptance"
+        action = "confirm_customer_acceptance"
+        limitation = "仅准备客户质量验收登记建议；本人确认后才写入验收事实，不自动扣款、整改、改合同或关闭项目。"
     else:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
     proposal = {
@@ -1070,6 +1212,9 @@ def validate_intent(db, user, payload):
     elif proposal.get("kind") == "logistics_quote":
         data = parse_logistics_quote(proposal["input"])
         _, _, _, _, display = preview_logistics_quote(db, user, data)
+    elif proposal.get("kind") == "customer_acceptance":
+        data = parse_customer_acceptance(proposal["input"])
+        _, display = preview_customer_acceptance(db, user, data)
     else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
@@ -1085,6 +1230,14 @@ def confirm(db, user, payload):
             "project_id": row.project_id,
             "logistics_route_id": row.id,
             "action": "logistics_route",
+            "status": "CONFIRMED",
+        }
+    if proposal["kind"] == "customer_acceptance":
+        row = create_customer_acceptance(db, user, data)
+        return {
+            "project_id": row.project_id,
+            "customer_acceptance_record_id": row.id,
+            "action": "customer_acceptance",
             "status": "CONFIRMED",
         }
     row = create_logistics_quote(db, user, data)

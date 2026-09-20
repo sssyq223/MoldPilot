@@ -78,7 +78,7 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
       <button type="button" class="icon-button" aria-label="关闭业务操作详情" @click="intent=null;showDetails=false"><X :size="17"/></button>
     </div>
     <dl><template v-for="(value,key) in detailDisplay" :key="String(key)"><dt>{{key}}</dt><dd>{{displayValue(String(key),value)}}</dd></template></dl>
-    <div v-if="policy" class="confirmation-policy modal-policy" :class="{delegated:policy.agent_permission_mode==='delegated_auto'}">
+    <div v-if="policy&&!resolved" class="confirmation-policy modal-policy" :class="{delegated:policy.agent_permission_mode==='delegated_auto'}">
       <strong>{{policy.title}}</strong>
       <small>{{policy.description}}</small>
     </div>

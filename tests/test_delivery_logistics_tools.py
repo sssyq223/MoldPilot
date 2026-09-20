@@ -390,6 +390,167 @@ def test_delivery_logistics_reports_failed_customer_acceptance_deduction_and_rec
         assert "合同变化" in warnings
 
 
+def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_distinct(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-ACCEPT-CONFIRM")
+        signature = customer_signature(db, p, admin, "CUSTOMER-SIGN-CONFIRM")
+        sup = supplier(db, "acceptance")
+        conversation = m.Conversation(user_id=admin.id, title="客户质量验收确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记客户质量验收未通过记录",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "signature_id": signature.id,
+            "acceptance_type": "INITIAL",
+            "result": "FAILED",
+            "accepted_date": date.today().isoformat(),
+            "issue_description": "客户发现尺寸偏差，需整改复验",
+            "responsibility": "SUPPLIER",
+            "corrective_due_date": (date.today() + timedelta(days=7)).isoformat(),
+            "supplier_id": sup.id,
+            "deduction_amount": "3000.00",
+            "currency": "CNY",
+            "schedule_impact_days": 7,
+            "contract_change_required": True,
+            "evidence": "客户盖章验收报告-001",
+        }
+    schema = tool_schema("prepare_customer_acceptance")["function"]["parameters"]
+    assert {"project_id", "project_version", "result", "evidence"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_customer_acceptance", args, run=run)
+        assert evidence["proposal"]["kind"] == "customer_acceptance"
+        assert evidence["proposal"]["display"]["验收扣款"] == "3000.00 CNY"
+        assert db.scalar(select(m.CustomerAcceptanceRecord.id)) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_customer_acceptance", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "delivery_logistics.execute", step.id, {
+            "step_id": step.id,
+            "proposal_hash": bpm.content_hash(evidence["proposal"]),
+        })
+        assert db.scalar(select(m.CustomerAcceptanceRecord.id)) is None
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.CustomerAcceptanceRecord, receipt["customer_acceptance_record_id"])
+        assert receipt["status"] == "CONFIRMED"
+        assert row.signature_id == args["signature_id"]
+        assert row.result == "FAILED"
+        assert row.deduction_amount == Decimal("3000.00")
+        assert row.schedule_impact_days == 7
+        assert row.confirmed_by == admin.id
+        context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ACCEPT-CONFIRM"})
+        delivery = context["data"][0]["analysis"]["customer_delivery_acceptance"]
+        assert delivery["derived_status"]["has_customer_signature"] is True
+        assert delivery["derived_status"]["has_customer_acceptance"] is False
+        assert delivery["acceptance_records"][0]["id"] == row.id
+        with pytest.raises(DomainError) as duplicate:
+            execute(db, admin, "prepare_customer_acceptance", args, run=run)
+        assert duplicate.value.code == "CUSTOMER_ACCEPTANCE_DUPLICATE"
+
+
+def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-ACCEPT-RECHECK")
+        other = project(db, "DLV-ACCEPT-OTHER")
+        signature = customer_signature(db, other, admin, "OTHER-SIGN")
+        operator = user(db, "limited-acceptance")
+        grant(db, admin, operator, "project.read", project_id=p.id)
+        capability(db, operator, "prepare_customer_acceptance")
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "acceptance_type": "RECHECK",
+            "result": "FAILED",
+            "accepted_date": date.today().isoformat(),
+            "issue_description": "第一次复验仍未达标",
+            "evidence": "复验报告-001",
+        }
+        with pytest.raises(DomainError) as missing_prior:
+            execute(db, admin, "prepare_customer_acceptance", args)
+        assert missing_prior.value.code == "RECHECK_WITHOUT_FAILURE"
+        with pytest.raises(DomainError) as forbidden:
+            execute(db, operator, "prepare_customer_acceptance", args)
+        assert forbidden.value.code == "TOOL_FORBIDDEN"
+        first = m.CustomerAcceptanceRecord(
+            project_id=p.id,
+            signature_id=None,
+            acceptance_type="INITIAL",
+            result="FAILED",
+            accepted_date=date.today() - timedelta(days=1),
+            issue_description="初次验收尺寸偏差",
+            responsibility="INTERNAL",
+            schedule_impact_days=0,
+            contract_change_required=False,
+            evidence="初次验收报告",
+            confirmed_by=admin.id,
+        )
+        db.add(first)
+        db.flush()
+        conversation = m.Conversation(user_id=admin.id, title="客户复验确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记客户复验结果",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        for sequence, current_args in enumerate((args, {
+            **args,
+            "result": "PASSED",
+            "issue_description": "整改复验通过",
+            "evidence": "复验报告-002",
+        })):
+            evidence = execute(db, admin, "prepare_customer_acceptance", current_args, run=run)
+            step = m.Step(
+                run_id=run.id,
+                sequence=sequence,
+                tool="prepare_customer_acceptance",
+                request_hash=f"recheck-{sequence}",
+                result=evidence,
+            )
+            db.add(step)
+            db.flush()
+            intent = business.create_intent(db, admin, "delivery_logistics.execute", step.id, {
+                "step_id": step.id,
+                "proposal_hash": bpm.content_hash(evidence["proposal"]),
+            })
+            receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            assert db.get(m.CustomerAcceptanceRecord, receipt["customer_acceptance_record_id"]).result == current_args["result"]
+            context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ACCEPT-RECHECK"})
+            status = context["data"][0]["analysis"]["derived_status"]
+            assert status["has_customer_recheck_passed"] is (current_args["result"] == "PASSED")
+        with pytest.raises(DomainError) as wrong_signature:
+            execute(db, admin, "prepare_customer_acceptance", {**args, "signature_id": signature.id})
+        assert wrong_signature.value.code == "SIGNATURE_NOT_FOUND"
+        with pytest.raises(DomainError) as missing_issue:
+            execute(db, admin, "prepare_customer_acceptance", {**args, "issue_description": ""})
+        assert missing_issue.value.code == "ACCEPTANCE_ISSUE_REQUIRED"
+        with pytest.raises(DomainError) as missing_currency:
+            execute(db, admin, "prepare_customer_acceptance", {**args, "deduction_amount": "100.00", "responsibility": "INTERNAL"})
+        assert missing_currency.value.code == "CURRENCY_REQUIRED"
+
+
 def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:

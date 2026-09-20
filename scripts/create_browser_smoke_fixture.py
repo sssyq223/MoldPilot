@@ -31,6 +31,7 @@ from domain_packs.mold.tools.erp.change import contact_tools
 from domain_packs.mold.tools.erp.commercial import contract_tools
 from domain_packs.mold.tools.erp.commercial import quotation_tools
 from domain_packs.mold.tools.erp.finance import finance_context_tools
+from domain_packs.mold.erp.procurement import delivery_logistics
 from domain_packs.mold.tools.erp.project import project_closure_tools as closure_tools
 from domain_packs.mold.tools.erp.project import project_control_tools as pause_tools
 from domain_packs.mold.tools.erp.project import plan_tools
@@ -1402,6 +1403,130 @@ def build_mold_transfer_receipt(
         engine.dispose()
 
 
+def build_customer_acceptance(
+    database_url: str,
+    password: str,
+    project_code: str | None = None,
+    username: str = "admin",
+):
+    """Create a pending customer-quality-acceptance card for browser QA."""
+    _require_postgresql(database_url)
+    engine = make_engine(database_url)
+    parsed = urlsplit(database_url)
+    run_key = now().strftime("%m%d%H%M%S")
+    project_code = project_code or f"SMOKE-CUSTOMER-ACCEPTANCE-{run_key}"
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            user = db.scalar(select(m.User).where(m.User.username == username).limit(1))
+            if user is None or not user.active:
+                raise SystemExit(f"Smoke user {username!r} is missing or inactive.")
+            project = _upsert_one(
+                db,
+                m.Project,
+                [m.Project.code == project_code],
+                {"code": project_code, "name": "浏览器客户质量验收项目", "status": "ACTIVE"},
+            )
+            profile = db.get(m.ProjectProfile, project.id)
+            if profile is None:
+                db.add(m.ProjectProfile(
+                    project_id=project.id,
+                    owner_user_id=user.id,
+                    execution_mode="FULL_OUTSOURCE",
+                    customer_due_date=date.today() + timedelta(days=45),
+                    settlement_status="OPEN",
+                ))
+            else:
+                profile.owner_user_id = user.id
+                profile.execution_mode = "FULL_OUTSOURCE"
+                profile.settlement_status = "OPEN"
+            supplier = _upsert_one(
+                db,
+                m.Supplier,
+                [m.Supplier.code == f"{project_code}-SUPPLIER"],
+                {"code": f"{project_code}-SUPPLIER", "name": "浏览器客户验收责任供应商", "category": "outsource", "active": True},
+            )
+            signature = _upsert_one(
+                db,
+                m.CustomerDeliverySignature,
+                [m.CustomerDeliverySignature.project_id == project.id, m.CustomerDeliverySignature.shipment_reference == f"{project_code}-SHIP-001"],
+                {
+                    "project_id": project.id,
+                    "shipment_reference": f"{project_code}-SHIP-001",
+                    "signed_date": date.today(),
+                    "signer_name": "客户质量负责人（浏览器验收）",
+                    "sign_status": "SIGNED",
+                    "move_type": "DELIVERY",
+                    "evidence": "客户签收单原件（浏览器验收合成）",
+                    "recorded_by": user.id,
+                },
+            )
+            conversation = m.Conversation(user_id=user.id, title="客户质量验收确认")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                security_version=user.security_version,
+                prompt=f"请登记 {project_code} 的客户质量验收结果。",
+                status="SUCCEEDED",
+                checkpoint={
+                    "authorization_hash": fingerprint(db, user),
+                    "agent_permission_mode": "ask",
+                },
+            )
+            db.add(run)
+            db.flush()
+            arguments = {
+                "project_id": project.id,
+                "project_version": project.row_version,
+                "signature_id": signature.id,
+                "acceptance_type": "INITIAL",
+                "result": "FAILED",
+                "accepted_date": date.today().isoformat(),
+                "issue_description": "客户验收发现外观缺陷，需返工并复验。",
+                "responsibility": "SUPPLIER",
+                "corrective_due_date": (date.today() + timedelta(days=14)).isoformat(),
+                "supplier_id": supplier.id,
+                "deduction_amount": "3000.00",
+                "currency": "CNY",
+                "schedule_impact_days": 7,
+                "contract_change_required": False,
+                "evidence": "客户验收报告与缺陷照片（浏览器验收合成）",
+            }
+            tool = "prepare_customer_acceptance"
+            result = delivery_logistics.execute_delivery_logistics_tool(db, user, tool, arguments, run=run)
+            step = m.Step(
+                run_id=run.id,
+                sequence=0,
+                tool=tool,
+                request_hash=content_hash({"key": tool, "arguments": arguments}),
+                result=result,
+            )
+            db.add(step)
+            db.flush()
+            _attach_smoke_tool_trace(run, step, tool, arguments)
+            run.result = {
+                "response_kind": "BUSINESS",
+                "summary": "已准备客户质量验收未通过登记确认卡。本人确认后才保存验收、责任、整改、扣款及计划影响事实；不自动扣款、改合同或关闭项目。",
+                "evidence_ids": [step.id],
+                "suggestions": ["请核对签收依据、验收问题、责任供应商、整改期限、扣款金额和计划影响；确认后再登记，整改完成后需另行准备复验。"],
+                "evidence": [{"id": step.id, "tool": step.tool, **result}],
+            }
+            return {
+                "database": parsed.path.lstrip("/"),
+                "host": parsed.hostname,
+                "port": parsed.port,
+                "username": user.username,
+                "password": password,
+                "project_code": project_code,
+                "conversation_id": conversation.id,
+                "step_id": step.id,
+            }
+    finally:
+        engine.dispose()
+
+
 def build_bid_intake(
     database_url: str,
     password: str,
@@ -1678,7 +1803,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "plan_change", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff", "customer_receipt", "supplier_payment", "supplier_deduction", "mold_transfer_receipt"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "plan_change", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff", "customer_receipt", "supplier_payment", "supplier_deduction", "mold_transfer_receipt", "customer_acceptance"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
@@ -1697,5 +1822,7 @@ if __name__ == "__main__":
         print(build_supplier_deduction(url, args.password, args.project_code or None, args.username))
     elif args.scenario == "mold_transfer_receipt":
         print(build_mold_transfer_receipt(url, args.password, args.project_code or None, args.username))
+    elif args.scenario == "customer_acceptance":
+        print(build_customer_acceptance(url, args.password, args.project_code or None, args.username))
     else:
         print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))
