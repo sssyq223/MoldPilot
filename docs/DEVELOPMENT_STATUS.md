@@ -2,6 +2,15 @@
 
 更新：2026-09-19。此表记录已实现与未实现的差异，不缩减 V3.6 全量范围，不把业务功能分产品阶段，也不替代正式验收。
 
+## 持续开发：工程联络影响到项目计划变更审批闭环（2026-09-20）
+
+- 新增 PostgreSQL 浏览器验收种子 `scripts/create_browser_smoke_fixture.py --scenario plan_change`：从工程联络影响构造真实项目版本、原计划、顺延的制造节点、新增试模节点和受影响部门，调用 `prepare_project_plan_change` 生成操作建议；不会直接改写原计划。
+- 内置浏览器已验证对话框内完整确认卡：展示项目、原计划、项目版本、变更原因、变更节点、新增节点、审批流程、任务数和受影响部门。本人点击确认后只创建计划变更材料并提交 Agent BPM，审批生效前不改变计划或客户交期。
+- 修复 Harness/恢复边界的两个架构问题：可信人工批准回执现在满足恢复轮的正式动作完成条件；Host-owned resume 保留原 proposal step 的 `evidence_ids`，并只在可信批准回执路径将旧版 `message/status` 响应协议化为 `response_kind/summary/evidence_ids/suggestions`，普通模型输出仍严格失败关闭，不做自然语言兜底。
+- 同时修复多进程 worker scope 下的确认入口：领域 proposal source 现在接受 `RUNNING_SCOPED`，不会把 API/Worker 使用稳定 scope 时的有效操作建议误报为“任务已停止”。
+- 恢复指令明确要求模型输出完整最终协议并保留 `proposal_decision`；确认卡处理后不会再次要求确认，也不会丢失已处理确认卡和前序证据。
+- 验证：Harness 与 Agent API 定向回归 `147 passed`；内置浏览器使用 PostgreSQL 合成项目 `BROWSER-PLAN-CHANGE-005` 完成“准备建议 → 展开确认卡 → 本人确认 → 提交 BPM → Agent 唤醒并回复”闭环。页面显示 `SUBMITTED`、已处理确认卡和最终正文；数据库 Run 为 `SUCCEEDED`，结果含 `proposal_decision=approved`、权威回执与 proposal evidence。旧的 `BROWSER-PLAN-CHANGE-001`～`004` 失败记录保留作为回归证据，不冒充成功验收。
+
 ## 持续开发：PI-Desktop 对齐的 Harness 语义证据保护（2026-09-19）
 
 - 对照 `D:\pi-desktop` 的 turn-boundary/checkpoint 语义修复通用 Harness：工具结果仍先作为完整 MCP/`ai_step` 回执落库，模型侧压缩只允许收缩审计明细，不再对领域工具声明的 `model_context`、确认 `proposal`、工具错误和权威回执执行深度/长度抽样。证据编号不能脱离语义事实继续驱动模型生成结论。

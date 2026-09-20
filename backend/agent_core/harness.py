@@ -843,6 +843,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     proposal_resolution = (context.get("proposal_resolution")
                            if isinstance(context.get("proposal_resolution"), dict) else None)
     resolution_decision = (proposal_resolution or {}).get("decision")
+    resolution_receipt = (proposal_resolution or {}).get("authoritative_receipt")
+    trusted_action_resolved = bool(
+        resolution_decision == "approved" and isinstance(resolution_receipt, dict)
+        and resolution_receipt
+    )
     design_attachment_upload_requested = _is_design_attachment_upload_request(context)
     preferred_group_keys = DESIGN_UPLOAD_SKILL_KEYS if design_attachment_upload_requested else ()
     business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
@@ -1305,6 +1310,21 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         except ValueError:
             request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
             continue
+        # A few OpenAI-compatible providers return the confirmed-proposal
+        # answer using the older ``message``/``status`` envelope even though
+        # the semantic decision is valid.  Only the trusted-host resume path
+        # may normalize that legacy envelope; ordinary model answers remain
+        # fail-closed and must satisfy the public protocol themselves.
+        if (isinstance(result, dict) and proposal_resolution
+                and resolution_decision == "approved"
+                and result.get("proposal_decision") == "approved"
+                and isinstance(result.get("message"), str)
+                and result["message"].strip()):
+            result = dict(result)
+            result.setdefault("summary", result["message"].strip())
+            result.setdefault("evidence_ids", [])
+            result.setdefault("suggestions", [])
+            result.setdefault("response_kind", "BUSINESS")
         if (not isinstance(result, dict) or not isinstance(result.get("summary"), str)
                 or not isinstance(result.get("evidence_ids"), list)
                 or not all(isinstance(e, str) for e in result["evidence_ids"])
@@ -1352,13 +1372,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             details = json.dumps(unresolved_actions, ensure_ascii=False)
             request_protocol_repair(ACTION_OUTCOME_REPAIR_REMINDER + "\n未解决的工具错误：" + details)
             continue
-        if formal_action_requested and kind == 'BUSINESS' and not successful_action_evidence:
+        if (formal_action_requested and kind == 'BUSINESS'
+                and not successful_action_evidence and not trusted_action_resolved):
             request_protocol_repair(ACTION_NOT_COMPLETED_REPAIR_REMINDER)
             continue
         if kind == 'BUSINESS' and successful_action_evidence and not successful_action_evidence <= set(result['evidence_ids']):
             request_protocol_repair(ACTION_EVIDENCE_REPAIR_REMINDER)
             continue
-        if not evidence_ids and kind == 'BUSINESS':
+        if (not evidence_ids and kind == 'BUSINESS'
+                and not (proposal_resolution and resolution_decision == 'approved'
+                         and result.get('proposal_decision') == 'approved')):
             result = {"summary": "当前未取得业务证据，无法确认业务结论。请补充对象或检查可用工具。", "evidence_ids": [], "suggestions": []}
         streaming_model_message = None
         save()

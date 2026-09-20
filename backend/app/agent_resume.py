@@ -11,7 +11,7 @@ def _final_snapshot(result):
     if not isinstance(result, dict):
         return None
     snapshot = {key: result.get(key) for key in (
-        "response_kind", "summary", "message", "suggestions", "error_code"
+        "response_kind", "summary", "message", "suggestions", "error_code", "evidence_ids"
     ) if result.get(key) is not None}
     return snapshot or None
 
@@ -51,6 +51,11 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     prior = _final_snapshot(run.result)
     if prior:
         prior_finals.append(prior)
+    prior_evidence_ids = [item for item in (prior or {}).get("evidence_ids", [])
+                          if isinstance(item, str)]
+    existing_evidence_ids = [item for item in checkpoint.get("evidence_ids", [])
+                             if isinstance(item, str)]
+    resumed_evidence_ids = list(dict.fromkeys(existing_evidence_ids + prior_evidence_ids))
 
     if decision == "approved":
         fact = {
@@ -62,6 +67,8 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         instruction = (
             "这是已完成的可信人工确认及权威执行回执。请依据回执自然回应用户，"
             "准确区分已执行、已提交审批和最终生效；当前不再等待批准，不得再次调用工具。"
+            "最终 JSON 必须包含 response_kind=BUSINESS、summary、evidence_ids、suggestions，"
+            "并保留 proposal_decision。"
         )
     else:
         fact = {
@@ -122,6 +129,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         "proposal_decisions": decisions,
         "proposal_resolution": fact,
         "prior_finals": prior_finals,
+        # The proposal step is already a trusted business fact. Preserve its
+        # evidence ids across the host-owned resume so the follow-up model can
+        # cite the same step instead of being rejected as an unknown fact.
+        "evidence_ids": resumed_evidence_ids,
         "pending": [],
         "pending_index": 0,
         "finalizing": True,

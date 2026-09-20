@@ -32,6 +32,7 @@ from domain_packs.mold.tools.erp.commercial import contract_tools
 from domain_packs.mold.tools.erp.commercial import quotation_tools
 from domain_packs.mold.tools.erp.project import project_closure_tools as closure_tools
 from domain_packs.mold.tools.erp.project import project_control_tools as pause_tools
+from domain_packs.mold.tools.erp.project import plan_tools
 from domain_packs.mold.erp.core import domains
 
 
@@ -84,6 +85,7 @@ def _build_workflow(db, user_id: str, business_type: str, scenario: str):
     xml = bpm.compile_bpmn(config)
     names = {
         "contact": "工程联络处理方案审批（浏览器验收）",
+        "plan_change": "工程联络影响计划变更审批（浏览器验收）",
         "contract": "销售合同审批（浏览器验收）",
         "contract_relation": "销售合同替代审批（浏览器验收）",
         "quotation": "客户报价版本审批（浏览器验收）",
@@ -191,6 +193,7 @@ def build(
 
         business_type = (
             "contact_resolution" if scenario == "contact"
+            else "plan_change" if scenario == "plan_change"
             else "sales_contract" if scenario in {"contract", "contract_relation"}
             else "project_close" if scenario == "closure"
             else "pause_resume"
@@ -200,6 +203,7 @@ def build(
             user_id=user.id,
             title=(
                 "工程联络影响项验收" if scenario == "contact"
+                else "工程联络影响计划变更验收" if scenario == "plan_change"
                 else "销售合同替代与历史回款验收" if scenario == "contract_relation"
                 else "销售合同附件审批验收" if scenario == "contract"
                 else "项目终止业务流验收" if scenario == "closure"
@@ -215,6 +219,8 @@ def build(
             prompt=(
                 "请将受影响图纸纳入工程联络单，明确返工、交期与费用影响。"
                 if scenario == "contact"
+                else f"请根据工程联络单对 {project_code} 准备计划变更审批建议。"
+                if scenario == "plan_change"
                 else f"请替代 {project_code} 的原销售合同，并把历史回款明确归属到新合同节点。"
                 if scenario == "contract_relation"
                 else f"请把本轮上传的销售合同原件绑定到 {project_code} 并提交审批。"
@@ -287,6 +293,45 @@ def build(
             result = contact_tools.execute_tool(db, user, tool, arguments)
             summary = "已按当前联络单资料准备结构化影响与责任事项，请核对对象、返工动作、交期、金额和来源后确认。"
             suggestions = ["确认后只新增联络协作事项；方案审批、实际执行和独立复验仍分别办理。"]
+        elif scenario == "plan_change":
+            tool = "prepare_project_plan_change"
+            baseline_tasks = list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id == plan.id).order_by(m.PlanTask.key)))
+            task_payload = [
+                {
+                    "key": row.key,
+                    "name": row.name,
+                    "owner_user_id": row.owner_user_id,
+                    "planned_start": row.planned_start.isoformat(),
+                    "planned_end": (
+                        (row.planned_end + timedelta(days=2)).isoformat()
+                        if row.key == "manufacture" else row.planned_end.isoformat()
+                    ),
+                    "prerequisites": [],
+                }
+                for row in baseline_tasks
+            ]
+            task_payload.append({
+                "key": "trial",
+                "name": "试模验证",
+                "owner_user_id": user.id,
+                "planned_start": (now().date() + timedelta(days=27)).isoformat(),
+                "planned_end": (now().date() + timedelta(days=29)).isoformat(),
+                "prerequisites": ["manufacture"],
+            })
+            arguments = {
+                "project_id": project.id,
+                "project_version": project.row_version,
+                "previous_id": plan.id,
+                "reason": "工程联络单确认图纸返工，制造节点顺延并新增试模验证节点",
+                "workflow_definition_id": workflow.id,
+                "tasks": task_payload,
+            }
+            result = plan_tools.execute_plan_tool(db, user, tool, arguments, run=run)
+            summary = "已根据工程联络单影响准备项目计划变更审批建议，请核对顺延节点、新增试模节点和受影响部门后确认。"
+            suggestions = [
+                "确认后只提交 Agent BPM；审批生效前原计划、执行任务和客户承诺交期不会改变。",
+                "审批生效后再由受影响部门确认执行影响，不能把计划变更建议当成已生效。",
+            ]
         elif scenario in {"contract", "contract_relation"}:
             customer = _upsert_one(
                 db,
@@ -1012,7 +1057,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "plan_change", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()

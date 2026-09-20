@@ -1900,6 +1900,59 @@ def test_confirmed_proposal_resume_cannot_return_to_awaiting_approval():
     assert gateway.saved['next_model_instructions'] == []
 
 
+def test_confirmed_proposal_resume_normalizes_legacy_message_envelope():
+    """A valid trusted receipt must not fail only because the provider used
+    the pre-protocol ``message``/``status`` response envelope.
+    """
+    legacy_reply = {'role': 'assistant', 'content': json.dumps({
+        'proposal_decision': 'approved',
+        'status': '已提交审批',
+        'message': '项目计划变更建议已获本人确认，并正式提交至 Agent BPM 审批流程。',
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    result = run_loop(context(
+        prompt='确认后继续说明',
+        messages=[{'role': 'system', 'content': '通用智能体协议'}],
+        proposal_resolution={'decision': 'approved',
+                             'authoritative_receipt': {'status': 'SUBMITTED'}},
+        finalizing=True,
+    ), Model([legacy_reply]), gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['summary'].startswith('项目计划变更建议已获本人确认')
+    assert result['proposal_decision'] == 'approved'
+    assert result['evidence_ids'] == []
+    assert gateway.final['summary'] == result['summary']
+
+
+def test_confirmed_proposal_receipt_satisfies_resumed_formal_action_guard():
+    receipt_reply = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'proposal_decision': 'approved',
+        'summary': '计划变更已提交审批，尚未最终生效。',
+        'evidence_ids': ['proposal-step'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    result = run_loop(context(
+        prompt='请办理项目计划变更并提交审批',
+        messages=[{'role': 'system', 'content': '通用智能体协议'}],
+        evidence_ids=['proposal-step'],
+        proposal_resolution={
+            'decision': 'approved',
+            'proposal_step_id': 'proposal-step',
+            'authoritative_receipt': {'status': 'SUBMITTED', 'action': 'plan_change'},
+        },
+        finalizing=True,
+        action_outcomes={},
+    ), Model([receipt_reply]), gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['proposal_decision'] == 'approved'
+    assert result['summary'] == '计划变更已提交审批，尚未最终生效。'
+    assert gateway.saved['protocol_repairs'] == 0
+
+
 def test_legacy_mid_history_system_messages_are_consolidated_at_provider_boundary():
     class StrictProviderModel:
         def generate(self, messages, tools):

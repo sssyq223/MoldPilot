@@ -162,6 +162,32 @@ def test_confirmed_proposal_is_requeued_as_a_new_model_turn(monkeypatch):
     assert '"event": "proposal_resolved"' in tool_receipt['content']
 
 
+def test_confirmed_proposal_resume_preserves_prior_evidence_ids(monkeypatch):
+    run = Run(
+        id='resume-evidence-run', conversation_id='conversation', user_id='user-1', security_version=1,
+        prompt='准备操作', status='SUCCEEDED',
+        checkpoint={'messages': [], 'completed_at': '2026-09-17T10:00:00+08:00',
+                    'evidence_ids': ['prior-evidence']},
+        result={'response_kind': 'AWAITING_APPROVAL', 'summary': '确认卡已准备，请确认。',
+                'evidence_ids': ['proposal-evidence'], 'suggestions': []},
+    )
+    step = Step(id='proposal-step-evidence', run_id=run.id, sequence=0, tool='prepare_demo',
+                request_hash='hash', result={})
+
+    class FakeDb:
+        def get(self, model, identity):
+            if model is Step and identity == step.id:
+                return step
+            if model is Run and identity == run.id:
+                return run
+            return None
+
+    monkeypatch.setattr('app.agent_resume.model_settings', lambda: SimpleNamespace(llm_enabled=True))
+    assert queue_after_proposal_decision(FakeDb(), SimpleNamespace(id='user-1'),
+                                         step.id, 'approved', {'status': 'SUBMITTED'}) is True
+    assert run.checkpoint['evidence_ids'] == ['prior-evidence', 'proposal-evidence']
+
+
 def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monkeypatch):
     run, claimed = start(client, monkeypatch)
     checkpoint = {
