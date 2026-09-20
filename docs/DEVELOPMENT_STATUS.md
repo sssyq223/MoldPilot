@@ -9,6 +9,7 @@
 - 验证：PostgreSQL 种子实际生成 `customer_receipt` proposal；本人确认后返回 `CONFIRMED`，回款凭证号、金额 `12000.00 CNY` 与收款节点正确落库，确认前查询不到该回款记录。随后通过真实 Agent Worker 恢复同一 Run，状态从 `QUEUED_SCOPED` → `RUNNING_SCOPED` → `SUCCEEDED`，最终正文带 `proposal_decision=approved` 和原 proposal evidence。财务领域与 Agent API 定向回归 `35 passed`，脚本编译检查通过。
 - 该闭环已具备内置浏览器可验收入口，但真实客户银行回单、财务人员签字、ERP/财务系统联调和正式业务验收仍保持 `NOT_VERIFIED`；不把合成 PostgreSQL 数据宣称为真实财务验收。
 - 同步新增 `--scenario supplier_payment`：用有效整套委外合同、已审批付款申请和授权余额生成供应商实付确认卡。实测本人确认后付款申请授权余额由 `25000.00` 扣减到 `20000.00 CNY`，`PaymentConfirmation` 与 Agent 恢复正文均成功生成；不执行银行转账。
+- 同步新增 `--scenario supplier_deduction`：用有效整套委外合同、供应商和工程联络事项生成供应商责任扣款/结算依据确认卡。确认前只保存 proposal；本人确认后才登记 `SupplierDeductionSettlement`，并保留责任依据、工程联络单/任务、合同、来源引用和结算单号，不自动抵扣供应商付款或执行银行付款。实测 PostgreSQL 中扣款金额 `3000.00 CNY` 以 `SETTLED` 落库，随后通过真实 Agent Worker 恢复同一 Run：`QUEUED_SCOPED` → `SUCCEEDED`，最终正文含 `proposal_decision=approved`、权威回执和原 proposal evidence。该场景只是合成数据验收，不代表真实供应商对账或财务付款验收。
 
 ## 持续开发：工程联络影响到项目计划变更审批闭环（2026-09-20）
 
