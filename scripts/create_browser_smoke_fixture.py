@@ -936,6 +936,169 @@ def build_customer_receipt(
         engine.dispose()
 
 
+def build_supplier_payment(
+    database_url: str,
+    password: str,
+    project_code: str | None = None,
+    username: str = "admin",
+):
+    """Create a pending supplier-payment confirmation card for browser QA."""
+    _require_postgresql(database_url)
+    engine = make_engine(database_url)
+    parsed = urlsplit(database_url)
+    run_key = now().strftime("%m%d%H%M%S")
+    project_code = project_code or f"SMOKE-SUPPLIER-PAYMENT-{run_key}"
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory.begin() as db:
+            user = db.scalar(select(m.User).where(m.User.username == username).limit(1))
+            if user is None or not user.active:
+                raise SystemExit(f"Smoke user {username!r} is missing or inactive.")
+            project = _upsert_one(
+                db,
+                m.Project,
+                [m.Project.code == project_code],
+                {"code": project_code, "name": "浏览器供应商实付验收项目", "status": "ACTIVE"},
+            )
+            profile = db.get(m.ProjectProfile, project.id)
+            if profile is None:
+                db.add(m.ProjectProfile(
+                    project_id=project.id,
+                    owner_user_id=user.id,
+                    execution_mode="FULL_OUTSOURCE",
+                    customer_due_date=date.today() + timedelta(days=60),
+                    settlement_status="OPEN",
+                ))
+            else:
+                profile.owner_user_id = user.id
+                profile.execution_mode = "FULL_OUTSOURCE"
+                profile.settlement_status = "OPEN"
+            supplier = _upsert_one(
+                db,
+                m.Supplier,
+                [m.Supplier.code == f"{project_code}-SUPPLIER"],
+                {"code": f"{project_code}-SUPPLIER", "name": "浏览器供应商实付验收供应商", "category": "outsource", "active": True},
+            )
+            contract = _upsert_one(
+                db,
+                m.BusinessSubject,
+                [m.BusinessSubject.number == f"{project_code}-FOC"],
+                {
+                    "kind": "full_outsource_contract",
+                    "number": f"{project_code}-FOC",
+                    "project_id": project.id,
+                    "category": "outsource",
+                    "created_by": user.id,
+                    "status": "EFFECTIVE",
+                },
+            )
+            if db.get(m.ContractDetail, contract.id) is None:
+                db.add(m.ContractDetail(
+                    subject_id=contract.id,
+                    customer_id=None,
+                    supplier_id=supplier.id,
+                    amount=Decimal("70000.00"),
+                    currency="CNY",
+                    contract_number=f"{project_code}-FOC-001",
+                    expected_date=date.today() + timedelta(days=45),
+                    replaces_id=None,
+                ))
+            stage = db.scalar(select(m.PaymentStage).where(
+                m.PaymentStage.contract_id == contract.id,
+                m.PaymentStage.name == "委外验收付款",
+            ).limit(1))
+            if stage is None:
+                stage = m.PaymentStage(
+                    contract_id=contract.id,
+                    name="委外验收付款",
+                    amount=Decimal("40000.00"),
+                    currency="CNY",
+                    condition="供应商验收后付款",
+                    condition_confirmed=True,
+                    condition_evidence="浏览器验收已核对委外合同付款节点",
+                )
+                db.add(stage)
+                db.flush()
+            payment = _upsert_one(
+                db,
+                m.BusinessSubject,
+                [m.BusinessSubject.number == f"{project_code}-PAY"],
+                {
+                    "kind": "supplier_payment",
+                    "number": f"{project_code}-PAY",
+                    "project_id": project.id,
+                    "category": "outsource",
+                    "created_by": user.id,
+                    "status": "EFFECTIVE",
+                },
+            )
+            if db.get(m.PaymentRequestDetail, payment.id) is None:
+                db.add(m.PaymentRequestDetail(
+                    subject_id=payment.id,
+                    stage_id=stage.id,
+                    amount=Decimal("25000.00"),
+                    currency="CNY",
+                    reservation=Decimal("25000.00"),
+                ))
+
+            conversation = m.Conversation(user_id=user.id, title="供应商实际付款确认验收")
+            db.add(conversation)
+            db.flush()
+            run = m.Run(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                security_version=user.security_version,
+                prompt=f"请登记 {project_code} 已核准的供应商实际付款。",
+                status="SUCCEEDED",
+                checkpoint={
+                    "authorization_hash": fingerprint(db, user),
+                    "agent_permission_mode": "ask",
+                },
+            )
+            db.add(run)
+            db.flush()
+            arguments = {
+                "project_id": project.id,
+                "project_version": project.row_version,
+                "payment_subject_id": payment.id,
+                "amount": "5000.00",
+                "currency": "CNY",
+                "paid_date": date.today().isoformat(),
+                "reference": f"{project_code}-PAY-001",
+                "evidence": "浏览器验收合成供应商付款回单",
+            }
+            tool = "prepare_supplier_payment_confirmation"
+            result = finance_context_tools.execute_finance_tool(db, user, tool, arguments, run=run)
+            step = m.Step(
+                run_id=run.id,
+                sequence=0,
+                tool=tool,
+                request_hash=content_hash({"key": tool, "arguments": arguments}),
+                result=result,
+            )
+            db.add(step)
+            db.flush()
+            run.result = {
+                "response_kind": "BUSINESS",
+                "summary": "已准备供应商实际付款确认卡。本人确认后才扣减该付款申请授权余额并写入实付台账，不执行银行转账。",
+                "evidence_ids": [step.id],
+                "suggestions": ["请核对付款申请、委外合同、付款节点、实付金额、日期和凭证号；确认后再写入付款事实。"],
+                "evidence": [{"id": step.id, "tool": step.tool, **result}],
+            }
+            return {
+                "database": parsed.path.lstrip("/"),
+                "host": parsed.hostname,
+                "port": parsed.port,
+                "username": user.username,
+                "password": password,
+                "project_code": project_code,
+                "conversation_id": conversation.id,
+                "step_id": step.id,
+            }
+    finally:
+        engine.dispose()
+
+
 def build_bid_intake(
     database_url: str,
     password: str,
@@ -1212,7 +1375,7 @@ if __name__ == "__main__":
     parser.add_argument("--url-key", default="AGENT_DATABASE_URL")
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin", help="Existing PostgreSQL-backed MoldPilot user. Defaults to admin.")
-    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "plan_change", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff", "customer_receipt"], default="pause")
+    parser.add_argument("--scenario", choices=["pause", "closure", "contact", "plan_change", "contract", "contract_relation", "quotation", "bid_intake", "internal_start_handoff", "customer_receipt", "supplier_payment"], default="pause")
     parser.add_argument("--project-code", default="", help="Optional fixed smoke project code. Omit to generate a unique SMOKE-* code.")
     parser.add_argument("--pdf-file", default="", help="Optional real PDF used by the contract smoke scenario.")
     args = parser.parse_args()
@@ -1225,5 +1388,7 @@ if __name__ == "__main__":
         print(build_internal_start_handoff(url, args.password, args.project_code or None, args.username))
     elif args.scenario == "customer_receipt":
         print(build_customer_receipt(url, args.password, args.project_code or None, args.username))
+    elif args.scenario == "supplier_payment":
+        print(build_supplier_payment(url, args.password, args.project_code or None, args.username))
     else:
         print(build(url, args.password, args.scenario, args.project_code or None, args.username, args.pdf_file or None))

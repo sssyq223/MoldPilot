@@ -8,6 +8,7 @@
 - 确认后仍复用通用 `finance.execute` 意图和领域命令 `customer_receipt.confirm`，只新增一条不可变客户实际回款确认；不会执行银行收款、开票、利润计算或项目关闭。合同金额、付款节点和原始凭证不被覆盖。
 - 验证：PostgreSQL 种子实际生成 `customer_receipt` proposal；本人确认后返回 `CONFIRMED`，回款凭证号、金额 `12000.00 CNY` 与收款节点正确落库，确认前查询不到该回款记录。随后通过真实 Agent Worker 恢复同一 Run，状态从 `QUEUED_SCOPED` → `RUNNING_SCOPED` → `SUCCEEDED`，最终正文带 `proposal_decision=approved` 和原 proposal evidence。财务领域与 Agent API 定向回归 `35 passed`，脚本编译检查通过。
 - 该闭环已具备内置浏览器可验收入口，但真实客户银行回单、财务人员签字、ERP/财务系统联调和正式业务验收仍保持 `NOT_VERIFIED`；不把合成 PostgreSQL 数据宣称为真实财务验收。
+- 同步新增 `--scenario supplier_payment`：用有效整套委外合同、已审批付款申请和授权余额生成供应商实付确认卡。实测本人确认后付款申请授权余额由 `25000.00` 扣减到 `20000.00 CNY`，`PaymentConfirmation` 与 Agent 恢复正文均成功生成；不执行银行转账。
 
 ## 持续开发：工程联络影响到项目计划变更审批闭环（2026-09-20）
 
