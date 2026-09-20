@@ -2075,13 +2075,14 @@ def test_safe_pre_delta_retry_wait_does_not_consume_business_deadline():
     assert gateway.saved['deadline'] > time.time()
 
 
-def test_context_budget_compacts_model_visible_tool_history_before_next_model_call():
+def test_read_only_turn_uses_semantic_projection_before_next_model_call():
     gateway = Gateway()
 
     class LargeResultGateway(Gateway):
         def execute(self, seq, key, arguments):
             self.physical_calls += 1
-            return {"evidence_id": "e1", "data": [{"code": "DEMO-A", "detail": "长字段" * 5000}]}
+            return {"evidence_id": "e1", "data": [{"code": "DEMO-A", "detail": "长字段" * 5000}],
+                    "model_context": {"projects": [{"code": "DEMO-A", "status": "ACTIVE"}]}}
 
     class InspectingModel:
         def __init__(self): self.calls = 0
@@ -2090,15 +2091,34 @@ def test_context_budget_compacts_model_visible_tool_history_before_next_model_ca
             if self.calls == 1:
                 return copy.deepcopy(PROPOSAL)
             tool_content = next(message["content"] for message in messages if message.get("role") == "tool")
-            assert "compact_summary" in tool_content
-            assert len(tool_content) < 2000
+            payload = json.loads(tool_content)
+            assert payload["model_context"]["projects"][0]["code"] == "DEMO-A"
+            assert "compact_summary" not in tool_content
             return copy.deepcopy(FINAL)
 
     gateway = LargeResultGateway()
     result = run_loop(context(), InspectingModel(), gateway, context_window=7000, max_output_tokens=512)
     assert result["summary"] == "one visible project"
-    assert gateway.saved["context_usage"]["compaction_count"] == 1
-    assert gateway.saved["context_compactions"][0]["saved_tokens"] > 0
+    assert gateway.saved["context_usage"]["compaction_count"] == 0
+    assert gateway.saved["context_compactions"] == []
+
+
+def test_data_only_business_receipt_is_not_replaced_by_shape_sample():
+    """Without a domain semantic projection, compaction must fail closed."""
+    messages = [{
+        'role': 'tool',
+        'tool_call_id': 'tool-raw',
+        'content': json.dumps({
+            'evidence_id': 'e-raw',
+            'data': [{'contract_number': 'SC-001', 'detail': '长字段' * 5000}],
+        }, ensure_ascii=False),
+    }]
+
+    compacted, record = harness_module.compact_messages_for_model(messages)
+
+    assert record is None
+    assert compacted is messages
+    assert 'compact_summary' not in compacted[0]['content']
 
 
 def test_tool_result_compaction_is_idempotent_and_preserves_model_context():
@@ -2253,8 +2273,8 @@ def test_compacted_context_does_not_reuse_stale_provider_prompt_tokens():
             if seq == 0:
                 return {'evidence_id': 'e1', 'data': [
                     {'code': 'DEMO-A', 'detail': '长字段' * 5000},
-                ]}
-            return {'evidence_id': 'e2', 'data': []}
+                ], 'model_context': {'projects': [{'code': 'DEMO-A', 'status': 'ACTIVE'}]}}
+            return {'evidence_id': 'e2', 'data': [], 'model_context': {'projects': []}}
 
     class StaleUsageModel:
         def __init__(self):
@@ -2268,7 +2288,9 @@ def test_compacted_context_does_not_reuse_stale_provider_prompt_tokens():
                 return copy.deepcopy(PROPOSAL)
             if self.calls == 2:
                 tool_content = next(message['content'] for message in messages if message.get('role') == 'tool')
-                assert 'compact_summary' in tool_content
+                payload = json.loads(tool_content)
+                assert payload['model_context']['projects'][0]['code'] == 'DEMO-A'
+                assert 'compact_summary' not in tool_content
                 # This count belongs only to call 2. It must not be reused for
                 # the changed transcript after the next assistant message.
                 self.last_metrics = {'prompt_tokens': 7446, 'completion_tokens': 27}

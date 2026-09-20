@@ -183,7 +183,17 @@ def _compact_payload(content: str) -> tuple[str, bool]:
     # bug: an evidence id without its semantic payload is not evidence.  The
     # complete receipt remains in the durable Step row; this exact projection
     # is the model-facing checkpoint-safe copy.
-    for key in ("model_context", "proposal", "tool_error", "authoritative_receipt"):
+    semantic_keys = ("model_context", "proposal", "tool_error", "authoritative_receipt")
+    # A raw business ``data`` payload without a semantic projection cannot be
+    # safely reduced by a generic sampler.  Keeping only a shape/sample would
+    # let the next model turn see an evidence id but not the facts behind it.
+    # Domain tools must publish a model_context (or a proposal/error envelope)
+    # before their result can cross a context checkpoint.  If they do not, the
+    # caller's hard budget guard will fail closed instead of asking the model to
+    # infer missing business values.
+    if "data" in payload and not any(key in payload for key in semantic_keys):
+        return content, False
+    for key in semantic_keys:
         if key in payload:
             compact[key] = deepcopy(payload[key])
     for key in ("status", "resolution", "warnings", "suggestions", "record_count", "limitations"):
