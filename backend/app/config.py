@@ -6,8 +6,9 @@ from pathlib import Path
 import socket
 from types import SimpleNamespace
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,6 +83,39 @@ class Settings(BaseSettings):
     file_s3_region: str = _compatible("file_s3_region", "us-east-1")
     file_s3_access_key: str = _compatible("file_s3_access_key", "")
     file_s3_secret_key: str = _compatible("file_s3_secret_key", "")
+
+    @model_validator(mode="after")
+    def validate_file_storage(self):
+        """Fail fast when file storage is unsafe or incomplete for the environment."""
+        environment = self.environment.strip().lower()
+        development_like = environment in {"development", "dev", "test", "testing"}
+
+        if not development_like and self.file_backend != "s3":
+            raise ValueError(
+                "生产、预发布等非开发环境必须使用 AGENT_FILE_BACKEND=s3；"
+                "本地文件存储仅允许 development/test"
+            )
+
+        if self.file_backend == "s3":
+            missing = [
+                name for name, value in {
+                    "AGENT_FILE_S3_ENDPOINT": self.file_s3_endpoint,
+                    "AGENT_FILE_S3_BUCKET": self.file_s3_bucket,
+                    "AGENT_FILE_S3_ACCESS_KEY": self.file_s3_access_key,
+                    "AGENT_FILE_S3_SECRET_KEY": self.file_s3_secret_key,
+                }.items() if not str(value or "").strip()
+            ]
+            if missing:
+                raise ValueError("S3 文件存储配置不完整，缺少：" + ", ".join(missing))
+            endpoint = urlsplit(self.file_s3_endpoint.strip())
+            if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+                raise ValueError("AGENT_FILE_S3_ENDPOINT 必须是带主机名的 http(s) 地址")
+            if endpoint.username or endpoint.password:
+                raise ValueError("AGENT_FILE_S3_ENDPOINT 不应在 URL 中携带账号或密码")
+            if not development_like and endpoint.scheme != "https":
+                raise ValueError("生产、预发布等非开发环境的 S3 存储必须使用 HTTPS")
+
+        return self
 
     @property
     def active_model(self):
