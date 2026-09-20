@@ -10,6 +10,7 @@
 - 该闭环已具备内置浏览器可验收入口，但真实客户银行回单、财务人员签字、ERP/财务系统联调和正式业务验收仍保持 `NOT_VERIFIED`；不把合成 PostgreSQL 数据宣称为真实财务验收。
 - 同步新增 `--scenario supplier_payment`：用有效整套委外合同、已审批付款申请和授权余额生成供应商实付确认卡。实测本人确认后付款申请授权余额由 `25000.00` 扣减到 `20000.00 CNY`，`PaymentConfirmation` 与 Agent 恢复正文均成功生成；不执行银行转账。
 - 同步新增 `--scenario supplier_deduction`：用有效整套委外合同、供应商和工程联络事项生成供应商责任扣款/结算依据确认卡。确认前只保存 proposal；本人确认后才登记 `SupplierDeductionSettlement`，并保留责任依据、工程联络单/任务、合同、来源引用和结算单号，不自动抵扣供应商付款或执行银行付款。实测 PostgreSQL 中扣款金额 `3000.00 CNY` 以 `SETTLED` 落库，随后通过真实 Agent Worker 恢复同一 Run：`QUEUED_SCOPED` → `SUCCEEDED`，最终正文含 `proposal_decision=approved`、权威回执和原 proposal evidence。该场景只是合成数据验收，不代表真实供应商对账或财务付款验收。
+- 再新增 `--scenario mold_transfer_receipt`：用有效项目、客户签收单号、签收人和原件依据生成“客户签收/移模时间”确认卡。本人确认后才写入 `CustomerDeliverySignature(move_type=MOLD_TRANSFER)`；不会写入客户质量验收，不会登记回款或结算，也不会关闭项目。确认后的恢复正文明确区分“签收已登记”和“质量验收/回款仍未完成”，原确认卡详情保留且按钮禁用。
 
 ## 持续开发：工程联络影响到项目计划变更审批闭环（2026-09-20）
 
