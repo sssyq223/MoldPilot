@@ -2,8 +2,10 @@
 import {computed,onMounted,ref} from 'vue'
 import {ShieldCheck,X} from 'lucide-vue-next'
 import {api,post,shanghai} from '../api'
+import {fieldName,valueText} from '../domain-packs/mold/uiText'
 type ProposalDetailLink={target:string;receipt_field:string;label:string}
 type ProposalPresentation={action_prefixes?:string[];action_suffixes?:string[];value_names?:Record<string,string>;detail_links?:Record<string,ProposalDetailLink>}
+const proposalFieldNames:Record<string,string>={payments:'付款阶段',stage_id:'节点标识',reservation:'付款占用',original_application:'原申请材料'}
 const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string;decision?:string;presentation?:ProposalPresentation}>(),{placement:'message',productName:'Agent',decision:'',presentation:()=>({})})
 const emit=defineEmits<{open:[link:{target:string;id:string}];status:[confirmed:boolean];confirmed:[];dismissed:[]}>()
 const intent=ref<any>(null),receipt=ref<any>(null),showDetails=ref(false),busy=ref(false),error=ref('')
@@ -26,16 +28,21 @@ const detailLinkId=computed(()=>detailLink.value?String(receipt.value?.[detailLi
 function displayScalar(key:string,value:any){
   if(typeof value==='boolean')return value?'是':'否'
   if(key==='实际发生时间')return shanghai(value)
-  const text=String(value)
+  const text=valueText(key,value)
   if(proposalValueNames.value[text])return proposalValueNames.value[text]
   return text.split(/(\s*[·、，]\s*)/).map(part=>{
     const trimmed=part.trim()
     return proposalValueNames.value[trimmed]?part.replace(trimmed,proposalValueNames.value[trimmed]):part
   }).join('')
 }
+function displayKey(key:string){
+  if(proposalFieldNames[key])return proposalFieldNames[key]
+  const label=fieldName(key)
+  return label==='业务补充信息'?key:label
+}
 function displayValue(key:string,value:any){
-  if(Array.isArray(value))return value.map(item=>typeof item==='object'&&item!==null?Object.entries(item).map(([k,v])=>`${k}：${displayScalar(String(k),v)}`).join('，'):displayScalar(key,item)).join('\n')
-  if(typeof value==='object'&&value!==null)return Object.entries(value).map(([k,v])=>`${k}：${displayScalar(String(k),v)}`).join('\n')
+  if(Array.isArray(value))return value.map(item=>typeof item==='object'&&item!==null?Object.entries(item).map(([k,v])=>`${displayKey(String(k))}：${displayScalar(String(k),v)}`).join('，'):displayScalar(key,item)).join('\n')
+  if(typeof value==='object'&&value!==null)return Object.entries(value).map(([k,v])=>`${displayKey(String(k))}：${displayScalar(String(k),v)}`).join('\n')
   return displayScalar(key,value)
 }
 const base='/proposals/'
@@ -77,7 +84,7 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
       <h2>{{resolved?'本次业务操作详情':'请核对本次业务操作'}}</h2>
       <button type="button" class="icon-button" aria-label="关闭业务操作详情" @click="intent=null;showDetails=false"><X :size="17"/></button>
     </div>
-    <dl><template v-for="(value,key) in detailDisplay" :key="String(key)"><dt>{{key}}</dt><dd>{{displayValue(String(key),value)}}</dd></template></dl>
+    <dl><template v-for="(value,key) in detailDisplay" :key="String(key)"><dt>{{displayKey(String(key))}}</dt><dd>{{displayValue(String(key),value)}}</dd></template></dl>
     <div v-if="policy&&!resolved" class="confirmation-policy modal-policy" :class="{delegated:policy.agent_permission_mode==='delegated_auto'}">
       <strong>{{policy.title}}</strong>
       <small>{{policy.description}}</small>
