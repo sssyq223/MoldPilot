@@ -4,6 +4,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 from hashlib import sha256
 import pytest
+from openpyxl import Workbook
 from sqlalchemy import select,func,text
 from sqlalchemy.exc import DBAPIError
 from app.config import settings
@@ -65,6 +66,32 @@ def test_upload_accepts_csv_attachment(client):
     blob=response.json()
     assert blob['filename']=='物料清单.csv' and blob['media_type']=='text/csv'
     assert client.get('/api/files/'+blob['id']+'/content').content==content
+
+
+def test_spreadsheet_attachments_can_be_previewed_as_bounded_tables(client):
+    sign_in(client)
+    csv_content='物料编号,数量\nA-001,12\n'.encode('utf-8')
+    csv_blob=upload(client,csv_content,'物料清单.csv').json()
+    csv_preview=client.get('/api/files/'+csv_blob['id']+'/content?preview=true&render=table')
+    assert csv_preview.status_code==200,csv_preview.text
+    csv_payload=csv_preview.json()
+    assert csv_payload['kind']=='spreadsheet' and csv_payload['format']=='csv'
+    assert csv_payload['sheets'][0]['rows']==[['物料编号','数量'],['A-001','12']]
+
+    workbook=Workbook()
+    workbook.active.title='主清单'
+    workbook.active.append(['零件号','数量'])
+    workbook.active.append(['P-001',4])
+    workbook.create_sheet('备注').append(['说明'])
+    xlsx=BytesIO()
+    workbook.save(xlsx)
+    xlsx_blob=upload(client,xlsx.getvalue(),'设计清单.xlsx').json()
+    xlsx_preview=client.get('/api/files/'+xlsx_blob['id']+'/content?preview=true&render=table')
+    assert xlsx_preview.status_code==200,xlsx_preview.text
+    xlsx_payload=xlsx_preview.json()
+    assert xlsx_payload['format']=='xlsx'
+    assert [sheet['name'] for sheet in xlsx_payload['sheets']]==['主清单','备注']
+    assert xlsx_payload['sheets'][0]['rows'][1]==['P-001',4]
 
 
 def test_docx_attachment_can_be_previewed_inline(client):

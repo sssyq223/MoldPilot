@@ -3,6 +3,9 @@ import {
   calculateErpDesignSteelTolerance,
   erpDesignCell,
   erpDesignColumns,
+  erpDesignDrawingColumns,
+  erpDesignDrawingsFromRun,
+  erpDesignDrawingsFromTool,
   erpDesignAgingTreatmentDisabled,
   erpDesignAgingTreatmentSupported,
   erpDesignPreviewUrl,
@@ -57,6 +60,17 @@ describe('ERP design preview', () => {
     })
   })
 
+  it('extracts the independent modify-mold ERP upload session', () => {
+    expect(erpDesignSessionFromTool({
+      ...tool,
+      tool: 'erp_design_parse_modify_mold_upload',
+      data: { ...tool.data, designOrderType: 'repair_other' },
+    })).toMatchObject({
+      sessionId: 268,
+      designOrderType: 'repair_other',
+    })
+  })
+
   it('publishes the ERP session only when a run succeeds', () => {
     const current = { id: 'run-1', status: 'SUCCEEDED', trace: [tool] }
     const failed = { id: 'run-2', status: 'FAILED', trace: [tool] }
@@ -64,6 +78,18 @@ describe('ERP design preview', () => {
     expect(erpDesignSessionFromRun(current)?.sessionId).toBe(268)
     expect(erpDesignSessionFromRun(failed)).toBeNull()
     expect(erpDesignSessionFromRun(cancelled)).toBeNull()
+  })
+
+  it('keeps repair_other type when a later ERP status omits the type', () => {
+    const current = {
+      id: 'run-modify-1',
+      status: 'SUCCEEDED',
+      trace: [
+        { ...tool, tool: 'erp_design_parse_modify_mold_upload', data: { ...tool.data, designOrderType: 'repair_other' } },
+        { type: 'tool', tool: 'erp_design_get_drawing_status', data: { ...tool.data, designOrderType: undefined } },
+      ],
+    }
+    expect(erpDesignSessionFromRun(current)?.designOrderType).toBe('repair_other')
   })
 
   it('keeps tolerance evidence separate from the editable upload preview', () => {
@@ -191,7 +217,7 @@ describe('ERP design preview', () => {
     })
     expect(columns.map(column => column.label)).toEqual([
       '编码', '名称', '材质', '规格', '料型', '采购数量', '长(L)', '宽(W)', '厚(T)',
-      '外径(Φ)', '内径(Φ)', '加工工艺', '备注',
+      '外径(Φ)', '内径(Φ)', '图纸匹配状态', '加工工艺', '备注',
     ])
     expect(columns.map(column => column.label)).not.toEqual(expect.arrayContaining([
       '核算单价', '核算金额', '总价', '计算过程', '确认导入',
@@ -208,6 +234,39 @@ describe('ERP design preview', () => {
     expect(erpDesignReadOnlyTableNeedsDisclosure(8)).toBe(false)
     expect(erpDesignReadOnlyTableNeedsDisclosure(9)).toBe(true)
     expect(erpDesignReadOnlyTableNeedsDisclosure(10, 12)).toBe(false)
+  })
+
+  it('collects drawing previews in their own table across tool calls and sessions', () => {
+    const drawing = (sessionId: number, id: number, fileName = `${id}.dxf`) => ({
+      tool: 'erp_design_preview_drawing',
+      data: {
+        displayMode: 'design_drawings', sessionId, moldCode: 'M250238-P4',
+        previewRows: [{ drawing_resource_id: id, drawing_file_name: fileName }],
+      },
+    })
+    const trace = [drawing(271, 1), drawing(271, 2), drawing(271, 1, 'latest.dxf'), drawing(272, 1)]
+    const results = erpDesignDrawingsFromRun({ status: 'SUCCEEDED', trace })
+    expect(results).toHaveLength(2)
+    expect(results[0].previewRows.map(row => row.drawing_file_name)).toEqual(['latest.dxf', '2.dxf'])
+    expect(erpDesignDrawingsFromRun({ status: 'FAILED', trace })).toEqual(results)
+    expect(erpDesignDrawingsFromRun({ status: 'RUNNING', trace })).toEqual([])
+    expect(erpDesignDrawingsFromRun({ status: 'CANCELLED', trace })).toEqual([])
+    expect(erpDesignSessionFromTool(trace[0])).toBeNull()
+    expect(erpDesignDrawingColumns().map(column => column.label)).toEqual(['编码', '名称', '图纸文件', '预览'])
+    expect(erpDesignDrawingsFromTool(drawing(0, 1))).toBeNull()
+    expect(erpDesignDrawingsFromTool(drawing(271, 0))?.previewRows).toEqual([])
+    expect(erpDesignDrawingsFromTool({ tool: 'erp_design_preview_drawing', data: { file: {} } })).toBeNull()
+  })
+
+  it('uses ERP standard hardware rows and paths without needing an upload session', () => {
+    const row = { standardCode: 'R-BZ-001', fileName: '标准件.dxf', relativePath: 'R-BZ-001/标准件.dxf', previewUrl: '/design/standard-hardware/preview?relativePath=R-BZ-001%2F标准件.dxf' }
+    const item = { tool: 'erp_design_query_standard_hardware', data: { data: { rows: [row], total: 23 } } }
+    const result = erpDesignDrawingsFromTool(item)!
+    expect(result).toMatchObject({ source: 'standard_hardware', totalCount: 23, previewRows: [row] })
+    expect(result.sessionId).toBeUndefined()
+    expect(erpDesignDrawingColumns(result.source).map(column => column.label)).toEqual(['标准件编号', '图纸文件', '预览'])
+    expect(erpDesignDrawingsFromRun({ status: 'SUCCEEDED', trace: [item, item] })[0].previewRows).toHaveLength(1)
+    expect(erpDesignDrawingsFromTool({ ...item, data: { rows: [], total: 0 } })?.previewRows).toEqual([])
   })
 
   it('merges a proxied ERP status result into the existing session', () => {

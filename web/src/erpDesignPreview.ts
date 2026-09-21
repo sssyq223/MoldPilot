@@ -75,7 +75,17 @@ export type ErpDesignParameterResult = {
   rowCount: number
   matchedCount: number
   tableThreshold: number
+  columns?: ErpDesignColumn[]
+  selectedFields?: string[]
   renderAsTable: boolean
+  previewRows: ErpDesignRow[]
+}
+
+export type ErpDesignDrawingResult = {
+  source: 'upload' | 'standard_hardware'
+  sessionId?: number
+  moldCode: string
+  totalCount: number
   previewRows: ErpDesignRow[]
 }
 
@@ -104,9 +114,8 @@ export type ErpDesignColumn = {
 const ERP_DESIGN_UPLOAD_PAGE = 'http://127.0.0.1:18080/design/upload/index'
 const ERP_DESIGN_TOLERANCE_TOOL = 'erp_design_evaluate_tolerances'
 const ERP_DESIGN_PARAMETER_TOOL = 'erp_design_query_upload_parameters'
+const ERP_DESIGN_DRAWING_TOOL = 'erp_design_preview_drawing'
 const ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL = 'erp_design_get_technical_requirements'
-const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING'])
-const TERMINAL_RUN_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
 export const ERP_READONLY_INLINE_ROW_LIMIT = 8
 
 export function erpDesignReadOnlyTableNeedsDisclosure(
@@ -120,6 +129,7 @@ export function erpDesignReadOnlyTableNeedsDisclosure(
 
 const DESIGN_UPLOAD_TOOLS = new Set([
   'erp_design_parse_new_mold_upload',
+  'erp_design_parse_modify_mold_upload',
   'erp_design_get_drawing_status',
   'erp_design_get_upload_result',
   'erp_design_validate_rows',
@@ -210,9 +220,19 @@ const parameterColumns: ErpDesignColumn[] = [
   { key: 'height', label: '厚(T)', fields: ['height', 'thickness'], width: 95, decimals: 4 },
   { key: 'outer', label: '外径(Φ)', fields: ['outer_diameter', 'outerDiameter'], width: 100, decimals: 4 },
   { key: 'inner', label: '内径(Φ)', fields: ['inner_diameter', 'innerDiameter'], width: 100, decimals: 4 },
+  { key: 'matchStatus', label: '图纸匹配状态', fields: ['match_status', 'matchStatus', 'drawing_match_status', 'drawingMatchStatus', 'drawing_status', 'drawingStatus'], width: 130 },
   { key: 'technology', label: '加工工艺', fields: ['processing_technology', 'processingTechnology'], width: 130 },
   { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
 ]
+
+const processingColumns: ErpDesignColumn[] = [
+  { key: 'field', label: '处理字段', fields: ['field'], width: 150 },
+  { key: 'before', label: '处理前', fields: ['before'], width: 220 },
+  { key: 'after', label: '处理后', fields: ['after'], width: 220 },
+  { key: 'reason', label: '原因', fields: ['reason'], width: 360 },
+]
+
+export const erpDesignProcessingColumns = processingColumns
 
 function record(value: unknown): Record<string, any> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -301,20 +321,25 @@ export function erpDesignSessionFromTool(item: any): ErpDesignPreviewSession | n
 export function erpDesignSessionFromRun(run: any): ErpDesignPreviewSession | null {
   if (String(run?.status || '') !== 'SUCCEEDED') return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
+  // Status/result follow-ups are shared by both ERP upload flows and may not
+  // repeat the business type. Keep the original parser receipt as the
+  // fallback so a repair_other session is not relabeled as new_model.
+  const parserReceipt = trace
+    .map((item: any) => erpDesignSessionFromTool(item))
+    .find((session: ErpDesignPreviewSession | null, index: number) => {
+      const name = String(trace[index]?.tool || '')
+      return name === 'erp_design_parse_new_mold_upload'
+        || name === 'erp_design_parse_modify_mold_upload'
+    })
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const session = erpDesignSessionFromTool(trace[index])
-    if (session) return session
+    if (session) {
+      return parserReceipt && parserReceipt.sessionId === session.sessionId
+        ? normalizeErpDesignPreview(trace[index]?.data, parserReceipt)
+        : session
+    }
   }
-  return null
-}
-
-export function shouldOpenErpDesignPreview(previousRun: any, currentRun: any): boolean {
-  return Boolean(
-    previousRun
-    && ACTIVE_RUN_STATUSES.has(String(previousRun.status || ''))
-    && TERMINAL_RUN_STATUSES.has(String(currentRun?.status || ''))
-    && erpDesignSessionFromRun(currentRun),
-  )
+  return parserReceipt || null
 }
 
 export function erpDesignToleranceFromTool(item: any): ErpDesignPreviewSession | null {
@@ -400,6 +425,10 @@ export function normalizeErpDesignParameterResult(value: unknown): ErpDesignPara
     rowCount: previewRows.length,
     matchedCount: Number(source?.matchedCount ?? source?.matched_count ?? previewRows.length) || 0,
     tableThreshold,
+    columns: Array.isArray(source?.columns) ? source.columns.filter((c: any) =>
+      typeof c?.key === 'string' && typeof c?.label === 'string' && Array.isArray(c?.fields)
+    ) : undefined,
+    selectedFields: Array.isArray(source?.selectedFields) ? source.selectedFields : undefined,
     renderAsTable: Boolean(source?.renderAsTable ?? source?.render_as_table ?? previewRows.length > tableThreshold),
     previewRows,
   }
@@ -418,6 +447,127 @@ export function erpDesignParametersFromRun(run: any): ErpDesignParameterResult |
     if (result) return result
   }
   return null
+}
+
+// Combine selected projections only within one authoritative upload session.
+// Row positions come from ERP; names/codes may repeat and are not join keys.
+export function erpDesignParameterTablesFromRun(run: any): ErpDesignParameterResult[] {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  const sessions = new Map<number, ErpDesignParameterResult>()
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const result = erpDesignParametersFromTool(item)
+    if (!result) continue
+    const current = sessions.get(result.sessionId)
+    if (!current || !current.columns || !result.columns) {
+      sessions.set(result.sessionId, { ...result, previewRows: result.previewRows.map(row => ({ ...row })),
+        columns: result.columns ? [...result.columns] : undefined })
+      continue
+    }
+    for (const column of result.columns) {
+      if (!current.columns.some(c => c.key === column.key)) current.columns.push(column)
+    }
+    current.selectedFields = [...new Set([...(current.selectedFields ?? []), ...(result.selectedFields ?? [])])]
+    for (const row of result.previewRows) {
+      const index = row.rowIndex == null ? -1 : current.previewRows.findIndex(r => r.rowIndex === row.rowIndex)
+      if (index < 0) current.previewRows.push({ ...row })
+      else current.previewRows[index] = { ...current.previewRows[index], ...row }
+    }
+    current.rowCount = current.matchedCount = current.previewRows.length
+  }
+  // 公差判断与参数查询针对同一个上传会话时，合并到同一张表；单独询问
+  // 公差时仍由 ErpDesignToleranceTable 独立展示。
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const tolerance = erpDesignToleranceFromTool(item)
+    if (!tolerance) continue
+    const current = sessions.get(tolerance.sessionId)
+    if (!current) continue
+    for (const column of toleranceColumns) {
+      if (!current.columns?.some(c => c.key === column.key)) current.columns?.push(column)
+    }
+    for (const row of tolerance.previewRows) {
+      const index = row.rowIndex == null ? -1 : current.previewRows.findIndex(r => r.rowIndex === row.rowIndex)
+      if (index < 0) current.previewRows.push({ ...row })
+      else current.previewRows[index] = { ...current.previewRows[index], ...row }
+    }
+    current.rowCount = current.matchedCount = current.previewRows.length
+  }
+  return [...sessions.values()]
+}
+
+export function erpDesignToleranceMergedIntoParameter(run: any): boolean {
+  const tolerance = erpDesignToleranceFromRun(run)
+  if (!tolerance) return false
+  return erpDesignParameterTablesFromRun(run).some(result => result.sessionId === tolerance.sessionId)
+}
+
+export function erpDesignDrawingId(row: ErpDesignRow): number {
+  const id = Number(row.drawing_resource_id ?? row.drawingResourceId ?? row.drawing_id ?? row.drawingId ?? 0)
+  return Number.isInteger(id) && id > 0 ? id : 0
+}
+
+export function erpDesignDrawingsFromTool(item: any): ErpDesignDrawingResult | null {
+  if (String(item?.tool || '') === 'erp_design_query_standard_hardware') {
+    const source = nestedPayload(item?.data)
+    if (!Array.isArray(source?.rows)) return null
+    const previewRows = source.rows.filter((row: unknown) => record(row))
+    return {
+      source: 'standard_hardware',
+      moldCode: '',
+      totalCount: Number(source.total ?? previewRows.length),
+      previewRows,
+    }
+  }
+  if (String(item?.tool || '') !== ERP_DESIGN_DRAWING_TOOL) return null
+  const source = payload(item?.data)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_drawings') return null
+  const sessionId = Number(source?.sessionId ?? source?.session_id ?? 0)
+  if (!Number.isInteger(sessionId) || sessionId < 1) return null
+  return {
+    source: 'upload',
+    sessionId,
+    moldCode: String(source?.moldCode ?? source?.mold_code ?? ''),
+    totalCount: rows(source).length,
+    previewRows: rows(source).filter(row => record(row) && erpDesignDrawingId(row)),
+  }
+}
+
+export function erpDesignDrawingsFromRun(run: any): ErpDesignDrawingResult[] {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  const sessions = new Map<string, ErpDesignDrawingResult>()
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const result = erpDesignDrawingsFromTool(item)
+    if (!result) continue
+    const key = `${result.source}:${result.sessionId ?? ''}`
+    const current = sessions.get(key)
+    if (!current) {
+      sessions.set(key, result)
+      continue
+    }
+    for (const row of result.previewRows) {
+      const rowKey = (value: ErpDesignRow) => result.source === 'standard_hardware'
+        ? value.relativePath
+        : erpDesignDrawingId(value)
+      const index = current.previewRows.findIndex(existing => rowKey(existing) === rowKey(row))
+      if (index < 0) current.previewRows.push(row)
+      else current.previewRows[index] = row
+    }
+    current.totalCount = Math.max(current.totalCount, result.totalCount, current.previewRows.length)
+  }
+  return [...sessions.values()]
+}
+
+export function erpDesignDrawingColumns(source: ErpDesignDrawingResult['source'] = 'upload'): ErpDesignColumn[] {
+  if (source === 'standard_hardware') return [
+    { key: 'code', label: '标准件编号', fields: ['standardCode'], width: 190 },
+    { key: 'file', label: '图纸文件', fields: ['fileName'], width: 300 },
+    { key: 'preview', label: '预览', fields: [], width: 110 },
+  ]
+  return [
+    { key: 'code', label: '编码', fields: ['item_code_full', 'itemCodeFull'], width: 190 },
+    { key: 'name', label: '名称', fields: ['item_name', 'itemName'], width: 145 },
+    { key: 'file', label: '图纸文件', fields: ['drawing_file_name', 'drawingFileName'], width: 230 },
+    { key: 'preview', label: '预览', fields: [], width: 110 },
+  ]
 }
 
 export function erpDesignPreviewUrl(session: ErpDesignPreviewSession): string {

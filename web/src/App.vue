@@ -16,11 +16,16 @@ import {legacyStorageKeys,notificationWorkspaceTarget,toolEvidenceLinks} from '@
 import ErpDesignTable from './components/ErpDesignTable.vue'
 import ErpDesignToleranceTable from './components/ErpDesignToleranceTable.vue'
 import ErpDesignParameterTable from './components/ErpDesignParameterTable.vue'
+import ErpDesignGroupKeywordTable from './components/ErpDesignGroupKeywordTable.vue'
+import ErpDesignResultTable from './components/ErpDesignResultTable.vue'
+import { erpDesignGroupKeywordsFromRun } from './erpDesignGroupKeywords'
+import ErpDesignDrawingTable from './components/ErpDesignDrawingTable.vue'
 import ErpDesignTechnicalRequirements from './components/ErpDesignTechnicalRequirements.vue'
 import ErpDrawingPreview from './components/ErpDrawingPreview.vue'
 import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
-import {erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,shouldOpenErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
+import {erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
+import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
 import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 import {runDurationSeconds as calculateRunDurationSeconds,shouldPollActiveRun} from './runTiming'
 const colorTheme=ref<ColorTheme>(storedTheme())
@@ -49,7 +54,6 @@ const erpDesignDrafts=new Map<number,{expectedDate:string;remark:string}>()
 const erpDesignRowRepriceTokens=new Map<string,number>()
 let erpDesignPreviewPoll:number|null=null
 let erpDesignPreviewRequest=0
-const openedErpDesignRunIds=new Set<string>()
 const loadedErpDesignImportStatuses=new Set<number>()
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
 let conversationEpoch=0
@@ -381,16 +385,6 @@ watch(runs,(currentRuns)=>{
  }
  for(const key of streamedTextTargets.keys())if(!activeKeys.has(key)){
   streamedTextTargets.delete(key);streamedTextLiveKeys.delete(key);streamedTextCompletedKeys.delete(key);stopStreamedTextAnimation(key)
- }
-},{deep:true})
-watch(runs,(currentRuns,previousRuns=[])=>{
- const previousById=new Map(previousRuns.map((run:any)=>[run.id,run]))
- for(const run of currentRuns){
-  if(openedErpDesignRunIds.has(run.id)||!shouldOpenErpDesignPreview(previousById.get(run.id),run))continue
-  const session=erpDesignSessionFromRun(run)
-  if(!session)continue
-  openedErpDesignRunIds.add(run.id)
-  openErpDesignPreview(session)
  }
 },{deep:true})
 watch(runs,currentRuns=>{void loadErpDesignImportStatuses(currentRuns)},{deep:true,immediate:true})
@@ -781,7 +775,7 @@ async function handleCurrentProposalDecision(dismissed=false){
 async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch(e:any){fail(e.message||'工作台初始化失败')}finally{loading.value=false;await nextTick();await fitInitialConversations()}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
-function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];conversationHasMore.value=true;conversationLoadingMore.value=false;runs.value=[];conversationLoading.value=false;detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;erpDesignOrdersDialog.value=null;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';closeErpDesignPreview();openedErpDesignRunIds.clear();loadedErpDesignImportStatuses.clear();erpDesignImportReceipts.value={};search.value=''}
+function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];conversationHasMore.value=true;conversationLoadingMore.value=false;runs.value=[];conversationLoading.value=false;detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;erpDesignOrdersDialog.value=null;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';closeErpDesignPreview();loadedErpDesignImportStatuses.clear();erpDesignImportReceipts.value={};search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem(productStoragePrefix()+'.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
 async function openPanel(key:string){if(!workspaceTabs.value.some((tab:any)=>tab.key===key))return;panel.value=key;expanded.value=true;saveLayout()}
@@ -902,11 +896,18 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                     <summary class="agent-tool-head">
                       <span class="agent-tool-icon"><Search :size="13"/></span>
                       <span class="agent-tool-name">{{item.proposal?'已准备':'已查询'}} {{capabilityName(item.tool)}}</span>
-                      <span class="agent-tool-summary">{{item.proposal?'操作建议':(erpDesignTechnicalRequirementsFromTool(item)?`${erpDesignTechnicalRequirementsFromTool(item)?.requirements.length} 条要求 · ${erpDesignTechnicalRequirementsFromTool(item)?.toleranceRows.length} 档公差`:(erpDesignToleranceFromTool(item)?`ERP 会话 ${erpDesignToleranceFromTool(item)?.sessionId} · ${erpDesignToleranceFromTool(item)?.rowCount} 行公差`:(erpDesignParametersFromTool(item)?`ERP 会话 ${erpDesignParametersFromTool(item)?.sessionId} · ${erpDesignParametersFromTool(item)?.matchedCount} 项参数`:(erpDesignSessionFromTool(item)?`ERP 会话 ${erpDesignSessionFromTool(item)?.sessionId} · ${erpDesignSessionFromTool(item)?.rowCount} 行`:(toolEvidenceCount(item)+' 条记录')))))}}<template v-if="!item.proposal&&!erpDesignTechnicalRequirementsFromTool(item)&&!erpDesignToleranceFromTool(item)&&!erpDesignParametersFromTool(item)&&firstToolEvidenceRow(item)"> · {{compactRecordTitle(firstToolEvidenceRow(item))}}</template></span>
+                      <span class="agent-tool-summary" v-if="erpDesignDrawingsFromTool(item)">{{erpDesignDrawingsFromTool(item)?.previewRows.length}} 项图纸</span>
+                      <span v-else class="agent-tool-summary">{{item.proposal?'操作建议':(erpDesignTechnicalRequirementsFromTool(item)?`${erpDesignTechnicalRequirementsFromTool(item)?.requirements.length} 条要求 · ${erpDesignTechnicalRequirementsFromTool(item)?.toleranceRows.length} 档公差`:(erpDesignToleranceFromTool(item)?`ERP 会话 ${erpDesignToleranceFromTool(item)?.sessionId} · ${erpDesignToleranceFromTool(item)?.rowCount} 行公差`:(erpDesignParametersFromTool(item)?`ERP 会话 ${erpDesignParametersFromTool(item)?.sessionId} · ${erpDesignParametersFromTool(item)?.matchedCount} 项参数`:(erpDesignSessionFromTool(item)?`ERP 会话 ${erpDesignSessionFromTool(item)?.sessionId} · ${erpDesignSessionFromTool(item)?.rowCount} 行`:(toolEvidenceCount(item)+' 条记录')))))}}<template v-if="!item.proposal&&!erpDesignTechnicalRequirementsFromTool(item)&&!erpDesignToleranceFromTool(item)&&!erpDesignParametersFromTool(item)&&firstToolEvidenceRow(item)"> · {{compactRecordTitle(firstToolEvidenceRow(item))}}</template></span>
                       <span class="agent-tool-caret"><ChevronRight :size="12"/></span>
                     </summary>
                     <div class="agent-tool-body">
                       <p v-if="item.proposal" class="agent-tool-meta">已生成待确认卡，请在下方正文区域处理。</p>
+                      <div v-else-if="erpDesignDrawingsFromTool(item)" class="agent-tool-main agent-evidence-brief">
+                        <span>
+                          <strong>图纸明细已就绪</strong>
+                          <small>{{erpDesignDrawingsFromTool(item)?.previewRows.length}} 项图纸 · 点击下方图纸表格查看预览</small>
+                        </span>
+                      </div>
                       <div v-else-if="erpDesignTechnicalRequirementsFromTool(item)" class="agent-tool-main agent-evidence-brief">
                         <span>
                           <strong>技术要求与公差表已就绪</strong>
@@ -983,9 +984,15 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               </ul>
             </div>
             <ErpDesignTechnicalRequirements :result="erpDesignTechnicalRequirementsFromRun(run)"/>
-            <ErpDesignToleranceTable :preview="erpDesignToleranceFromRun(run)"/>
-            <ErpDesignParameterTable :result="erpDesignParametersFromRun(run)"/>
-            <div v-if="erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
+            <ErpDesignToleranceTable v-if="!erpDesignToleranceMergedIntoParameter(run)" :preview="erpDesignToleranceFromRun(run)"/>
+            <ErpDesignParameterTable v-for="result in erpDesignParameterTablesFromRun(run)" :key="result.sessionId" :result="result"/>
+            <ErpDesignGroupKeywordTable v-for="(result,index) in erpDesignGroupKeywordsFromRun(run)" :key="`group-keywords:${index}`" :result="result"/>
+            <ErpDesignDrawingTable v-for="result in erpDesignDrawingsFromRun(run)" :key="`${result.source}:${result.sessionId??''}`" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpDesignMasterDataTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpDesignProcessingTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpDesignDrawingVersionTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpDesignIdleMaterialTablesFromRun(run)" :key="result.key" :result="result"/>
+            <div v-if="!erpDesignDrawingsFromRun(run).length&&erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
               <span>
                 <strong>{{erpDesignUploadLabel(erpDesignSessionFromRun(run))}}</strong>
                 <small v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo:'ERP 已返回成功回执'}} · 上传会话 {{erpDesignSessionFromRun(run)?.sessionId}}</small>

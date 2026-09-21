@@ -54,17 +54,17 @@ if errorlevel 1 (
     goto :failed
 )
 
-echo [CHECK] Applying database migrations...
-"%PYTHON_EXE%" "%ROOT%scripts\migrate.py" upgrade head
+echo [CHECK] Preparing database according to AGENT_STARTUP_MIGRATIONS...
+"%PYTHON_EXE%" "%ROOT%scripts\migrate.py" startup
 if errorlevel 1 (
-    echo [ERROR] Database migration failed. Review the database configuration and traceback above.
+    echo [ERROR] Database preparation failed. Review the database configuration and traceback above.
     goto :failed
 )
 
 if /I "%~1"=="--check" (
     echo [OK] Found .env, Python virtual environment, npm and frontend dependencies.
     echo [OK] API, Agent Worker and Message Worker imports are valid.
-    echo [OK] Database migrations are current.
+    echo [OK] Database startup checks passed.
     echo [INFO] Database, Redis and model connectivity is checked by the running services.
     popd
     exit /b 0

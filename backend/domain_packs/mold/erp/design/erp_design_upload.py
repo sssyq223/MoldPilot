@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from base64 import b64decode
 from binascii import Error as BinasciiError
+from datetime import date
 import json
 from pathlib import Path
 from queue import Empty, Queue
@@ -16,10 +17,11 @@ import subprocess
 import tempfile
 from threading import Thread
 from typing import Literal
+from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
-from pydantic import Field
+from fastapi import APIRouter, Depends, Query, Response
+from pydantic import Field, field_validator
 from sqlalchemy import select
 
 from domain_packs.mold import files, models as m
@@ -80,6 +82,17 @@ class ImportInput(RowsInput):
     purchase_reason: str | None = Field(default=None, max_length=200)
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = False
+
+    @field_validator("expected_date")
+    @classmethod
+    def expected_date_must_be_reasonable(cls, value: str) -> str:
+        # Do not let a direct browser call bypass the follow-up validation
+        # performed by the agent. A procurement delivery date in the past is
+        # almost always an omitted/guessed answer and must be corrected first.
+        parsed = date.fromisoformat(value)
+        if parsed < date.today():
+            raise ValueError("交期不能早于今天，请重新选择合理交期")
+        return value
 
 
 class ImportStatusesInput(StrictModel):
@@ -307,6 +320,23 @@ def drawing_preview(session_id: int, drawing_id: int, user=Depends(current_user)
     value = erp_design_mcp.call_design_control_mcp("download_erp_design_file", {
         "artifact": "drawing_preview", "drawingId": drawing_id, "previewUrl": preview_url,
     })
+    return _drawing_preview_response(value, f"drawing-{drawing_id}-preview")
+
+
+@router.get("/standard-hardware/preview")
+def standard_hardware_preview(
+    relative_path: str = Query(min_length=1, max_length=500),
+    user=Depends(current_user), db=Depends(get_db),
+):
+    require(db, user, "design_route.read")
+    # The ERP endpoint owns path validation, file selection and preview generation.
+    value = erp_design_mcp.call_design_control_mcp("download_erp_design_file", {
+        "artifact": "standard_hardware_preview", "relativePath": relative_path,
+    })
+    return _drawing_preview_response(value, "standard-hardware-preview")
+
+
+def _drawing_preview_response(value, fallback_name: str):
     if not isinstance(value, dict) or not isinstance(value.get("base64"), str):
         _mcp_failure("ERP 图纸预览未返回有效文件")
     try:
@@ -318,10 +348,10 @@ def drawing_preview(session_id: int, drawing_id: int, user=Depends(current_user)
     media_type = str(value.get("mediaType") or "application/octet-stream").split(";", 1)[0].strip()
     if media_type.lower() == "application/json":
         _mcp_failure("ERP 返回了错误信息而不是图纸预览")
-    filename = Path(str(value.get("fileName") or f"drawing-{drawing_id}-preview")).name.replace('"', "_")
+    filename = Path(str(value.get("fileName") or fallback_name)).name.replace('"', "_")
     return Response(content=content, media_type=media_type, headers={
         "Cache-Control": "private, max-age=300",
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": f"inline; filename=\"{fallback_name}\"; filename*=UTF-8''{quote(filename)}",
     })
 
 
@@ -383,18 +413,30 @@ def import_statuses(data: ImportStatusesInput, user=Depends(current_user), db=De
 @router.post("/import")
 def import_design(data: ImportInput, user=Depends(current_user), db=Depends(get_db)):
     require(db, user, "design_route.execute")
-    _owned_session(db, user, data.session_id)
+    session_event = _owned_session(db, user, data.session_id)
     validation = call_mcp("validate_new_mold_design_rows", {
         "sessionId": data.session_id, "sheetType": data.sheet_type, "moldCode": data.mold_code,
         "previewRows": data.preview_rows, "pricingAlreadyEnriched": True,
     })
     if not _validation_allows_import(validation):
         raise DomainError("ERP_VALIDATION_FAILED", "ERP 校验未通过，不能导入。请处理明细错误后重新校验", 409)
-    result = call_mcp("import_new_mold_design", {
+    detail = session_event.detail if isinstance(session_event.detail, dict) else {}
+    design_order_type = str(detail.get("design_order_type") or "new_model").strip().lower()
+    common_arguments = {
         "sessionId": data.session_id, "sheetType": data.sheet_type, "moldCode": data.mold_code,
         "previewRows": data.preview_rows, "urgencyLevel": data.urgency_level, "expectedDate": data.expected_date,
         "purchaseReason": data.purchase_reason, "remark": data.remark, "allowDuplicate": data.allow_duplicate,
-    })
-    record(db, user, _IMPORT_ACTION, str(data.session_id), _import_receipt_detail(result, len(data.preview_rows)))
+    }
+    if design_order_type == "repair_other":
+        if not data.purchase_reason:
+            raise DomainError("ERP_MODIFY_PURCHASE_REASON_REQUIRED", "修模改模导入必须填写 ERP 请购原因", 422)
+        # Reuse the existing ERP control MCP flow; do not downgrade a
+        # repair_other session to the new-model import endpoint.
+        result = erp_design_mcp.call_design_control_mcp("import_modify_mold_design", common_arguments)
+    else:
+        result = call_mcp("import_new_mold_design", common_arguments)
+    receipt = _import_receipt_detail(result, len(data.preview_rows))
+    receipt["design_order_type"] = design_order_type
+    record(db, user, _IMPORT_ACTION, str(data.session_id), receipt)
     db.commit()
     return result

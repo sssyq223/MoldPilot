@@ -1203,6 +1203,35 @@ def test_design_upload_attachment_exposes_tool_search():
              InspectingModel([]), Gateway())
 
 
+def test_design_upload_route_requires_choice_when_both_erp_types_are_authorized():
+    skills = [
+        {'key': 'erp_new_mold_design_upload'},
+        {'key': 'erp_design_modify_mold_upload'},
+    ]
+    assert harness_module._design_upload_route({
+        'prompt': '解析当前附件', 'skills': skills,
+    }) == 'ambiguous'
+    assert harness_module._design_upload_route({
+        'prompt': '解析新模清单', 'skills': skills,
+    }) == 'new'
+    assert harness_module._design_upload_route({
+        'prompt': '解析修模改模清单', 'skills': skills,
+    }) == 'modify'
+    assert harness_module._design_upload_route({
+        'prompt': '解析当前附件',
+        'skills': skills,
+        'active_skill_keys': ['erp_design_modify_mold_upload'],
+    }) == 'modify'
+    assert harness_module._design_upload_group_keys(
+        'modify', [{'key': 'erp_new_mold_design_upload'}]
+    ) == ()
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': '新模',
+        'files': [{'filename': 'design-list.xlsx'}],
+        'skills': skills,
+    })
+
+
 def test_design_upload_followup_uses_historical_attachment_context():
     class InspectingModel(Model):
         def generate(self, messages, tools):
@@ -1246,6 +1275,31 @@ def test_csv_design_upload_attachment_exposes_tool_search():
         'skills': [{'key': 'erp_new_mold_design_upload'}],
         'recent_requests': [],
     })
+
+
+def test_material_list_import_alias_activates_attachment_parser():
+    parser = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '通过 ERP 解析当前 XLSX、XLS 或 CSV 料单并创建上传会话。',
+    }}
+    groups = harness_module._skill_tool_groups([
+        {'key': 'erp_new_mold_design_upload',
+         'tools': ['erp_design_parse_new_mold_upload'],
+         'activation_tools': ['erp_design_parse_new_mold_upload'],
+         'activation_queries': ['解析上传附件', '导入料单']},
+    ], {'erp_design_parse_new_mold_upload': parser})
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        '解析上传附件', {'erp_design_parse_new_mold_upload': parser}, groups,
+        action_intent=True,
+        current_prompt='导入料单',
+        preferred_group_keys=('erp_new_mold_design_upload',),
+        tool_annotations={'erp_design_parse_new_mold_upload': {'readOnlyHint': True}},
+    )
+
+    assert matches == ['erp_new_mold_design_upload']
+    assert activated == ['erp_design_parse_new_mold_upload']
+    assert matched_groups == ['erp_new_mold_design_upload']
 
 
 def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
@@ -1429,6 +1483,78 @@ def test_tolerance_prompt_directly_activates_authoritative_reader_without_tool_s
     assert model.tool_names == [[]]
     assert gateway.physical_calls == 1
     assert gateway.saved['finalizing'] is True
+
+
+def test_drawing_preview_host_binds_latest_upload_after_history_is_present():
+    preview_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_preview_drawing',
+        'description': '读取当前 ERP 上传会话中已匹配的图纸预览',
+        'parameters': {'type': 'object', 'properties': {
+            'session_id': {'type': ['integer', 'null']},
+            'identifiers': {'type': 'array', 'items': {'type': 'string'}},
+            'drawing_id': {'type': ['integer', 'null']},
+        }, 'additionalProperties': False},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已展示当前料单的图纸。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([final])
+
+    result = run_loop(context(
+        prompt='查看这个料单的图纸', core_tool_names=[], tools=[preview_tool],
+        messages=[{'role': 'user', 'content': '解析当前附件'},
+                  {'role': 'assistant', 'content': '已成功解析当前料单。'}],
+        skills=[{
+            'key': 'erp_design_drawing_preview',
+            'tools': ['erp_design_preview_drawing'],
+            'activation_tools': ['erp_design_preview_drawing'],
+            'activation_queries': ['查看图纸', '料单的图纸'],
+            'auto_activation_queries': ['查看图纸', '料单的图纸'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '已展示当前料单的图纸。'
+    assert model.tool_names == [[]]
+    assert gateway.physical_calls == 1
+    assert gateway.saved['attempted_tools'] == ['erp_design_preview_drawing']
+
+
+def test_combined_parameters_and_drawing_prompt_activates_both_readers():
+    tools = {
+        name: {'type': 'function', 'function': {
+            'name': name, 'description': ('读取当前上传会话中材料长宽厚参数'
+                                         if 'parameters' in name
+                                         else '预览当前上传会话中的图纸'),
+            'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+        }}
+        for name in ('erp_design_query_upload_parameters', 'erp_design_preview_drawing')
+    }
+    skills = [
+        {'key': 'erp_design_upload_parameter_review', 'tools': ['erp_design_query_upload_parameters'],
+         'activation_tools': ['erp_design_query_upload_parameters'],
+         'auto_activation_queries': ['长宽厚'], 'suppress_tool_search_on_auto_activation': True},
+        {'key': 'erp_design_drawing_preview', 'tools': ['erp_design_preview_drawing'],
+         'activation_tools': ['erp_design_preview_drawing'],
+         'auto_activation_queries': ['长宽厚与图纸'], 'suppress_tool_search_on_auto_activation': True},
+    ]
+    groups = harness_module._skill_tool_groups(skills, tools)
+
+    active = set()
+    for group in groups:
+        aliases = [alias.lower() for alias in group['auto_activation_queries']]
+        if any(alias in '查看这个料单的长宽厚与图纸'.lower() for alias in aliases):
+            selected = harness_module._rank_group_tools(
+                '查看这个料单的长宽厚与图纸', group, tools,
+                current_prompt='查看这个料单的长宽厚与图纸',
+            )
+            active.update(selected)
+
+    assert active == {'erp_design_query_upload_parameters', 'erp_design_preview_drawing'}
 
 
 def test_technical_requirements_prompt_is_host_invoked_without_model_arguments():
@@ -1717,6 +1843,10 @@ def test_fabricated_evidence_requests_repair_then_uses_a_real_tool_receipt():
 
 
 @pytest.mark.parametrize(('prompt', 'tool_name', 'arguments', 'skill_key'), [
+    ('查询 ERP 分组关键词，返回表格', 'erp_design_query_group_keywords', {},
+     'erp_design_group_keyword_review'),
+    ('查看包含导柱的分组关键字', 'erp_design_query_group_keywords', {'keyword_text': '导柱'},
+     'erp_design_group_keyword_review'),
     ('45#的材质密度是多少', 'erp_design_query_densities', {'material_mark': '45#'},
      'erp_design_density_review'),
     ('M250238-P4当前图纸版本是什么', 'erp_design_query_drawing_versions',
@@ -1759,6 +1889,55 @@ def test_authoritative_erp_reads_cannot_fall_back_to_model_knowledge(
     assert gateway.saved['evidence_tools'] == [tool_name]
     assert gateway.saved['attempted_tools'] == [tool_name]
     assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_group_keyword_lookup_activates_only_the_dedicated_read_boundary():
+    from app.tool_gateway import SKILLS, tool_schema
+
+    names = ['erp_design_query_group_keywords', 'erp_design_manage_group_keyword',
+             'erp_design_query_master_data', 'erp_design_manage_group_rule', 'erp_design_get_record',
+             'erp_design_query_densities', 'erp_design_manage_density']
+    skill_keys = ['erp_design_group_keyword_review', 'erp_design_master_data_maintenance',
+                  'erp_design_density_review']
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'keyword-query', 'type': 'function', 'function': {
+            'name': 'erp_design_query_group_keywords', 'arguments': '{}',
+        },
+    }]}
+    model = InspectingRepliesModel([call, FINAL])
+    gateway = Gateway()
+    run_loop(context(
+        prompt='查询设计分组关键词，返回 ERP 表格', core_tool_names=[],
+        tools=[tool_schema(name) for name in names],
+        skills=[{'key': key, **SKILLS[key]} for key in skill_keys],
+        tool_annotations={name: {'readOnlyHint': 'manage' not in name} for name in names},
+    ), model, gateway)
+
+    assert model.tool_names[0] == ['erp_design_query_group_keywords']
+    assert gateway.physical_calls == 1
+    assert gateway.saved['evidence_tools'] == ['erp_design_query_group_keywords']
+
+
+@pytest.mark.parametrize('prompt', ['分组关键词列表', '全部关键词'])
+def test_group_keyword_catalogue_intents_are_host_invoked_without_model_arguments(prompt):
+    from app.tool_gateway import SKILLS, tool_schema
+
+    keyword_tool = tool_schema('erp_design_query_group_keywords')
+    model = InspectingRepliesModel([{
+        'role': 'assistant',
+        'content': json.dumps({'response_kind': 'BUSINESS', 'summary': '关键词已查询',
+                               'evidence_ids': ['e1'], 'suggestions': []}),
+    }])
+    gateway = Gateway()
+    run_loop(context(
+        prompt=prompt, core_tool_names=[], tools=[keyword_tool],
+        skills=[{'key': 'erp_design_group_keyword_review', **SKILLS['erp_design_group_keyword_review']}],
+        tool_annotations={'erp_design_query_group_keywords': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert model.tool_names[0] == []
+    assert gateway.physical_calls == 1
+    assert gateway.saved['evidence_tools'] == ['erp_design_query_group_keywords']
 
 
 @pytest.mark.parametrize('kind',['CONVERSATION','CLARIFICATION'])
@@ -2311,6 +2490,39 @@ def test_read_only_harness_feeds_model_context_without_duplicate_full_receipt():
     result = run_loop(context(prompt='只读查询项目'), ProjectionModel(), gateway)
 
     assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
+
+
+def test_formal_request_uses_explicitly_complete_tool_projection():
+    class ParseGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {
+                'evidence_id': 'e1',
+                'data': {'previewRows': [{'detail': 'ERP 原始明细' * 1000}]},
+                'model_context': {'sessionId': 328, 'previewRowCount': 1},
+                'model_context_complete': True,
+            }
+
+    class ParseModel:
+        def __init__(self): self.calls = 0
+        def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return copy.deepcopy(PROPOSAL)
+            payload = json.loads(next(message['content'] for message in messages if message.get('role') == 'tool'))
+            assert payload['model_context']['sessionId'] == 328
+            assert 'data' not in payload
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CLARIFICATION', 'summary': '请补充交期',
+                'evidence_ids': ['e1'], 'suggestions': [],
+            }, ensure_ascii=False)}
+
+    gateway = ParseGateway()
+    result = run_loop(context(prompt='导入料单'), ParseModel(), gateway,
+                      context_window=8192, max_output_tokens=2048)
+
+    assert result['summary'] == '请补充交期'
     assert gateway.physical_calls == 1
 
 

@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{
   sourceNote: string
   tableLabel: string
   emptyText: string
+  viewLabel?: string
   rows: ErpDesignRow[]
   columns: ErpDesignColumn[]
   cell: (row: ErpDesignRow, column: ErpDesignColumn) => string
@@ -19,6 +20,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   context: '',
   defer: false,
+  viewLabel: '查看明细',
 })
 
 const open = ref(false)
@@ -49,7 +51,7 @@ onUnmounted(() => window.removeEventListener('keydown', onEscape))
         <small><template v-if="context">{{context}} · </template>{{summary}} · 点击查看完整表格</small>
       </span>
       <button ref="trigger" type="button" :disabled="!rows.length" @click="openDetails">
-        {{rows.length?'查看明细':'暂无明细'}}
+        {{rows.length?viewLabel:'暂无明细'}}
       </button>
     </section>
     <Teleport to="body">
@@ -74,7 +76,9 @@ onUnmounted(() => window.removeEventListener('keydown', onEscape))
               :columns="props.columns"
               :cell="props.cell"
               :show-header="false"
-            />
+            >
+              <template v-if="$slots.cell" #cell="scope"><slot name="cell" v-bind="scope"/></template>
+            </ErpReadOnlyTable>
           </div>
         </section>
       </div>
@@ -91,7 +95,9 @@ onUnmounted(() => window.removeEventListener('keydown', onEscape))
     :rows="props.rows"
     :columns="props.columns"
     :cell="props.cell"
-  />
+  >
+    <template v-if="$slots.cell" #cell="scope"><slot name="cell" v-bind="scope"/></template>
+  </ErpReadOnlyTable>
 </template>
 
 <style scoped>

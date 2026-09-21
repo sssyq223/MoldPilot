@@ -72,7 +72,7 @@ DESIGN_BUSINESS_OBJECT_HINTS = (
     "图纸", "图号", "图纸版本", "图纸匹配", "历史无图", "无图", "设计订单", "设计订单明细",
     "设计草稿", "闲置料", "闲置库存",
     # Design master data and standard hardware.
-    "材质密度", "设计密度", "设计分组", "分组规则", "分组关键词", "厂内标准件",
+    "材质密度", "设计密度", "设计分组", "分组规则", "分组关键词", "分组关键字", "关键词列表", "关键字列表", "全部关键词", "全部关键字", "厂内标准件",
     "标准件图纸", "标准件目录", "标准件编号",
     # Design changes, repair/modify-mold drawing exceptions, and BOM.
     "设变", "设计变更", "变更请购", "变更申请", "设变明细", "修模", "改模", "修模改模",
@@ -93,13 +93,29 @@ DESIGN_ELLIPTICAL_ACTION_TERMS = (
     "解析", "上传", "导入", "校验", "核价", "重新核价", "核算价格", "价格核算", "自动修正", "修正参数", "修正尺寸", "修正数量", "修正长宽厚", "按图纸修正", "匹配", "重新匹配", "轮询", "预览", "图纸预览", "预览图纸", "下载",
     "维护", "重命名", "删除", "启用", "停用", "保存", "释放", "审批", "评审", "重提", "提交", "执行",
 )
-# A file-only utterance such as “解析当前附件” is intentionally accepted only
-# for the authorized new-mold XLSX/XLS/CSV workflow. It is a visibility fallback, not
-# a file parser: the ERP tool remains responsible for validating file ownership,
-# file type and all import/confirmation preconditions.
-DESIGN_UPLOAD_SKILL_KEYS = ("erp_new_mold_design_upload",)
+# A file-only utterance such as “解析当前附件” is accepted for either of the
+# two existing ERP upload flows.  The Harness must not silently choose one:
+# when both skills are authorized and the request does not name a type, it
+# asks the user to choose.  The actual ERP adapters remain the two existing
+# parse_*_design_file_auto MCP calls; this is only an Agent-side routing rule.
+DESIGN_UPLOAD_SKILL_KEYS = (
+    "erp_new_mold_design_upload",
+    "erp_design_modify_mold_upload",
+)
+DESIGN_UPLOAD_NEW_TERMS = (
+    "新模", "新模开发", "新模钢料", "新模五金", "新模清单", "新模料单",
+    "new mold", "new_model", "new model",
+)
+DESIGN_UPLOAD_MODIFY_TERMS = (
+    "修模", "改模", "修模改模", "改模清单", "改模料单", "改模钢料", "改模五金",
+    "repair_other", "modify mold", "repair mold", "repair/modify",
+)
 DESIGN_ATTACHMENT_ACTION_HINTS = (
     "解析", "上传", "导入", "校验", "核价", "重新核价", "核算价格", "价格核算", "重算", "重新核算", "自动修正", "修正参数", "修正尺寸", "修正数量", "修正长宽厚", "按图纸修正", "匹配", "重新匹配", "图纸预览", "预览图纸",
+    # A type-only reply (for example, “新模”) is the expected continuation
+    # after the ambiguous parser choice; the attached workbook supplies the
+    # omitted parse/upload action.
+    "新模", "修模", "改模", "修模改模",
 )
 PURE_CONVERSATION_TERMS = (
     "你好", "您好", "哈喽", "嗨", "hello", "hi", "谢谢", "感谢", "辛苦了", "好的", "好", "收到",
@@ -146,6 +162,7 @@ SYSTEM_PROMPT = """你是模具工作台的智能体，通过已登记工具帮�
 不得推断隐藏业务数据，不得把采购申请当作正式订单、发货或实付。业务副作用必须有权威回执。
 准备业务方案时保留用户提供的措施、时态和执行要求，不把“拟执行、需要核对”改写为“已执行、已核对”。历史反馈应作为独立事实描述，不可替代本次方案内容。
 查询工具只读；prepare_contact_ 和 prepare_project_ 工具仅准备操作建议，返回 proposal 后等待用户在会话卡片中核对确认，不代表业务已执行。项目暂停、恢复、终止或最终关闭建议经本人确认后也只是提交 Agent BPM，须把“已提交审批”和“审批已生效”明确区分；结项清单或事项更新虽不走 BPM，也必须由本人确认并保留修订。不得把局部生产完成、发货、签收或单次回款说成项目已结束，不得把未联调 ERP 的未知事实当作无待办。不得把自然语言同意当作确认凭证。用户仅查询时不得准备写入建议；用户要求办理时，查询真实对象标识、当前版本和可选流程，必要时追问，再准备对应建议。
+涉及 ERP 导入的正式操作必须分两步：缺少交期、请购原因、紧急程度、模具号、清单类型或其他必填业务字段时，先用 CLARIFICATION 明确追问，不能猜测或按默认值代填。用户回复字段值后，先校验格式、日期合理性和与当前清单/业务类型的一致性；回复本身不等于同意写入，除非同时明确表示确认导入。字段合理但尚未明确确认时，展示待导入摘要并继续请求确认；只有收到明确确认且必填信息齐全时，才能调用正式导入工具。ERP 返回自动修正、规范化、图纸回填或价格/数量调整时，必须在待确认摘要中逐行列出修正前后值与原因；不得只说“已自动处理”，不得把未核对的修正结果直接导入。
 工具返回已经覆盖用户所问字段后，必须立即停止调用工具并依据现有证据作答。不得为了“更全面”而扩展到用户未问的项目、采购、合同或其他流程；工程联络单查询优先使用联络单查询与上下文工具，证据充分后直接收口。
 每批工具调用前，必须在同一条带 tool_calls 的 assistant 消息 content 中写一句面向用户的简短阶段说明，说明当前要核对或办理什么；不要另发一条只有进度说明、没有工具调用的消息。这是可见的工作说明，不是内部思维链，不得输出隐藏推理过程。
 最后输出 JSON 对象，字段 response_kind 为 BUSINESS（业务结论）、AWAITING_APPROVAL（操作建议已准备、正在等待本人批准）、CONVERSATION（一般对话）或 CLARIFICATION（需要澄清），summary 为简短回复，evidence_ids 为本次实际取得的证据编号列表，suggestions 为建议字符串列表。工具返回 proposal 且尚无可信确认回执时必须使用 AWAITING_APPROVAL，并由你根据实际建议自然说明当前进展；不得声称已执行。一般对话与澄清不需要业务证据，但不能以此类型输出未经查询的业务状态。

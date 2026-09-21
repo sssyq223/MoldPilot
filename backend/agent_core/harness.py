@@ -34,6 +34,8 @@ PURE_CONVERSATION_TERMS = _policy.PURE_CONVERSATION_TERMS
 ELLIPTICAL_ACTION_TERMS = _policy.ELLIPTICAL_ACTION_TERMS
 DESIGN_ELLIPTICAL_ACTION_TERMS = getattr(_policy, "DESIGN_ELLIPTICAL_ACTION_TERMS", ())
 DESIGN_UPLOAD_SKILL_KEYS = getattr(_policy, "DESIGN_UPLOAD_SKILL_KEYS", ())
+DESIGN_UPLOAD_NEW_TERMS = getattr(_policy, "DESIGN_UPLOAD_NEW_TERMS", ())
+DESIGN_UPLOAD_MODIFY_TERMS = getattr(_policy, "DESIGN_UPLOAD_MODIFY_TERMS", ())
 DESIGN_ATTACHMENT_ACTION_HINTS = getattr(_policy, "DESIGN_ATTACHMENT_ACTION_HINTS", ())
 ALL_BUSINESS_OBJECT_HINTS = (*BUSINESS_OBJECT_HINTS, *DESIGN_BUSINESS_OBJECT_HINTS)
 ALL_ELLIPTICAL_ACTION_TERMS = (*ELLIPTICAL_ACTION_TERMS, *DESIGN_ELLIPTICAL_ACTION_TERMS)
@@ -122,7 +124,7 @@ EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 e
 AUTHORITATIVE_READ_REMINDER = """本次问题涉及必须从权威业务数据源读取的事实，不能使用模型训练知识、历史助手答复或常识直接作答。请调用指定的只读工具；只有工具执行失败时才输出 CLARIFICATION，并准确说明无法取得当前数据。"""
 TOOL_ARGUMENT_REPAIR_REMINDER = """上一轮工具调用的 arguments 不是有效 JSON 对象，工具尚未执行。请根据当前工具的参数 schema 重新发起一次工具调用；arguments 必须是一个完整 JSON 对象，不能在对象结束后追加字段，也不能把对象类型字段写成字符串。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
-UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮再调用 ToolSearch 返回的真实工具。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
+UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮只能调用 ToolSearch 结果中“已激活可调用工具”列出的真实函数名。ToolSearch 的能力目录名称、matches 或 matched_groups 仅用于说明匹配场景，不是函数名。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
 ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
 ACTION_EVIDENCE_REPAIR_REMINDER = """上一轮遗漏了正式操作的成功证据。只要结论声称已经准备、提交或执行操作，evidence_ids 就必须包含本轮所有成功正式操作工具返回的证据编号；不得只引用前置查询证据。请重新输出约定 JSON。"""
 ACTION_NOT_COMPLETED_REPAIR_REMINDER = """本轮用户明确要求准备或办理正式操作，但目前没有任何成功的正式操作工具回执或待确认操作证据。只读查询结果不能证明操作已经准备、提交或执行。不得声称已有确认卡；请输出 response_kind=CLARIFICATION，明确说明操作尚未完成以及需要用户补充或系统配置的条件。"""
@@ -296,6 +298,56 @@ def _has_design_upload_skill(context):
     ))
 
 
+def _design_upload_route(context):
+    """Resolve the user's ERP upload type without guessing from the file.
+
+    ``new`` and ``modify`` select one of the existing ERP parser skills;
+    ``ambiguous`` means both are authorized but the request only says to
+    parse/upload an attachment.  A prior active skill is used only for a
+    short confirmation turn (for example, the user's “好的” after choosing
+    新模), never as a substitute for a conflicting current-turn type.
+    """
+    prompt = str(context.get("prompt") or "").strip().lower()
+    new_hit = any(str(term).lower() in prompt for term in DESIGN_UPLOAD_NEW_TERMS)
+    modify_hit = any(str(term).lower() in prompt for term in DESIGN_UPLOAD_MODIFY_TERMS)
+    if new_hit and modify_hit:
+        return "ambiguous"
+    if new_hit:
+        return "new"
+    if modify_hit:
+        return "modify"
+
+    active = {
+        str(key) for key in (context.get("active_skill_keys") or [])
+        if str(key) in DESIGN_UPLOAD_SKILL_KEYS
+    }
+    if len(active) == 1:
+        return "new" if "erp_new_mold_design_upload" in active else "modify"
+
+    authorized = {
+        str(skill.get("key") or "")
+        for skill in (context.get("skills") or [])
+        if isinstance(skill, dict) and str(skill.get("key") or "") in DESIGN_UPLOAD_SKILL_KEYS
+    }
+    if len(authorized) == 1:
+        return "new" if "erp_new_mold_design_upload" in authorized else "modify"
+    return "ambiguous"
+
+
+def _design_upload_group_keys(route, tool_groups):
+    key_by_route = {
+        "new": "erp_new_mold_design_upload",
+        "modify": "erp_design_modify_mold_upload",
+    }
+    selected = key_by_route.get(route)
+    if selected:
+        return (selected,) if any(group.get("key") == selected for group in tool_groups) else ()
+    return tuple(
+        key for key in DESIGN_UPLOAD_SKILL_KEYS
+        if any(group.get("key") == key for group in tool_groups)
+    )
+
+
 def _is_design_attachment_upload_request(context):
     return bool(
         _contains_any(context.get("prompt") or "", DESIGN_ATTACHMENT_ACTION_HINTS)
@@ -306,7 +358,21 @@ def _is_design_attachment_upload_request(context):
 
 def _business_tool_activation_allowed(context):
     current_prompt = context.get("prompt") or ""
+    # A short affirmative answer to the parser's own confirmation is a
+    # continuation of that attachment request. It must retain ToolSearch, but
+    # ordinary greetings in an old business conversation must stay tool-free.
     if _is_pure_conversation(current_prompt):
+        if not _has_design_list_attachment(context) or not _has_design_upload_skill(context):
+            return False
+        history = context.get("conversation_history") or []
+        for turn in reversed(history):
+            if not isinstance(turn, dict):
+                continue
+            assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
+            text = " ".join(str(assistant.get(key) or "") for key in ("summary", "message", "content"))
+            if text.strip():
+                normalized = _compact_intent_text(text)
+                return "解析" in normalized and ("确认" in normalized or "是否" in normalized)
         return False
     has_current_business_object = _contains_any(current_prompt, ALL_BUSINESS_OBJECT_HINTS)
     has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
@@ -382,6 +448,8 @@ def _skill_tool_groups(skills, all_tools):
                            skill.get("host_auto_invoke_empty_arguments")
                            or spec.get("host_auto_invoke_empty_arguments", False)
                        ),
+                       "host_auto_invoke_queries": skill.get("host_auto_invoke_queries")
+                       or spec.get("host_auto_invoke_queries", []),
                        "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", [])})
     return result
 
@@ -617,6 +685,33 @@ def _compact_skills(skills):
     return result
 
 
+def _active_skill_instructions(skills, active_keys):
+    """Load full authorized skill bodies only after capability selection.
+
+    Summaries are retrieval aids, not execution instructions. Keep these
+    host-supplied bodies at system priority and separate from tool results or
+    attachment text. Rebuild from the fresh authorized context on recovery.
+    """
+    parts = []
+    for skill in skills:
+        key = skill.get("key")
+        content = skill.get("instructions")
+        if key in active_keys and isinstance(content, str) and content.strip():
+            # Skill files are durable source material, but copying an entire
+            # long document into every provider turn makes the conservative
+            # estimator reject small, deterministic calls. The opening rules
+            # contain the route, invocation boundary and confirmation policy;
+            # durable receipts remain available to the host and tool schema
+            # remains authoritative for arguments.
+            text = content.strip()
+            if len(text) > 1100:
+                paragraphs = [item.strip() for item in text.split("\n\n") if item.strip()]
+                text = "\n\n".join(paragraphs[:3])[:1100]
+                text += "\n（技能其余细则由宿主和 ERP 工具回执约束。）"
+            parts.append(f"# 已加载技能 {key}\n{text}")
+    return "\n\n".join(parts)
+
+
 def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=False, current_prompt="",
                          preferred_group_keys=(), tool_annotations=None):
     normalized = (query or "").strip().lower()
@@ -633,6 +728,11 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
         group = preferred_groups[0]
         activated = _rank_group_tools(normalized, group, deferred_tools, action_intent, current_prompt,
                                       tool_annotations)
+        # The attachment route is already the authoritative match.  Do not let
+        # a short UI command such as “导入料单” produce a zero relevance score
+        # and leave the actual parser undiscoverable.
+        if not activated:
+            activated = [name for name in group["tools"] if name in deferred_tools][:MAX_ACTIVATED_TOOLS_PER_SEARCH]
         return [group["key"]], activated, [group["key"]]
     # Domain priority is evaluated against the complete current request before
     # folder routing considers the model's abbreviated search query.  Otherwise
@@ -849,30 +949,117 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         and resolution_receipt
     )
     design_attachment_upload_requested = _is_design_attachment_upload_request(context)
-    preferred_group_keys = DESIGN_UPLOAD_SKILL_KEYS if design_attachment_upload_requested else ()
+    preferred_group_keys = ()
     business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
     formal_action_requested = bool(
         _has_formal_action_intent(context.get("prompt", ""))
         and _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
     )
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
+    design_upload_route = _design_upload_route(context)
+    authorized_design_groups = _design_upload_group_keys(design_upload_route, tool_groups)
+    unavailable_design_upload = bool(
+        design_attachment_upload_requested
+        and design_upload_route in {"new", "modify"}
+        and not authorized_design_groups
+    )
+    if design_attachment_upload_requested:
+        # Explicit wording narrows the route to one existing ERP skill.  A
+        # generic “解析/上传附件” request keeps both choices visible when
+        # both skills are authorized; it is handled as a clarification below.
+        preferred_group_keys = authorized_design_groups
+        if design_upload_route in {"new", "modify"} and authorized_design_groups:
+            # Once the user names a type, remove the other upload skill from
+            # this turn's discovery catalogue.  The ERP parser itself remains
+            # unchanged; this only makes the explicit choice non-switchable.
+            selected = set(authorized_design_groups)
+            tool_groups = [
+                group for group in tool_groups
+                if group.get("key") not in DESIGN_UPLOAD_SKILL_KEYS
+                or group.get("key") in selected
+            ]
+        elif unavailable_design_upload:
+            # An explicit but unauthorized type must not fall back to the
+            # other parser.  Keep this turn read/tool-free and explain the
+            # missing assignment to the user.
+            tool_groups = [
+                group for group in tool_groups
+                if group.get("key") not in DESIGN_UPLOAD_SKILL_KEYS
+            ]
+    ambiguous_design_upload = bool(
+        design_attachment_upload_requested
+        and design_upload_route == "ambiguous"
+        and len(authorized_design_groups) > 1
+    )
+    active_skill_keys = set(context.get("active_skill_keys") or []) & {
+        group["key"] for group in tool_groups
+    }
+
+    def load_selected_skills(names, matched_groups=()):
+        selected = set(matched_groups)
+        if not selected:
+            # Exact-name searches return no group. Resolve their authorized
+            # owning skill by the same current-request relevance used by the
+            # discovery catalogue, without loading every overlapping skill.
+            for name in names:
+                owners = [group for group in tool_groups
+                          if name in {*group["tools"], *group["required"], *group["optional"]}]
+                if owners:
+                    owner = max(owners, key=lambda group: _group_prompt_relevance(
+                        context.get("prompt", ""), group, all_tools))
+                    selected.add(owner["key"])
+        active_skill_keys.update(selected & {group["key"] for group in tool_groups})
+
     suppress_tool_search = False
     required_evidence_tools = set()
     host_auto_invoke_candidates = set()
     if not business_tools_allowed:
         active_tool_names.clear()
+        active_skill_keys.clear()
     else:
+        # Continuations such as “是的” inherit only the immediately preceding
+        # explicit attachment confirmation. Activate the parser for the next
+        # model turn; the model still has to issue the normal tool call, so the
+        # durable receipt and authorization path remain unchanged.
+        attachment_confirmation = (
+            _is_pure_conversation(context.get("prompt", ""))
+            and _business_tool_activation_allowed(context)
+            and _has_design_list_attachment(context)
+            and _has_design_upload_skill(context)
+        )
+        if attachment_confirmation and not ambiguous_design_upload:
+            selected_groups = set(authorized_design_groups)
+            for group in tool_groups:
+                if group["key"] not in selected_groups:
+                    continue
+                parser_names = [name for name in group["tools"]
+                                if name in {"erp_design_parse_new_mold_upload",
+                                            "erp_design_parse_modify_mold_upload"}
+                                and name in all_tools]
+                active_tool_names.update(parser_names)
+                active_skill_keys.add(group["key"])
+                if parser_names:
+                    suppress_tool_search = True
+        if active_tool_names and not active_skill_keys:
+            load_selected_skills(active_tool_names)
         # Domain packs may mark a small, unambiguous read boundary for direct
         # activation. This avoids spending a model turn on ToolSearch while
         # still keeping every unrelated capability deferred.
         auto_deferred = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
         prompt = context.get("prompt", "")
-        normalized_prompt = prompt.lower()
+        attachment_confirmation = (
+            _is_pure_conversation(prompt)
+            and _business_tool_activation_allowed(context)
+            and _has_design_list_attachment(context)
+            and _has_design_upload_skill(context)
+        )
+        auto_prompt = "解析当前附件" if attachment_confirmation else prompt
+        normalized_prompt = auto_prompt.lower()
         priority_auto_groups = []
         for group in tool_groups:
             aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
                        if str(alias).strip()]
-            if (_group_priority_matches(prompt, group)
+            if (_group_priority_matches(auto_prompt, group)
                     and any(alias in normalized_prompt for alias in aliases)):
                 priority_auto_groups.append(group)
         # Domain-owned context patterns disambiguate overlapping short aliases
@@ -881,6 +1068,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         # fixed reference table. Never auto-invoke both readers and let the
         # model guess between them.
         auto_groups = priority_auto_groups or tool_groups
+        if ambiguous_design_upload or unavailable_design_upload:
+            # Do not let a generic attachment request fan out into a parser
+            # chosen by model ranking.  The next model turn must either ask
+            # which existing ERP upload type to use or report the missing
+            # assignment.
+            suppress_tool_search = True
+            auto_groups = []
         for group in auto_groups:
             aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
                        if str(alias).strip()]
@@ -890,13 +1084,20 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             selected = _rank_group_tools(
                 normalized_prompt, group, auto_deferred,
                 action_intent=formal_action_requested,
-                current_prompt=prompt,
+                current_prompt=auto_prompt,
                 tool_annotations=tool_annotations,
             )
             active_tool_names.update(selected)
+            if selected or group_already_active:
+                load_selected_skills(selected, [group["key"]])
             if group.get("requires_tool_evidence"):
                 required_evidence_tools.update(group.get("required") or selected)
-            if group.get("host_auto_invoke_empty_arguments"):
+            host_auto_queries = [str(alias).strip().lower()
+                                 for alias in group.get("host_auto_invoke_queries", [])
+                                 if str(alias).strip()]
+            if (group.get("host_auto_invoke_empty_arguments")
+                    and (not host_auto_queries
+                         or any(alias in normalized_prompt for alias in host_auto_queries))):
                 eligible = set(selected)
                 if group_already_active:
                     eligible.update(set(group["tools"]) & active_tool_names)
@@ -924,8 +1125,36 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         return tools
 
     skill_prompt = "授权技能摘要："+json.dumps(_compact_skills(context["skills"]), ensure_ascii=False)
-    system_content="\n\n".join(part for part in [SYSTEM,ATTACHMENT_CONTEXT_INSTRUCTION,optional_prompt,mode_instruction,skill_prompt] if part)
+    design_upload_selection_prompt = ""
+    if ambiguous_design_upload:
+        design_upload_selection_prompt = (
+            "当前附件可通过 ERP 的两条既有解析流程处理：新模，或修模改模（ERP 类型 repair_other）。"
+            "用户只说了解析/上传但没有指定类型时，必须先输出 CLARIFICATION，请用户选择“新模”或“修模改模”；"
+            "本轮不要调用任何解析工具，也不要依据文件名、历史记录或模型猜测类型。用户明确选择后，下一轮只激活对应的 ERP 解析工具。"
+        )
+    elif unavailable_design_upload:
+        locked_label = "新模" if design_upload_route == "new" else "修模改模"
+        design_upload_selection_prompt = (
+            f"用户明确要求按“{locked_label}”解析，但当前账号没有该 ERP 解析能力。"
+            "不要改用另一种类型，也不要调用解析工具；请输出 CLARIFICATION，说明需要管理员为该类型授权。"
+        )
+    elif design_attachment_upload_requested and design_upload_route in {"new", "modify"}:
+        locked_label = "新模" if design_upload_route == "new" else "修模改模"
+        design_upload_selection_prompt = (
+            f"本轮用户已明确选择 ERP 设计上传类型为“{locked_label}”。只允许使用对应的既有 ERP 解析流程，"
+            "不要向用户展示或激活另一种上传类型；不要依据文件名改写该选择。"
+        )
+    system_content="\n\n".join(part for part in [SYSTEM,ATTACHMENT_CONTEXT_INSTRUCTION,optional_prompt,
+                                                       design_upload_selection_prompt,mode_instruction,skill_prompt] if part)
     messages = context.get("messages") or _initial_messages(context,system_content)
+
+    def model_messages():
+        # Include full loaded skills in every call and in context accounting,
+        # including terminal turns. Persist keys, not duplicate skill bodies.
+        return _messages_for_model(messages, [
+            _active_skill_instructions(context.get("skills", []), active_skill_keys),
+            *next_model_instructions,
+        ])
     count = context.get("tool_count", 0)
     turn = context.get("turn", 0)
     evidence_ids = list(context.get("evidence_ids", []))
@@ -969,8 +1198,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     # the single required read directly instead of asking a model to invent an
     # opaque session id or copy a large row payload.  The schema, read-only
     # boundary and fresh-run checks keep this generic mechanism fail-closed.
-    if (not context.get("messages")
-            and turn == 0
+    if (turn == 0
             and not pending
             and not formal_action_requested
             and not evidence_ids
@@ -1037,7 +1265,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
 
     def save():
         visible_tools = [] if finalizing else active_tools()
-        context_usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
+        context_usage = usage_snapshot(model_messages(), visible_tools,
                                        context_window=context_window,
                                        max_output_tokens=max_output_tokens,
                                        model_metrics=model_metrics,
@@ -1055,6 +1283,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             'executed_tool_signatures': executed_tool_signatures,
                             'action_outcomes': action_outcomes,
                             'active_tool_names': sorted(active_tool_names),
+                            'active_skill_keys': sorted(active_skill_keys),
                             'last_model_message': last_model_message,
                             'streaming_model_message': streaming_model_message,
                             'next_model_instructions': next_model_instructions,
@@ -1067,7 +1296,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         if deadline is not None and time.time() >= deadline:
             raise RuntimeError("BUDGET_EXCEEDED")
         visible_tools = [] if finalizing else active_tools()
-        usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
+        usage = usage_snapshot(model_messages(), visible_tools,
                                context_window=context_window,
                                max_output_tokens=max_output_tokens,
                                model_metrics=model_metrics,
@@ -1081,7 +1310,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             messages = compacted
             compactions.append(record)
             save()
-            usage = usage_snapshot(_messages_for_model(messages, next_model_instructions), visible_tools,
+            usage = usage_snapshot(model_messages(), visible_tools,
                                    context_window=context_window,
                                    max_output_tokens=max_output_tokens,
                                    model_metrics=model_metrics,
@@ -1124,16 +1353,27 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         tool_annotations=tool_annotations)
                     activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
+                    load_selected_skills(candidates, matched_groups)
                     if activated:
                         # ToolSearch promises that newly activated tools are
                         # available on the next model turn. Context-pressure
                         # finalization must not remove them before that turn.
                         activation_grace = True
+                    # ``matches`` returned by _find_deferred_tools are capability
+                    # group keys for semantic searches (for example
+                    # ``erp_new_mold_design_upload``), not callable functions.
+                    # Showing those keys as matches made the model call a skill
+                    # alias instead of the registered ERP tool.  Keep the group
+                    # keys in ``matched_groups`` for traceability and expose only
+                    # registered function names as callable matches.
+                    callable_matches = candidates or [name for name in matches if name in deferred_tools]
+                    group_note = ("匹配能力目录（仅说明场景，不可直接调用）：" + "、".join(matched_groups)) if matched_groups else ""
                     result = {"source": "harness", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                              "query": arguments.get("query", ""), "matches": matches, "activated": activated,
+                              "query": arguments.get("query", ""), "matches": callable_matches, "activated": activated,
                               "matched_groups": matched_groups,
-                              "message": ("已激活按需工具：" + "、".join(activated) + "。下一轮可调用。") if activated else
-                                         ("匹配工具已处于激活状态：" + "、".join(matches)) if matches else "未找到匹配的按需工具。"}
+                              "message": (("已激活可调用工具：" + "、".join(activated) + "。下一轮只能调用这些真实工具。") if activated else
+                                          ("匹配工具已处于激活状态：" + "、".join(callable_matches)) if callable_matches else "未找到匹配的按需工具。")
+                                         + ((" " + group_note) if group_note else "")}
                 else:
                     attempted_tools.add(name)
                     result = gateway.execute(count, name, arguments)
@@ -1159,7 +1399,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 pending_index += 1
                 model_result = _tool_result_for_model(
                     result,
-                    prefer_model_context=not formal_action_requested,
+                    prefer_model_context=(not formal_action_requested
+                                          or result.get("model_context_complete") is True),
                 )
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(model_result, ensure_ascii=False)})
                 save()
@@ -1181,7 +1422,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         # First compact the transcript that will actually be submitted. The
         # provider token count in model_metrics describes the previous request.
         check_budget()
-        context_size = usage_snapshot(_messages_for_model(messages, next_model_instructions), [] if finalizing else active_tools(),
+        context_size = usage_snapshot(model_messages(), [] if finalizing else active_tools(),
                                       context_window=context_window,
                                       max_output_tokens=max_output_tokens,
                                       model_metrics=model_metrics,
@@ -1208,7 +1449,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         save()
         model_ok = False
         try:
-            request_messages = _messages_for_model(messages, next_model_instructions)
+            request_messages = model_messages()
             request_tools = [] if finalizing else active_tools()
 
             def publish_model_update(partial):

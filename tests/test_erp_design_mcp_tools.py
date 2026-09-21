@@ -145,6 +145,8 @@ def test_new_mold_design_upload_matches_named_historical_attachment_without_lead
 
 def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_path):
     from domain_packs.mold import erp_design_mcp
+    from agent_core.context_budget import estimate_json_tokens
+    from agent_core.harness import _tool_result_for_model
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -158,7 +160,13 @@ def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_pat
 
     def fake_control_call(name, arguments):
         calls.append((name, arguments))
-        return {"sessionId": 321, "sheetType": "hardware", "previewRows": []}
+        return {
+            "sessionId": 321, "sheetType": "hardware", "canImport": True,
+            "previewRows": [{"item_code_full": f"P4-{index}", "item_name": "五金件",
+                             "qty": index, "detail": "ERP 原始解析字段" * 30}
+                            for index in range(1, 10)],
+            "additionalProcessingFeeRules": [{"rule": "ERP 原始规则" * 50} for _ in range(7)],
+        }
 
     monkeypatch.setattr(erp_design_mcp, "_temporary_design_file",
                         lambda *_args: (directory, path, source))
@@ -179,6 +187,15 @@ def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_pat
             "filePath": str(path), "sheetType": "auto", "designOrderSubType": None,
         })]
         assert result["data"]["sheetType"] == "hardware"
+        assert len(result["data"]["previewRows"]) == 9
+        assert result["model_context"]["sessionId"] == 321
+        assert result["model_context"]["previewRowCount"] == 9
+        assert "previewRows" not in result["model_context"]
+        assert result["model_context_complete"] is True
+        projected = _tool_result_for_model(result, prefer_model_context=True)
+        assert "data" not in projected
+        assert estimate_json_tokens(projected) < 500
+        assert estimate_json_tokens(result) > 3000
         assert event.detail["sheet_type"] == "hardware"
     finally:
         engine.dispose()
@@ -392,7 +409,7 @@ def test_http_bridge_rejects_drawing_outside_the_owned_upload(monkeypatch):
         assert error.code == "ERP_DRAWING_NOT_IN_SESSION"
 
 
-def test_agent_drawing_preview_tool_uses_the_owned_session_row(monkeypatch):
+def test_agent_drawing_preview_tool_returns_owned_drawing_table_without_downloading(monkeypatch):
     from app.events import record
     from domain_packs.mold import erp_design_mcp
 
@@ -407,6 +424,8 @@ def test_agent_drawing_preview_tool_uses_the_owned_session_row(monkeypatch):
         return {"previewRows": [{
             "drawing_resource_id": 1190,
             "drawing_preview_url": "/purchase/drawing/resource/1190/preview",
+            "item_code_full": "C04", "item_name": "导柱", "drawing_file_name": "C04.dxf",
+            "length": 42, "unit_price": 123,
         }]}
 
     monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_mcp)
@@ -424,18 +443,65 @@ def test_agent_drawing_preview_tool_uses_the_owned_session_row(monkeypatch):
             record(db, user, "erp_design_mcp.parsed", "271", {"sheet_type": "hardware"})
         with Session() as db:
             user = db.query(m.User).filter_by(username="erp_drawing_tool_admin").one()
-            run = SimpleNamespace(user_id=user.id)
             result = execute(db, user, "erp_design_preview_drawing", {
                 "session_id": 271, "drawing_id": 1190,
-            }, run=run)
-        assert result["data"]["file"]["filename"] == "C04.png"
-        assert mcp_calls == [("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True})]
-        assert control_calls == [("download_erp_design_file", {
-            "artifact": "drawing_preview", "drawingId": 1190,
-            "previewUrl": "/purchase/drawing/resource/1190/preview",
-        })]
+            })
+            with pytest.raises(DomainError, match="该图纸不属于当前上传会话"):
+                execute(db, user, "erp_design_preview_drawing", {"session_id": 271, "drawing_id": 999})
+            with pytest.raises(DomainError, match="上传会话不存在"):
+                execute(db, user, "erp_design_preview_drawing", {"session_id": 999, "drawing_id": 1190})
+        assert result["data"]["displayMode"] == "design_drawings"
+        assert result["data"]["previewRows"] == [{
+            "rowIndex": 1, "item_code_full": "C04", "item_name": "导柱",
+            "drawing_resource_id": 1190, "drawing_file_name": "C04.dxf",
+        }]
+        assert result["data"]["matchedCount"] == 1
+        assert "file" not in result["data"]
+        assert mcp_calls == [
+            ("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True}),
+            ("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True}),
+            ("get_new_mold_upload_result", {"sessionId": 271}),
+        ]
+        assert control_calls == []
     finally:
         engine.dispose()
+
+
+def test_standard_hardware_query_keeps_erp_drawing_rows_and_keyword(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    calls = []
+    payload = {"rows": [{
+        "standardCode": "R-BZ-001", "fileName": "R-BZ-001.dxf",
+        "relativePath": "R-BZ-001/R-BZ-001.dxf",
+        "previewUrl": "/design/standard-hardware/preview?relativePath=R-BZ-001%2FR-BZ-001.dxf",
+    }], "total": 1}
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", lambda name, args: calls.append((name, args)) or payload)
+    result = erp_design_mcp.execute_tool(None, None, "erp_design_query_standard_hardware", {"query": "R-BZ-001"})
+    assert result["data"] == payload
+    assert calls == [("query_erp_standard_hardware_drawings", {"query": {"keyword": "R-BZ-001"}})]
+
+
+def test_standard_hardware_preview_reuses_erp_file_endpoint(monkeypatch):
+    from base64 import b64encode
+    from domain_packs.mold import erp_design_mcp
+    from domain_packs.mold.erp.design import erp_design_upload
+
+    calls = []
+    permissions = []
+    content = b"ERP standard hardware preview" * 4
+    monkeypatch.setattr(erp_design_upload, "require", lambda db, user, permission: permissions.append(permission))
+    monkeypatch.setattr(erp_design_mcp, "call_design_control_mcp", lambda name, args: calls.append((name, args)) or {
+        "base64": b64encode(content).decode(), "fileName": "R-BZ-001 标准件.png", "mediaType": "image/png",
+    })
+    response = erp_design_upload.standard_hardware_preview("R-BZ-001/R-BZ-001.dxf", user=None, db=None)
+    assert response.body == content
+    assert response.media_type == "image/png"
+    assert "filename*=UTF-8''R-BZ-001%20" in response.headers["Content-Disposition"]
+    assert permissions == ["design_route.read"]
+    assert calls == [("download_erp_design_file", {
+        "artifact": "standard_hardware_preview", "relativePath": "R-BZ-001/R-BZ-001.dxf",
+    })]
 
 
 def test_agent_auto_correction_replaces_shape_dimensions_quantity_and_reprices_steel(monkeypatch):
@@ -699,6 +765,7 @@ def test_upload_parameter_reader_reuses_conversation_session_and_projects_only_d
                     "material_mark": "CR12MOV", "material_shape": "方料", "qty": 2,
                     "length": 706.526, "width": 705.79, "height": 70.46,
                     "calculation_process": "price-only evidence",
+                    "drawing_resource_id": 1191, "drawing_file_name": "DIE-01.dxf",
                 },
             ],
         }
@@ -738,18 +805,45 @@ def test_upload_parameter_reader_reuses_conversation_session_and_projects_only_d
             result = execute(db, user, "erp_design_query_upload_parameters", {
                 "identifiers": ["DIE-01"],
             }, run=current)
+            combined = execute(db, user, "erp_design_query_upload_parameters", {
+                "identifiers": ["DIE-01"],
+                "fields": ["length", "width", "height", "drawing"],
+            }, run=current)
+            drawings = execute(db, user, "erp_design_preview_drawing", {}, run=current)
+            missing = execute(db, user, "erp_design_preview_drawing", {"identifiers": ["不存在"]}, run=current)
 
-        assert calls == [("get_new_mold_upload_result", {"sessionId": 417})]
+        assert calls == [
+            ("get_new_mold_upload_result", {"sessionId": 417}),
+            ("get_new_mold_upload_result", {"sessionId": 417}),
+            ("get_new_mold_upload_status", {"sessionId": 417, "includeResult": True}),
+            ("get_new_mold_upload_status", {"sessionId": 417, "includeResult": True}),
+        ]
+        assert drawings["data"] == {
+            "displayMode": "design_drawings", "sessionId": 417, "moldCode": "M250238-P4",
+            "matchedCount": 1, "previewRows": [{
+                "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
+                "drawing_resource_id": 1191, "drawing_file_name": "DIE-01.dxf",
+            }],
+        }
+        assert missing["data"]["previewRows"] == []
         assert result["data"]["moldCode"] == "M250238-P4"
         assert result["data"]["displayMode"] == "design_parameters"
-        assert result["data"]["renderAsTable"] is False
+        assert result["data"]["renderAsTable"] is True
         assert result["data"]["matchedCount"] == 1
         assert result["data"]["previewRows"] == [{
             "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
-            "material_mark": "CR12MOV", "spec_raw": "", "material_shape": "方料",
-            "purchase_quantity": 2, "unit": "", "length": 706.526, "width": 705.79,
+            "material": "CR12MOV", "spec": None, "shape": "方料",
+            "purchase_quantity": 2, "unit": None, "length": 706.526, "width": 705.79,
             "height": 70.46, "outer_diameter": None, "inner_diameter": None,
-            "processing_technology": "", "remark": "",
+            "processing_technology": None, "remark": None,
+        }]
+        assert [column["key"] for column in combined["data"]["columns"]] == [
+            "item_code_full", "item_name", "length", "width", "height", "drawing",
+        ]
+        assert combined["data"]["previewRows"] == [{
+            "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
+            "length": 706.526, "width": 705.79, "height": 70.46,
+            "drawing_resource_id": 1191, "drawing_file_name": "DIE-01.dxf", "drawing": 1191,
         }]
         assert "unit_price" not in result["data"]["previewRows"][0]
         assert "calculation_process" not in result["data"]["previewRows"][0]
@@ -857,6 +951,87 @@ def test_erp_design_master_data_query_aggregates_the_related_read_catalogues(mon
         engine.dispose()
 
 
+def test_drawing_version_query_requires_and_forwards_an_explicit_target(monkeypatch):
+    from domain_packs.mold.tools.erp.design import erp_design_mcp
+
+    with pytest.raises(DomainError, match="图号、零件号或模具号"):
+        erp_design_mcp.execute_tool(None, SimpleNamespace(super_admin=True),
+                                    "erp_design_query_drawing_versions", {"query": {}})
+    assert erp_design_mcp._INPUTS["erp_design_query_drawing_versions"].model_validate(
+        {"query": "M250238-P4"}
+    ).query == {"moldCode": "M250238-P4"}
+
+    calls = []
+
+    def fake_call(name, arguments):
+        calls.append((name, arguments))
+        return {"rows": [{"partCode": "P-01", "version": 2}], "total": 1}
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_call)
+    result = execute(None, SimpleNamespace(super_admin=True), "erp_design_query_drawing_versions", {
+        "query": {"partCode": "P-01", "moldCode": "M250238-P4"},
+    })
+
+    assert calls == [("query_erp_drawing_versions", {
+        "query": {"partCode": "P-01", "moldCode": "M250238-P4"},
+    })]
+    assert result["model_context"]["query"]["partCode"] == "P-01"
+    assert result["data"]["rows"][0]["version"] == 2
+
+
+def test_idle_material_query_uses_erp_inventory_or_order_candidates(monkeypatch):
+    from domain_packs.mold.tools.erp.design import erp_design_mcp
+
+    control_calls = []
+
+    def fake_control(name, arguments):
+        control_calls.append((name, arguments))
+        return {"rows": [{"id": 31, "materialMark": "CR12MOV", "availableQuantity": 18}], "total": 1}
+
+    monkeypatch.setattr(erp_design_mcp, "call_design_control_mcp", fake_control)
+    inventory = execute(None, SimpleNamespace(super_admin=True), "erp_design_query_idle_material", {
+        "query": {"materialMark": "CR12MOV", "status": "available"},
+    })
+    assert control_calls == [("query_erp_idle_material", {
+        "query": {"materialMark": "CR12MOV", "status": "available"},
+    })]
+    assert inventory["model_context"]["erp_table"] == "scrap_inventory_match"
+    assert inventory["data"]["rows"][0]["availableQuantity"] == 18
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", lambda name, arguments: {
+        "details": [{
+            "id": 77, "detailVersion": "v4", "materialNo": "DIE-01",
+            "materialName": "下模板", "quantity": 2,
+            "scrapMatchCandidates": [{"id": 31, "availableQuantity": 18, "matchStatus": "matched"}],
+        }],
+    })
+    order = execute(None, SimpleNamespace(super_admin=True), "erp_design_query_idle_material", {
+        "request_id": 9001,
+    })
+    assert order["data"]["rows"] == [{
+        "detail_id": 77, "detail_version": "v4", "item_code_full": "DIE-01",
+        "item_name": "下模板", "required_quantity": 2, "id": 31,
+        "availableQuantity": 18, "matchStatus": "matched",
+        "matched_quantity": None, "remaining_quantity": None,
+        "used_quantity": None, "decision_status": None,
+    }]
+
+
+def test_processing_diff_exposes_before_after_and_reason():
+    from domain_packs.mold.tools.erp.design import erp_design_mcp
+
+    before = [{"rowIndex": 1, "item_code_full": "DIE-01", "length": 100, "height": 20}]
+    after = [{"rowIndex": 1, "item_code_full": "DIE-01", "length": 101, "height": 20}]
+    diff = erp_design_mcp._processing_diff(before, after, reason="ERP 图纸修正")
+    assert diff == [{
+        "rowIndex": 1, "item_code_full": "DIE-01", "item_name": None,
+        "field": "长", "before": 100, "after": 101, "reason": "ERP 图纸修正",
+    }]
+    wrapped = erp_design_mcp._with_processing_table({"previewRows": after}, before, after, reason="ERP 图纸修正")
+    assert [row["field"] for row in wrapped["processingDiff"]] == ["长"]
+    assert [column["key"] for column in wrapped["processingDiffColumns"]] == ["field", "before", "after", "reason"]
+
+
 def test_erp_design_control_tools_are_registered_and_forwarded(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -925,7 +1100,6 @@ def test_erp_design_master_data_crud_is_grouped_by_resource():
     assert SKILLS["erp_design_master_data_maintenance"]["tools"] == ["erp_design_query_master_data"]
     assert SKILLS["erp_design_master_data_maintenance"]["activation_tools"] == [
         "erp_design_query_master_data", "erp_design_manage_group_rule",
-        "erp_design_manage_group_keyword",
     ]
     assert SKILLS["erp_design_density_review"]["tools"] == ["erp_design_query_densities"]
     assert SKILLS["erp_design_density_review"]["activation_tools"] == [
@@ -933,7 +1107,7 @@ def test_erp_design_master_data_crud_is_grouped_by_resource():
     ]
     assert SKILLS["erp_design_density_review"]["requires_tool_evidence"] is True
     assert set(SKILLS["erp_design_master_data_maintenance"]["optional_tools"]) == {
-        "erp_design_get_record", "erp_design_manage_group_rule", "erp_design_manage_group_keyword",
+        "erp_design_get_record", "erp_design_manage_group_rule",
     }
 
 

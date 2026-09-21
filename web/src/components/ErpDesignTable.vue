@@ -34,10 +34,26 @@ const emit = defineEmits<{
 }>()
 
 const localRows = ref<ErpDesignRow[]>([])
+const pageSize = 60
+const currentPage = ref(1)
+const pageCount = computed(() => Math.max(1, Math.ceil(localRows.value.length / pageSize)))
+const pageStart = computed(() => (currentPage.value - 1) * pageSize)
+const pagedRows = computed(() => localRows.value.slice(pageStart.value, pageStart.value + pageSize))
 const expectedDate = ref('')
 const remark = ref('')
+const minExpectedDate = (() => {
+  const value = new Date()
+  value.setHours(12, 0, 0, 0)
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+})()
 
 const columns = computed(() => erpDesignColumns(props.preview.sheetType))
+const designOrderTypeLabel = computed(() => {
+  const value = String(props.preview.designOrderType || '').trim().toLowerCase()
+  return value === 'repair_other' || value.includes('repair') || value.includes('modify')
+    ? '修模改模'
+    : '新模'
+})
 const displayCell = (row: ErpDesignRow, column: ErpDesignColumn) => (
   erpDesignCell(row, column, props.preview.techRequirements)
 )
@@ -46,8 +62,12 @@ const idleQuantity = computed(() => sumField(['idle_quantity', 'idleQuantity']))
 const purchaseQuantity = computed(() => sumField(['purchase_quantity', 'purchaseQuantity'], true))
 const autoCorrectedCount = computed(() => localRows.value.filter(row => Boolean(
   row.item_code_auto_corrected || row.itemCodeAutoCorrected
+  || row.drawing_material_shape_auto_corrected || row.drawingMaterialShapeAutoCorrected
   || row.drawing_dimension_auto_corrected || row.drawingDimensionAutoCorrected
-  || row.drawing_dimension_defaulted || row.drawingDimensionDefaulted,
+  || row.drawing_dimension_defaulted || row.drawingDimensionDefaulted
+  || row.drawing_quantity_auto_corrected || row.drawingQuantityAutoCorrected
+  || (Array.isArray(row.auto_corrected_fields) && row.auto_corrected_fields.length)
+  || (Array.isArray(row.autoCorrectedFields) && row.autoCorrectedFields.length),
 )).length)
 const drawingCorrectableCount = computed(() => localRows.value.filter(row => (
   materialShapeMismatch(row)
@@ -55,14 +75,97 @@ const drawingCorrectableCount = computed(() => localRows.value.filter(row => (
   || quantityFieldMismatch(row)
 )).length)
 
+type CorrectionDetail = {
+  key: string
+  row: string
+  field: string
+  before: string
+  after: string
+  message: string
+}
+
+function correctionValue(value: unknown): string {
+  if (value == null || value === '') return '未填写'
+  if (typeof value === 'string' && value.trim().startsWith('{')) {
+    try { return correctionValue(JSON.parse(value)) } catch { return value }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const fields = value as Record<string, unknown>
+    const dimensions: Array<[string, string[]]> = [
+      ['长', ['length']], ['宽', ['width']], ['厚', ['height', 'thickness']],
+      ['外径', ['outer_diameter', 'outerDiameter']],
+      ['内径', ['inner_diameter', 'innerDiameter']],
+    ]
+    const parts = dimensions.flatMap(([label, keys]) => {
+      const entry = keys.map(key => fields[key]).find(item => item != null && item !== '')
+      return entry == null ? [] : [`${label} ${entry}`]
+    })
+    if (parts.length) return parts.join('、')
+    return Object.entries(fields).filter(([, entry]) => entry != null && entry !== '')
+      .map(([key, entry]) => `${key} ${correctionValue(entry)}`).join('、') || '未填写'
+  }
+  return String(value)
+}
+
+function correctionRowNumber(row: ErpDesignRow, index: number): string {
+  return String(row.rowIndex ?? row.row_index ?? index + 1)
+}
+
+const correctionDetails = computed<CorrectionDetail[]>(() => pagedRows.value.flatMap((row, index) => {
+  const rowNumber = correctionRowNumber(row, pageStart.value + index)
+  const details: CorrectionDetail[] = []
+  const add = (key: string, field: string, before: unknown, after: unknown, message = '') => {
+    details.push({ key: `${rowNumber}-${key}`, row: rowNumber, field,
+      before: correctionValue(before), after: correctionValue(after), message: String(message || '') })
+  }
+  const codeCorrected = Boolean(row.item_code_auto_corrected || row.itemCodeAutoCorrected)
+  if (codeCorrected) {
+    add('code', '编码', row.item_code_original ?? row.itemCodeOriginal ?? row.item_code_source ?? row.itemCodeSource,
+      row.item_code_full ?? row.itemCodeFull, row.item_code_correction_message ?? row.itemCodeCorrectionMessage)
+  }
+  const shapeCorrected = Boolean(row.drawing_material_shape_auto_corrected || row.drawingMaterialShapeAutoCorrected
+    || row.drawing_material_shape_original || row.drawingMaterialShapeOriginal)
+  if (shapeCorrected) {
+    add('shape', '料型', row.drawing_material_shape_original ?? row.drawingMaterialShapeOriginal
+      ?? row.material_shape_original ?? row.materialShapeOriginal,
+      row.material_shape ?? row.materialShape ?? row.material_type ?? row.materialType,
+      row.drawing_material_shape_correction_message ?? row.drawingMaterialShapeCorrectionMessage)
+  }
+  const dimensionCorrected = Boolean(row.drawing_dimension_auto_corrected || row.drawingDimensionAutoCorrected
+    || row.drawing_dimension_defaulted || row.drawingDimensionDefaulted
+    || row.drawing_dimension_original || row.drawingDimensionOriginal)
+  if (dimensionCorrected) {
+    const before = row.drawing_dimension_original ?? row.drawingDimensionOriginal
+    const after = {
+      length: row.length, width: row.width, height: row.height,
+      outer_diameter: row.outer_diameter ?? row.outerDiameter,
+      inner_diameter: row.inner_diameter ?? row.innerDiameter,
+    }
+    add('dimensions', '长宽高/直径', before, after,
+      row.drawing_dimension_correction_message ?? row.drawingDimensionCorrectionMessage)
+  }
+  const quantityCorrected = Boolean(row.drawing_quantity_auto_corrected || row.drawingQuantityAutoCorrected
+    || row.drawing_quantity_original || row.drawingQuantityOriginal)
+  if (quantityCorrected) {
+    add('quantity', '数量', row.drawing_quantity_original ?? row.drawingQuantityOriginal,
+      row.qty ?? row.quantity, row.drawing_quantity_correction_message ?? row.drawingQuantityCorrectionMessage)
+  }
+  return details
+}))
+
 watch(() => props.preview.previewRows, value => {
   localRows.value = (value || []).map(row => props.preview.sheetType === 'steel'
     ? normalizeErpDesignTreatments(row)
     : ({ ...row }))
 }, { immediate: true })
 
+watch(() => props.preview.sessionId, () => { currentPage.value = 1 })
+watch(pageCount, count => { if (currentPage.value > count) currentPage.value = count })
+
 watch(() => props.preview.sessionId, () => {
-  expectedDate.value = props.preview.expectedDate || defaultExpectedDate(props.preview)
+  // A delivery date is a business decision. Never infer one from row count
+  // or sheet type; an omitted date must result in a follow-up question.
+  expectedDate.value = props.preview.expectedDate || ''
   remark.value = props.preview.remark || ''
   updateDraft()
 }, { immediate: true })
@@ -79,20 +182,6 @@ function sumField(fields: string[], fallbackToQty = false): number {
     if (value == null && fallbackToQty) value = row.qty ?? row.quantity ?? 0
     return total + (Number(value) || 0)
   }, 0)
-}
-
-function localDate(days: number): string {
-  const date = new Date()
-  date.setHours(12, 0, 0, 0)
-  date.setDate(date.getDate() + days)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
-function defaultExpectedDate(preview: ErpDesignPreviewSession): string {
-  const count = preview.previewRows.length
-  if (preview.sheetType === 'steel') return localDate(count >= 10 ? 3 : 2)
-  if (preview.sheetType === 'hardware' && count >= 10) return localDate(15)
-  return ''
 }
 
 function updateDraft() {
@@ -556,6 +645,7 @@ function submitImport(allowDuplicate: boolean) {
 const canImport = computed(() => Boolean(
   localRows.value.length
   && expectedDate.value
+  && expectedDate.value >= minExpectedDate
   && !props.loading
   && !props.repricing
   && !props.importing
@@ -647,8 +737,8 @@ const toleranceRows = computed(() => {
   <div class="erp-design-table-view">
     <div class="erp-design-order-form">
       <label><span>模具号</span><input :value="preview.moldCode||'-'" readonly></label>
-      <label><span>类型</span><input value="新模" readonly></label>
-      <label><span><b>*</b> 交期</span><input v-model="expectedDate" type="date" @change="updateDraft"></label>
+      <label><span>类型</span><input :value="designOrderTypeLabel" readonly></label>
+      <label><span><b>*</b> 交期</span><input v-model="expectedDate" :min="minExpectedDate" type="date" @change="updateDraft"><small v-if="!expectedDate" class="erp-design-required-hint">请先选择交期，系统不会自动推算</small><small v-else-if="expectedDate<minExpectedDate" class="erp-design-required-hint">交期不能早于今天，请重新选择</small></label>
       <label class="erp-design-remark"><span>备注</span><textarea v-model="remark" maxlength="1000" placeholder="请输入备注" @input="updateDraft"></textarea><small>{{remark.length}} / 1000</small></label>
     </div>
 
@@ -656,6 +746,16 @@ const toleranceRows = computed(() => {
       <span v-if="autoCorrectedCount"><strong>自动修正</strong><b>{{autoCorrectedCount}} 条</b><em>已自动完成</em></span>
       <span v-if="drawingCorrectableCount"><strong>双击图纸修正</strong><b>{{drawingCorrectableCount}} 条</b><em>双击橙色提示可按图纸回填料型、长宽厚与数量</em></span>
     </div>
+    <details v-if="autoCorrectedCount||correctionDetails.length" class="erp-design-correction-details" aria-label="自动修正明细">
+      <summary>自动修正明细（本页 {{correctionDetails.length}} 项，导入前请核对）</summary>
+      <ul v-if="correctionDetails.length">
+        <li v-for="item in correctionDetails" :key="item.key">
+          <span>第 {{item.row}} 行 · {{item.field}}：{{item.before}} → {{item.after}}</span>
+          <small v-if="item.message">{{item.message}}</small>
+        </li>
+      </ul>
+      <p v-else>本页没有自动修正记录，请翻页查看。</p>
+    </details>
 
     <div v-if="duplicateNotice" class="erp-design-duplicate-warning" role="alert">
       <div>
@@ -676,7 +776,7 @@ const toleranceRows = computed(() => {
         <button v-if="preview.sheetType==='steel'" type="button" :disabled="repricing||loading||!localRows.length" @click="$emit('reprice',localRows)">
           {{repricing?'正在核算…':'重新核算价格'}}
         </button>
-        <button class="erp-design-import-button" type="button" :disabled="!canImport" :title="expectedDate?'确认后将提交 ERP 导入':'请先填写交期'" @click="submitImport(false)">
+        <button class="erp-design-import-button" type="button" :disabled="!canImport" :title="expectedDate && expectedDate>=minExpectedDate?'确认后将提交 ERP 导入':'请先选择今天或之后的交期'" @click="submitImport(false)">
           {{importing ? '正在导入…' : '确认导入'}}
         </button>
       </div>
@@ -698,8 +798,8 @@ const toleranceRows = computed(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row,index) in localRows" :key="row.drawing_row_key||row.rowIndex||index">
-            <td class="erp-design-index">{{row.rowIndex??row.row_index??index+1}}</td>
+          <tr v-for="(row,index) in pagedRows" :key="row.drawing_row_key||row.rowIndex||pageStart+index">
+            <td class="erp-design-index">{{pageStart+index+1}}</td>
             <td v-for="column in columns" :key="column.key" :title="displayCell(row,column)" :class="{'erp-design-calculation-cell':column.key==='calculation'}">
               <button v-if="column.kind==='preview'&&canPreviewDrawing(row)" class="erp-design-preview-button" type="button" @click="$emit('previewDrawing',row)">✓ 查看</button>
               <span v-else-if="column.kind==='preview'">{{displayCell(row,column)}}</span>
@@ -772,6 +872,13 @@ const toleranceRows = computed(() => {
         <option v-for="item in ERP_DESIGN_HEAT_TREATMENT_OPTIONS" :key="item" :value="item"/>
       </datalist>
     </div>
+
+    <nav v-if="pageCount>1" class="erp-design-pagination" aria-label="料单分页">
+      <span>共 {{localRows.length}} 条</span>
+      <button type="button" :disabled="currentPage===1" @click="currentPage--">上一页</button>
+      <button v-for="page in pageCount" :key="page" type="button" :class="{active:currentPage===page}" :aria-current="currentPage===page?'page':undefined" @click="currentPage=page">{{page}}</button>
+      <button type="button" :disabled="currentPage===pageCount" @click="currentPage++">下一页</button>
+    </nav>
 
     <div v-if="notice" class="erp-design-inline-notice">{{notice}}</div>
     <div v-if="preview.drawingProcessing" class="erp-design-processing">

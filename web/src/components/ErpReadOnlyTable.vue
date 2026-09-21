@@ -51,7 +51,7 @@ function rowKey(row: ErpDesignRow, index: number) {
           <tr v-for="(row,index) in rows" :key="rowKey(row,Number(index))">
             <td class="erp-readonly-index">{{row.rowIndex??row.row_index??Number(index)+1}}</td>
             <td v-for="column in columns" :key="column.key" :title="cell(row,column)">
-              {{cell(row,column)}}
+              <slot name="cell" :row="row" :column="column">{{cell(row,column)}}</slot>
             </td>
           </tr>
         </tbody>

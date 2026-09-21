@@ -256,9 +256,10 @@ SKILLS.update({
         # status/result tools remain discoverable later by exact ToolSearch,
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
-        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入',
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
+
     },
     'erp_design_modify_mold_upload': {
         'name': 'ERP 修模改模清单上传流程（类型：改模）',
@@ -312,11 +313,20 @@ SKILLS.update({
         'name': 'ERP 设计上传材料参数查询',
         'tools': ['erp_design_query_upload_parameters'],
         'activation_tools': ['erp_design_query_upload_parameters'],
-        'activation_queries': ['采购数量', '请购数量', '材料参数', '材料尺寸', '尺寸参数', '规格参数',
+        'activation_queries': ['料单参数', '清单参数', '料单字段', '材质', '规格', '采购数量', '请购数量', '材料参数', '材料尺寸', '尺寸参数', '规格参数',
                                '长宽高', '长宽厚', '方料', '圆料', '圆环料', '外径', '内径', '直径',
                                '长是多少', '宽是多少', '高是多少', '厚是多少', '多长', '多宽', '多高', '多厚',
                                '材料的长', '材料的宽', '材料的高', '材料的厚'],
-        'auto_activation_queries': ['采购数量', '材料参数', '材料尺寸', '长宽高', '长宽厚',
+        'auto_activation_queries': ['料单参数', '清单参数', '料单字段', '材质和图纸', '材质与图纸', '图纸和材质', '图纸与材质',
+                                    '规格和图纸', '规格与图纸', '图纸和规格', '图纸与规格', '数量和图纸', '数量与图纸', '图纸和数量', '图纸与数量',
+                                    '长宽厚与图纸', '长宽厚和图纸',
+                                    '图纸与长宽厚', '图纸和长宽厚', '长宽高与图纸', '长宽高和图纸', '图纸与长宽高', '图纸和长宽高',
+                                    '尺寸与图纸', '尺寸和图纸', '图纸与尺寸', '图纸和尺寸', '参数与图纸', '参数和图纸', '图纸与参数', '图纸和参数',
+                                    '料单的材质', '清单的材质', '料单的规格', '清单的规格',
+                                    '料单的料型', '清单的料型', '料单的数量', '清单的数量', '料单的长', '料单的宽',
+                                    '料单的厚', '料单的高', '料单的外径', '料单的内径', '料单的密度', '料单的价格',
+                                    '料单的金额', '料单的图纸', '采购数量', '材料参数', '材料尺寸', '长宽高', '长宽厚',
+                                    '多长', '多宽', '多厚', '多高', '外径', '内径', '直径', '密度', '单价', '价格', '金额', '热处理', '时效', '硬度', '加工工艺',
                                     '方料', '圆料', '圆环料', '外径', '内径', '直径',
                                     '长是多少', '宽是多少', '高是多少', '厚是多少', '多长', '多宽', '多高', '多厚',
                                     '材料的长', '材料的宽', '材料的高', '材料的厚'],
@@ -331,9 +341,20 @@ SKILLS.update({
     },
     'erp_design_drawing_preview': {
         'name': 'ERP 新模图纸预览',
-        'tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
-        'activation_tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
-        'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸'],
+        'tools': ['erp_design_preview_drawing'],
+        'activation_tools': ['erp_design_preview_drawing'],
+        'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                               '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
+                               '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸',
+                               '图纸与尺寸', '图纸和尺寸', '参数与图纸', '参数和图纸'],
+        'auto_activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                                    '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
+                                    '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        # Field selection and material filters are model arguments. An empty
+        # host call would discard both in combined or filtered queries.
     },
     'erp_design_drawing_auto_correction': {
         'name': 'ERP 新模图纸参数自动修正',
@@ -377,10 +398,10 @@ SKILLS.update({
     },
     'erp_design_order_adjustment': {
         'name': 'ERP 设计订单明细调整',
-        'tools': ['erp_design_query_orders', 'erp_design_get_record'],
+        'tools': ['erp_design_query_orders', 'erp_design_get_record', 'erp_design_query_idle_material'],
         'optional_tools': ['erp_design_update_order_item', 'erp_design_save_scrap_decision',
                            'erp_design_release_scrap_decision'],
-        'activation_queries': ['设计订单明细', '闲置料', '修改设计订单'],
+        'activation_queries': ['设计订单明细', '闲置料', '闲置料匹配', '闲置料库', '修改设计订单'],
     },
     'erp_design_density_review': {
         'name': 'ERP 材质密度查询与维护',
@@ -392,20 +413,39 @@ SKILLS.update({
         'suppress_tool_search_on_auto_activation': True,
         'requires_tool_evidence': True,
     },
+    'erp_design_group_keyword_review': {
+        'name': 'ERP 分组关键词查询与维护',
+        'tools': ['erp_design_query_group_keywords'],
+        'optional_tools': ['erp_design_manage_group_keyword'],
+        'activation_tools': ['erp_design_query_group_keywords', 'erp_design_manage_group_keyword'],
+        # Listing the catalogue is a complete read-only intent.  Keep the
+        # common short forms here because follow-up replies such as
+        # “全部关键词” no longer repeat the word “分组”.
+        'activation_queries': ['分组关键词', '分组关键字', '关键词列表', '关键字列表', '全部关键词', '全部关键字'],
+        'auto_activation_queries': ['分组关键词', '分组关键字', '关键词列表', '关键字列表', '全部关键词', '全部关键字'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        # The adapter supplies defaults (all records, first page).  Let the
+        # host issue the authoritative empty-argument read instead of asking
+        # a model to invent an optional keyword value.
+        'host_auto_invoke_empty_arguments': True,
+        # Filtered requests must keep their keyword argument for the model;
+        # only explicit catalogue/list intents are safe to invoke empty.
+        'host_auto_invoke_queries': ['分组关键词列表', '分组关键字列表', '关键词列表', '关键字列表',
+                                     '全部关键词', '全部关键字', '所有关键词', '所有关键字'],
+    },
     'erp_design_master_data_maintenance': {
         'name': 'ERP 设计基础资料维护',
         'tools': ['erp_design_query_master_data'],
-        'optional_tools': ['erp_design_get_record', 'erp_design_manage_group_rule',
-                           'erp_design_manage_group_keyword'],
+        'optional_tools': ['erp_design_get_record', 'erp_design_manage_group_rule'],
         # A normal lookup exposes one read-only aggregation.  Individual write
         # operations stay searchable only when the current user request itself
         # has formal action intent; the Harness ranks them by resource.
-        'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_group_rule',
-                             'erp_design_manage_group_keyword'],
-        'activation_queries': ['ERP设计基础资料', '设计基础资料', '分组规则', '分组关键词'],
+        'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_group_rule'],
+        'activation_queries': ['ERP设计基础资料', '设计基础资料', '分组规则'],
         # These aliases identify this small read boundary without another
         # model round trip through ToolSearch.
-        'auto_activation_queries': ['设计分组规则', '设计分组关键词'],
+        'auto_activation_queries': ['设计分组规则'],
         'suppress_tool_search_on_auto_activation': True,
     },
     'erp_design_standard_hardware_maintenance': {
@@ -414,7 +454,7 @@ SKILLS.update({
         'optional_tools': ['erp_design_upload_standard_hardware',
                            'erp_design_rename_standard_hardware',
                            'erp_design_delete_standard_hardware'],
-        'activation_queries': ['厂内标准件图纸', '标准件目录', '标准件图纸维护'],
+        'activation_queries': ['厂内标准件', '厂内标准件图纸', '标准件目录', '标准件图纸维护'],
     },
     'erp_design_change_management': {
         'name': 'ERP 设计变更办理',
@@ -727,6 +767,11 @@ def available_tools(db, user):
     if ("erp_design_query_master_data" not in allowed
             and legacy_master_reads <= set(allowed)):
         allowed.append("erp_design_query_master_data")
+    # The dedicated keyword reader is a subset of the aggregate reader's
+    # existing authorization; it grants no keyword maintenance capability.
+    if ("erp_design_query_master_data" in allowed
+            and "erp_design_query_group_keywords" not in allowed):
+        allowed.append("erp_design_query_group_keywords")
     # The parameter reader is a narrower read-only view of the already
     # assigned upload capability.  Existing design users should not need a
     # capability migration merely to inspect their own ERP upload result.
@@ -738,6 +783,18 @@ def available_tools(db, user):
                 for grant in grants_for(db, user, TOOLS[parameter_reader]["permission"])
             ))):
         allowed.append(parameter_reader)
+    # Idle-material matching is a read-only projection of the same design
+    # order/detail access already granted to existing order-adjustment users.
+    # Keep the ERP decision-write tools separate; this only makes the
+    # candidate table discoverable without a capability migration.
+    idle_material_reader = "erp_design_query_idle_material"
+    if (idle_material_reader not in allowed
+            and {"erp_design_query_orders", "erp_design_get_record"} <= set(allowed)
+            and (user.super_admin or any(
+                grant.effect == "ALLOW"
+                for grant in grants_for(db, user, TOOLS[idle_material_reader]["permission"])
+            ))):
+        allowed.append(idle_material_reader)
     # The technical-requirements reader is a read-only projection of the ERP
     # parse receipt already available to design-upload/tolerance users.
     technical_requirements_reader = "erp_design_get_technical_requirements"
@@ -889,8 +946,8 @@ def skill_context(db, user):
     for key, spec in SKILLS.items():
         enabled = assigned(db, user, "SKILL", key)
         # Preserve existing design-master-data assignments while splitting the
-        # authoritative density reader into its own narrowly routed skill.
-        if (not enabled and key == "erp_design_density_review"):
+        # authoritative density and keyword readers into narrowly routed skills.
+        if (not enabled and key in {"erp_design_density_review", "erp_design_group_keyword_review"}):
             enabled = assigned(db, user, "SKILL", "erp_design_master_data_maintenance")
         # Existing design-upload assignees automatically receive the split
         # read-only parameter reader.  It exposes no import or pricing action.
