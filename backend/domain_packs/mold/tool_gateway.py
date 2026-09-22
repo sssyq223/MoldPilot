@@ -508,8 +508,8 @@ SKILLS.update({
 
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
-    'finance': '财务部门', 'warehouse': '仓储部门', 'assembly': '装配部门', 'trial': '试模部门',
-    'sales': '销售部门', 'system': '管理部门',
+    'finance': '财务部门', 'warehouse': '仓储部门', 'quality': '质检部门', 'assembly': '装配部门',
+    'trial': '试模部门', 'sales': '销售部门', 'processor': '加工商', 'system': '管理部门',
 }
 
 TYPE_NAMES = {'query': '查询', 'operation': '操作', 'approval': '审批', 'review': '核对'}
@@ -522,7 +522,11 @@ BUSINESS_DEPARTMENTS = {
     'finance_reversal': 'finance', 'finance_correction': 'finance', 'warehouse': 'warehouse',
     'assembly_issue': 'assembly', 'trial_request': 'trial', 'quotation': 'sales', 'quote_acceptance': 'sales',
     'sales_contract': 'sales', 'start_notice': 'project', 'internal_start': 'project',
-    'outsource_contract': 'purchase', 'full_outsource_contract': 'purchase', 'project_plan': 'project',
+    'outsource_contract': 'purchase', 'full_outsource_contract': 'purchase',
+    'erp_outsource_buyer': 'purchase', 'erp_outsource_approval': 'purchase',
+    'erp_outsource_processor': 'processor', 'erp_outsource_warehouse': 'warehouse',
+    'erp_outsource_quality': 'quality',
+    'project_plan': 'project',
     'project_plan_change': 'project',
     'plan_change': 'project', 'shipment': 'warehouse', 'receipt': 'warehouse', 'inspection': 'warehouse',
     'stock': 'warehouse', 'risk': 'purchase', 'master': 'system', 'file': 'system', 'user': 'system',

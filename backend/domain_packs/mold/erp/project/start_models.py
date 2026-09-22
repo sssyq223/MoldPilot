@@ -21,7 +21,7 @@ class InternalStartSnapshot(Base):
         ForeignKey("business_subject.id"), primary_key=True
     )
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id"), index=True)
-    bid_intake_revision_id: Mapped[str] = mapped_column(
+    bid_intake_revision_id: Mapped[str | None] = mapped_column(
         ForeignKey("bid_intake_revision.id"), index=True
     )
     linked_business: Mapped[dict] = mapped_column(J)

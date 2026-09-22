@@ -1,5 +1,6 @@
 """Authorization vocabulary owned by the mold ERP business pack."""
 from domain_packs.mold.erp.core.domain_schemas import PERMISSIONS as DOMAIN_PERMISSIONS
+from domain_packs.mold.erp.procurement.erp_outsource_roles import ERP_OUTSOURCE_PERMISSIONS
 from agent_core.host_ports import host_ports
 
 
@@ -22,9 +23,11 @@ PERMISSIONS = {
             "attach", "plan", "review", "close", "set_reviewer", "cancel_task",
         )
     },
+    **ERP_OUTSOURCE_PERMISSIONS,
 }
 
-DIMENSIONS = frozenset({"project_id", "category", "warehouse_id"})
+# supplier_id scopes processor accounts once outsource tools enforce data range.
+DIMENSIONS = frozenset({"project_id", "category", "warehouse_id", "supplier_id"})
 
 
 def access(*args, **kwargs):

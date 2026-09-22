@@ -183,6 +183,7 @@ def preview(db, project, data):
 
 def create(db, user, subject, data, association_snapshot):
     row = m.ContractBusinessTerms(
+        material_version=1,
         contract_subject_id=subject.id,
         signed_date=data.signed_date,
         delivery_due_date=data.delivery_due_date,
@@ -201,7 +202,12 @@ def create(db, user, subject, data, association_snapshot):
 
 
 def card(db, contract_subject_id):
-    row = db.get(m.ContractBusinessTerms, contract_subject_id)
+    row = db.scalar(
+        select(m.ContractBusinessTerms)
+        .where(m.ContractBusinessTerms.contract_subject_id == contract_subject_id)
+        .order_by(m.ContractBusinessTerms.material_version.desc())
+        .limit(1)
+    )
     if not row:
         return None
     return {
@@ -215,6 +221,8 @@ def card(db, contract_subject_id):
         "mapping_evidence": row.mapping_evidence,
         "association_snapshot": row.association_snapshot,
         "recorded_by": row.recorded_by,
+        "material_version": row.material_version,
+        "attachment_selection": row.attachment_selection,
     }
 
 

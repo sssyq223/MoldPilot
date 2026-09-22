@@ -80,6 +80,10 @@ def catalog(db, user):
         {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name}
         for warehouse in db.scalars(warehouse_query.limit(500))
     ]
+    suppliers = [
+        {"id": supplier.id, "code": supplier.code, "name": supplier.name}
+        for supplier in db.scalars(select(m.Supplier).order_by(m.Supplier.code).limit(500))
+    ]
     return {
         "kind": "project",
         "label": "项目角色",
@@ -103,6 +107,7 @@ def catalog(db, user):
                 for category in categories
             ]},
             {"key": "warehouse_id", "name": "仓库", "default": False, "values": warehouses},
+            {"key": "supplier_id", "name": "供应商", "default": False, "values": suppliers},
         ],
     }
 
