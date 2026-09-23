@@ -106,7 +106,9 @@ AGENT_REDIS_URL=redis://127.0.0.1:6379/0
 AGENT_WORKER_SECRET=替换为本地随机密钥
 ```
 
-如需运行 Agent，再配置模型服务，并将 `AGENT_LLM_ENABLED` 设为 `true`。旧版 `MOLD_*` 宿主变量仍可读取，但新部署统一使用 `AGENT_*`；Mold 领域策略和 ERP 连接仍使用 `MOLD_*`。完整字段和示例见 [`.env.example`](.env.example)。请勿提交包含真实凭据的 `.env`。
+如需运行 Agent，再配置模型服务，并将 `AGENT_LLM_ENABLED` 设为 `true`。旧版 `MOLD_*` 宿主变量仍可读取，但新部署统一使用 `AGENT_*`；Mold 领域策略和 ERP 连接仍使用 `MOLD_*`。完整字段和示例见 [`.env.example`](.env.example)。本机 `.env` 不要提交。
+
+委外看板/时间线只读连接局域网 ERP 库，模板里已写好 `MOLD_ERP_DB_*`（`192.168.3.60:5432` / 库名 `erp`）。新环境复制 `.env.example` 为 `.env` 即可，不必再配本机 `D:\ERP\...\.env.local`。已经有 `.env` 的同事把模板里这五行抄进自己的文件。电脑必须能访问该局域网地址，否则查询会失败；不要直写 ERP 库。
 
 请先在 PostgreSQL 中创建名为 `moldpilot` 的空数据库。本项目默认复用本机 Redis 服务（`127.0.0.1:6379`），不要求 Docker。可先只读检查状态；需要时再显式启动并初始化业务 stream：
 
