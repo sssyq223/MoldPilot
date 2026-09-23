@@ -1,7 +1,7 @@
 """ERP part/operation outsource role vocabulary.
 
 These roles are organizational assignment templates plus Grant permission codes.
-They do not yet register Tools/Skills; outsource encapsulation comes later.
+Buyer-side read Skills are registered under skills/erp/procurement/.
 Organization ROLE/DEPARTMENT names are used by admin login isolation; permission
 codes appear in the grant catalog so administrators can authorize accounts.
 """

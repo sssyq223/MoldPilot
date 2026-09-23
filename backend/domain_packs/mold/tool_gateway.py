@@ -112,8 +112,10 @@ TOOLS.update({
 })
 from domain_packs.mold import contact_tools
 from domain_packs.mold import erp_design_mcp
+from domain_packs.mold.tools.erp.procurement import erp_outsource_query_tools
 
 TOOLS.update(erp_design_mcp.TOOL_SPECS)
+TOOLS.update(erp_outsource_query_tools.TOOL_SPECS)
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
 TOOLS['query_contact_context']={'description':'读取指定工程联络单的主信息、结构化影响与动作、实际执行/复验材料、事项标识，以及可用责任部门或候选处理人。','permission':'contact.read'}
 for action,(_,permission,title) in contact_tools.SPECS.items():
@@ -505,6 +507,7 @@ SKILLS.update({
         'activation_queries': ['ERP BOM维护', 'ERP BOM导入', 'BOM缺料'],
     },
 })
+SKILLS.update(erp_outsource_query_tools.SKILL_SPECS)
 
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
@@ -607,6 +610,7 @@ CAPABILITY_NAMES = {
     'prepare_contact_set_reviewer': '准备指定验收负责人',
     'prepare_contact_cancel_task': '准备撤销联络事项',
     **{key: value['name'] for key, value in SKILLS.items()},
+    **erp_outsource_query_tools.TOOL_NAMES,
 }
 
 CAPABILITY_DEPARTMENTS = {
@@ -662,6 +666,8 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contact_note': 'engineering', 'prepare_contact_task': 'engineering',
     'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
     'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
+    **{key: 'purchase' for key in erp_outsource_query_tools.TOOL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_query_tools.SKILL_SPECS},
 }
 # ERP design skills are the guided entry points for the same design capabilities
 # as the registered ERP design tools.  They do not carry a permission field of
@@ -708,6 +714,7 @@ CAPABILITY_TYPES = {
     'prepare_contact_set_reviewer': 'operation', 'prepare_contact_cancel_task': 'operation',
     'prepare_customer_receivable_schedule': 'operation', 'prepare_supplier_deduction_settlement': 'operation',
     'prepare_mold_transfer_receipt': 'operation',
+    **{key: 'review' for key in erp_outsource_query_tools.SKILL_SPECS},
 }
 
 
@@ -759,6 +766,12 @@ def assigned(db, user, kind, key):
 def available_tools(db, user):
     allowed = [key for key, tool in TOOLS.items() if assigned(db, user, "TOOL", key) and
                (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"])))]
+    for old, new in {
+        "query_buyer_todo": "query_erp_outsource_followup_board",
+        "query_outsource_timeline": "query_erp_outsource_order_progress",
+    }.items():
+        if new not in allowed and assigned(db, user, "TOOL", old):
+            allowed.append(new)
     # Existing accounts can already have the three read-only master-data
     # catalogues assigned.  Treat that exact prior grant as authorization for
     # the new aggregate reader, so this display/selection simplification does
@@ -814,6 +827,8 @@ def available_tools(db, user):
 
 
 def tool_schema(key):
+    if key in erp_outsource_query_tools.TOOL_SPECS:
+        return erp_outsource_query_tools.tool_schema(key)
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.tool_schema(key)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
@@ -1110,6 +1125,8 @@ def _fallback_empty_design_context_to_erp(db, user, data, allowed, local_result,
 
 def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
+    if key in erp_outsource_query_tools.TOOL_SPECS:
+        return erp_outsource_query_tools.execute_tool(db, user, key, arguments, run=run)
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':

@@ -26,6 +26,7 @@ import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 import {erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
 import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
+import {erpOutsourceResultTablesFromRun} from './erpOutsourceResultTables'
 import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 import {runDurationSeconds as calculateRunDurationSeconds,shouldPollActiveRun} from './runTiming'
 const colorTheme=ref<ColorTheme>(storedTheme())
@@ -303,9 +304,17 @@ function runTrace(run:any){
  }
  return items
 }
+function isHistoricalProcessMessage(item:any){
+ if(item?.historical)return true
+ const text=String(item?.text??'')
+ return text.startsWith('历史助手答复（不是当前业务事实）')
+  || text.startsWith('历史用户消息（仅用于连续对话和指代解析）')
+  || text.startsWith('历史对话压缩摘要')
+}
 function runProcessTrace(run:any){
  return runTrace(run).filter((item:any)=>
   !['final','proposal_resolution'].includes(item.type)
+  && !isHistoricalProcessMessage(item)
   && (run.status==='SUCCEEDED'||!erpDesignSessionFromTool(item)),
  )
 }
@@ -975,7 +984,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               </div>
             </div>
             <div v-for="(finalItem,finalIndex) in runFinalTraces(run)" :key="'final:'+finalIndex" class="assistant-prose final">
-              <MarkdownText v-if="(finalItem.summary || finalItem.message) && !erpDesignTechnicalRequirementsFromRun(run)" :text="finalItem.summary ?? finalItem.message"/>
+              <MarkdownText v-if="(finalItem.summary || finalItem.message) && !erpDesignTechnicalRequirementsFromRun(run) && !erpOutsourceResultTablesFromRun(run).length" :text="finalItem.summary ?? finalItem.message"/>
               <div v-if="finalItem.error_code" class="run-error-detail" role="note">
                 <strong>失败原因</strong><span>{{runFailureReason(finalItem.error_code)}}</span><code>错误码 {{finalItem.error_code}}</code>
               </div>
@@ -992,6 +1001,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             <ErpDesignResultTable v-for="result in erpDesignProcessingTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignDrawingVersionTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignIdleMaterialTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpOutsourceResultTablesFromRun(run)" :key="result.key" :result="result"/>
             <div v-if="!erpDesignDrawingsFromRun(run).length&&erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
               <span>
                 <strong>{{erpDesignUploadLabel(erpDesignSessionFromRun(run))}}</strong>

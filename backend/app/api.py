@@ -21,6 +21,7 @@ from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
+from agent_core.context_budget import is_historical_model_context
 from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, public_run_status
 
 active_manifest = load_domain_manifest()
@@ -116,8 +117,9 @@ def run_trace(run, steps, decisions=None):
             text = (msg.get("content") or "").strip()
             if text:
                 assistant_texts.add(text)
-                trace.append({"type": "message", "text": text, "message_key": message_key,
-                              **({"historical": True} if text in prior_texts else {})})
+                if not is_historical_model_context(text):
+                    trace.append({"type": "message", "text": text, "message_key": message_key,
+                                  **({"historical": True} if text in prior_texts else {})})
             for call in msg.get("tool_calls") or []:
                 call_id = call.get("id")
                 tool_names_by_call[call_id] = (call.get("function") or {}).get("name") or "业务工具"

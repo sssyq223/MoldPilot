@@ -295,9 +295,12 @@ def _historical_entries(message: dict[str, Any], text_limit: int) -> list[dict[s
     return []
 
 
+def is_historical_model_context(text: str) -> bool:
+    return str(text or "").startswith((HISTORICAL_USER_PREFIX, HISTORICAL_ASSISTANT_PREFIX, HISTORICAL_SUMMARY_PREFIX))
+
+
 def _is_historical_message(message: dict[str, Any]) -> bool:
-    content = str(message.get("content") or "")
-    return content.startswith((HISTORICAL_USER_PREFIX, HISTORICAL_ASSISTANT_PREFIX, HISTORICAL_SUMMARY_PREFIX))
+    return is_historical_model_context(str(message.get("content") or ""))
 
 
 def _collapse_historical_messages(

@@ -27,6 +27,11 @@ Object.assign(optionNames,{INTERNAL:'内部加工',FULL_OUTSOURCE:'整套委外'
 Object.assign(optionNames,{HISENSE:'海信',HAIER:'海尔',OTHER:'其他',MATCHED:'已匹配',PARTIAL:'部分匹配',UNMATCHED:'未匹配',MANUAL:'人工匹配',BACKUP:'备份模具',REFERENCE:'参考模具',BID_NOTICE:'中标通知',EXTERNAL_START_NOTICE:'外部开工通知',CONTRACT_REFERENCE:'合同参考',MOLD_IMAGE:'模具图片',DRAFT_AWAITING_ACCEPTANCE:'草稿待承接',ACCEPTED_AWAITING_FORMAL_START:'已承接待正式开工',FORMALLY_STARTED:'已正式开工'})
 Object.assign(optionNames,{ORIGINAL:'原始合同',REPLACEMENT:'替代合同',ADDITION:'追加合同',CUSTOMER_RECEIPT:'客户实际回款',SUPPLIER_PAYMENT:'供应商实际付款'})
 Object.assign(capabilityNames,{prepare_design_order_approval:'准备设计订单 Agent 审批',erp_design_order_approval:'ERP 设计订单 Agent 审批'})
+Object.assign(capabilityNames,{
+ query_erp_outsource_followup_board:'查询 ERP 委外待办',
+ query_erp_outsource_order_progress:'查询委外单进度',
+ outsource_followup_query:'委外跟单进度查询',
+})
 export function capabilityName(value:any,items:any[]=[]){
  const key=typeof value==='string'?value:value?.key||''
  const providedName=typeof value==='object'?String(value?.name||''):''
@@ -44,10 +49,17 @@ Object.assign(capabilityDepartments,{prepare_design_order_approval:'design',erp_
 Object.assign(capabilityDepartments,{prepare_customer_acceptance:'warehouse'})
 Object.assign(capabilityDepartments,{prepare_customer_receivable_schedule:'finance'})
 Object.assign(capabilityDepartments,{prepare_quotation_version:'sales',prepare_quotation_feedback:'sales',prepare_bid_intake_draft:'sales',project_kickoff_orchestration:'project',query_project_kickoff_context:'project'})
+Object.assign(capabilityDepartments,{
+ query_erp_outsource_followup_board:'purchase',query_erp_outsource_order_progress:'purchase',
+ outsource_followup_query:'purchase',
+})
 const capabilityTypes:Record<string,string>={purchase_request_review:'review',business_object_matching:'review',quote_acceptance_review:'review',quote_evaluation_review:'review',bid_intake_review:'review',contract_context_review:'review',finance_context_review:'review',governance_context_review:'review',operations_readiness_review:'review',internal_start_readiness:'review',project_plan_context_review:'review',project_plan_change:'approval',prepare_project_plan_change:'approval',design_route_context_review:'review',manufacturing_quality_review:'review',full_outsource_review:'review',change_intake_review:'review',procurement_price_context_review:'review',delivery_risk_analysis:'review',contact_collaboration_review:'review',business_status_review:'review',project_dossier_review:'review',project_pause_resume:'approval',project_termination_closure:'approval',prepare_project_pause:'approval',prepare_project_resume:'approval',prepare_project_closure_checklist:'operation',prepare_project_termination:'approval',prepare_project_closure_item:'operation',prepare_project_normal_close:'approval',prepare_project_settlement_close:'approval',prepare_contact_resolution:'approval',prepare_contact_review:'review',prepare_contact_close:'operation',prepare_contact_set_reviewer:'operation',prepare_contact_cancel_task:'operation',prepare_contract_signing_record:'operation',prepare_supplier_material_handoff:'operation',prepare_supplier_material_verification:'operation',prepare_supplier_progress_policy:'operation',prepare_supplier_progress_report:'operation',prepare_supplier_deduction_settlement:'operation',prepare_logistics_route:'operation',prepare_logistics_quote:'approval'}
 Object.assign(capabilityTypes,{prepare_design_order_approval:'approval',erp_design_order_approval:'approval'})
 Object.assign(capabilityTypes,{prepare_customer_acceptance:'operation'})
 Object.assign(capabilityTypes,{prepare_customer_receivable_schedule:'operation'})
+Object.assign(capabilityTypes,{
+ outsource_followup_query:'review',
+})
 Object.assign(capabilityTypes,{prepare_quotation_version:'approval',prepare_quotation_feedback:'operation',prepare_bid_intake_draft:'operation',project_kickoff_orchestration:'review',query_project_kickoff_context:'query'})
 function capabilityBusinessKey(key:string,permission=''){
  const raw=key.startsWith('query_')?key.slice(6):key.startsWith('prepare_')?key.slice(8):key

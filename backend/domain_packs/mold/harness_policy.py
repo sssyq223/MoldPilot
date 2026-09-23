@@ -48,7 +48,17 @@ BUSINESS_OBJECT_HINTS = (
     "项目", "模具", "工程联络", "联络单", "采购", "订单", "报价", "承接", "拒单", "合同",
     "开工", "计划", "大节点", "设计", "bom", "加工", "装配", "试模", "发货", "物流",
     "签收", "验收", "委外", "供应商", "财务", "回款", "付款", "结项", "关闭", "暂停",
-    "恢复", "终止", "审批", "smoke-", "test-m",
+    "恢复", "终止", "审批", "零件", "零件号", "零件信息", "smoke-", "test-m",
+)
+# Mold / batch / work-order / project / part codes count as business objects
+# even when the user never says 模具 or 零件.  Patterns match the same
+# identifiers the outsource readers already parse from a natural-language
+# question (M260063-P2, PU-06, E26-0012, WO…).
+BUSINESS_OBJECT_CODE_PATTERNS = (
+    r"(?i)(?<![A-Z0-9])M\d{5,}(?:-P\d+)?(?![A-Z0-9])",
+    r"(?i)(?<![A-Z0-9])WO\d+(?![A-Z0-9])",
+    r"(?i)(?<![A-Z0-9])(?:E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])",
+    r"(?i)(?<![A-Z0-9])[A-Z]{1,6}\d*[A-Z]?-\d+[A-Z]?(?![A-Z0-9])",
 )
 BUSINESS_ACTION_HINTS = (
     "查询", "核对", "办理", "准备", "创建", "提交", "审批", "确认", "分析", "查看",

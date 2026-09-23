@@ -15,6 +15,12 @@ class MoldSettings(BaseSettings):
     credential_encryption_key: str = ""
     erp_design_mcp_root: str = ""
     erp_design_mcp_package: str = ""
+    erp_env_file: str = ""
+    erp_db_host: str = ""
+    erp_db_port: int = 5432
+    erp_db_username: str = ""
+    erp_db_password: str = ""
+    erp_db_database: str = ""
 
 
 @lru_cache

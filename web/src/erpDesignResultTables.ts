@@ -107,6 +107,7 @@ function cell(row: ErpDesignRow, column: ErpDesignColumn): string {
   for (const field of column.fields) {
     const value = row[field]
     if (value === undefined || value === null || value === '') continue
+    if (typeof value === 'number' && column.decimals != null) return value.toFixed(column.decimals)
     if (typeof value === 'object') return JSON.stringify(value)
     return String(value)
   }

@@ -38,6 +38,10 @@ DESIGN_UPLOAD_NEW_TERMS = getattr(_policy, "DESIGN_UPLOAD_NEW_TERMS", ())
 DESIGN_UPLOAD_MODIFY_TERMS = getattr(_policy, "DESIGN_UPLOAD_MODIFY_TERMS", ())
 DESIGN_ATTACHMENT_ACTION_HINTS = getattr(_policy, "DESIGN_ATTACHMENT_ACTION_HINTS", ())
 ALL_BUSINESS_OBJECT_HINTS = (*BUSINESS_OBJECT_HINTS, *DESIGN_BUSINESS_OBJECT_HINTS)
+BUSINESS_OBJECT_CODE_PATTERNS = tuple(
+    re.compile(pattern) if isinstance(pattern, str) else pattern
+    for pattern in getattr(_policy, "BUSINESS_OBJECT_CODE_PATTERNS", ())
+)
 ALL_ELLIPTICAL_ACTION_TERMS = (*ELLIPTICAL_ACTION_TERMS, *DESIGN_ELLIPTICAL_ACTION_TERMS)
 SYSTEM = _policy.SYSTEM_PROMPT
 TOOL_SEARCH_SCHEMA_DESCRIPTION = getattr(
@@ -199,6 +203,15 @@ def _compact_description(text, limit=80):
 def _contains_any(text, hints):
     folded = (text or "").lower()
     return any(hint in folded for hint in hints)
+
+
+def _has_business_object_code(text):
+    source = text or ""
+    return any(pattern.search(source) for pattern in BUSINESS_OBJECT_CODE_PATTERNS)
+
+
+def _has_business_object(text):
+    return _contains_any(text, ALL_BUSINESS_OBJECT_HINTS) or _has_business_object_code(text)
 
 
 def _compact_intent_text(text):
@@ -374,7 +387,7 @@ def _business_tool_activation_allowed(context):
                 normalized = _compact_intent_text(text)
                 return "解析" in normalized and ("确认" in normalized or "是否" in normalized)
         return False
-    has_current_business_object = _contains_any(current_prompt, ALL_BUSINESS_OBJECT_HINTS)
+    has_current_business_object = _has_business_object(current_prompt)
     has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
                           or _contains_any(current_prompt, DESIGN_BUSINESS_ACTION_HINTS)
                           or _has_formal_action_intent(current_prompt))
@@ -391,7 +404,7 @@ def _business_tool_activation_allowed(context):
     # the omitted object after this turn explicitly asks to inspect/continue it.
     recent_text = "\n".join(context.get("recent_requests") or [])
     return bool(_is_elliptical_business_action(current_prompt)
-                and _contains_any(recent_text, ALL_BUSINESS_OBJECT_HINTS))
+                and _has_business_object(recent_text))
 
 
 def _tool_search_schema():
@@ -585,6 +598,33 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
 
 def _is_read_query_tool(name):
     return str(name).startswith(("query_", "erp_design_query_"))
+
+
+def _same_skill_deferred_tools(
+    names,
+    *,
+    deferred_tools,
+    tool_groups,
+    active_skill_keys,
+    tool_annotations,
+    action_intent=False,
+):
+    """Read tools whose owning skill is already loaded may skip a second ToolSearch.
+
+    Auto-activation and ToolSearch only expose up to four tools per search. A
+    follow-up reader from the same skill (for example query_quote_compare after
+    query_buyer_todo) is still authorized; failing the run as TOOL_FORBIDDEN
+    after a successful read is worse than activating the sibling tool.
+    """
+    allowed = []
+    for name in names:
+        if not name or name not in deferred_tools:
+            continue
+        if _is_write_capable_tool(name, tool_annotations) and not action_intent:
+            continue
+        if any(name in group["tools"] and group["key"] in active_skill_keys for group in tool_groups):
+            allowed.append(name)
+    return allowed
 
 
 def _is_write_capable_tool(name, tool_annotations=None):
@@ -1331,7 +1371,21 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 check_budget()
                 if count >= max_tools: raise RuntimeError("BUDGET_EXCEEDED")
                 name = call["function"]["name"]
-                if name not in batch_allowed_names: raise RuntimeError("TOOL_FORBIDDEN")
+                if name not in batch_allowed_names:
+                    sibling = _same_skill_deferred_tools(
+                        [name],
+                        deferred_tools=deferred_tools,
+                        tool_groups=tool_groups,
+                        active_skill_keys=active_skill_keys,
+                        tool_annotations=tool_annotations,
+                        action_intent=formal_action_requested,
+                    )
+                    if name not in sibling:
+                        raise RuntimeError("TOOL_FORBIDDEN")
+                    active_tool_names.add(name)
+                    deferred_tools.pop(name, None)
+                    load_selected_skills([name])
+                    batch_allowed_names.add(name)
                 try:
                     signature, arguments = tool_signature(call)
                 except ToolArgumentsError:
@@ -1528,7 +1582,20 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 if invalid_names <= skill_names:
                     request_tool_repair(UNKNOWN_TOOL_REMINDER)
                     continue
-                raise RuntimeError("TOOL_FORBIDDEN")
+                sibling = _same_skill_deferred_tools(
+                    invalid_names,
+                    deferred_tools=deferred_tools,
+                    tool_groups=tool_groups,
+                    active_skill_keys=active_skill_keys,
+                    tool_annotations=tool_annotations,
+                    action_intent=formal_action_requested,
+                )
+                if set(invalid_names) - set(sibling):
+                    raise RuntimeError("TOOL_FORBIDDEN")
+                for name in sibling:
+                    active_tool_names.add(name)
+                    deferred_tools.pop(name, None)
+                load_selected_skills(sibling)
             signatures = []
             try:
                 for call in calls:

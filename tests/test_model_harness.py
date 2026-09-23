@@ -1385,6 +1385,57 @@ def test_design_elliptical_action_uses_recent_design_object():
     })
 
 
+@pytest.mark.parametrize('prompt', [
+    '帮我查一下 M260063-P2 的 PU-06 的详细信息',
+    '帮我查一下M260063-P2的PU-06的详细信息',
+    'PU-06 的零件信息',
+    '查一下零件 PU-06',
+])
+def test_part_detail_lookup_allows_business_tools(prompt):
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': prompt,
+        'recent_requests': [],
+    })
+
+
+def test_part_detail_lookup_auto_activates_followup_skill():
+    tools = [
+        {'type': 'function', 'function': {
+            'name': 'query_buyer_todo',
+            'description': '只读查询指定模具号下委外待办分站。',
+        }},
+        {'type': 'function', 'function': {
+            'name': 'query_unoutsourced_parts',
+            'description': '只读查询指定模具号下未委外零件或单个零件详细信息。',
+        }},
+    ]
+
+    class InspectingModel(Model):
+        def generate(self, messages, tools):
+            names = [item['function']['name'] for item in tools]
+            assert 'query_unoutsourced_parts' in names
+            return {'content': json.dumps({
+                'response_kind': 'CLARIFICATION',
+                'summary': '已激活委外跟单查询。',
+                'evidence_ids': [],
+                'suggestions': [],
+            }, ensure_ascii=False)}
+
+    run_loop(context(
+        prompt='帮我查一下 M260063-P2 的 PU-06 的详细信息',
+        core_tool_names=[],
+        tools=tools,
+        skills=[{
+            'key': 'outsource_followup_query',
+            'tools': [],
+            'optional_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],
+            'activation_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],
+            'auto_activation_queries': ['零件详细', '零件信息', '的详细信息'],
+            'suppress_tool_search_on_auto_activation': False,
+        }],
+    ), InspectingModel([]), Gateway())
+
+
 def test_erp_material_list_alias_activates_erp_design_workspace():
     deferred = {
         'query_design_route_context': {'type': 'function', 'function': {
@@ -1820,6 +1871,37 @@ def test_cancel_after_model_return_blocks_tool_execution():
         def generate(self, messages, tools): gateway.cancelled = True; return PROPOSAL
     with pytest.raises(RuntimeError, match='CANCELLED'): run_loop(context(), CancellingModel(), gateway)
     assert gateway.physical_calls == 0
+
+
+def test_loaded_skill_allows_sibling_read_tool_without_second_search():
+    buyer = {'type': 'function', 'function': {
+        'name': 'query_buyer_todo',
+        'description': '只读查询指定模具号下委外待办分站。',
+    }}
+    quotes = {'type': 'function', 'function': {
+        'name': 'query_quote_compare',
+        'description': '只读对比指定模具号的核算价和加工商报价。',
+    }}
+    sibling = {'role': 'assistant', 'tool_calls': [
+        {'id': 'todo1', 'type': 'function', 'function': {'name': 'query_buyer_todo', 'arguments': '{}'}},
+        {'id': 'quote1', 'type': 'function', 'function': {'name': 'query_quote_compare', 'arguments': '{}'}},
+    ]}
+    gateway = Gateway()
+    result = run_loop(context(
+        prompt='现在有几个委外订单',
+        core_tool_names=[],
+        tools=[buyer, quotes],
+        skills=[{
+            'key': 'outsource_followup_query',
+            'tools': [],
+            'optional_tools': ['query_buyer_todo', 'query_quote_compare'],
+            'activation_tools': ['query_buyer_todo', 'query_quote_compare'],
+            'auto_activation_queries': ['委外订单'],
+            'suppress_tool_search_on_auto_activation': False,
+        }],
+    ), Model([sibling, FINAL]), gateway)
+    assert gateway.physical_calls == 2
+    assert result['summary'] == 'one visible project'
 
 
 def test_unregistered_tool_is_not_executed():
