@@ -3,6 +3,7 @@
 People mapping (requested):
 - buyer: 徐桂利
 - approval: 王群
+- gm: 李辉
 - warehouse: 薛海峰
 - quality: 赵殿烨
 - processor: ERP supplier SUP000001
@@ -40,6 +41,7 @@ DEFAULT_PASSWORD = "123456"
 SYNTHETIC_USERNAMES = {
     "outsource_buyer",
     "outsource_approver",
+    "outsource_gm",
     "outsource_processor",
     "outsource_warehouse",
     "outsource_quality",
@@ -55,6 +57,11 @@ PEOPLE = (
         "role_key": "erp_outsource_approval",
         "username": "wangqun",
         "display_name": "王群",
+    },
+    {
+        "role_key": "erp_outsource_gm",
+        "username": "lihui",
+        "display_name": "李辉",
     },
     {
         "role_key": "erp_outsource_warehouse",

@@ -1,15 +1,23 @@
 from domain_packs.mold import tool_gateway
+from domain_packs.mold.erp.procurement import erp_outsource_scope
+from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.tools.erp.procurement import erp_outsource_query_tools
 from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, fulfillment_gap, timeline, unoutsourced
 
 
 def test_outsource_query_skills_are_registered_under_erp_procurement():
     paths = tool_gateway.skill_paths()
-    assert list(erp_outsource_query_tools.SKILL_SPECS) == ["outsource_followup_query"]
+    assert list(erp_outsource_query_tools.SKILL_SPECS) == [
+        "outsource_followup_query",
+        "outsource_processor_query",
+    ]
     spec = erp_outsource_query_tools.SKILL_SPECS["outsource_followup_query"]
     assert spec["tools"] == [erp_outsource_query_tools.BOARD_TOOL]
     assert spec["optional_tools"] == [erp_outsource_query_tools.PROGRESS_TOOL]
-    assert spec["activation_tools"] == list(erp_outsource_query_tools.TOOL_KEYS)
+    assert spec["activation_tools"] == list(erp_outsource_query_tools.BUYER_TOOL_KEYS)
+    processor = erp_outsource_query_tools.SKILL_SPECS["outsource_processor_query"]
+    assert processor["tools"] == [erp_outsource_query_tools.PROCESSOR_BOARD_TOOL]
+    assert processor["activation_tools"] == list(erp_outsource_query_tools.PROCESSOR_TOOL_KEYS)
     for key in erp_outsource_query_tools.SKILL_SPECS:
         assert key in tool_gateway.SKILLS
         assert paths[key]["layer"] == "erp"
@@ -38,14 +46,17 @@ def test_followup_skill_catalog_keeps_query_tools_optional():
     assert item["department"] == "purchase"
     assert item["dependencies"] == [erp_outsource_query_tools.BOARD_TOOL]
     assert item["optional_dependencies"] == [erp_outsource_query_tools.PROGRESS_TOOL]
-    assert item["activation_dependencies"] == list(erp_outsource_query_tools.TOOL_KEYS)
+    assert item["activation_dependencies"] == list(erp_outsource_query_tools.BUYER_TOOL_KEYS)
 
 
-def test_outsource_query_tools_use_buyer_read_permission():
-    for key, spec in erp_outsource_query_tools.TOOL_SPECS.items():
-        assert key in tool_gateway.TOOLS
-        assert spec["permission"] == "erp_outsource_buyer.read"
+def test_outsource_query_tools_use_role_read_permission():
+    for key in erp_outsource_query_tools.BUYER_TOOL_KEYS:
+        assert erp_outsource_query_tools.TOOL_SPECS[key]["permission"] == "erp_outsource_buyer.read"
         assert tool_gateway.CAPABILITY_DEPARTMENTS[key] == "purchase"
+    for key in erp_outsource_query_tools.PROCESSOR_TOOL_KEYS:
+        assert erp_outsource_query_tools.TOOL_SPECS[key]["permission"] == "erp_outsource_processor.read"
+        assert tool_gateway.CAPABILITY_DEPARTMENTS[key] == "processor"
+        assert key in tool_gateway.TOOLS
 
 
 def test_buyer_todo_question_picks_station():
@@ -81,7 +92,7 @@ def test_buyer_todo_item_hides_project_and_shows_pending_quoters():
         "supplier_quote",
     )
     assert "projectNo" not in item
-    assert "orderNo" not in item
+    assert item["orderNo"] == ""
     assert item["stationLabel"] == "待报价"
     assert item["outsourceTypeLabel"] == "零件委外"
     assert "PU-06" in item["partDetails"]
@@ -200,8 +211,11 @@ def test_all_board_question_does_not_need_mold():
 
 
 def test_progress_without_mold_returns_need_mold_code():
+    class Admin:
+        super_admin = True
+
     result = erp_outsource_query_tools.execute_tool(
-        None, None, erp_outsource_query_tools.PROGRESS_TOOL, {"question": "这一票到哪一步了"},
+        None, Admin(), erp_outsource_query_tools.PROGRESS_TOOL, {"question": "这一票到哪一步了"},
     )
     assert result["data"]["status"] == "NEED_MOLD_CODE"
     assert "模具号" in result["data"]["summary"]
@@ -284,3 +298,122 @@ def test_unoutsourced_question_picks_batch_and_part():
     assert parsed["mode"] == "parts"
     assert parsed["mold_batch"] == "M260063-P2"
     assert parsed["part_no"] == "PU-06"
+
+
+def test_processor_item_hides_internal_prices_and_other_suppliers():
+    visible = {
+        "station": "accept",
+        "supplierCode": "SUP000001",
+        "supplierName": "铂锐",
+        "pendingQuoteSuppliers": "铂锐",
+        "supplierQuotes": "铂锐 330",
+        "referenceTotal": 276.1,
+        "ourQuoteAmount": 320,
+        "autoAcceptMaxAmount": 400,
+        "finalDealAmount": 330,
+    }
+    hidden = {
+        "station": "accept",
+        "supplierCode": "SUP000002",
+        "supplierName": "精工",
+        "pendingQuoteSuppliers": "精工",
+        "supplierQuotes": "精工 410",
+        "ourQuoteAmount": 320,
+    }
+    assert buyer_todo.item_mentions_processor(visible, ["SUP000001"])
+    assert not buyer_todo.item_mentions_processor(hidden, ["SUP000001"])
+    stripped = buyer_todo.strip_internal_prices(visible)
+    assert stripped["ourQuoteAmount"] is None
+    assert stripped["autoAcceptMaxAmount"] is None
+    assert stripped["referenceTotal"] is None
+    assert stripped["finalDealAmount"] is None
+
+
+def test_awarded_processor_scope_ignores_historical_invitations():
+    item = {
+        "station": "accept",
+        "supplierCode": "SUP000002",
+        "invitations": [
+            {"supplierCode": "SUP000001", "status": "quoted"},
+            {"supplierCode": "SUP000002", "status": "quoted"},
+        ],
+    }
+    assert not buyer_todo.item_mentions_processor(item, ["SUP000001"])
+    assert buyer_todo.item_mentions_processor(item, ["SUP000002"])
+
+
+def test_awarded_station_without_order_row_falls_back_to_invitations():
+    # classify() can return “accept” / “order_approval” from the inquiry status
+    # before ERP has an awarded order row; the quoted supplier must still see it.
+    item = {
+        "station": "order_approval",
+        "supplierCode": "",
+        "supplierId": None,
+        "invitations": [{"supplierCode": "SUP000001", "status": "quoted"}],
+    }
+    assert buyer_todo.item_mentions_processor(item, ["SUP000001"])
+    assert not buyer_todo.item_mentions_processor(item, ["SUP000002"])
+
+
+def test_processor_identifier_match_is_exact_not_substring():
+    invitation = {"supplierCode": "SUP0000010", "supplierId": 110}
+    assert not buyer_todo.invitation_matches_processor(invitation, ["SUP000001"])
+
+
+def test_processor_empty_tokens_hide_all_rows():
+    payload = buyer_todo.present(
+        {"station": "", "mold_family": "", "mold_batch": "", "project_no": "", "outsource_type": ""},
+        [buyer_todo.strip_internal_prices(item) for item in [{
+            "station": "supplier_quote",
+            "stationLabel": "待报价",
+            "outsourceTypeLabel": "零件委外",
+            "moldNo": "M260063-P1",
+            "partDetails": "PU-06",
+            "supplierName": "铂锐",
+        }] if buyer_todo.item_mentions_processor(item, [])],
+    )
+    assert payload["items"] == []
+    assert "0 条" in payload["summary"] or "没有查到" in payload["summary"]
+
+
+def test_buyer_scope_uses_erp_identity_and_outsource_category(monkeypatch):
+    class User:
+        id = "buyer"
+        super_admin = False
+
+    class Identity:
+        erp_user_id = "42"
+
+    class DB:
+        @staticmethod
+        def get(model, key):
+            return Identity()
+
+    captured = {}
+    monkeypatch.setattr(
+        erp_outsource_scope,
+        "fetch_one",
+        lambda sql, params: captured.update(params) or {"id": 1},
+    )
+    erp_outsource_scope.require_outsource_buyer_scope(DB(), User())
+    assert captured == {"erp_user_id": 42}
+    assert "purchase_buyer_scope" in erp_outsource_scope.OUTSOURCE_BUYER_SCOPE_SQL
+
+
+def test_buyer_scope_without_active_erp_scope_is_forbidden(monkeypatch):
+    class User:
+        id = "buyer"
+        super_admin = False
+
+    class DB:
+        @staticmethod
+        def get(model, key):
+            return None
+
+    monkeypatch.setattr(erp_outsource_scope, "fetch_one", lambda sql, params: None)
+    try:
+        erp_outsource_scope.require_outsource_buyer_scope(DB(), User())
+    except DomainError as error:
+        assert error.code == "FORBIDDEN"
+    else:
+        raise AssertionError("expected FORBIDDEN")

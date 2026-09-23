@@ -1057,7 +1057,10 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
     elif (handler := handler_for_action(intent.action)) is not None:
-        result=handler.implementation().confirm(db,user,intent.payload)
+        handler_payload = intent.payload
+        if intent.action.startswith("erp_outsource_"):
+            handler_payload = {**intent.payload, "_intent_id": intent.id}
+        result=handler.implementation().confirm(db,user,handler_payload)
     elif intent.action.startswith('domain.'):
         from domain_packs.mold.erp.core.domain_commands import execute_command
         result=execute_command(db,user,intent.action[7:],intent.resource_id,intent.payload)

@@ -17,23 +17,25 @@ def test_erp_outsource_permissions_registered():
         assert action in {"read", "execute", "approve"}
 
 
-def test_erp_outsource_role_catalog_isolates_five_roles():
-    assert len(ERP_OUTSOURCE_ROLES) == 5
+def test_erp_outsource_role_catalog_isolates_roles():
+    assert len(ERP_OUTSOURCE_ROLES) == 6
     keys = [role["key"] for role in ERP_OUTSOURCE_ROLES]
     assert keys == [
         "erp_outsource_buyer",
         "erp_outsource_approval",
+        "erp_outsource_gm",
         "erp_outsource_processor",
         "erp_outsource_warehouse",
         "erp_outsource_quality",
     ]
-    assert ERP_OUTSOURCE_DEPARTMENTS == ("采购", "加工商", "仓储", "质检")
+    assert ERP_OUTSOURCE_DEPARTMENTS == ("采购", "管理", "加工商", "仓储", "质检")
 
     buyer = role_by_key("erp_outsource_buyer")
     warehouse = role_by_key("erp_outsource_warehouse")
     quality = role_by_key("erp_outsource_quality")
     processor = role_by_key("erp_outsource_processor")
     approval = role_by_key("erp_outsource_approval")
+    gm = role_by_key("erp_outsource_gm")
 
     assert "erp_outsource_buyer.execute" in buyer["permissions"]
     assert "erp_outsource_warehouse.execute" not in buyer["permissions"]
@@ -42,6 +44,9 @@ def test_erp_outsource_role_catalog_isolates_five_roles():
     assert "erp_outsource_approval.approve" in approval["permissions"]
     assert "erp_outsource_buyer.execute" not in approval["permissions"]
     assert "erp_outsource_buyer.read" in approval["permissions"]
+    assert "erp_outsource_approval.approve" in gm["permissions"]
+    assert "erp_outsource_buyer.execute" not in gm["permissions"]
+    assert gm["department_name"] == "管理"
     assert quality["department_name"] == "质检"
 
 

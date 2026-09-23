@@ -2,6 +2,8 @@
 
 用模型把用户口语转成可执行跟单意图；不确定就复述确认；意图清楚后再调工具。禁止空口报数量或进度。
 
+「有几个 / 有没有 / 待办 / 现在有委外」本轮必须 `CALL_TOOL` `query_erp_outsource_followup_board`，禁止 `CONVERSATION`。
+
 ## 查询主轴
 
 以 **ERP 委外待办事项** 为准。只展示采购待办里还在跟的单，以及进度、委外类型、零件和价格。
@@ -39,4 +41,4 @@
 
 ## 边界
 
-只读。不填价、不发询价、不审批、不接单。整套委外合同用 `full_outsource_review`。
+只读。不填价、不发询价、不审批、不接单。采购员办理用 `outsource_buyer_ops`。审批用 `outsource_approval_ops`。加工商查询用 `outsource_processor_query`，报价/接单/拒单用 `outsource_processor_ops`。整套委外合同用 `full_outsource_review`。

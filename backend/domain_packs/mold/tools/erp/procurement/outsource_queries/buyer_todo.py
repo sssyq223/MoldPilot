@@ -50,7 +50,10 @@ SELECT
     invite.invitations,
     awarded.stage AS awarded_stage,
     awarded.status AS awarded_status,
+    awarded.order_id AS awarded_order_id,
     awarded.order_no AS awarded_order_no,
+    awarded.supplier_id,
+    awarded.supplier_code,
     awarded.supplier_name,
     awarded.awarded_amount,
     awarded.process_name,
@@ -87,9 +90,13 @@ LEFT JOIN LATERAL (
         count(*) FILTER (WHERE invitation.status = 'quoted') AS quoted_count,
         json_agg(
             json_build_object(
+                'invitationId', invitation.id,
+                'supplierId', supplier.id,
+                'supplierCode', supplier.partner_code,
                 'supplierName', supplier.partner_name,
                 'status', invitation.status,
-                'quoteAmount', quote.unit_price
+                'quoteAmount', quote.unit_price,
+                'quoteId', quote.id
             )
             ORDER BY supplier.partner_name
         ) FILTER (WHERE invitation.id IS NOT NULL) AS invitations
@@ -102,7 +109,10 @@ LEFT JOIN LATERAL (
     SELECT
         lower(coalesce(order_row.stage, '')) AS stage,
         lower(coalesce(order_row.status, '')) AS status,
+        order_row.id AS order_id,
         order_row.order_no,
+        supplier.id AS supplier_id,
+        supplier.partner_code AS supplier_code,
         supplier.partner_name AS supplier_name,
         order_row.total_amount AS awarded_amount,
         order_row.process_name,
@@ -419,6 +429,10 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "stationLabel": STATIONS[station],
         "outsourceType": outsource_type,
         "outsourceTypeLabel": OUTSOURCE_TYPE_LABELS.get(outsource_type, outsource_type or "委外"),
+        "projectId": row.get("project_id"),
+        "inquiryId": row.get("inquiry_id"),
+        "orderId": row.get("awarded_order_id"),
+        "orderNo": row.get("awarded_order_no") or "",
         "moldNo": row.get("mold_no") or "",
         "parts": parts,
         "partDetails": format_parts(parts),
@@ -430,6 +444,9 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "finalDealAmount": money(row.get("final_deal_amount")) or awarded_amount,
         "pendingQuoteSuppliers": pending,
         "supplierName": row.get("supplier_name") or "",
+        "supplierId": row.get("supplier_id"),
+        "supplierCode": row.get("supplier_code") or "",
+        "invitations": invitations,
     }
 
 
@@ -489,5 +506,132 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def run(parsed: dict[str, str]) -> dict[str, Any]:
-    return present(parsed, query_items(parsed))
+def _identifier_hit(value: Any, tokens: list[str] | None) -> bool:
+    if not tokens:
+        return False
+    text = str(value or "").strip().casefold()
+    return bool(text) and any(text == str(token).strip().casefold() for token in tokens if str(token).strip())
+
+
+def invitation_matches_processor(invitation: dict[str, Any], tokens: list[str] | None) -> bool:
+    if tokens is None:
+        return True
+    return any(
+        _identifier_hit(invitation.get(key), tokens)
+        for key in ("supplierCode", "supplierId")
+    )
+
+
+def item_mentions_processor(item: dict[str, Any], tokens: list[str] | None) -> bool:
+    if tokens is None:
+        return True
+    if not tokens:
+        return False
+    station = str(item.get("station") or "")
+    has_awarded_supplier = bool(item.get("supplierCode") or item.get("supplierId"))
+    if station in {"accept", "order_approval", "exhausted"} and has_awarded_supplier:
+        # Once ERP has chosen a supplier only that supplier may see the row;
+        # historical invitations must not leak the awarded order.
+        return any(_identifier_hit(item.get(key), tokens) for key in ("supplierCode", "supplierId"))
+    # No awarded order row yet (for example the inquiry is closed but the
+    # order is still pending_match, or the final price was just entered):
+    # fall back to the invitation list, which is still exact per supplier.
+    return any(
+        invitation_matches_processor(invitation, tokens)
+        for invitation in item.get("invitations") or []
+    )
+
+
+def strip_internal_prices(item: dict[str, Any]) -> dict[str, Any]:
+    visible = dict(item)
+    for key in ("referenceTotal", "ourQuoteAmount", "autoAcceptMaxAmount", "finalDealAmount"):
+        visible[key] = None
+    return visible
+
+
+def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
+    station = str(item.get("station") or "")
+    outsource_type = str(item.get("outsourceType") or "")
+    if station == "supplier_quote":
+        return {
+            "action": "quote",
+            "hint": "提交本加工商报价。提交后重新查询：出现待接单则提醒接单；仍待下单或审批中则等采购填成交价、主管和总经理审批。",
+        }
+    if station == "accept":
+        if outsource_type == "operation":
+            hint = "接单或拒单。拒单后 ERP 自动把同一张工序单转给下一家，不要自己选下一家。"
+        else:
+            hint = "接单或拒单。拒单后由采购员重选加工商再发询价。"
+        return {"action": "accept_or_reject", "orderId": item.get("orderId"), "hint": hint}
+    if station in {"place_order", "order_approval"}:
+        return {
+            "action": "wait",
+            "hint": "报价已超出直接接单区间。等采购员填成交价，再等主管、总经理审批。不要自己接单或改成交价。",
+        }
+    if station == "exhausted":
+        return {"action": "wait", "hint": "候选加工商已全部拒单，等采购员重派。"}
+    return {"action": "wait", "hint": "当前不是本加工商可办阶段。"}
+
+
+def clip_for_processor(item: dict[str, Any], tokens: list[str] | None) -> dict[str, Any]:
+    visible = strip_internal_prices(item)
+    invitations = [
+        invitation for invitation in item.get("invitations") or []
+        if invitation_matches_processor(invitation, tokens)
+    ]
+    visible["invitations"] = invitations
+    if invitations:
+        visible["pendingQuoteSuppliers"] = pending_quote_suppliers(invitations)
+        visible["supplierQuotes"] = format_quotes(invitations)
+        visible["supplierName"] = invitations[0].get("supplierName") or visible.get("supplierName")
+    visible["nextAction"] = processor_next_action(visible)
+    return visible
+
+
+def _scan_items(mold: str | None = None) -> list[dict[str, Any]]:
+    parsed = {
+        "station": "",
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    text = str(mold or "").strip().upper()
+    if re.fullmatch(r"M\d{5,}-P\d+", text):
+        parsed["mold_batch"] = text
+    elif re.fullmatch(r"M\d{5,}", text):
+        parsed["mold_family"] = text
+    return query_items(parsed)
+
+
+def find_item(inquiry_id: int, *, mold: str | None = None) -> dict[str, Any] | None:
+    for item in _scan_items(mold):
+        if item.get("inquiryId") == inquiry_id:
+            return item
+    return None
+
+
+def find_item_by_order(order_id: int, *, mold: str | None = None) -> dict[str, Any] | None:
+    for item in _scan_items(mold):
+        if item.get("orderId") == order_id:
+            return item
+    return None
+
+
+def find_invitation(invitation_id: int, *, mold: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    for item in _scan_items(mold):
+        for invitation in item.get("invitations") or []:
+            if invitation.get("invitationId") == invitation_id:
+                return item, invitation
+    return None, None
+
+
+def run(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) -> dict[str, Any]:
+    items = query_items(parsed)
+    if processor_tokens is not None:
+        items = [
+            clip_for_processor(item, processor_tokens)
+            for item in items
+            if item_mentions_processor(item, processor_tokens)
+        ]
+    return present(parsed, items)

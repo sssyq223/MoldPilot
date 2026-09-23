@@ -10,6 +10,7 @@ Object.assign(verbs,{coordinate:'组织部门协作',assign:'分派处理人',re
 Object.assign(businessNames,{
  erp_outsource_buyer:'零件/工序委外·采购',
  erp_outsource_approval:'零件/工序委外·采购主管审批',
+ erp_outsource_gm:'零件/工序委外·总经理审批',
  erp_outsource_processor:'零件/工序委外·加工商',
  erp_outsource_warehouse:'零件/工序委外·仓储',
  erp_outsource_quality:'零件/工序委外·质检',
@@ -30,7 +31,40 @@ Object.assign(capabilityNames,{prepare_design_order_approval:'准备设计订单
 Object.assign(capabilityNames,{
  query_erp_outsource_followup_board:'查询 ERP 委外待办',
  query_erp_outsource_order_progress:'查询委外单进度',
+ query_erp_outsource_processor_board:'查询加工商委外待办',
+ query_erp_outsource_processor_progress:'查询加工商委外进度',
+ prepare_erp_outsource_buyer_quote:'准备填写委外我方报价',
+ prepare_erp_outsource_inquiry_send:'准备发出委外询价',
+ prepare_erp_outsource_final_deal:'准备填写委外成交价',
+ prepare_erp_outsource_reselect:'准备重选委外加工商',
+ prepare_erp_outsource_processor_quote:'准备提交加工商报价',
+ prepare_erp_outsource_processor_accept:'准备确认接单',
+ prepare_erp_outsource_processor_reject:'准备拒绝接单',
+ query_erp_outsource_processor_fulfillment:'查询加工商履约待办',
+ prepare_erp_outsource_processor_receipt:'准备确认原料收货',
+ prepare_erp_outsource_processor_product_ship:'准备成品发货',
+ query_erp_outsource_warehouse_tasks:'查询仓库委外待发料',
+ prepare_erp_outsource_warehouse_ship:'准备确认仓库发料或备料',
+ outsource_processor_fulfillment:'委外加工商履约',
+ query_erp_outsource_processor_product_ship:'查询加工商成品发货待办',
+ outsource_processor_product_ship:'委外加工商成品发货',
+ outsource_warehouse_ops:'委外仓管供料办理',
+ query_erp_outsource_warehouse_inbound:'查询仓库回厂收货入库待办',
+ prepare_erp_outsource_warehouse_arrival:'准备仓库到货确认',
+ prepare_erp_outsource_warehouse_inbound:'准备仓储入库确认',
+ outsource_warehouse_inbound:'委外仓管回厂收货入库',
+ query_erp_outsource_quality_tasks:'查询委外质检待办',
+ prepare_erp_outsource_quality_claim:'准备领取质检任务',
+ prepare_erp_outsource_quality_pass:'准备提交质检合格',
+ outsource_quality_ops:'委外质检领取与合格',
  outsource_followup_query:'委外跟单进度查询',
+ outsource_processor_query:'委外加工商待办查询',
+ outsource_processor_ops:'委外加工商办理',
+ outsource_buyer_ops:'委外采购办理',
+ outsource_approval_ops:'委外下单审批',
+ query_erp_outsource_approval_todos:'查询委外下单审批待办',
+ prepare_erp_outsource_approval_pass:'准备通过委外下单审批',
+ prepare_erp_outsource_approval_reject:'准备驳回委外下单审批',
 })
 export function capabilityName(value:any,items:any[]=[]){
  const key=typeof value==='string'?value:value?.key||''
@@ -43,7 +77,7 @@ Object.assign(capabilityNames,{query_contact_cases:'查询工程联络协作',co
 export const capabilityDepartmentNames:Record<string,string>={project:'项目管理',purchase:'采购部门',design:'设计部门',engineering:'工程部门',finance:'财务部门',warehouse:'仓储部门',quality:'质检部门',assembly:'装配部门',trial:'试模部门',sales:'销售部门',processor:'加工商',system:'管理部门'}
 export const capabilityTypeNames:Record<string,string>={query:'查询',operation:'操作',approval:'审批',review:'核对'}
 Object.assign(businessNames,{project_plan_change:'项目计划变更'})
-const departmentByBusiness:Record<string,string>={project:'project',project_control:'project',project_close:'project',pause_resume:'project',project_dossier:'project',project_plan_change:'project',purchase:'purchase',purchase_request:'purchase',order:'purchase',supplier_payment:'finance',purchase_price:'purchase',design_route:'design',engineering_change:'engineering',contact:'engineering',contact_resolution:'engineering',finance_reversal:'finance',finance_correction:'finance',warehouse:'warehouse',assembly_issue:'assembly',trial_request:'trial',quotation:'sales',bid_intake:'sales',quote_acceptance:'sales',sales_contract:'sales',start_notice:'project',internal_start:'project',outsource_contract:'purchase',full_outsource_contract:'purchase',erp_outsource_buyer:'purchase',erp_outsource_approval:'purchase',erp_outsource_processor:'processor',erp_outsource_warehouse:'warehouse',erp_outsource_quality:'quality',project_plan:'project',plan_change:'project',shipment:'warehouse',receipt:'warehouse',inspection:'warehouse',stock:'warehouse',risk:'purchase',master:'system',file:'system',user:'system',grant:'system',workflow:'system',audit:'system',agent:'system'}
+const departmentByBusiness:Record<string,string>={project:'project',project_control:'project',project_close:'project',pause_resume:'project',project_dossier:'project',project_plan_change:'project',purchase:'purchase',purchase_request:'purchase',order:'purchase',supplier_payment:'finance',purchase_price:'purchase',design_route:'design',engineering_change:'engineering',contact:'engineering',contact_resolution:'engineering',finance_reversal:'finance',finance_correction:'finance',warehouse:'warehouse',assembly_issue:'assembly',trial_request:'trial',quotation:'sales',bid_intake:'sales',quote_acceptance:'sales',sales_contract:'sales',start_notice:'project',internal_start:'project',outsource_contract:'purchase',full_outsource_contract:'purchase',erp_outsource_buyer:'purchase',erp_outsource_approval:'purchase',erp_outsource_gm:'system',erp_outsource_processor:'processor',erp_outsource_warehouse:'warehouse',erp_outsource_quality:'quality',project_plan:'project',plan_change:'project',shipment:'warehouse',receipt:'warehouse',inspection:'warehouse',stock:'warehouse',risk:'purchase',master:'system',file:'system',user:'system',grant:'system',workflow:'system',audit:'system',agent:'system'}
 const capabilityDepartments:Record<string,string>={query_projects:'project',query_project_dossier:'project',query_business_object_candidates:'project',project_dossier_review:'project',business_object_matching:'project',query_quote_acceptance_context:'sales',query_quote_evaluation_context:'sales',query_bid_intake_context:'sales',quote_acceptance_review:'sales',quote_evaluation_review:'sales',bid_intake_review:'sales',query_contract_context:'finance',contract_context_review:'finance',query_finance_context:'finance',prepare_contract_signing_record:'finance',prepare_supplier_deduction_settlement:'finance',finance_context_review:'finance',query_governance_context:'system',governance_context_review:'system',query_operations_readiness_context:'system',operations_readiness_review:'system',query_internal_start_readiness:'project',internal_start_readiness:'project',query_project_plan_context:'project',project_plan_context_review:'project',project_plan_change:'project',prepare_project_plan_change:'project',query_design_route_context:'design',design_route_context_review:'design',query_manufacturing_quality_context:'project',manufacturing_quality_review:'project',query_assembly_trial_context:'assembly',assembly_trial_review:'assembly',query_delivery_logistics_context:'warehouse',prepare_logistics_route:'warehouse',prepare_logistics_quote:'purchase',delivery_logistics_review:'warehouse',query_full_outsource_context:'purchase',prepare_supplier_material_handoff:'purchase',prepare_supplier_material_verification:'purchase',prepare_supplier_progress_policy:'purchase',prepare_supplier_progress_report:'purchase',full_outsource_review:'purchase',query_change_intake_context:'engineering',change_intake_review:'engineering',query_procurement_price_context:'purchase',procurement_price_context_review:'purchase',query_purchase_requests:'purchase',purchase_request_review:'purchase',purchase_review:'purchase',query_orders:'purchase',query_purchase_orders:'purchase',analyze_delivery_risk:'purchase',delivery_risk_analysis:'purchase',business_status_review:'purchase',query_business_subjects:'project',project_overview:'project',query_project_control_context:'project',prepare_project_pause:'project',prepare_project_resume:'project',project_pause_resume:'project',query_project_closure_context:'project',prepare_project_closure_checklist:'project',prepare_project_termination:'project',prepare_project_closure_item:'project',prepare_project_normal_close:'project',prepare_project_settlement_close:'project',project_termination_closure:'project',query_contact_cases:'engineering',query_contact_context:'engineering',contact_collaboration_review:'engineering',query_contact_resolution:'engineering',prepare_contact_resolution:'engineering',prepare_contact_review:'engineering',prepare_contact_close:'engineering',prepare_contact_set_reviewer:'engineering',prepare_contact_cancel_task:'engineering',prepare_contact_create:'engineering',prepare_contact_note:'engineering',prepare_contact_task:'engineering',prepare_contact_assign:'engineering',prepare_contact_respond:'engineering',prepare_contact_attach:'engineering',query_uploaded_files:'system'}
 Object.assign(capabilityDepartments,{prepare_design_order_approval:'design',erp_design_order_approval:'design'})
 Object.assign(capabilityDepartments,{prepare_customer_acceptance:'warehouse'})
@@ -51,7 +85,23 @@ Object.assign(capabilityDepartments,{prepare_customer_receivable_schedule:'finan
 Object.assign(capabilityDepartments,{prepare_quotation_version:'sales',prepare_quotation_feedback:'sales',prepare_bid_intake_draft:'sales',project_kickoff_orchestration:'project',query_project_kickoff_context:'project'})
 Object.assign(capabilityDepartments,{
  query_erp_outsource_followup_board:'purchase',query_erp_outsource_order_progress:'purchase',
- outsource_followup_query:'purchase',
+ query_erp_outsource_processor_board:'processor',query_erp_outsource_processor_progress:'processor',
+ prepare_erp_outsource_buyer_quote:'purchase',prepare_erp_outsource_inquiry_send:'purchase',
+ prepare_erp_outsource_final_deal:'purchase',prepare_erp_outsource_reselect:'purchase',
+ outsource_followup_query:'purchase',outsource_processor_query:'processor',outsource_processor_ops:'processor',outsource_buyer_ops:'purchase',
+ prepare_erp_outsource_processor_quote:'processor',prepare_erp_outsource_processor_accept:'processor',
+ prepare_erp_outsource_processor_reject:'processor',
+ query_erp_outsource_processor_fulfillment:'processor',prepare_erp_outsource_processor_receipt:'processor',
+ prepare_erp_outsource_processor_product_ship:'processor',outsource_processor_fulfillment:'processor',
+ query_erp_outsource_processor_product_ship:'processor',outsource_processor_product_ship:'processor',
+ query_erp_outsource_warehouse_tasks:'warehouse',prepare_erp_outsource_warehouse_ship:'warehouse',
+ outsource_warehouse_ops:'warehouse',
+ query_erp_outsource_warehouse_inbound:'warehouse',prepare_erp_outsource_warehouse_arrival:'warehouse',
+ prepare_erp_outsource_warehouse_inbound:'warehouse',outsource_warehouse_inbound:'warehouse',
+ query_erp_outsource_quality_tasks:'quality',prepare_erp_outsource_quality_claim:'quality',
+ prepare_erp_outsource_quality_pass:'quality',outsource_quality_ops:'quality',
+ outsource_approval_ops:'purchase',query_erp_outsource_approval_todos:'purchase',
+ prepare_erp_outsource_approval_pass:'purchase',prepare_erp_outsource_approval_reject:'purchase',
 })
 const capabilityTypes:Record<string,string>={purchase_request_review:'review',business_object_matching:'review',quote_acceptance_review:'review',quote_evaluation_review:'review',bid_intake_review:'review',contract_context_review:'review',finance_context_review:'review',governance_context_review:'review',operations_readiness_review:'review',internal_start_readiness:'review',project_plan_context_review:'review',project_plan_change:'approval',prepare_project_plan_change:'approval',design_route_context_review:'review',manufacturing_quality_review:'review',full_outsource_review:'review',change_intake_review:'review',procurement_price_context_review:'review',delivery_risk_analysis:'review',contact_collaboration_review:'review',business_status_review:'review',project_dossier_review:'review',project_pause_resume:'approval',project_termination_closure:'approval',prepare_project_pause:'approval',prepare_project_resume:'approval',prepare_project_closure_checklist:'operation',prepare_project_termination:'approval',prepare_project_closure_item:'operation',prepare_project_normal_close:'approval',prepare_project_settlement_close:'approval',prepare_contact_resolution:'approval',prepare_contact_review:'review',prepare_contact_close:'operation',prepare_contact_set_reviewer:'operation',prepare_contact_cancel_task:'operation',prepare_contract_signing_record:'operation',prepare_supplier_material_handoff:'operation',prepare_supplier_material_verification:'operation',prepare_supplier_progress_policy:'operation',prepare_supplier_progress_report:'operation',prepare_supplier_deduction_settlement:'operation',prepare_logistics_route:'operation',prepare_logistics_quote:'approval'}
 Object.assign(capabilityTypes,{prepare_design_order_approval:'approval',erp_design_order_approval:'approval'})
@@ -59,6 +109,37 @@ Object.assign(capabilityTypes,{prepare_customer_acceptance:'operation'})
 Object.assign(capabilityTypes,{prepare_customer_receivable_schedule:'operation'})
 Object.assign(capabilityTypes,{
  outsource_followup_query:'review',
+ outsource_processor_query:'review',
+ outsource_processor_ops:'operation',
+ outsource_buyer_ops:'operation',
+ prepare_erp_outsource_processor_quote:'operation',
+ prepare_erp_outsource_processor_accept:'operation',
+ prepare_erp_outsource_processor_reject:'operation',
+ query_erp_outsource_processor_fulfillment:'review',
+ prepare_erp_outsource_processor_receipt:'operation',
+ prepare_erp_outsource_processor_product_ship:'operation',
+ outsource_processor_fulfillment:'operation',
+ query_erp_outsource_processor_product_ship:'review',
+ outsource_processor_product_ship:'operation',
+ query_erp_outsource_warehouse_tasks:'review',
+ prepare_erp_outsource_warehouse_ship:'operation',
+ outsource_warehouse_ops:'operation',
+ query_erp_outsource_warehouse_inbound:'review',
+ prepare_erp_outsource_warehouse_arrival:'operation',
+ prepare_erp_outsource_warehouse_inbound:'operation',
+ outsource_warehouse_inbound:'operation',
+ query_erp_outsource_quality_tasks:'review',
+ prepare_erp_outsource_quality_claim:'operation',
+ prepare_erp_outsource_quality_pass:'operation',
+ outsource_quality_ops:'operation',
+ outsource_approval_ops:'approval',
+ query_erp_outsource_approval_todos:'review',
+ prepare_erp_outsource_approval_pass:'approval',
+ prepare_erp_outsource_approval_reject:'approval',
+ prepare_erp_outsource_buyer_quote:'operation',
+ prepare_erp_outsource_inquiry_send:'operation',
+ prepare_erp_outsource_final_deal:'operation',
+ prepare_erp_outsource_reselect:'operation',
 })
 Object.assign(capabilityTypes,{prepare_quotation_version:'approval',prepare_quotation_feedback:'operation',prepare_bid_intake_draft:'operation',project_kickoff_orchestration:'review',query_project_kickoff_context:'query'})
 function capabilityBusinessKey(key:string,permission=''){

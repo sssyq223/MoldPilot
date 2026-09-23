@@ -112,10 +112,22 @@ TOOLS.update({
 })
 from domain_packs.mold import contact_tools
 from domain_packs.mold import erp_design_mcp
-from domain_packs.mold.tools.erp.procurement import erp_outsource_query_tools
+from domain_packs.mold.tools.erp.procurement import (
+    erp_outsource_approval_tools, erp_outsource_buyer_tools, erp_outsource_processor_fulfillment_tools,
+    erp_outsource_processor_ship_tools, erp_outsource_processor_tools, erp_outsource_quality_tools,
+    erp_outsource_query_tools, erp_outsource_warehouse_inbound_tools, erp_outsource_warehouse_tools,
+)
 
 TOOLS.update(erp_design_mcp.TOOL_SPECS)
 TOOLS.update(erp_outsource_query_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_buyer_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_approval_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_processor_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_processor_fulfillment_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_processor_ship_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_warehouse_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_warehouse_inbound_tools.TOOL_SPECS)
+TOOLS.update(erp_outsource_quality_tools.TOOL_SPECS)
 TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
 TOOLS['query_contact_context']={'description':'读取指定工程联络单的主信息、结构化影响与动作、实际执行/复验材料、事项标识，以及可用责任部门或候选处理人。','permission':'contact.read'}
 for action,(_,permission,title) in contact_tools.SPECS.items():
@@ -508,6 +520,14 @@ SKILLS.update({
     },
 })
 SKILLS.update(erp_outsource_query_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_buyer_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_approval_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_processor_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_processor_fulfillment_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_processor_ship_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_warehouse_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_warehouse_inbound_tools.SKILL_SPECS)
+SKILLS.update(erp_outsource_quality_tools.SKILL_SPECS)
 
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
@@ -527,6 +547,7 @@ BUSINESS_DEPARTMENTS = {
     'sales_contract': 'sales', 'start_notice': 'project', 'internal_start': 'project',
     'outsource_contract': 'purchase', 'full_outsource_contract': 'purchase',
     'erp_outsource_buyer': 'purchase', 'erp_outsource_approval': 'purchase',
+    'erp_outsource_gm': 'system',
     'erp_outsource_processor': 'processor', 'erp_outsource_warehouse': 'warehouse',
     'erp_outsource_quality': 'quality',
     'project_plan': 'project',
@@ -611,6 +632,14 @@ CAPABILITY_NAMES = {
     'prepare_contact_cancel_task': '准备撤销联络事项',
     **{key: value['name'] for key, value in SKILLS.items()},
     **erp_outsource_query_tools.TOOL_NAMES,
+    **erp_outsource_buyer_tools.TOOL_NAMES,
+    **erp_outsource_approval_tools.TOOL_NAMES,
+    **erp_outsource_processor_tools.TOOL_NAMES,
+    **erp_outsource_processor_fulfillment_tools.TOOL_NAMES,
+    **erp_outsource_processor_ship_tools.TOOL_NAMES,
+    **erp_outsource_warehouse_tools.TOOL_NAMES,
+    **erp_outsource_warehouse_inbound_tools.TOOL_NAMES,
+    **erp_outsource_quality_tools.TOOL_NAMES,
 }
 
 CAPABILITY_DEPARTMENTS = {
@@ -666,8 +695,26 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contact_note': 'engineering', 'prepare_contact_task': 'engineering',
     'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
     'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
-    **{key: 'purchase' for key in erp_outsource_query_tools.TOOL_SPECS},
-    **{key: 'purchase' for key in erp_outsource_query_tools.SKILL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_query_tools.BUYER_TOOL_KEYS},
+    **{key: 'processor' for key in erp_outsource_query_tools.PROCESSOR_TOOL_KEYS},
+    **{key: 'purchase' for key in ('outsource_followup_query',)},
+    **{key: 'processor' for key in ('outsource_processor_query',)},
+    **{key: 'processor' for key in erp_outsource_processor_tools.TOOL_SPECS},
+    **{key: 'processor' for key in erp_outsource_processor_tools.SKILL_SPECS},
+    **{key: 'processor' for key in erp_outsource_processor_fulfillment_tools.TOOL_SPECS},
+    **{key: 'processor' for key in erp_outsource_processor_fulfillment_tools.SKILL_SPECS},
+    **{key: 'processor' for key in erp_outsource_processor_ship_tools.TOOL_SPECS},
+    **{key: 'processor' for key in erp_outsource_processor_ship_tools.SKILL_SPECS},
+    **{key: 'warehouse' for key in erp_outsource_warehouse_tools.TOOL_SPECS},
+    **{key: 'warehouse' for key in erp_outsource_warehouse_tools.SKILL_SPECS},
+    **{key: 'warehouse' for key in erp_outsource_warehouse_inbound_tools.TOOL_SPECS},
+    **{key: 'warehouse' for key in erp_outsource_warehouse_inbound_tools.SKILL_SPECS},
+    **{key: 'quality' for key in erp_outsource_quality_tools.TOOL_SPECS},
+    **{key: 'quality' for key in erp_outsource_quality_tools.SKILL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_buyer_tools.TOOL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_buyer_tools.SKILL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_approval_tools.TOOL_SPECS},
+    **{key: 'purchase' for key in erp_outsource_approval_tools.SKILL_SPECS},
 }
 # ERP design skills are the guided entry points for the same design capabilities
 # as the registered ERP design tools.  They do not carry a permission field of
@@ -715,6 +762,28 @@ CAPABILITY_TYPES = {
     'prepare_customer_receivable_schedule': 'operation', 'prepare_supplier_deduction_settlement': 'operation',
     'prepare_mold_transfer_receipt': 'operation',
     **{key: 'review' for key in erp_outsource_query_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_buyer_tools.TOOL_SPECS},
+    **{key: 'operation' for key in erp_outsource_buyer_tools.SKILL_SPECS},
+    **{key: 'approval' for key in erp_outsource_approval_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_approval_tools.QUERY_TOOL_KEYS},
+    **{key: 'approval' for key in erp_outsource_approval_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_processor_tools.TOOL_SPECS},
+    **{key: 'operation' for key in erp_outsource_processor_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_processor_fulfillment_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_processor_fulfillment_tools.QUERY_TOOL_KEYS},
+    **{key: 'operation' for key in erp_outsource_processor_fulfillment_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_processor_ship_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_processor_ship_tools.QUERY_TOOL_KEYS},
+    **{key: 'operation' for key in erp_outsource_processor_ship_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_warehouse_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_warehouse_tools.QUERY_TOOL_KEYS},
+    **{key: 'operation' for key in erp_outsource_warehouse_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_warehouse_inbound_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_warehouse_inbound_tools.QUERY_TOOL_KEYS},
+    **{key: 'operation' for key in erp_outsource_warehouse_inbound_tools.SKILL_SPECS},
+    **{key: 'operation' for key in erp_outsource_quality_tools.PREPARE_TOOL_KEYS},
+    **{key: 'review' for key in erp_outsource_quality_tools.QUERY_TOOL_KEYS},
+    **{key: 'operation' for key in erp_outsource_quality_tools.SKILL_SPECS},
 }
 
 
@@ -829,6 +898,22 @@ def available_tools(db, user):
 def tool_schema(key):
     if key in erp_outsource_query_tools.TOOL_SPECS:
         return erp_outsource_query_tools.tool_schema(key)
+    if key in erp_outsource_buyer_tools.TOOL_SPECS:
+        return erp_outsource_buyer_tools.tool_schema(key)
+    if key in erp_outsource_approval_tools.TOOL_SPECS:
+        return erp_outsource_approval_tools.tool_schema(key)
+    if key in erp_outsource_processor_tools.TOOL_SPECS:
+        return erp_outsource_processor_tools.tool_schema(key)
+    if key in erp_outsource_processor_fulfillment_tools.TOOL_SPECS:
+        return erp_outsource_processor_fulfillment_tools.tool_schema(key)
+    if key in erp_outsource_processor_ship_tools.TOOL_SPECS:
+        return erp_outsource_processor_ship_tools.tool_schema(key)
+    if key in erp_outsource_warehouse_tools.TOOL_SPECS:
+        return erp_outsource_warehouse_tools.tool_schema(key)
+    if key in erp_outsource_warehouse_inbound_tools.TOOL_SPECS:
+        return erp_outsource_warehouse_inbound_tools.tool_schema(key)
+    if key in erp_outsource_quality_tools.TOOL_SPECS:
+        return erp_outsource_quality_tools.tool_schema(key)
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.tool_schema(key)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
@@ -1127,6 +1212,22 @@ def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
     if key in erp_outsource_query_tools.TOOL_SPECS:
         return erp_outsource_query_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_buyer_tools.TOOL_SPECS:
+        return erp_outsource_buyer_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_approval_tools.TOOL_SPECS:
+        return erp_outsource_approval_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_processor_tools.TOOL_SPECS:
+        return erp_outsource_processor_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_processor_fulfillment_tools.TOOL_SPECS:
+        return erp_outsource_processor_fulfillment_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_processor_ship_tools.TOOL_SPECS:
+        return erp_outsource_processor_ship_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_warehouse_tools.TOOL_SPECS:
+        return erp_outsource_warehouse_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_warehouse_inbound_tools.TOOL_SPECS:
+        return erp_outsource_warehouse_inbound_tools.execute_tool(db, user, key, arguments, run=run)
+    if key in erp_outsource_quality_tools.TOOL_SPECS:
+        return erp_outsource_quality_tools.execute_tool(db, user, key, arguments, run=run)
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':

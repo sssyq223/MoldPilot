@@ -61,6 +61,32 @@ HANDLERS = (
         "prepare_supplier_progress_policy",
         "prepare_supplier_progress_report",
     })),
+    ProposalHandler("erp_outsource_buyer.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools", frozenset({
+        "prepare_erp_outsource_buyer_quote", "prepare_erp_outsource_inquiry_send",
+        "prepare_erp_outsource_final_deal", "prepare_erp_outsource_reselect",
+    })),
+    ProposalHandler("erp_outsource_approval.approve", "domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools", frozenset({
+        "prepare_erp_outsource_approval_pass", "prepare_erp_outsource_approval_reject",
+    })),
+    ProposalHandler("erp_outsource_processor.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools", frozenset({
+        "prepare_erp_outsource_processor_quote", "prepare_erp_outsource_processor_accept",
+        "prepare_erp_outsource_processor_reject",
+    })),
+    ProposalHandler("erp_outsource_processor.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_processor_fulfillment_tools", frozenset({
+        "prepare_erp_outsource_processor_receipt",
+    })),
+    ProposalHandler("erp_outsource_processor.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools", frozenset({
+        "prepare_erp_outsource_processor_product_ship",
+    })),
+    ProposalHandler("erp_outsource_warehouse.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools", frozenset({
+        "prepare_erp_outsource_warehouse_ship",
+    })),
+    ProposalHandler("erp_outsource_warehouse.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_inbound_tools", frozenset({
+        "prepare_erp_outsource_warehouse_arrival", "prepare_erp_outsource_warehouse_inbound",
+    })),
+    ProposalHandler("erp_outsource_quality.execute", "domain_packs.mold.tools.erp.procurement.erp_outsource_quality_tools", frozenset({
+        "prepare_erp_outsource_quality_claim", "prepare_erp_outsource_quality_pass",
+    })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
         "prepare_customer_receivable_schedule", "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",
         "prepare_supplier_deduction_settlement", "prepare_mold_transfer_receipt",

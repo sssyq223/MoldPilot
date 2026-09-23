@@ -68,6 +68,20 @@ ERP_OUTSOURCE_ROLES: tuple[OutsourceRoleSpec, ...] = (
         "display_name": "委外采购主管",
     },
     {
+        "key": "erp_outsource_gm",
+        "role_name": "总经理",
+        "department_name": "管理",
+        "description": "零件委外超区间下单审批的总经理节点：通过或驳回待审下单。",
+        "permissions": [
+            *_COMMON_READ,
+            "erp_outsource_approval.read",
+            "erp_outsource_approval.approve",
+            "erp_outsource_buyer.read",
+        ],
+        "username": "outsource_gm",
+        "display_name": "总经理",
+    },
+    {
         "key": "erp_outsource_processor",
         "role_name": "委外加工商",
         "department_name": "加工商",

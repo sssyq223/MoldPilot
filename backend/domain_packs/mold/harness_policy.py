@@ -5,6 +5,48 @@ ACTION_INTENT_TERMS = (
     "修改", "变更", "关闭", "恢复", "暂停", "签署", "交接", "上报", "反馈", "分派", "复验", "付款",
     "回款", "扣款", "结算", "执行", "approve", "create", "prepare", "submit", "record", "update",
 )
+# Outsource (委外) operations spoken as imperatives.  Each phrase carries a
+# verb (填 / 发 / 确认 / 领取 / 判 / 通过 / 驳回) so it cannot be confused with
+# the station name of a read-only to-do board.
+OUTSOURCE_FORMAL_ACTION_TERMS = (
+    # 采购员
+    "我要报价", "填我方报价", "填报价", "发询价", "填成交价", "重选加工商",
+    # 加工商 报价 / 接单
+    "我要接单", "确认接单", "接这单", "拒绝接单", "我要拒单", "拒这单",
+    # 仓管 供料
+    "确认发料", "确认备料", "确认原料发货", "办发料", "办备料",
+    # 加工商 收料 / 成品回厂
+    "确认收料", "确认来料", "发成品", "发半成品", "确认成品发货", "办成品发货",
+    # 仓管 回厂
+    "确认到货", "确认收货", "确认入库", "办到货", "办入库",
+    # 质检
+    "领取质检", "判合格", "判定合格", "确认合格", "提交合格", "检验通过",
+    # 审批
+    "通过这单", "驳回这单",
+)
+# Status wording that contains one of the imperatives above but describes a
+# to-do board (“待发询价有几个”).  Removing the complete scope first keeps the
+# remaining text free of a false action verb; a real imperative that follows
+# (“待发询价的这单帮我发询价”) still wins.
+OUTSOURCE_STATUS_PHRASES = (
+    "待发询价", "待填报价", "待填成交价",
+    "待确认接单", "待确认发料", "待确认备料", "待确认收料", "待确认来料",
+    "待发成品", "待发半成品", "待确认到货", "待确认收货", "待确认入库",
+    "待领取质检", "待判合格", "待确认合格",
+    # “待办 + 站点” reads as 待办/入库, not 办入库.
+    "待办入库", "待办到货", "待办发料", "待办备料", "待办成品发货",
+)
+OUTSOURCE_NEGATED_PHRASES = (
+    *OUTSOURCE_STATUS_PHRASES,
+    "不要报价", "不报价", "不要发询价", "不发询价",
+    "不要确认接单", "不确认接单", "不要接单", "不接单",
+    "不要拒绝接单", "不拒绝接单", "不要拒单", "不拒单",
+    "不要确认发料", "不确认发料", "不要确认备料", "不确认备料",
+    "不要确认收料", "不确认收料", "不要确认收货", "不确认收货",
+    "不要发成品", "不发成品", "不要确认入库", "不确认入库", "不要确认到货", "不确认到货",
+    "不要领取质检", "不领取质检", "不要判合格", "不判合格", "不要确认合格", "不确认合格",
+    "不要通过这单", "不通过这单", "不要驳回这单", "不驳回这单",
+)
 # Strong wording that asks the workbench to prepare or carry out a formal
 # business action.  Ambiguous read-only wording such as "确认一下状态" is kept
 # out of this list so a status question does not require an operation receipt.
@@ -12,6 +54,12 @@ FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
     "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算",
+    # Outsource operations.  Only imperative wording is listed; station nouns
+    # such as “成品发货 / 备料完成 / 到货确认 / 质检合格” also name the read-only
+    # to-do boards (“成品发货待办有几个”), so they must not by themselves turn a
+    # count question into a formal action that the Harness then refuses to
+    # answer without an operation receipt.
+    *OUTSOURCE_FORMAL_ACTION_TERMS,
     "prepare", "submit", "create", "record", "sign", "execute action",
 )
 # Complete negative scopes are removed before the Harness tests for a positive
@@ -25,6 +73,7 @@ FORMAL_ACTION_NEGATED_PHRASES = (
     "不要办理", "不办理", "无需办理",
     "不要提交", "不提交", "无需提交",
     "不要执行", "不执行", "无需执行",
+    *OUTSOURCE_NEGATED_PHRASES,
     "do not prepare or execute action", "do not prepare or execute",
     "do not prepare", "do not submit", "do not execute", "read only",
 )
@@ -35,6 +84,7 @@ UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
     "确认回款", "确认付款", "扣款结算",
+    *OUTSOURCE_FORMAL_ACTION_TERMS,
     "prepare", "submit", "create", "record", "execute action",
 )
 WORKBENCH_SUPPORT_HINTS = (
@@ -48,7 +98,10 @@ BUSINESS_OBJECT_HINTS = (
     "项目", "模具", "工程联络", "联络单", "采购", "订单", "报价", "承接", "拒单", "合同",
     "开工", "计划", "大节点", "设计", "bom", "加工", "装配", "试模", "发货", "物流",
     "签收", "验收", "委外", "供应商", "财务", "回款", "付款", "结项", "关闭", "暂停",
-    "恢复", "终止", "审批", "零件", "零件号", "零件信息", "smoke-", "test-m",
+    "恢复", "终止", "审批", "零件", "零件号", "零件信息",
+    "询价", "成交价", "接单", "拒单", "发料", "备料", "收料", "来料", "收货", "到货", "入库", "成品",
+    "质检", "检验", "合格", "这单",
+    "smoke-", "test-m",
 )
 # Mold / batch / work-order / project / part codes count as business objects
 # even when the user never says 模具 or 零件.  Patterns match the same

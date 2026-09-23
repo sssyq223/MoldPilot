@@ -10,6 +10,12 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
+from domain_packs.mold.erp.procurement.erp_outsource_scope import (
+    has_allow,
+    require_allow,
+    require_outsource_buyer_scope,
+    supplier_codes_for,
+)
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
@@ -17,7 +23,11 @@ from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo
 
 BOARD_TOOL = "query_erp_outsource_followup_board"
 PROGRESS_TOOL = "query_erp_outsource_order_progress"
-TOOL_KEYS = (BOARD_TOOL, PROGRESS_TOOL)
+PROCESSOR_BOARD_TOOL = "query_erp_outsource_processor_board"
+PROCESSOR_PROGRESS_TOOL = "query_erp_outsource_processor_progress"
+BUYER_TOOL_KEYS = (BOARD_TOOL, PROGRESS_TOOL)
+PROCESSOR_TOOL_KEYS = (PROCESSOR_BOARD_TOOL, PROCESSOR_PROGRESS_TOOL)
+TOOL_KEYS = BUYER_TOOL_KEYS + PROCESSOR_TOOL_KEYS
 RETIRED_TOOLS = (
     "query_buyer_todo",
     "query_unoutsourced_parts",
@@ -31,39 +41,66 @@ SKILL_SPECS = {
         "name": "委外跟单进度查询",
         "tools": [BOARD_TOOL],
         "optional_tools": [PROGRESS_TOOL],
-        "activation_tools": list(TOOL_KEYS),
+        "activation_tools": list(BUYER_TOOL_KEYS),
         "activation_queries": [
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单", "委外单子",
-            "待采购填报价", "待填价", "待发询价", "待报价", "待下单", "委外审批",
+            "待采购填报价", "待填价", "待发询价", "待报价", "待下单",
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "有没有委外", "有委外",
+            "几个委外", "有几个", "多少委外",
         ],
         "auto_activation_queries": [
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单",
-            "待采购填报价", "待填价", "待发询价", "待报价", "待下单", "委外审批",
+            "待采购填报价", "待填价", "待发询价", "待报价", "待下单",
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "所有委外", "全部委外",
-            "委外单子", "有没有委外", "有委外",
+            "委外单子", "有没有委外", "有委外", "几个委外", "有几个", "多少委外",
         ],
         "priority_patterns": [
-            "零件委外|工序委外|委外跟单|委外待办|委外订单|委外项目|委外单子|待填价|委外时间线",
+            "零件委外|工序委外|委外跟单|委外待办|委外订单|委外项目|委外单子|待填价|委外时间线|有几个委外|几个委外",
         ],
+        "requires_tool_evidence": True,
+        "suppress_tool_search_on_auto_activation": True,
+    },
+    "outsource_processor_query": {
+        "name": "委外加工商待办查询",
+        "tools": [PROCESSOR_BOARD_TOOL],
+        "optional_tools": [PROCESSOR_PROGRESS_TOOL],
+        "activation_tools": list(PROCESSOR_TOOL_KEYS),
+        "activation_queries": [
+            "我的委外", "待报价", "待接单", "加工商待办", "有几个", "有没有", "待办",
+        ],
+        "auto_activation_queries": [
+            "我的委外", "待报价", "待接单", "加工商待办", "有几个", "有没有", "待办",
+        ],
+        "priority_patterns": ["我的委外|加工商待办|待报价|待接单|有几个|有没有"],
+        "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
     },
 }
 
 TOOL_SPECS = {
     BOARD_TOOL: {
-        "description": "只读读取 ERP 委外待办看板：进度、委外类型、模具号、零件明细和价格。有没有委外、几个订单、全部待办都直接查责任域看板；有模具号则只过滤该模具。不要先追问模具号。",
+        "description": "只读读取 ERP 委外待办看板：进度、委外类型、模具号、零件明细和价格。有没有委外、几个订单、全部待办都直接查责任域看板；有模具号则只过滤该模具。不要先追问模具号。采购员/主管使用。",
         "permission": "erp_outsource_buyer.read",
     },
     PROGRESS_TOOL: {
-        "description": "只读查看指定模具号下一张委外待办的进度时间线与零件/价格。必须传入模具号或批次号。",
+        "description": "只读查看指定模具号下一张委外待办的进度时间线与零件/价格。必须传入模具号或批次号。采购员/主管使用。",
         "permission": "erp_outsource_buyer.read",
+    },
+    PROCESSOR_BOARD_TOOL: {
+        "description": "只读读取本加工商可见的委外待办：待报价、待接单等。不含其他供应商订单，不含我方内部价。",
+        "permission": "erp_outsource_processor.read",
+    },
+    PROCESSOR_PROGRESS_TOOL: {
+        "description": "只读查看本加工商名下某一模具的委外进度。必须传入模具号。",
+        "permission": "erp_outsource_processor.read",
     },
 }
 
 TOOL_NAMES = {
     BOARD_TOOL: "查询 ERP 委外待办",
     PROGRESS_TOOL: "查询委外单进度",
+    PROCESSOR_BOARD_TOOL: "查询加工商委外待办",
+    PROCESSOR_PROGRESS_TOOL: "查询加工商委外进度",
 }
 
 TODO_TABS = Literal[
@@ -105,6 +142,8 @@ class FollowupProgressInput(StrictModel):
 INPUT_MODELS = {
     BOARD_TOOL: FollowupBoardInput,
     PROGRESS_TOOL: FollowupProgressInput,
+    PROCESSOR_BOARD_TOOL: FollowupBoardInput,
+    PROCESSOR_PROGRESS_TOOL: FollowupProgressInput,
 }
 
 MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
@@ -172,27 +211,45 @@ def tool_schema(key: str) -> dict[str, Any]:
 
 
 def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[str, Any]:
-    del db, user
+    processor = key in PROCESSOR_TOOL_KEYS
+    if processor:
+        require_allow(db, user, "erp_outsource_processor.read", "仅委外加工商可查询本供应商待办")
+    else:
+        require_allow(db, user, "erp_outsource_buyer.read", "仅委外采购员或采购主管可查询跟单看板")
+        if has_allow(db, user, "erp_outsource_buyer.execute"):
+            require_outsource_buyer_scope(db, user)
     model = INPUT_MODELS[key]
     try:
         data = model.model_validate(arguments or {})
     except ValidationError as error:
         raise DomainError("INVALID_TOOL_INPUT", "委外查询参数无效：" + error.errors()[0]["msg"]) from None
     question = data.question or str(getattr(run, "prompt", "") or "")
-    parser = buyer_todo.parse_question if key == BOARD_TOOL else timeline.parse_question
+    board = key in {BOARD_TOOL, PROCESSOR_BOARD_TOOL}
+    parser = buyer_todo.parse_question if board else timeline.parse_question
     scoped = _scope(data, parser(question), spoken=question)
-    if key == BOARD_TOOL:
-        payload = buyer_todo.run(scoped)
+    tokens = supplier_codes_for(db, user) if processor else None
+    if processor and tokens == []:
+        payload = {
+            "status": "NO_SUPPLIER_SCOPE",
+            "summary": "当前账号未绑定加工商范围，看不到委外待办。",
+            "items": [],
+        }
+    elif board:
+        payload = buyer_todo.run(scoped, processor_tokens=tokens)
     elif not _has_mold_scope(scoped):
         payload = _need_mold_code()
+    elif processor:
+        payload = buyer_todo.run(scoped, processor_tokens=tokens)
     else:
         payload = timeline.run(scoped)
     return {
         "data": payload,
         "source": "management-system ERP 委外待办只读查询",
         "as_of": now().isoformat(),
+        "role_lens": "processor" if processor else "buyer",
         "limitations": [
             "只读查询 ERP 委外待办事实，不改数据。",
-            "有没有委外、几个订单默认查责任域待办看板；单票进度才需要模具号。",
+            "加工商视角不含其他供应商订单和我方内部价。" if processor
+            else "有没有委外、几个订单默认查责任域待办看板；单票进度才需要模具号。",
         ],
     }

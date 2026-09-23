@@ -40,8 +40,9 @@ def _load_env_file(path: Path) -> dict[str, str]:
 def _merged_env() -> dict[str, str]:
     merged: dict[str, str] = {}
     config = settings()
-    configured = Path(getattr(config, "erp_env_file", "") or "")
-    paths = [configured] if configured else list(DEFAULT_ENV_CANDIDATES)
+    configured = str(getattr(config, "erp_env_file", "") or "").strip()
+    # Path("") is Path("."), which is truthy and must not be opened as an env file.
+    paths = [Path(configured)] if configured else list(DEFAULT_ENV_CANDIDATES)
     for path in paths:
         if path:
             merged.update(_load_env_file(path))

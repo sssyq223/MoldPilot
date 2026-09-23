@@ -1411,16 +1411,28 @@ def test_part_detail_lookup_auto_activates_followup_skill():
     ]
 
     class InspectingModel(Model):
+        def __init__(self):
+            super().__init__([])
+            self.seen = []
+
         def generate(self, messages, tools):
             names = [item['function']['name'] for item in tools]
-            assert 'query_unoutsourced_parts' in names
+            self.seen.append(names)
+            if len(self.seen) == 1:
+                # The registered follow-up skill requires tool evidence, so the
+                # auto-activated reader must be called before answering.
+                return {'role': 'assistant', 'tool_calls': [{
+                    'id': 'call-part-detail', 'type': 'function',
+                    'function': {'name': 'query_unoutsourced_parts', 'arguments': '{}'},
+                }]}
             return {'content': json.dumps({
-                'response_kind': 'CLARIFICATION',
-                'summary': '已激活委外跟单查询。',
-                'evidence_ids': [],
+                'response_kind': 'BUSINESS',
+                'summary': '已按委外跟单查询返回零件详细信息。',
+                'evidence_ids': ['e1'],
                 'suggestions': [],
             }, ensure_ascii=False)}
 
+    model = InspectingModel()
     run_loop(context(
         prompt='帮我查一下 M260063-P2 的 PU-06 的详细信息',
         core_tool_names=[],
@@ -1431,9 +1443,11 @@ def test_part_detail_lookup_auto_activates_followup_skill():
             'optional_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],
             'activation_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],
             'auto_activation_queries': ['零件详细', '零件信息', '的详细信息'],
+            'requires_tool_evidence': True,
             'suppress_tool_search_on_auto_activation': False,
         }],
-    ), InspectingModel([]), Gateway())
+    ), model, Gateway())
+    assert model.seen and 'query_unoutsourced_parts' in model.seen[0]
 
 
 def test_erp_material_list_alias_activates_erp_design_workspace():
