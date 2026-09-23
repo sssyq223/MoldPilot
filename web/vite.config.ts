@@ -9,6 +9,14 @@ export default defineConfig(({mode}) => {
     plugins: [vue()],
     define:{__DOMAIN_PACK_ID__:JSON.stringify(pack)},
     resolve:{alias:{'@domain-pack':resolve(__dirname,`src/domain-packs/${pack}`)}},
-    server: { proxy: { '/api': 'http://127.0.0.1:8000' } },
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://127.0.0.1:8000',
+          timeout: 0,
+          proxyTimeout: 0,
+        },
+      },
+    },
   }
 })

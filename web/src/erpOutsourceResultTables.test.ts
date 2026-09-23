@@ -44,6 +44,23 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].columns.some((column) => /项目|工单|订单/.test(column.label))).toBe(false)
   })
 
+  it('keeps one board table when the same tool returns an empty pass then rows', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [
+        { type: 'tool', id: 'a', tool: 'query_erp_outsource_followup_board', data: { items: [] } },
+        {
+          type: 'tool',
+          id: 'b',
+          tool: 'query_erp_outsource_followup_board',
+          data: { items: [{ stationLabel: '待接单', moldNo: 'M260063-P1' }] },
+        },
+      ],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].rows).toHaveLength(1)
+  })
+
   it('does not render a board when the tool still needs a mold code', () => {
     expect(erpOutsourceResultTablesFromRun({
       status: 'SUCCEEDED',

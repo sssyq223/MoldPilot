@@ -1,7 +1,20 @@
+function networkError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return Object.assign(new Error('无法连接工作台服务。请使用 http://127.0.0.1:5173 打开页面，并确认后端已启动。'), {status: 0})
+  }
+  return error instanceof Error ? error : new Error(message || '无法连接工作台服务')
+}
+
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const cookies=document.cookie.split('; ')
   const csrf=cookies.find(c=>c.startsWith('agent_csrf='))?.split('=')[1]??''
-  const response = await fetch(`/api${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, ...options.headers } })
+  let response: Response
+  try {
+    response = await fetch(`/api${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, ...options.headers } })
+  } catch (error) {
+    throw networkError(error)
+  }
   const raw=await response.text()
   let body:any={}
   try{body=raw?JSON.parse(raw):{}}catch{}

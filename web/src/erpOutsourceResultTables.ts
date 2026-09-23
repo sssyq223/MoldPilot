@@ -79,15 +79,19 @@ export function erpOutsourceResultTablesFromRun(run: any): ErpDesignResultTable[
     if (String(data.status || '') === 'NEED_MOLD_CODE') continue
     if (BOARD_TOOLS.has(tool)) {
       const rows = list(data.items)
+      if (!rows.length) continue
       const scope = String(data.scope || '')
-      result.push(table(
+      const next = table(
         `${tool}:board`,
         'ERP 委外待办',
         rows,
         boardColumns,
         `${scope || 'ERP 委外待办'} 共 ${rows.length} 条`,
         scope,
-      ))
+      )
+      const existing = result.findIndex((item) => item.title === 'ERP 委外待办')
+      if (existing >= 0) result[existing] = next
+      else result.push(next)
       continue
     }
     if (PROGRESS_TOOLS.has(tool)) {
