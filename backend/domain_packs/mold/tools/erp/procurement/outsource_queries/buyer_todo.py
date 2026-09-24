@@ -341,6 +341,40 @@ def _promote_batch_code(mold: str, batch: str) -> tuple[str, str]:
     return mold, batch
 
 
+PART_CODE = re.compile(r"(?i)\b([A-Z]{1,4}-?\d{1,4}[A-Z0-9]*)\b")
+
+
+def normalize_part_token(value: Any) -> str:
+    if isinstance(value, list):
+        pieces = []
+        for item in value:
+            if isinstance(item, dict):
+                pieces.append(str(item.get("partNo") or item.get("part_no") or item.get("partName") or ""))
+            else:
+                pieces.append(str(item or ""))
+        value = " ".join(piece for piece in pieces if piece.strip())
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = PART_CODE.search(text)
+    return (match.group(1) if match else text).upper()
+
+
+def item_matches_part(item: dict[str, Any], part: str) -> bool:
+    wanted = normalize_part_token(part)
+    if not wanted:
+        return True
+    for row in item.get("parts") or []:
+        if not isinstance(row, dict):
+            continue
+        no = _norm_code(row.get("partNo") or row.get("part_no"))
+        name = _norm_code(row.get("partName") or row.get("part_name"))
+        if no == wanted or name == wanted:
+            return True
+    details = str(item.get("partDetails") or "")
+    return bool(re.search(rf"(?i)(?<![A-Z0-9]){re.escape(wanted)}(?![A-Z0-9])", details))
+
+
 def item_matches_identity(
     item: dict[str, Any],
     *,
@@ -368,6 +402,28 @@ def item_matches_identity(
         ):
             return False
     return True
+
+
+def _ambiguous_identity_message(hits: list[dict[str, Any]], *, part: str = "") -> str:
+    lines = [
+        "同一模具/批次下有多张待办询价，并不是这个零件出现在多张工单里。",
+        f"当前条件命中 {len(hits)} 张：",
+    ]
+    for item in hits[:8]:
+        display = identity_display(item)
+        details = str(item.get("partDetails") or "未标注零件").strip()
+        if len(details) > 80:
+            details = details[:80] + "…"
+        lines.append(
+            f"- {display['订单号']} / {display['模具号']} / {display['批次号']} / {details}"
+        )
+    if len(hits) > 8:
+        lines.append(f"- 另有 {len(hits) - 8} 张未展开")
+    if part:
+        lines.append(f"零件 {normalize_part_token(part)} 仍无法唯一锁定，请再补订单号或表格里的完整批次号。")
+    else:
+        lines.append("请补零件号（例如 PH-01）或表格里的完整批次号后再办理。禁止使用内部数字编号。")
+    return "\n".join(lines)
 
 
 def format_process_names(parts: list[Any], fallback: str = "") -> str:
@@ -610,7 +666,7 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
     summary += "\n" + "\n".join(f"- {label}：{count} 条" for label, count in counts.items() if count)
     summary += "\n" + "\n".join(f"- {label}：{count} 条" for label, count in type_counts.items() if count)
     if not visible:
-        summary += "\n没有查到仍停在采购待办的项目。"
+        summary += "\n本次查询结果是 0 条。"
     else:
         lines = []
         for item in visible[:30]:
@@ -763,33 +819,29 @@ def find_item_by_identity(
     order_no: str | None = None,
     mold: str | None = None,
     batch: str | None = None,
+    part: str | None = None,
     require_inquiry: bool = False,
 ) -> dict[str, Any] | None:
     order_no = str(order_no or "").strip()
     mold, batch = _promote_batch_code(str(mold or "").strip().upper(), str(batch or "").strip().upper())
-    if not order_no and not mold and not batch:
-        raise DomainError("INVALID_TOOL_INPUT", "请用订单号、模具号和批次号定位，不要使用内部数字编号")
-    hits = [
-        item
-        for item in _scan_items(batch or mold)
-        if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
-    ]
-    if order_no and not hits and (batch or mold):
-        hits = [
-            item
-            for item in _scan_items(None)
-            if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
-        ]
+    part = normalize_part_token(part)
+    if not order_no and not mold and not batch and not part:
+        raise DomainError("INVALID_TOOL_INPUT", "请用订单号、模具号、批次号或零件号定位，不要使用内部数字编号")
+
+    def matches(item: dict[str, Any]) -> bool:
+        return item_matches_identity(
+            item, order_no=order_no, mold=mold, batch=batch
+        ) and item_matches_part(item, part)
+
+    hits = [item for item in _scan_items(batch or mold) if matches(item)]
+    if not hits and (order_no or part):
+        hits = [item for item in _scan_items(None) if matches(item)]
     if require_inquiry:
         hits = [item for item in hits if item.get("inquiryId")]
     if not hits:
         return None
     if len(hits) > 1:
-        raise DomainError(
-            "AMBIGUOUS",
-            "同一条件命中多张委外工单。尚未下单时请用单一批次号；合并多批次的询价要用表格里的完整批次号。禁止使用内部数字编号",
-            409,
-        )
+        raise DomainError("AMBIGUOUS", _ambiguous_identity_message(hits, part=part), 409)
     return hits[0]
 
 

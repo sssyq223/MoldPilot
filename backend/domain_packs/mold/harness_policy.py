@@ -10,7 +10,8 @@ ACTION_INTENT_TERMS = (
 # the station name of a read-only to-do board.
 OUTSOURCE_FORMAL_ACTION_TERMS = (
     # 采购员
-    "我要报价", "填我方报价", "填报价", "发询价", "填成交价", "重选加工商",
+    "我要报价", "填我方报价", "填报价", "填价格", "帮我填报价", "帮我填价格",
+    "发询价", "填成交价", "重选加工商",
     # 加工商 报价 / 接单
     "我要接单", "确认接单", "接这单", "拒绝接单", "我要拒单", "拒这单",
     # 仓管 供料
@@ -39,6 +40,8 @@ OUTSOURCE_STATUS_PHRASES = (
 OUTSOURCE_NEGATED_PHRASES = (
     *OUTSOURCE_STATUS_PHRASES,
     "不要报价", "不报价", "不要发询价", "不发询价",
+    "不要填价格", "不填价格", "不要填报价", "不填报价",
+    "不要填我方报价", "不填我方报价",
     "不要确认接单", "不确认接单", "不要接单", "不接单",
     "不要拒绝接单", "不拒绝接单", "不要拒单", "不拒单",
     "不要确认发料", "不确认发料", "不要确认备料", "不确认备料",
@@ -48,8 +51,11 @@ OUTSOURCE_NEGATED_PHRASES = (
     "不要通过这单", "不通过这单", "不要驳回这单", "不驳回这单",
 )
 # Strong wording that asks the workbench to prepare or carry out a formal
-# business action.  Ambiguous read-only wording such as "确认一下状态" is kept
-# out of this list so a status question does not require an operation receipt.
+# business action.  This list only drives the operation-receipt invariant
+# (“user clearly asked to 办理, so do not claim success without prepare”).
+# It does not decide whether prepare_* tools are visible; spoken writes use
+# WRITE_SIGNAL_TERMS / read-only questions instead.  Ambiguous wording such
+# as "确认一下状态" stays out so a status question does not demand a receipt.
 FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
@@ -80,6 +86,26 @@ FORMAL_ACTION_NEGATED_PHRASES = (
 READ_ONLY_INTENT_TERMS = (
     "只读", "仅查询", "只查询", "仅核对", "只核对", "read only",
 )
+# Board nouns that look like operations (“待填价”) but are only to-do labels.
+# Stripped before deciding whether a turn may see write tools.
+OUTSOURCE_BOARD_NOUNS = (
+    *OUTSOURCE_STATUS_PHRASES,
+    "待填价", "待报价", "待下单", "待接单", "待采购填报价",
+    "委外待办", "采购待办",
+)
+# Look-up questions.  These hide write tools.  They do not decide whether the
+# model understood a spoken write such as “把价钱写成400”.
+READ_ONLY_QUESTION_TERMS = (
+    "有几个", "有没有", "有哪些", "多少条", "几条", "是多少", "是什么", "什么是",
+    "查一下", "查询", "查看", "看看", "看下", "待办", "怎么样", "情况", "进度",
+    "确认一下", "什么状态",
+)
+# Spoken write signals that are not in the formal-receipt whitelist.
+# Visibility of prepare_* tools uses these; the receipt invariant does not.
+WRITE_SIGNAL_TERMS = (
+    "填", "写", "改", "发", "选", "办", "提交", "准备", "登记", "录入",
+    "写成", "改成", "设为", "定为",
+)
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
@@ -99,7 +125,7 @@ BUSINESS_OBJECT_HINTS = (
     "开工", "计划", "大节点", "设计", "bom", "加工", "装配", "试模", "发货", "物流",
     "签收", "验收", "委外", "供应商", "财务", "回款", "付款", "结项", "关闭", "暂停",
     "恢复", "终止", "审批", "零件", "零件号", "零件信息",
-    "询价", "成交价", "接单", "拒单", "发料", "备料", "收料", "来料", "收货", "到货", "入库", "成品",
+    "询价", "成交价", "接单", "拒单", "加工商", "发料", "备料", "收料", "来料", "收货", "到货", "入库", "成品",
     "质检", "检验", "合格", "这单",
     "smoke-", "test-m",
 )

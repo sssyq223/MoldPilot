@@ -48,7 +48,8 @@ SKILL_SPECS = {
         ],
         "priority_patterns": ["下单审批|委外审批|待我审批|采购主管审批|总经理审批|审批待办|现在有审批"],
         "requires_tool_evidence": True,
-        "suppress_tool_search_on_auto_activation": True,
+        "activation_route": "authorized",
+        "suppress_tool_search_on_auto_activation": False,
         "host_auto_invoke_empty_arguments": True,
     },
 }

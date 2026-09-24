@@ -24,6 +24,9 @@ ACTION_INTENT_TERMS = _policy.ACTION_INTENT_TERMS
 FORMAL_ACTION_TERMS = getattr(_policy, "FORMAL_ACTION_TERMS", ACTION_INTENT_TERMS)
 FORMAL_ACTION_NEGATED_PHRASES = getattr(_policy, "FORMAL_ACTION_NEGATED_PHRASES", ())
 READ_ONLY_INTENT_TERMS = getattr(_policy, "READ_ONLY_INTENT_TERMS", ())
+OUTSOURCE_BOARD_NOUNS = getattr(_policy, "OUTSOURCE_BOARD_NOUNS", ())
+READ_ONLY_QUESTION_TERMS = getattr(_policy, "READ_ONLY_QUESTION_TERMS", ())
+WRITE_SIGNAL_TERMS = getattr(_policy, "WRITE_SIGNAL_TERMS", ())
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = getattr(_policy, "UNAMBIGUOUS_FORMAL_ACTION_TERMS", FORMAL_ACTION_TERMS)
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
@@ -166,6 +169,30 @@ def _tool_calls_from_message(message):
     return [call] if call and payload.get("name") else []
 
 
+_BUYER_QUOTE_TOOL = "prepare_erp_outsource_buyer_quote"
+_BUYER_QUOTE_NAME_ALIASES = {
+    "prepareprojectquote", "preparequote", "preparebuyerquote",
+    "prepareoutsourcequote", "fillquote", "fillprice",
+}
+
+
+def _rewrite_known_prepare_aliases(calls, allowed_names):
+    """Map spoken/hallucinated prepare names onto the active buyer quote tool."""
+    if _BUYER_QUOTE_TOOL not in allowed_names:
+        return calls
+    for call in calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if name in allowed_names:
+            continue
+        folded = str(name or "").replace("_", "").lower()
+        if folded in _BUYER_QUOTE_NAME_ALIASES:
+            function["name"] = _BUYER_QUOTE_TOOL
+    return calls
+
+
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 evidence_ids。附件 ID、会话 ID、业务对象 ID 和历史轮次证据都不是本轮证据编号。请删除无效编号；若用户询问业务事实且尚无本轮证据，请先调用当前可用的只读工具取得事实，再用工具返回的 evidence_id 作答。"""
@@ -173,6 +200,7 @@ AUTHORITATIVE_READ_REMINDER = """本次问题涉及必须从权威业务数据�
 TOOL_ARGUMENT_REPAIR_REMINDER = """上一轮工具调用的 arguments 不是有效 JSON 对象，工具尚未执行。请根据当前工具的参数 schema 重新发起一次工具调用；arguments 必须是一个完整 JSON 对象，不能在对象结束后追加字段，也不能把对象类型字段写成字符串。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
 UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮只能调用 ToolSearch 结果中“已激活可调用工具”列出的真实函数名。ToolSearch 的能力目录名称、matches 或 matched_groups 仅用于说明匹配场景，不是函数名。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
+AVAILABLE_PREPARE_REMINDER = """上一轮调用了当前列表里不存在的函数名。不要编造 prepare_project_quote 这类名称。请用下面已激活的真实办理工具重新发起一次工具调用，arguments 必须符合该工具 schema。"""
 ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
 ACTION_EVIDENCE_REPAIR_REMINDER = """上一轮遗漏了正式操作的成功证据。只要结论声称已经准备、提交或执行操作，evidence_ids 就必须包含本轮所有成功正式操作工具返回的证据编号；不得只引用前置查询证据。请重新输出约定 JSON。"""
 ACTION_NOT_COMPLETED_REPAIR_REMINDER = """本轮用户明确要求准备或办理正式操作，但目前没有任何成功的正式操作工具回执或待确认操作证据。只读查询结果不能证明操作已经准备、提交或执行。不得声称已有确认卡；请输出 response_kind=CLARIFICATION，明确说明操作尚未完成以及需要用户补充或系统配置的条件。"""
@@ -310,6 +338,37 @@ def _has_formal_action_intent(prompt):
             and not _contains_any(compact, UNAMBIGUOUS_FORMAL_ACTION_TERMS)):
         return False
     return _contains_any(compact, FORMAL_ACTION_TERMS)
+
+
+def _strip_board_and_negated_scopes(prompt):
+    compact = _compact_intent_text(prompt)
+    for phrase in sorted((*FORMAL_ACTION_NEGATED_PHRASES, *OUTSOURCE_BOARD_NOUNS), key=len, reverse=True):
+        folded = _compact_intent_text(phrase)
+        if folded and folded in compact:
+            compact = compact.replace(folded, "")
+    return compact
+
+
+def _is_read_only_request(prompt):
+    """True when this turn is asking to look, not to change anything.
+
+    Formal-action phrases remain a closed list so a to-do count cannot demand
+    an operation receipt.  Write-tool visibility is the opposite default:
+    hide prepare_* only on an explicit read-only / count / status question.
+    Spoken writes such as “把价钱写成400” therefore stay visible to the model.
+    """
+    if _contains_any(prompt, READ_ONLY_INTENT_TERMS):
+        return True
+    if _has_formal_action_intent(prompt):
+        return False
+    remainder = _strip_board_and_negated_scopes(prompt)
+    if WRITE_SIGNAL_TERMS and _contains_any(remainder, WRITE_SIGNAL_TERMS):
+        return False
+    return bool(READ_ONLY_QUESTION_TERMS) and _contains_any(prompt, READ_ONLY_QUESTION_TERMS)
+
+
+def _allows_write_tools(prompt):
+    return not _is_read_only_request(prompt)
 
 
 def _attachment_candidates(context):
@@ -479,13 +538,20 @@ def _skill_tool_groups(skills, all_tools):
             continue
         seen.add(key)
         spec = registered.get(key, {})
-        required = skill.get("tools") or skill.get("dependencies") or spec.get("tools", [])
-        optional = skill.get("optional_tools") or skill.get("optional_dependencies") or spec.get("optional_tools", [])
-        activation = skill.get("activation_tools") or skill.get("activation_dependencies") or spec.get("activation_tools")
-        # Optional prepare_* tools must stay in the group catalog so a formal
-        # action can rank them.  Write tools are still withheld until
-        # action_intent; listing questions that only auto-activate a read
-        # surface will not expose them.
+        required = skill["tools"] if "tools" in skill else (
+            skill.get("dependencies") or spec.get("tools", [])
+        )
+        optional = skill["optional_tools"] if "optional_tools" in skill else (
+            skill.get("optional_dependencies") or spec.get("optional_tools", [])
+        )
+        if "activation_tools" in skill:
+            activation = skill.get("activation_tools")
+        else:
+            activation = skill.get("activation_dependencies") or spec.get("activation_tools")
+        # Optional prepare_* tools stay in the group catalog so a write turn
+        # can rank them.  They are still withheld on read-only / count
+        # questions; listing questions that only auto-activate a read surface
+        # will not expose them.
         catalog = list(dict.fromkeys([*(activation or required), *optional]))
         tool_names = [name for name in catalog if name in all_tools]
         if not tool_names:
@@ -512,7 +578,11 @@ def _skill_tool_groups(skills, all_tools):
                        ),
                        "host_auto_invoke_queries": skill.get("host_auto_invoke_queries")
                        or spec.get("host_auto_invoke_queries", []),
-                       "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", [])})
+                       "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", []),
+                       "activation_route": (
+                           skill["activation_route"] if "activation_route" in skill
+                           else spec.get("activation_route") or ""
+                       )})
     return result
 
 
@@ -1044,10 +1114,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     design_attachment_upload_requested = _is_design_attachment_upload_request(context)
     preferred_group_keys = ()
     business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
+    current_prompt = context.get("prompt", "")
     formal_action_requested = bool(
-        _has_formal_action_intent(context.get("prompt", ""))
-        and _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
+        _has_formal_action_intent(current_prompt)
+        and _has_business_object(current_prompt)
     )
+    # Write-tool visibility is not the formal-receipt whitelist.  The model
+    # may see prepare_* once this turn is not a look-up; ERP writes still
+    # wait for the confirmation card.
+    write_tools_allowed = _allows_write_tools(current_prompt)
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
     design_upload_route = _design_upload_route(context)
     authorized_design_groups = _design_upload_group_keys(design_upload_route, tool_groups)
@@ -1148,38 +1223,62 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         )
         auto_prompt = "解析当前附件" if attachment_confirmation else prompt
         normalized_prompt = auto_prompt.lower()
+        authorized_groups = [group for group in tool_groups
+                             if (group.get("activation_route") or "") == "authorized"]
+        authorized_keys = {group["key"] for group in authorized_groups}
         priority_auto_groups = []
         for group in tool_groups:
+            if group["key"] in authorized_keys:
+                continue
             aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
                        if str(alias).strip()]
             if (_group_priority_matches(auto_prompt, group)
                     and any(alias in normalized_prompt for alias in aliases)):
                 priority_auto_groups.append(group)
-        # Domain-owned context patterns disambiguate overlapping short aliases
-        # before host-side invocation. For example, “料单的公差是多少” refers
-        # to the current upload session, while bare “公差是多少” may refer to a
-        # fixed reference table. Never auto-invoke both readers and let the
-        # model guess between them.
-        auto_groups = priority_auto_groups or tool_groups
+        # Authorized-route skills (委外) load from the account assignment, not
+        # from a spoken-phrase whitelist.  Other domains still use aliases so a
+        # density question does not open every deferred design writer.
+        if authorized_groups or priority_auto_groups:
+            auto_groups = [*authorized_groups, *priority_auto_groups]
+        else:
+            auto_groups = tool_groups
         if ambiguous_design_upload or unavailable_design_upload:
             # Do not let a generic attachment request fan out into a parser
             # chosen by model ranking.  The next model turn must either ask
             # which existing ERP upload type to use or report the missing
             # assignment.
             suppress_tool_search = True
-            auto_groups = []
+            auto_groups = [group for group in authorized_groups]
         for group in auto_groups:
+            authorized_route = (group.get("activation_route") or "") == "authorized"
             aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
                        if str(alias).strip()]
-            if not any(alias in normalized_prompt for alias in aliases):
+            if not authorized_route and not any(alias in normalized_prompt for alias in aliases):
                 continue
             group_already_active = any(name in active_tool_names for name in group["tools"])
-            selected = _rank_group_tools(
-                normalized_prompt, group, auto_deferred,
-                action_intent=formal_action_requested,
-                current_prompt=auto_prompt,
-                tool_annotations=tool_annotations,
-            )
+            if authorized_route:
+                selected = [name for name in group["tools"] if name in all_tools]
+                required = set(group.get("required") or [])
+                if write_tools_allowed:
+                    # Board + prepare_*. Extra read-detail tools such as
+                    # order_progress steal the turn after the board already
+                    # listed the row the user asked to fill.
+                    selected = [
+                        name for name in selected
+                        if name in required or _is_write_capable_tool(name, tool_annotations)
+                    ]
+                else:
+                    selected = [
+                        name for name in selected
+                        if not _is_write_capable_tool(name, tool_annotations)
+                    ]
+            else:
+                selected = _rank_group_tools(
+                    normalized_prompt, group, auto_deferred,
+                    action_intent=write_tools_allowed,
+                    current_prompt=auto_prompt,
+                    tool_annotations=tool_annotations,
+                )
             active_tool_names.update(selected)
             if selected or group_already_active:
                 load_selected_skills(selected, [group["key"]])
@@ -1188,21 +1287,26 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             host_auto_queries = [str(alias).strip().lower()
                                  for alias in group.get("host_auto_invoke_queries", [])
                                  if str(alias).strip()]
-            if (group.get("host_auto_invoke_empty_arguments")
-                    and (not host_auto_queries
-                         or any(alias in normalized_prompt for alias in host_auto_queries))):
+            host_auto_ok = bool(group.get("host_auto_invoke_empty_arguments"))
+            if host_auto_ok and authorized_route:
+                host_auto_ok = _is_read_only_request(auto_prompt)
+            elif host_auto_ok:
+                host_auto_ok = (not host_auto_queries
+                                or any(alias in normalized_prompt for alias in host_auto_queries))
+            if host_auto_ok:
                 eligible = set(selected)
                 if group_already_active:
                     eligible.update(set(group["tools"]) & active_tool_names)
                 host_auto_invoke_candidates.update(
                     name for name in (group.get("required") or selected)
-                    if name in eligible
+                    if name in eligible and not _is_write_capable_tool(name, tool_annotations)
                 )
             for name in selected:
                 auto_deferred.pop(name, None)
             if ((selected or group_already_active)
                     and group.get("suppress_tool_search_on_auto_activation")
-                    and not formal_action_requested):
+                    and not formal_action_requested
+                    and not authorized_route):
                 suppress_tool_search = True
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
     optional_prompt = "" if suppress_tool_search else _optional_tools_prompt(
@@ -1431,7 +1535,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         tool_groups=tool_groups,
                         active_skill_keys=active_skill_keys,
                         tool_annotations=tool_annotations,
-                        action_intent=formal_action_requested,
+                        action_intent=write_tools_allowed,
                     )
                     if name not in sibling:
                         raise RuntimeError("TOOL_FORBIDDEN")
@@ -1454,7 +1558,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 if name == TOOL_SEARCH_NAME:
                     matches, candidates, matched_groups = _find_deferred_tools(
                         arguments.get("query", ""), deferred_tools, tool_groups,
-                        action_intent=formal_action_requested,
+                        action_intent=write_tools_allowed,
                         current_prompt=context.get("prompt", ""),
                         preferred_group_keys=preferred_group_keys,
                         tool_annotations=tool_annotations)
@@ -1516,10 +1620,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             # answered the user's read-only question. Close the tool stage
             # before asking for the final envelope so providers cannot repeat
             # the same call, hallucinate a similarly named tool, or emit a
-            # truncated second set of arguments. Formal action flows still
-            # continue because their read evidence is only a prerequisite.
+            # truncated second set of arguments. Formal action flows and
+            # authorized-route skills still continue: their read evidence is
+            # only a prerequisite, and the model must still choose prepare_*.
+            authorized_active = any(
+                (group.get("activation_route") or "") == "authorized"
+                and group["key"] in active_skill_keys
+                for group in tool_groups
+            )
             if (not finalizing
                     and not formal_action_requested
+                    and not authorized_active
                     and required_evidence_tools
                     and required_evidence_tools <= evidence_tools):
                 finalizing = True
@@ -1622,12 +1733,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             continue
         calls = _tool_calls_from_message(message)
         if calls:
+            allowed_names = {_tool_name(tool) for tool in active_tools()}
+            calls = _rewrite_known_prepare_aliases(calls, allowed_names)
+            if finalizing and calls and all(
+                    (call.get("function") or {}).get("name") in allowed_names for call in calls):
+                finalizing = False
             if finalizing:
                 request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
                 continue
             if count + len(calls) > max_tools:
                 raise RuntimeError("BUDGET_EXCEEDED")
-            allowed_names = {_tool_name(tool) for tool in active_tools()}
             invalid_names = {(call.get("function") or {}).get("name") for call in calls
                              if (call.get("function") or {}).get("name") not in allowed_names}
             if invalid_names:
@@ -1641,9 +1756,18 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     tool_groups=tool_groups,
                     active_skill_keys=active_skill_keys,
                     tool_annotations=tool_annotations,
-                    action_intent=formal_action_requested,
+                    action_intent=write_tools_allowed,
                 )
-                if set(invalid_names) - set(sibling):
+                leftover = set(invalid_names) - set(sibling)
+                if leftover:
+                    prepares = sorted(name for name in allowed_names if str(name).startswith("prepare_"))
+                    if prepares:
+                        request_tool_repair(
+                            AVAILABLE_PREPARE_REMINDER
+                            + "\n本轮可调用办理工具："
+                            + json.dumps(prepares, ensure_ascii=False)
+                        )
+                        continue
                     raise RuntimeError("TOOL_FORBIDDEN")
                 for name in sibling:
                     active_tool_names.add(name)
@@ -1733,9 +1857,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             details = json.dumps(unresolved_actions, ensure_ascii=False)
             request_protocol_repair(ACTION_OUTCOME_REPAIR_REMINDER + "\n未解决的工具错误：" + details)
             continue
-        if (formal_action_requested and kind == 'BUSINESS'
+        if ((kind == 'AWAITING_APPROVAL' or (formal_action_requested and kind == 'BUSINESS'))
                 and not successful_action_evidence and not trusted_action_resolved):
-            request_protocol_repair(ACTION_NOT_COMPLETED_REPAIR_REMINDER)
+            request_tool_repair(ACTION_NOT_COMPLETED_REPAIR_REMINDER)
             continue
         if kind == 'BUSINESS' and successful_action_evidence and not successful_action_evidence <= set(result['evidence_ids']):
             request_protocol_repair(ACTION_EVIDENCE_REPAIR_REMINDER)
@@ -1743,7 +1867,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         if (not evidence_ids and kind == 'BUSINESS'
                 and not (proposal_resolution and resolution_decision == 'approved'
                          and result.get('proposal_decision') == 'approved')):
-            result = {"summary": "当前未取得业务证据，无法确认业务结论。请补充对象或检查可用工具。", "evidence_ids": [], "suggestions": []}
+            result = {
+                "summary": "这一遍还没有查。请再说一次要看哪些单，我马上帮你查。",
+                "evidence_ids": [],
+                "suggestions": [],
+            }
         streaming_model_message = None
         save()
         gateway.finish(result)

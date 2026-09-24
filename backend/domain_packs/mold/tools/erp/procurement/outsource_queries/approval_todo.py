@@ -225,7 +225,7 @@ def present(items: list[dict[str, Any]], *, node_tokens: list[str] | None) -> di
     lens = "全部节点" if node_tokens is None else ("、".join(node_tokens) or "未分配审批节点")
     summary = f"委外下单审批待办（{lens}）共 {len(visible)} 条。"
     if not visible:
-        summary += "\n当前没有指派给本角色节点的待审下单。"
+        summary += "\n本次查询结果是 0 条。"
     else:
         lines = [
             f"{item['nodeName']} {item['moldNo']} {item['orderNo']} {item['supplierName']} {item['amount'] or ''}".strip()

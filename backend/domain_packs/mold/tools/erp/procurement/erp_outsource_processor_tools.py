@@ -45,6 +45,7 @@ SKILL_SPECS = {
             "拒绝接单", "我要拒单",
         ],
         "priority_patterns": ["加工商报价|提交报价|我要报价|确认接单|我要接单|拒绝接单|我要拒单"],
+        "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
 }

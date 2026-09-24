@@ -8,14 +8,14 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述确认。「有几个 / 有没有 / 待办 / 待报价 / 待接单」本轮必须 `CALL_TOOL` `query_erp_outsource_processor_board`，禁止 `CONVERSATION`。
+对象清楚就直接查，不必先复述确认。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_processor_board`，禁止 `CONVERSATION`。
 
 | 意图 | 工具 |
 | --- | --- |
 | 我的委外、待报价、待接单、有几个 | `query_erp_outsource_processor_board` |
 | 某一模具到哪一步 | `query_erp_outsource_processor_progress`（要模具号） |
 
-没有模具号的「有没有 / 有几个」直接查看板。空清单如实说。
+没有模具号的「有没有 / 有几个」直接查看板。已经查过且列表为空时，明确说「现在是 0 条」。
 
 ## 有证据后展示
 

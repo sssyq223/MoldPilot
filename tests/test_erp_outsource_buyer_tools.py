@@ -43,6 +43,22 @@ def test_buyer_quote_prepare_requires_matching_station(monkeypatch):
         raise AssertionError("expected STATE_BLOCKED")
 
 
+def test_buyer_quote_accepts_spoken_total_price_aliases():
+    data = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.QUOTE_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P1",
+        "ourQuote": 3000,
+        "upperLimit": 4000,
+        "parts": "PH-01 上夹板",
+        "reason": "ignored extra",
+    })
+    assert data.our_quote_amount == 3000
+    assert data.auto_accept_max_amount == 4000
+    assert data.mold == "M260063"
+    assert data.batch == "M260063-P1"
+    assert data.part == "PH-01"
+
+
 def test_buyer_quote_prepare_returns_confirmation_card(monkeypatch):
     monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
         "inquiryId": 9,
@@ -138,6 +154,55 @@ def test_single_batch_does_not_match_combined_inquiry():
     assert buyer_todo.item_matches_identity(single, mold="M260063", batch="M260063-P1")
     assert not buyer_todo.item_matches_identity(combined, mold="M260063", batch="M260063-P1")
     assert buyer_todo.item_matches_identity(combined, batch="M260063-P1、M260063-P2")
+
+
+def test_shared_batch_is_disambiguated_by_part(monkeypatch):
+    items = [
+        {
+            "inquiryId": 11,
+            "orderNo": "",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "parts": [{"partNo": "PH-01", "partName": "上夹板"}],
+            "partDetails": "PH-01 上夹板（S-Z-M-WZ 166×128×20）",
+        },
+        {
+            "inquiryId": 12,
+            "orderNo": "",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "parts": [{"partNo": "PU-01", "partName": "成型冲头"}],
+            "partDetails": "PU-01 成型冲头",
+        },
+        {
+            "inquiryId": 13,
+            "orderNo": "",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "parts": [{"partNo": "UB-01", "partName": "上垫板"}],
+            "partDetails": "UB-01 上垫板",
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "_scan_items", lambda mold=None: items)
+    hit = buyer_todo.find_item_by_identity(
+        mold="M260063",
+        batch="M260063-P1",
+        part="PH-01 上夹板（S-Z-M-WZ 166×128×20）",
+    )
+    assert hit["inquiryId"] == 11
+    assert buyer_todo.find_item_by_identity(part="PH-01")["inquiryId"] == 11
+    try:
+        buyer_todo.find_item_by_identity(mold="M260063", batch="M260063-P1")
+    except DomainError as error:
+        assert error.code == "AMBIGUOUS"
+        assert "并不是这个零件出现在多张工单里" in error.message
+        assert "PH-01" in error.message
+        assert "PU-01" in error.message
+    else:
+        raise AssertionError("expected AMBIGUOUS")
 
 
 def test_buyer_inquiry_send_uses_supplier_names(monkeypatch):

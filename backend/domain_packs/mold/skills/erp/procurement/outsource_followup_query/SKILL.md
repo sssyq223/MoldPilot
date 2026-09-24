@@ -2,7 +2,9 @@
 
 用模型把用户口语转成可执行跟单意图。禁止空口报数量或进度。
 
-「有几个 / 有没有 / 待办 / 现在有委外」本轮第一动作必须 `CALL_TOOL` `query_erp_outsource_followup_board`。不要先输出 JSON 复述意图，不要 `CONVERSATION`，不要先要模具号。
+问进度、待办或数量时，本轮第一动作必须 `CALL_TOOL` `query_erp_outsource_followup_board`。不要等特定口令，不要先输出 JSON 复述意图，不要 `CONVERSATION`，不要先要模具号。
+
+用户追问上一轮报错或澄清（为什么命中多张、怎么就多张工单、同一条件）时，用已有查询结果解释，不要再查整表。同一模具+同一批次可以对应多张询价（不同零件）；零件号只出现在其中一张时，不是「这个零件有多张工单」。
 
 ## 查询主轴
 
@@ -21,7 +23,7 @@
 | 有没有委外、几个订单、全部待办、某类分站 | `query_erp_outsource_followup_board`（只调这一个，无模具号也要查） |
 | 某一票到哪一步、时间线 | `query_erp_outsource_order_progress`（要模具号） |
 
-禁止同时再调其它查询。空清单如实说，不编造。
+用户要填价、发询价、成交价时，看板查完立刻交给 `outsource_buyer_ops` 的 prepare，不要再调 `query_erp_outsource_order_progress`。禁止同时再调其它查询。已经查过且列表为空时，必须明确说「现在是 0 条」，不要说「没查到」或「无法确认」。没调用查询工具就不能报数量。
 
 ## 有证据后展示
 

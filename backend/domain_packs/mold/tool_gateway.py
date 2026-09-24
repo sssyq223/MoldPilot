@@ -1076,9 +1076,7 @@ def skill_context(db, user):
                            "activation_tools": spec.get("activation_tools"),
                            "activation_queries": spec.get("activation_queries", []),
                            "auto_activation_queries": spec.get("auto_activation_queries", []),
-                           "suppress_tool_search_on_auto_activation": bool(
-                               spec.get("suppress_tool_search_on_auto_activation", False)
-                           ),
+                           "activation_route": spec.get("activation_route") or "",
                             "requires_tool_evidence": bool(spec.get("requires_tool_evidence", False)),
                             "suppress_tool_search_on_auto_activation": bool(
                                 spec.get("suppress_tool_search_on_auto_activation", False)),

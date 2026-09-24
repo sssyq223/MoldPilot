@@ -39,7 +39,8 @@ SKILL_SPECS = {
         ],
         "priority_patterns": ["成品发货|发成品|发半成品|回厂发货|待发货|成品发货待办"],
         "requires_tool_evidence": True,
-        "suppress_tool_search_on_auto_activation": True,
+        "activation_route": "authorized",
+        "suppress_tool_search_on_auto_activation": False,
         "host_auto_invoke_empty_arguments": True,
     },
 }

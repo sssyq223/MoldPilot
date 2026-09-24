@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -21,6 +21,7 @@ from domain_packs.mold.tools.erp.procurement.outsource_identity import (
     identity_batch,
     identity_mold,
     identity_order_no,
+    identity_part,
 )
 from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo
 
@@ -44,20 +45,23 @@ SKILL_SPECS = {
         "optional_tools": list(TOOL_KEYS),
         "activation_tools": ["query_erp_outsource_followup_board"],
         "activation_queries": [
-            "填我方报价", "发询价", "选加工商",
+            "填我方报价", "填价格", "帮我填报价", "帮我填价格",
+            "发询价", "选加工商",
             "填成交价", "成交价", "重选加工商", "拒单重选",
         ],
         "auto_activation_queries": [
-            "填我方报价", "发询价", "填成交价", "成交价", "重选加工商",
+            "填我方报价", "填价格", "帮我填报价", "帮我填价格",
+            "发询价", "填成交价", "成交价", "重选加工商",
         ],
-        "priority_patterns": ["填我方报价|发询价|填成交价|成交价|重选加工商|拒单重选"],
+        "priority_patterns": ["填我方报价|填价格|帮我填报价|帮我填价格|发询价|填成交价|成交价|重选加工商|拒单重选"],
+        "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
 }
 
 TOOL_SPECS = {
     QUOTE_TOOL: {
-        "description": "准备填写零件/模具委外的我方报价与直接接单上限。用订单号或模具号+批次号定位，当前分站必须是待采购填报价。禁止使用内部数字 id。本人确认后才写入 ERP。",
+        "description": "准备填写零件/模具委外的我方报价（订单总价/总价格）与直接接单上限（上限区间）。必须调用本工具，禁止编造 prepare_project_quote 或其他函数名。参数 our_quote_amount 填总价，auto_accept_max_amount 填上限。用订单号，或模具号+批次号+零件号定位。同一批次常有多张询价，用户点名零件时必须带 part。当前分站必须是待采购填报价。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     SEND_TOOL: {
@@ -86,22 +90,44 @@ class _BuyerIdentity(CamelModel):
     order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号。尚未下单时可省略。禁止内部数字 id。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = identity_batch(default=None, max_length=80, description="批次号，例如 M260063-P1。尚未下单时必填。")
+    part: str | None = identity_part(default=None, max_length=200, description="零件号，例如 PH-01。同一批次有多张询价时必填。")
 
     @field_validator("order_no", "mold", "batch")
     @classmethod
     def strip_identity(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
+    @field_validator("part", mode="before")
+    @classmethod
+    def normalize_part(cls, value):
+        token = buyer_todo.normalize_part_token(value)
+        return token or None
+
     @model_validator(mode="after")
     def require_identity(self):
-        if not self.order_no and not self.mold and not self.batch:
-            raise ValueError("请用订单号、模具号和批次号定位，不要使用内部数字编号")
+        if not self.order_no and not self.mold and not self.batch and not self.part:
+            raise ValueError("请用订单号、模具号、批次号或零件号定位，不要使用内部数字编号")
         return self
 
 
 class BuyerQuoteInput(_BuyerIdentity):
-    our_quote_amount: float = Field(gt=0, description="我方报价（订单总额）。")
-    auto_accept_max_amount: float = Field(gt=0, description="直接接单上限。")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    our_quote_amount: float = Field(
+        gt=0,
+        validation_alias=AliasChoices(
+            "our_quote_amount", "ourQuoteAmount", "our_quote", "ourQuote",
+            "total_price", "totalPrice",
+        ),
+        description="我方报价（订单总额，用户说的总价格）。",
+    )
+    auto_accept_max_amount: float = Field(
+        gt=0,
+        validation_alias=AliasChoices(
+            "auto_accept_max_amount", "autoAcceptMaxAmount",
+            "upper_limit", "upperLimit", "max_amount", "maxAmount",
+        ),
+        description="直接接单上限（用户说的上限或上限区间）。",
+    )
 
 
 class InquirySendInput(_BuyerIdentity):
@@ -187,6 +213,7 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
         order_no=getattr(data, "order_no", None),
         mold=getattr(data, "mold", None),
         batch=getattr(data, "batch", None),
+        part=getattr(data, "part", None),
         require_inquiry=True,
     )
     if not item:

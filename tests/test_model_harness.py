@@ -522,6 +522,34 @@ def test_failed_formal_action_cannot_be_reported_as_a_successful_confirmation_ca
     assert gateway.saved['action_outcomes']['prepare_demo_action']['status'] == 'error'
 
 
+def test_awaiting_approval_without_prepare_receipt_is_rejected():
+    false_card = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请确认将填我方报价400，上限600。',
+        'evidence_ids': ['e1'],
+        'suggestions': ['确认'],
+    }, ensure_ascii=False)}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '确认卡尚未准备，还不能写入报价。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([PROPOSAL, false_card, clarification])
+
+    result = run_loop(
+        context(prompt='PH-01这一笔订单帮我填价格：400，上限是600'),
+        model,
+        gateway,
+    )
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert result['summary'].startswith('确认卡尚未准备')
+    assert model.calls == 3
+    assert '没有任何成功的正式操作工具回执' in model.transcripts[2][0]['content']
+
+
 def test_formal_action_request_cannot_use_read_only_evidence_to_claim_a_confirmation_card():
     action_tool = {'type': 'function', 'function': {'name': 'prepare_demo_action'}}
     false_success = {'role': 'assistant', 'content': json.dumps({
@@ -586,6 +614,40 @@ def test_positive_action_after_a_negated_alternative_still_requires_a_receipt():
 
     assert result['response_kind'] == 'CLARIFICATION'
     assert model.calls == 3
+
+
+def test_spoken_price_wording_opens_buyer_prepare_without_whitelist_verb():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_followup_board',
+        'description': '查询委外采购待办',
+    }}
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_buyer_quote',
+        'description': '准备填写我方报价与直接接单上限',
+    }}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '请继续提供订单号。',
+        'evidence_ids': [],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    model = InspectingRepliesModel([clarification, clarification])
+
+    run_loop(context(
+        prompt='把PH-01这一笔的价钱写成400，上限600',
+        core_tool_names=[],
+        tools=[board, quote],
+        skills=[{
+            'key': 'outsource_buyer_ops',
+            'agent_description': '委外采购办理',
+            'tools': ['query_erp_outsource_followup_board'],
+            'optional_tools': ['prepare_erp_outsource_buyer_quote'],
+            'activation_queries': ['填我方报价', '发询价'],
+        }],
+        tool_annotations={'prepare_erp_outsource_buyer_quote': {'readOnlyHint': False}},
+    ), model, Gateway())
+
+    assert 'prepare_erp_outsource_buyer_quote' in model.tool_names[0]
 
 
 def test_current_prompt_action_intent_survives_a_narrower_tool_search_query():
@@ -1452,6 +1514,7 @@ def test_part_detail_lookup_auto_activates_followup_skill():
         tools=tools,
         skills=[{
             'key': 'outsource_followup_query',
+            'activation_route': '',
             'tools': [],
             'optional_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],
             'activation_tools': ['query_buyer_todo', 'query_unoutsourced_parts'],

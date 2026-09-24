@@ -42,7 +42,7 @@
   → prepare_* 出确认卡
   → 本人确认后才调 ERP
 
-用户只问「有几个 / 待报价 / 待接单」时不要激活本 Skill，走 `outsource_processor_query`。本 Skill 只在用户说提交报价、我要接单、拒绝接单时办理。
+按用户本轮意图选工具，不要等特定口令。只问数量或待办时先 query，不要 prepare。用户要报价、接单或拒单时，用对应 `prepare_*` 出确认卡。
 ```
 
 1. 先用 `query_erp_outsource_processor_board`（或已有查询结果）锁定本供应商单据。同一模具多单时列出候选的订单号、模具号、批次号，等用户选定后再 prepare。

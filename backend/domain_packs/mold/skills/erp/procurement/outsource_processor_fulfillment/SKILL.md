@@ -21,7 +21,7 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述。「收料待办 / 待收料 / 确认来料 / 确认收料」本轮必须 `CALL_TOOL` `query_erp_outsource_processor_fulfillment`，禁止 `CONVERSATION`。只问数量时不要 prepare。按 `nextAction`：收货才 prepare，等待仓库只说明。空清单如实说，不要说库连接失败。
+对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_processor_fulfillment`，禁止 `CONVERSATION`。只问数量时不要 prepare。按 `nextAction`：收货才 prepare，等待仓库只说明。空清单如实说，不要说库连接失败。
 
 | 意图 | 工具 |
 | --- | --- |

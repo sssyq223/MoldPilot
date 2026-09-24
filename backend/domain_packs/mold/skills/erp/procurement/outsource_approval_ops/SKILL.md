@@ -24,7 +24,7 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述。「待我审批 / 委外审批 / 审批待办」本轮必须 `CALL_TOOL` `query_erp_outsource_approval_todos`，禁止 `CONVERSATION`。只问数量时不要 prepare。
+对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_approval_todos`，禁止 `CONVERSATION`。只问数量时不要 prepare。用户要过或驳时用对应 `prepare_*`。已经查过且待办为空时，明确说「现在是 0 条」。
 
 | 意图 | 工具 |
 | --- | --- |

@@ -22,7 +22,7 @@
 
 ## 工作流
 
-对象清楚就直接查。「质检待办 / 领取质检 / 检验合格」本轮必须 `CALL_TOOL` `query_erp_outsource_quality_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。办理时按用户明确意图选择领取或合格。
+对象清楚就直接查。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_quality_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。办理时按用户明确意图选择领取或合格。
 
 | 意图 | 工具 |
 | --- | --- |

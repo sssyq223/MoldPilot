@@ -59,6 +59,18 @@ def test_outsource_query_tools_use_role_read_permission():
         assert key in tool_gateway.TOOLS
 
 
+def test_progress_input_accepts_empty_order_no():
+    data = erp_outsource_query_tools.FollowupProgressInput.model_validate({
+        "mold": "M260063",
+        "batch": "M260063-P1",
+        "orderNo": "",
+        "reason": "ignored extra",
+    })
+    assert data.mold == "M260063"
+    assert data.batch == "M260063-P1"
+    assert data.order_no is None
+
+
 def test_buyer_todo_question_picks_station():
     parsed = buyer_todo.parse_question("M260063-P4 现在有哪些待填价")
     assert parsed["station"] == "buyer_quote"

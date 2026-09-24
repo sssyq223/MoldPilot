@@ -38,7 +38,8 @@ SKILL_SPECS = {
         ],
         "priority_patterns": ["领取质检|质检任务|检验合格|质检合格|质检待办|有几个|有没有"],
         "requires_tool_evidence": True,
-        "suppress_tool_search_on_auto_activation": True,
+        "activation_route": "authorized",
+        "suppress_tool_search_on_auto_activation": False,
         "host_auto_invoke_empty_arguments": True,
     },
 }

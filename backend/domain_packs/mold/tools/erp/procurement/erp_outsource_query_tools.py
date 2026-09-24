@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, ValidationError, model_validator
 
 from domain_packs.mold.erp.procurement.erp_outsource_scope import (
     require_allow,
@@ -56,7 +56,8 @@ SKILL_SPECS = {
             "零件委外|工序委外|委外跟单|委外待办|委外订单|委外项目|委外单子|待填价|委外时间线|有几个委外|几个委外",
         ],
         "requires_tool_evidence": True,
-        "suppress_tool_search_on_auto_activation": True,
+        "activation_route": "authorized",
+        "suppress_tool_search_on_auto_activation": False,
         "host_auto_invoke_empty_arguments": True,
     },
     "outsource_processor_query": {
@@ -72,7 +73,8 @@ SKILL_SPECS = {
         ],
         "priority_patterns": ["我的委外|加工商待办|待报价|待接单|有几个|有没有"],
         "requires_tool_evidence": True,
-        "suppress_tool_search_on_auto_activation": True,
+        "activation_route": "authorized",
+        "suppress_tool_search_on_auto_activation": False,
         "host_auto_invoke_empty_arguments": True,
     },
 }
@@ -83,7 +85,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_buyer.read",
     },
     PROGRESS_TOOL: {
-        "description": "只读查看指定模具号下一张委外待办的进度时间线与零件/价格。必须传入模具号或批次号。采购员/主管使用。",
+        "description": "只读查看指定模具号下一张委外待办的进度时间线。仅当用户问这一票到哪一步或时间线时使用。用户要填价、发询价、成交价时不要调用本工具，改用对应 prepare_*。可传模具号或批次号。",
         "permission": "erp_outsource_buyer.read",
     },
     PROCESSOR_BOARD_TOOL: {
@@ -126,13 +128,20 @@ class FollowupBoardInput(StrictModel):
 
 
 class FollowupProgressInput(StrictModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
     question: str | None = Field(default=None, max_length=500, description="用户原话。")
-    mold: str | None = Field(default=None, max_length=40, description="模具号，必填，例如 M260063。")
-    batch: str | None = Field(default=None, max_length=40)
+    mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。")
+    batch: str | None = Field(default=None, max_length=40, description="批次号，例如 M260063-P1。")
+    order_no: str | None = Field(
+        default=None,
+        max_length=80,
+        validation_alias=AliasChoices("order_no", "orderNo"),
+        description="订单号。尚未下单时可空。",
+    )
 
     @model_validator(mode="after")
     def strip_values(self):
-        for name in ("question", "mold", "batch"):
+        for name in ("question", "mold", "batch", "order_no"):
             value = getattr(self, name)
             if isinstance(value, str):
                 setattr(self, name, value.strip() or None)

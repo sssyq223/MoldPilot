@@ -208,7 +208,7 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
     summary = f"{scope} 共 {len(visible)} 条。"
     summary += "".join(f"\n- {label}：{count} 条" for label, count in counts.items() if count)
     if not visible:
-        summary += "\n没有查到委外回厂待领取或质检中的任务。"
+        summary += "\n本次查询结果是 0 条。"
     else:
         lines = []
         for item in visible[:30]:

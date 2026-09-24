@@ -18,3 +18,10 @@ def identity_mold(**kwargs):
 
 def identity_batch(**kwargs):
     return Field(validation_alias=AliasChoices("batch", "moldBatch", "mold_batch"), **kwargs)
+
+
+def identity_part(**kwargs):
+    return Field(
+        validation_alias=AliasChoices("part", "part_no", "partNo", "parts", "partDetails"),
+        **kwargs,
+    )

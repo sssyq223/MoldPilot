@@ -179,7 +179,7 @@ def present(items: list[dict[str, Any]], *, mold_family: str = "", mold_batch: s
     if operation_count:
         summary += f"\n- 工序备料完成：{operation_count} 条"
     if not visible:
-        summary += "\n没有查到仓库待发料/待备料明细。采购直发不在本待办。"
+        summary += "\n本次查询结果是 0 条。采购直发不在本待办。"
     else:
         lines = []
         for item in visible[:30]:

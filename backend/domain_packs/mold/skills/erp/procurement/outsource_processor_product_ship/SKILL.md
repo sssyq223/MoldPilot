@@ -44,7 +44,7 @@
 
 ## 工作流
 
-对象清楚就直接查。「成品发货 / 发成品 / 发半成品 / 回厂发货」本轮必须 `CALL_TOOL` `query_erp_outsource_processor_product_ship`，禁止 `CONVERSATION`。只问能发哪些时不要 prepare。
+对象清楚就直接查。按用户本轮意图选工具，不要等特定口令。问待办或能发哪些时本轮必须 `CALL_TOOL` `query_erp_outsource_processor_product_ship`，禁止 `CONVERSATION`。只问能发哪些时不要 prepare。用户要发货时用 `prepare_erp_outsource_processor_product_ship`。
 
 | 意图 | 工具 |
 | --- | --- |

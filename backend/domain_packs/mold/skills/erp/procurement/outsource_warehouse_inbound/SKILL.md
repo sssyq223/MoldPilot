@@ -23,7 +23,7 @@
 
 ## 工作流
 
-对象清楚就直接查。「收货待办 / 入库待办 / 回厂待办 / 到货确认」本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_inbound`，禁止 `CONVERSATION`。只问数量时不要 prepare。按 `nextAction` 选到货或入库，不要一次办两步。
+对象清楚就直接查。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_inbound`，禁止 `CONVERSATION`。只问数量时不要 prepare。按 `nextAction` 选到货或入库，不要一次办两步。
 
 | 意图 | 工具 |
 | --- | --- |
