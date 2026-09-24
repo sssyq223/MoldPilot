@@ -15,6 +15,7 @@ from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.tools.erp.procurement.outsource_queries import warehouse_inbound
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_warehouse_inbound"
 ARRIVAL_TOOL = "prepare_erp_outsource_warehouse_arrival"
@@ -40,6 +41,7 @@ SKILL_SPECS = {
         "priority_patterns": ["仓库收货|确认收货|到货确认|回厂入库|成品入库|收货待办|入库待办|回厂待办"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -240,9 +242,8 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
         if (parts.get(line["shipment_line_id"]) or {}).get("inboundTarget")
     ]
     display = {
-        "模具号": item.get("moldNo") or "未标注",
+        **identity_display(item),
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType"),
-        "工单": item.get("orderNo") or item.get("orderId"),
         "发货单": item.get("shipmentNo") or item.get("shipmentId"),
         "操作": "仓库收货" if key == ARRIVAL_TOOL else "仓储入库",
         "入库目标": "、".join(dict.fromkeys(target for target in targets if target)) or "未返回",

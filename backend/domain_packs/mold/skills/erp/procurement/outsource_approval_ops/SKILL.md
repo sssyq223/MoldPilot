@@ -29,10 +29,10 @@
 | 意图 | 工具 |
 | --- | --- |
 | 待我审批、审批中有哪些 | `query_erp_outsource_approval_todos` |
-| 通过 | `prepare_erp_outsource_approval_pass`（要 taskId） |
-| 驳回 | `prepare_erp_outsource_approval_reject`（要 taskId 和原因） |
+| 通过 | `prepare_erp_outsource_approval_pass`（订单号，必要时模具号/批次号） |
+| 驳回 | `prepare_erp_outsource_approval_reject`（订单号 + 原因） |
 
-同一模具多单时列出候选，用户选定 **taskId** 后再 prepare。状态已变或不是本节点只说明原因，不 prepare。用户否认确认卡则停。
+同一模具多单时列出候选的订单号、模具号、批次号，用户选定后再 prepare。禁止使用内部数字 id。状态已变或不是本节点只说明原因，不 prepare。用户否认确认卡则停。
 
 ## 边界
 

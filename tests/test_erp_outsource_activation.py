@@ -39,6 +39,7 @@ def test_mixed_outsource_skills_activate_query_tools_only():
                 assert name not in spec["activation_tools"]
         runtime = tool_gateway.SKILLS[key]
         assert runtime["activation_tools"] == list(module.QUERY_TOOL_KEYS)
+        assert spec.get("host_auto_invoke_empty_arguments") is True
 
 
 def test_ops_skills_activate_query_before_prepare():
@@ -50,6 +51,47 @@ def test_ops_skills_activate_query_before_prepare():
     assert all(name.startswith("prepare_") for name in processor["optional_tools"])
     assert buyer["suppress_tool_search_on_auto_activation"] is False
     assert processor["suppress_tool_search_on_auto_activation"] is False
+
+
+def test_formal_accept_ranks_processor_prepare_from_optional_catalog():
+    board = "query_erp_outsource_processor_board"
+    accept = "prepare_erp_outsource_processor_accept"
+    all_tools = {
+        board: {"function": {"name": board, "description": "查询本加工商委外待办"}},
+        accept: {"function": {"name": accept, "description": "准备确认接单。必须已锁定 orderId，且当前分站是待接单。"}},
+        "prepare_erp_outsource_processor_quote": {
+            "function": {"name": "prepare_erp_outsource_processor_quote", "description": "准备提交本加工商报价"},
+        },
+        "prepare_erp_outsource_processor_reject": {
+            "function": {"name": "prepare_erp_outsource_processor_reject", "description": "准备拒绝接单"},
+        },
+    }
+    skills = [{
+        "key": "outsource_processor_ops",
+        "tools": [board],
+        "optional_tools": list(erp_outsource_processor_tools.TOOL_KEYS),
+        "activation_tools": [board],
+        "auto_activation_queries": ["确认接单", "我要接单"],
+    }]
+    groups = harness._skill_tool_groups(skills, all_tools)
+    assert groups and accept in groups[0]["tools"]
+    selected = harness._rank_group_tools(
+        "确认接单工单3141",
+        groups[0],
+        all_tools,
+        action_intent=True,
+        current_prompt="确认接单工单3141",
+    )
+    assert board in selected
+    assert accept in selected
+    listing = harness._rank_group_tools(
+        "我的委外待办",
+        groups[0],
+        all_tools,
+        action_intent=False,
+        current_prompt="我的委外待办",
+    )
+    assert listing == [board]
 
 
 def test_same_account_skills_do_not_share_auto_aliases():
@@ -91,7 +133,8 @@ def test_approval_and_fulfillment_next_action():
         "mold_no": "M260063-P1",
     })
     assert arrival["nextAction"]["action"] == "pass_or_reject"
-    assert arrival["nextAction"]["taskId"] == 12
+    assert arrival["nextAction"]["orderNo"] == ""
+    assert "taskId" not in arrival["nextAction"]
 
     receipt = processor_fulfillment.receipt_item({
         "shipment_id": 8,

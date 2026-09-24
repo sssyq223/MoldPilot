@@ -5,6 +5,11 @@ import re
 from typing import Any
 
 from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_all, fetch_one
+from domain_packs.mold.ports.errors import DomainError
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+    item_matches_identity,
+    mold_labels,
+)
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
 MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
@@ -92,7 +97,17 @@ SELECT
                 least(
                     coalesce(part.order_qty, 0) - coalesce(shipped.qty, 0),
                     CASE
-                        WHEN coalesce(part.material_required, false)
+                        WHEN lower(coalesce(order_row.outsource_type, project.outsource_type, 'part')) = 'operation'
+                         AND NOT EXISTS (
+                            SELECT 1
+                            FROM entrust_material_supply_tasks supply
+                            WHERE supply.order_id = order_row.id
+                              AND lower(coalesce(supply.responsible_type, '')) = 'warehouse'
+                              AND lower(coalesce(supply.source_type, '')) IN ('material_stock', 'semi_finished_stock')
+                              AND lower(coalesce(supply.status, '')) = 'pending'
+                         )
+                        THEN coalesce(part.order_qty, 0) - coalesce(shipped.qty, 0)
+                        WHEN coalesce(part.material_required::int, 0) <> 0
                         THEN coalesce(received.qty, 0) - coalesce(shipped.qty, 0)
                         ELSE coalesce(part.order_qty, 0) - coalesce(shipped.qty, 0)
                     END
@@ -146,7 +161,21 @@ LEFT JOIN LATERAL (
     WHERE mold.project_id = order_row.project_id
 ) molds ON TRUE
 WHERE lower(coalesce(order_row.status, '')) = 'open'
-  AND lower(coalesce(order_row.stage, '')) IN ('producing', 'shipping')
+  AND (
+        lower(coalesce(order_row.stage, '')) IN ('producing', 'shipping')
+     OR (
+            lower(coalesce(order_row.outsource_type, project.outsource_type, 'part')) = 'operation'
+        AND lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')
+        AND NOT EXISTS (
+            SELECT 1
+            FROM entrust_material_supply_tasks supply
+            WHERE supply.order_id = order_row.id
+              AND lower(coalesce(supply.responsible_type, '')) = 'warehouse'
+              AND lower(coalesce(supply.source_type, '')) IN ('material_stock', 'semi_finished_stock')
+              AND lower(coalesce(supply.status, '')) = 'pending'
+        )
+     )
+  )
   AND (
         %(mold_batch)s = '' AND %(mold_family)s = ''
      OR (%(mold_batch)s <> '' AND upper(coalesce(molds.mold_no, '')) LIKE '%%' || %(mold_batch)s || '%%')
@@ -182,6 +211,14 @@ LEFT JOIN LATERAL (
 ) molds ON TRUE
 WHERE lower(coalesce(order_row.status, '')) = 'open'
   AND lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')
+  AND EXISTS (
+    SELECT 1
+    FROM entrust_material_supply_tasks supply
+    WHERE supply.order_id = order_row.id
+      AND lower(coalesce(supply.responsible_type, '')) = 'warehouse'
+      AND lower(coalesce(supply.source_type, '')) IN ('material_stock', 'semi_finished_stock')
+      AND lower(coalesce(supply.status, '')) = 'pending'
+  )
   AND (
         %(mold_batch)s = '' AND %(mold_family)s = ''
      OR (%(mold_batch)s <> '' AND upper(coalesce(molds.mold_no, '')) LIKE '%%' || %(mold_batch)s || '%%')
@@ -311,11 +348,25 @@ def _mentions(item: dict[str, Any], tokens: list[str] | None) -> bool:
     return bool((values - {""}) & allowed)
 
 
+def _stamp_identity(item: dict[str, Any]) -> dict[str, Any]:
+    family, batch = mold_labels(item.get("moldNo"), item.get("parts") or item.get("pendingLines"))
+    item["moldFamily"] = family
+    item["moldBatch"] = batch
+    nxt = dict(item.get("nextAction") or {})
+    nxt.pop("orderId", None)
+    if item.get("orderNo"):
+        nxt["orderNo"] = item.get("orderNo")
+        nxt["mold"] = family
+        nxt["batch"] = batch
+    item["nextAction"] = nxt
+    return item
+
+
 def receipt_item(row: dict[str, Any]) -> dict[str, Any]:
     outsource_type = str(row.get("outsource_type") or "part")
     lines = _as_list(row.get("pending_lines"))
     hint = "零件/模具委外：确认来料后才进入生产并成品发货。"
-    return {
+    item = {
         "action": "receipt",
         "actionLabel": "确认原料收货",
         "shipmentId": row.get("shipment_id"),
@@ -333,10 +384,11 @@ def receipt_item(row: dict[str, Any]) -> dict[str, Any]:
         "hint": hint,
         "nextAction": {
             "action": "receipt",
-            "shipmentId": row.get("shipment_id"),
+            "shipmentNo": row.get("shipment_no") or "",
             "hint": hint,
         },
     }
+    return _stamp_identity(item)
 
 
 def product_item(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -367,7 +419,7 @@ def product_item(row: dict[str, Any]) -> dict[str, Any] | None:
     )
     if warnings:
         hint = f"{hint} {'；'.join(dict.fromkeys(warnings))}"
-    return {
+    item = {
         "action": "product_ship",
         "actionLabel": "成品发货",
         "orderId": row.get("order_id"),
@@ -386,10 +438,10 @@ def product_item(row: dict[str, Any]) -> dict[str, Any] | None:
         "hint": hint,
         "nextAction": {
             "action": "product_ship",
-            "orderId": row.get("order_id"),
             "hint": hint,
         },
     }
+    return _stamp_identity(item)
 
 
 def wait_item(row: dict[str, Any]) -> dict[str, Any]:
@@ -399,7 +451,7 @@ def wait_item(row: dict[str, Any]) -> dict[str, Any]:
         if outsource_type == "operation"
         else "零件/模具委外：等仓库原料发货后，再确认来料。"
     )
-    return {
+    item = {
         "action": "wait",
         "actionLabel": "等待仓库",
         "orderId": row.get("order_id"),
@@ -414,6 +466,7 @@ def wait_item(row: dict[str, Any]) -> dict[str, Any]:
         "hint": hint,
         "nextAction": {"action": "wait", "hint": hint},
     }
+    return _stamp_identity(item)
 
 
 def query_items(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) -> list[dict[str, Any]]:
@@ -467,6 +520,36 @@ def find_product_order(order_id: int, *, mold: str | None = None) -> dict[str, A
         if item.get("orderId") == order_id:
             return item
     return None
+
+
+def find_product_order_by_identity(
+    *,
+    order_no: str | None = None,
+    mold: str | None = None,
+    batch: str | None = None,
+) -> dict[str, Any] | None:
+    order_no = str(order_no or "").strip()
+    mold = str(mold or "").strip()
+    batch = str(batch or "").strip()
+    if not order_no and not mold and not batch:
+        raise DomainError("INVALID_TOOL_INPUT", "请用订单号、模具号和批次号定位，不要使用内部数字编号")
+    parsed = parse_question(" ".join(part for part in (batch, mold) if part))
+    hits = [
+        item
+        for item in query_product_items(parsed)
+        if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
+    ]
+    if order_no and not hits and (batch or mold):
+        hits = [
+            item
+            for item in query_product_items(parse_question(""))
+            if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
+        ]
+    if not hits:
+        return None
+    if len(hits) > 1:
+        raise DomainError("AMBIGUOUS", "同一条件命中多张可发货工单，请同时提供订单号、模具号和批次号", 409)
+    return hits[0]
 
 
 def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, Any]:

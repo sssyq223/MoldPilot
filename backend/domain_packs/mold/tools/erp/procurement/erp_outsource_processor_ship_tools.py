@@ -15,6 +15,7 @@ from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.tools.erp.procurement.outsource_queries import processor_fulfillment
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_processor_product_ship"
 SHIP_TOOL = "prepare_erp_outsource_processor_product_ship"
@@ -30,13 +31,16 @@ SKILL_SPECS = {
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
             "成品发货", "发成品", "发半成品", "回厂发货",
+            "待发货", "有没有发货", "成品发货待办",
         ],
         "auto_activation_queries": [
             "成品发货", "发成品", "发半成品", "回厂发货",
+            "待发货", "有没有发货", "成品发货待办",
         ],
-        "priority_patterns": ["成品发货|发成品|发半成品|回厂发货"],
+        "priority_patterns": ["成品发货|发成品|发半成品|回厂发货|待发货|成品发货待办"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -46,7 +50,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_processor.read",
     },
     SHIP_TOOL: {
-        "description": "准备成品发货。必须已锁定 orderId。未指定行时按剩余可发数量发。数量不能超过已收原料。本人确认后才写入 ERP。",
+        "description": "准备成品发货。用查询结果中的订单号，必要时加模具号、批次号。未指定行时按剩余可发数量发。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
 }
@@ -73,14 +77,15 @@ class ProductShipLineInput(StrictModel):
 
 
 class ProcessorProductShipInput(StrictModel):
-    order_id: int = Field(ge=1, description="查询结果中的 orderId。")
-    mold: str | None = Field(default=None, max_length=40)
+    order_no: str = Field(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
+    mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。")
+    batch: str | None = Field(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
     lines: list[ProductShipLineInput] = Field(default_factory=list, description="空则按各零件剩余可发数量全部发出。")
     logistics_company: str | None = Field(default=None, max_length=80)
     tracking_no: str | None = Field(default=None, max_length=80)
     remark: str | None = Field(default=None, max_length=400)
 
-    @field_validator("mold", "logistics_company", "tracking_no", "remark")
+    @field_validator("order_no", "mold", "batch", "logistics_company", "tracking_no", "remark")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
@@ -191,9 +196,13 @@ def _resolved_lines(data, item: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    item = processor_fulfillment.find_product_order(data.order_id, mold=data.mold)
+    item = processor_fulfillment.find_product_order_by_identity(
+        order_no=getattr(data, "order_no", None),
+        mold=getattr(data, "mold", None),
+        batch=getattr(data, "batch", None),
+    )
     if not item:
-        raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请确认仓库已发料/备料且原料已收", 404)
+        raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请用订单号、模具号和批次号重新查询", 404)
     _guard(item, tokens)
     return item, _resolved_lines(data, item)
 
@@ -210,9 +219,8 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             f"首道{part.get('isFirstOperationLabel')}/末道{part.get('isEndOperationLabel')}→{part.get('inboundTargetLabel')}）"
         )
     display = {
-        "模具号": item.get("moldNo") or "未标注",
+        **identity_display(item),
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType"),
-        "工单": item.get("orderNo") or item.get("orderId"),
         "操作": "成品发货",
         "入库目标": "、".join(item.get("inboundTargets") or []),
         "明细": "；".join(details),
@@ -281,15 +289,20 @@ def validate_intent(db, user, payload):
 def confirm(db, user, payload):
     _, data = validate_intent(db, user, payload)
     item, lines = _lookup(data, _tokens(db, user))
+    order_id = item.get("orderId")
+    if not order_id:
+        raise DomainError("STATE_BLOCKED", "这张待办还没有委外订单，不能发货", 409)
     result = post_erp(db, user, "entrust/fulfillment/product-shipment", {
-        "order_id": data.order_id,
+        "order_id": order_id,
         "lines": lines,
         "logistics_company": data.logistics_company,
         "tracking_no": data.tracking_no,
         "remark": data.remark,
-    }, intent_id=payload.get("_intent_id"), action="processor_product_ship", native_id=f"order:{data.order_id}")
+    }, intent_id=payload.get("_intent_id"), action="processor_product_ship", native_id=f"order:{order_id}")
     return {
-        "order_id": data.order_id,
+        "order_no": item.get("orderNo") or data.order_no,
+        "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
+        "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
         "action": "processor_product_ship",
         "status": "CONFIRMED",
         "erp": result,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -16,7 +16,12 @@ from domain_packs.mold.ports.bpm import content_hash
 from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_policy
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
-from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.tools.erp.procurement.outsource_identity import (
+    CamelModel,
+    identity_batch,
+    identity_mold,
+    identity_order_no,
+)
 from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo
 
 QUOTE_TOOL = "prepare_erp_outsource_buyer_quote"
@@ -52,19 +57,19 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     QUOTE_TOOL: {
-        "description": "准备填写零件/模具委外的我方报价与直接接单上限。必须已用查询锁定 inquiryId，且当前分站是待采购填报价。本人确认后才写入 ERP。",
+        "description": "准备填写零件/模具委外的我方报价与直接接单上限。用订单号或模具号+批次号定位，当前分站必须是待采购填报价。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     SEND_TOOL: {
-        "description": "准备向选定加工商发出询价。必须已锁定 inquiryId，且当前分站是待发询价。本人确认后才写入 ERP。",
+        "description": "准备向选定加工商发出询价。用订单号或模具号+批次号定位，加工商用编码或名称。当前分站必须是待发询价。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     DEAL_TOOL: {
-        "description": "准备填写超区间成交价并提交定标审批。必须已锁定 inquiryId 与 quotationId，且当前分站是待下单。本人确认后才写入 ERP。",
+        "description": "准备填写超区间成交价并提交定标审批。用订单号或模具号+批次号定位，并提供要定标的报价单。当前分站必须是待下单。禁止使用内部工单数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     RESELECT_TOOL: {
-        "description": "准备拒单后重选加工商的确认卡。ERP 暂无独立重选接口，确认后只说明下一步应发询价，不直接改 ERP。",
+        "description": "准备拒单后重选加工商的确认卡。用订单号或模具号+批次号定位。ERP 暂无独立重选接口，确认后只说明下一步应发询价，不直接改 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
 }
@@ -77,50 +82,52 @@ TOOL_NAMES = {
 }
 
 
-class BuyerQuoteInput(StrictModel):
-    inquiry_id: int = Field(ge=1, description="查询结果中的 inquiryId。")
-    mold: str | None = Field(default=None, max_length=40)
+class _BuyerIdentity(CamelModel):
+    order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号。尚未下单时可省略。禁止内部数字 id。")
+    mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
+    batch: str | None = identity_batch(default=None, max_length=80, description="批次号，例如 M260063-P1。尚未下单时必填。")
+
+    @field_validator("order_no", "mold", "batch")
+    @classmethod
+    def strip_identity(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_identity(self):
+        if not self.order_no and not self.mold and not self.batch:
+            raise ValueError("请用订单号、模具号和批次号定位，不要使用内部数字编号")
+        return self
+
+
+class BuyerQuoteInput(_BuyerIdentity):
     our_quote_amount: float = Field(gt=0, description="我方报价（订单总额）。")
     auto_accept_max_amount: float = Field(gt=0, description="直接接单上限。")
 
-    @field_validator("mold")
+
+class InquirySendInput(_BuyerIdentity):
+    suppliers: list[str] = Field(min_length=1, description="查询结果中的加工商编码或名称。禁止使用内部数字 id。")
+
+    @field_validator("suppliers")
     @classmethod
-    def strip_mold(cls, value):
-        return value.strip() or None if isinstance(value, str) else value
+    def strip_suppliers(cls, value):
+        names = [str(item).strip() for item in value if str(item).strip()]
+        if not names:
+            raise ValueError("请提供加工商编码或名称")
+        return names
 
 
-class InquirySendInput(StrictModel):
-    inquiry_id: int = Field(ge=1)
-    mold: str | None = Field(default=None, max_length=40)
-    supplier_ids: list[int] = Field(min_length=1, description="ERP 加工商 partner id。")
-
-    @field_validator("mold")
-    @classmethod
-    def strip_mold(cls, value):
-        return value.strip() or None if isinstance(value, str) else value
-
-
-class FinalDealInput(StrictModel):
-    inquiry_id: int = Field(ge=1)
-    mold: str | None = Field(default=None, max_length=40)
+class FinalDealInput(_BuyerIdentity):
     quotation_id: int = Field(ge=1, description="要定标的报价单 ID。")
     final_deal_amount: float = Field(gt=0)
 
-    @field_validator("mold")
-    @classmethod
-    def strip_mold(cls, value):
-        return value.strip() or None if isinstance(value, str) else value
 
-
-class ReselectInput(StrictModel):
-    inquiry_id: int = Field(ge=1)
-    mold: str | None = Field(default=None, max_length=40)
+class ReselectInput(_BuyerIdentity):
     note: str = Field(min_length=1, max_length=400, description="重选说明，例如要换哪家。")
 
-    @field_validator("mold")
+    @field_validator("note")
     @classmethod
-    def strip_mold(cls, value):
-        return value.strip() or None if isinstance(value, str) else value
+    def strip_note(cls, value):
+        return value.strip()
 
 
 INPUT_MODELS = {
@@ -176,7 +183,12 @@ def _require_buyer(db, user) -> None:
 
 
 def _lookup(data, expected_station: str) -> dict[str, Any]:
-    item = buyer_todo.find_item(data.inquiry_id, mold=getattr(data, "mold", None))
+    item = buyer_todo.find_item_by_identity(
+        order_no=getattr(data, "order_no", None),
+        mold=getattr(data, "mold", None),
+        batch=getattr(data, "batch", None),
+        require_inquiry=True,
+    )
     if not item:
         raise DomainError("NOT_FOUND", "没有找到这张仍停在采购待办的委外询价单，请重新查询", 404)
     if item.get("outsourceType") == "operation" and expected_station in {"buyer_quote", "inquiry_send", "place_order"}:
@@ -190,14 +202,17 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
     return item
 
 
+def _supplier_ids(item: dict[str, Any], suppliers: list[str]) -> list[int]:
+    return buyer_todo.resolve_supplier_ids(item, suppliers)
+
+
 def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
-    display = {
-        "模具号": item.get("moldNo") or "未标注",
+    display = buyer_todo.identity_display(item)
+    display.update({
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType") or "委外",
         "当前分站": item.get("stationLabel") or item.get("station"),
         "零件": item.get("partDetails") or "未返回零件明细",
-        "询价单": item.get("inquiryId"),
-    }
+    })
     display.update(extra)
     return display
 
@@ -212,9 +227,10 @@ def preview(key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             "说明": "本人确认后写入 ERP。报价合计不超过上限时加工商报价可免审定标。",
         }
     elif key == SEND_TOOL:
+        _supplier_ids(item, data.suppliers)
         extra = {
             "操作": "向选定加工商发出询价",
-            "加工商ID": "、".join(str(value) for value in data.supplier_ids),
+            "加工商": "、".join(data.suppliers),
             "说明": "本人确认后调用 ERP 发询价。",
         }
     elif key == DEAL_TOOL:
@@ -287,33 +303,42 @@ def validate_intent(db, user, payload):
 
 
 def confirm(db, user, payload):
-    proposal, key, data = validate_intent(db, user, payload)
+    _proposal, key, data = validate_intent(db, user, payload)
+    item, _ = preview(key, data)
+    inquiry_id = item.get("inquiryId")
+    identity = {
+        "order_no": item.get("orderNo") or data.order_no,
+        "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
+        "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
+    }
     if key == RESELECT_TOOL:
         return {
-            "inquiry_id": data.inquiry_id,
+            **identity,
             "action": "reselect",
             "status": "PREPARE_ONLY",
             "message": "ERP 暂无独立重选接口。请用发询价把新加工商发出，或在 ERP 待办中重选。",
         }
+    if not inquiry_id:
+        raise DomainError("STATE_BLOCKED", "这张待办还没有询价单，不能写入 ERP", 409)
     if key == QUOTE_TOOL:
-        result = post_erp(db, user, f"entrust/inquiry/{data.inquiry_id}/buyer-quote", {
+        result = post_erp(db, user, f"entrust/inquiry/{inquiry_id}/buyer-quote", {
             "ourQuoteAmount": data.our_quote_amount,
             "autoAcceptMaxAmount": data.auto_accept_max_amount,
-        }, intent_id=payload.get("_intent_id"), action="buyer_quote", native_id=f"inquiry:{data.inquiry_id}")
+        }, intent_id=payload.get("_intent_id"), action="buyer_quote", native_id=f"inquiry:{inquiry_id}")
         action = "buyer_quote"
     elif key == SEND_TOOL:
-        result = post_erp(db, user, f"entrust/inquiry/{data.inquiry_id}/send", {
-            "supplierIds": data.supplier_ids,
-        }, intent_id=payload.get("_intent_id"), action="inquiry_send", native_id=f"inquiry:{data.inquiry_id}")
+        result = post_erp(db, user, f"entrust/inquiry/{inquiry_id}/send", {
+            "supplierIds": _supplier_ids(item, data.suppliers),
+        }, intent_id=payload.get("_intent_id"), action="inquiry_send", native_id=f"inquiry:{inquiry_id}")
         action = "inquiry_send"
     else:
-        result = post_erp(db, user, f"entrust/inquiry/{data.inquiry_id}/final-deal-price", {
+        result = post_erp(db, user, f"entrust/inquiry/{inquiry_id}/final-deal-price", {
             "quotationId": data.quotation_id,
             "finalDealAmount": data.final_deal_amount,
-        }, intent_id=payload.get("_intent_id"), action="final_deal", native_id=f"inquiry:{data.inquiry_id}")
+        }, intent_id=payload.get("_intent_id"), action="final_deal", native_id=f"inquiry:{inquiry_id}")
         action = "final_deal"
     return {
-        "inquiry_id": data.inquiry_id,
+        **identity,
         "action": action,
         "status": "CONFIRMED",
         "erp": result,

@@ -271,6 +271,7 @@ function toolEvidenceRows(item:any){
  const data=item?.data
  if(Array.isArray(data))return data
  if(!isRecord(data))return []
+ if(Array.isArray(data.items))return data.items
  if(Array.isArray(data.rows))return data.rows
  return Object.values(data).flatMap((value:any)=>isRecord(value)&&Array.isArray(value.rows)?value.rows:[])
 }

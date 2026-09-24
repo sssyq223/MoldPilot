@@ -30,11 +30,13 @@ from app.db import make_engine
 from app.models import AssignmentGroup, AssignmentMember, Grant, User
 from app.security import hasher, normalize_username
 from domain_packs.mold import models as m
+from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_one
 from domain_packs.mold.erp.procurement.erp_outsource_roles import (
     ERP_OUTSOURCE_DEPARTMENTS,
     ERP_OUTSOURCE_ROLES,
     role_by_key,
 )
+from domain_packs.mold.ports.errors import DomainError
 
 
 DEFAULT_PASSWORD = "123456"
@@ -98,6 +100,50 @@ def _require_postgresql(url: str) -> None:
         raise SystemExit("PostgreSQL DSN is required.")
     if not parsed.scheme.startswith("postgresql"):
         raise SystemExit(f"Unsupported database scheme: {parsed.scheme}")
+
+
+ERP_BUYER_IDENTITY_SQL = """
+SELECT u.user_id
+FROM sys_user u
+JOIN purchase_buyer_scope scope ON scope.user_id = u.user_id
+JOIN sys_user_role user_role ON user_role.user_id = u.user_id
+JOIN sys_role role ON role.role_id = user_role.role_id
+WHERE coalesce(u.del_flag, '0') = '0'
+  AND (
+    u.nick_name = %(name)s
+    OR lower(btrim(u.user_name)) = lower(%(username)s)
+  )
+  AND lower(btrim(scope.material_category)) = 'outsource'
+  AND coalesce(scope.enabled, true) = true
+  AND coalesce(scope.is_deleted, 0) = 0
+  AND (scope.valid_from IS NULL OR scope.valid_from <= CURRENT_TIMESTAMP)
+  AND (scope.valid_to IS NULL OR scope.valid_to >= CURRENT_TIMESTAMP)
+  AND role.role_key = 'purchase_user'
+  AND role.status = '0'
+  AND role.del_flag = '0'
+LIMIT 1
+"""
+
+
+def _bind_erp_buyer_identity(db, user: User, *, display_name: str, username: str) -> str | None:
+    try:
+        row = fetch_one(ERP_BUYER_IDENTITY_SQL, {"name": display_name, "username": username})
+    except DomainError:
+        return None
+    erp_user_id = str((row or {}).get("user_id") or "").strip()
+    if not erp_user_id.isdigit():
+        return None
+    taken = db.scalar(select(m.ERPIdentity).where(m.ERPIdentity.erp_user_id == erp_user_id))
+    if taken is not None and taken.user_id != user.id:
+        raise SystemExit(
+            f"ERP user {erp_user_id} is already bound to MoldPilot user {taken.user_id}"
+        )
+    identity = db.get(m.ERPIdentity, user.id)
+    if identity is None:
+        db.add(m.ERPIdentity(user_id=user.id, erp_user_id=erp_user_id, version=1))
+    else:
+        identity.erp_user_id = erp_user_id
+    return erp_user_id
 
 
 def _ensure_group(db, kind: str, name: str) -> AssignmentGroup:
@@ -222,12 +268,19 @@ def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
                 reason=f"委外实名账号：{person['display_name']} / {role['role_name']}",
             )
 
+        erp_user_id = None
+        if person["role_key"] == "erp_outsource_buyer":
+            erp_user_id = _bind_erp_buyer_identity(
+                db, user, display_name=person["display_name"], username=person["username"]
+            )
+
         created.append(
             {
                 "username": user.username,
                 "display_name": user.display_name,
                 "role": role["role_name"],
                 "department": user.department,
+                "erp_user_id": erp_user_id,
             }
         )
 
@@ -265,7 +318,9 @@ def main() -> None:
     for account in result["accounts"]:
         print(
             f"- {account['username']} / {account['display_name']} "
-            f"[{account['role']} · {account['department']}]"
+            f"[{account['role']} · {account['department']}"
+            + (f" · ERP {account['erp_user_id']}" if account.get("erp_user_id") else "")
+            + "]"
         )
     print(f"password: {result['password']}")
     if result["deactivated"]:

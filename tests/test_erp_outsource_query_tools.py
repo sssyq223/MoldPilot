@@ -93,6 +93,8 @@ def test_buyer_todo_item_hides_project_and_shows_pending_quoters():
     )
     assert "projectNo" not in item
     assert item["orderNo"] == ""
+    assert item["moldFamily"] == "M260063"
+    assert item["moldBatch"] == "M260063-P1"
     assert item["stationLabel"] == "待报价"
     assert item["outsourceTypeLabel"] == "零件委外"
     assert "PU-06" in item["partDetails"]
@@ -374,6 +376,45 @@ def test_processor_empty_tokens_hide_all_rows():
     )
     assert payload["items"] == []
     assert "0 条" in payload["summary"] or "没有查到" in payload["summary"]
+
+
+def test_buyer_followup_board_query_does_not_require_erp_identity(monkeypatch):
+    class Buyer:
+        id = "xuguili"
+        super_admin = False
+
+    monkeypatch.setattr(erp_outsource_query_tools, "require_allow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        buyer_todo,
+        "run",
+        lambda scoped, processor_tokens=None: {"status": "OK", "summary": "20 条委外待办", "items": [{
+            "orderNo": "EO-260923-0KKR",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "stationLabel": "待接单",
+        }]},
+    )
+    result = erp_outsource_query_tools.execute_tool(
+        object(),
+        Buyer(),
+        erp_outsource_query_tools.BOARD_TOOL,
+        {"question": "现在有委外单子吗"},
+    )
+    assert result["data"]["items"][0]["orderNo"] == "EO-260923-0KKR"
+    assert result["role_lens"] == "buyer"
+    assert result["model_context"]["item_count"] == 1
+    assert result["model_context"]["items"][0]["orderNo"] == "EO-260923-0KKR"
+    assert result["model_context"]["items"][0]["mold"] == "M260063"
+    assert result["model_context"]["items"][0]["batch"] == "M260063-P1"
+    assert "inquiryId" not in result["model_context"]["items"][0]
+
+
+def test_followup_query_host_auto_invokes_empty_board():
+    spec = erp_outsource_query_tools.SKILL_SPECS["outsource_followup_query"]
+    schema = erp_outsource_query_tools.tool_schema(erp_outsource_query_tools.BOARD_TOOL)
+    assert spec["host_auto_invoke_empty_arguments"] is True
+    assert spec["tools"] == [erp_outsource_query_tools.BOARD_TOOL]
+    assert schema["function"]["parameters"].get("required", []) == []
 
 
 def test_buyer_scope_uses_erp_identity_and_outsource_category(monkeypatch):

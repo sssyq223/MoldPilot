@@ -59,6 +59,9 @@ def test_product_item_shows_target_and_partial_qty():
         }],
     })
     assert item["inboundTargets"] == ["半成品库"]
+    assert item["moldFamily"] == "M260063"
+    assert item["moldBatch"] == "M260063-P1"
+    assert item["nextAction"]["orderNo"] == "EO-3"
     assert item["parts"][0]["isFirstOperationLabel"] == "F"
     assert item["parts"][0]["isEndOperationLabel"] == "F"
     assert item["parts"][0]["inboundTargetLabel"] == "半成品库"
@@ -94,11 +97,13 @@ def test_product_item_mold_and_end_operation_go_to_finished():
 
 
 def test_product_ship_prepare_returns_card(monkeypatch):
-    monkeypatch.setattr(processor_fulfillment, "find_product_order", lambda order_id, mold=None: {
+    monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
         "action": "product_ship",
-        "orderId": order_id,
-        "orderNo": "EO-3",
+        "orderId": 3,
+        "orderNo": kwargs.get("order_no") or "EO-3",
         "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
         "outsourceType": "operation",
         "outsourceTypeLabel": "工序委外",
         "supplierName": "铂锐",
@@ -119,18 +124,23 @@ def test_product_ship_prepare_returns_card(monkeypatch):
         None,
         Admin(),
         erp_outsource_processor_ship_tools.SHIP_TOOL,
-        {"order_id": 3, "lines": [{"order_part_id": 21, "qty": 1}]},
+        {"order_no": "EO-3", "mold": "M260063", "batch": "M260063-P1", "lines": [{"order_part_id": 21, "qty": 1}]},
     )
     assert result["proposal"]["kind"] == "erp_outsource_processor_product_ship"
+    assert result["proposal"]["display"]["订单号"] == "EO-3"
+    assert result["proposal"]["display"]["模具号"] == "M260063"
+    assert result["proposal"]["display"]["批次号"] == "M260063-P1"
     assert "半成品库" in result["proposal"]["display"]["入库目标"]
     assert "已收1" in result["proposal"]["display"]["明细"]
 
 
 def test_product_ship_empty_lines_uses_remain(monkeypatch):
-    monkeypatch.setattr(processor_fulfillment, "find_product_order", lambda order_id, mold=None: {
-        "orderId": order_id,
+    monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
+        "orderId": 3,
         "orderNo": "EO-3",
         "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
         "outsourceType": "part",
         "outsourceTypeLabel": "零件委外",
         "supplierName": "铂锐",
@@ -151,7 +161,7 @@ def test_product_ship_empty_lines_uses_remain(monkeypatch):
         None,
         Admin(),
         erp_outsource_processor_ship_tools.SHIP_TOOL,
-        {"order_id": 3},
+        {"order_no": "EO-3"},
     )
     assert result["proposal"]["input"]["lines"] == []
     assert "可发1" in result["proposal"]["display"]["明细"]
@@ -159,8 +169,9 @@ def test_product_ship_empty_lines_uses_remain(monkeypatch):
 
 
 def test_product_ship_blocks_over_received(monkeypatch):
-    monkeypatch.setattr(processor_fulfillment, "find_product_order", lambda order_id, mold=None: {
-        "orderId": order_id,
+    monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
+        "orderId": 3,
+        "orderNo": "EO-3",
         "supplierName": "铂锐",
         "parts": [{"orderPartId": 21, "remainQty": 1, "receivedQty": 1, "partNo": "PU-06"}],
     })
@@ -171,7 +182,7 @@ def test_product_ship_blocks_over_received(monkeypatch):
             erp_outsource_processor_ship_tools.SHIP_TOOL,
             erp_outsource_processor_ship_tools.parse(
                 erp_outsource_processor_ship_tools.SHIP_TOOL,
-                {"order_id": 3, "lines": [{"order_part_id": 21, "qty": 2}]},
+                {"order_no": "EO-3", "lines": [{"order_part_id": 21, "qty": 2}]},
             ),
         )
     except DomainError as error:

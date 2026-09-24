@@ -7,9 +7,12 @@ from decimal import Decimal
 from typing import Any
 
 from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_all
+from domain_packs.mold.ports.errors import DomainError
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
 MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
+MOLD_BATCH_CODE = re.compile(r"(?i)^M\d{5,}-P\d+$")
+MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
 PROJECT_NO = re.compile(r"(?i)(?<![A-Z0-9])(E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])")
 ROW_LIMIT = 200
 STATIONS = {
@@ -272,6 +275,101 @@ def format_parts(parts: list[Any]) -> str:
     return "；".join(labels)
 
 
+def _unique_codes(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    codes: list[str] = []
+    for value in values:
+        text = str(value or "").strip().upper()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        codes.append(text)
+    return codes
+
+
+def mold_codes_from(mold_no: Any, parts: list[Any] | None = None) -> list[str]:
+    codes: list[str] = []
+    for piece in re.split(r"[、,;/\s]+", str(mold_no or "")):
+        codes.append(piece)
+    for part in parts or []:
+        if isinstance(part, dict):
+            codes.append(str(part.get("moldCode") or part.get("mold_code") or ""))
+    return _unique_codes(codes)
+
+
+def mold_labels(mold_no: Any, parts: list[Any] | None = None) -> tuple[str, str]:
+    codes = mold_codes_from(mold_no, parts)
+    batches = [code for code in codes if MOLD_BATCH_CODE.match(code)]
+    families = [code for code in codes if MOLD_FAMILY_CODE.match(code)]
+    for batch in batches:
+        family = batch.split("-P", 1)[0]
+        if family not in families:
+            families.append(family)
+    return "、".join(families), "、".join(batches) or "、".join(families)
+
+
+def _norm_code(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def item_identity(item: dict[str, Any]) -> tuple[str, str]:
+    family = str(item.get("moldFamily") or "").strip()
+    batch = str(item.get("moldBatch") or "").strip()
+    if not family or not batch:
+        derived_family, derived_batch = mold_labels(item.get("moldNo"), item.get("parts"))
+        family = family or derived_family
+        batch = batch or derived_batch
+    return family, batch
+
+
+def identity_display(item: dict[str, Any]) -> dict[str, str]:
+    family, batch = item_identity(item)
+    return {
+        "订单号": str(item.get("orderNo") or "").strip() or "尚未下单",
+        "模具号": family or str(item.get("moldNo") or "") or "未标注",
+        "批次号": batch or str(item.get("moldNo") or "") or "未标注",
+    }
+
+
+def _batch_tokens(value: Any) -> list[str]:
+    return [_norm_code(piece) for piece in re.split(r"[、,;]+", str(value or "")) if piece.strip()]
+
+
+def _promote_batch_code(mold: str, batch: str) -> tuple[str, str]:
+    if re.fullmatch(r"M\d{5,}-P\d+", mold) and not batch:
+        return mold.split("-P", 1)[0], mold
+    return mold, batch
+
+
+def item_matches_identity(
+    item: dict[str, Any],
+    *,
+    order_no: str = "",
+    mold: str = "",
+    batch: str = "",
+) -> bool:
+    wanted_order = _norm_code(order_no)
+    wanted_mold, wanted_batch = _promote_batch_code(_norm_code(mold), _norm_code(batch))
+    family, item_batch = item_identity(item)
+    codes = mold_codes_from(" ".join(piece for piece in (item.get("moldNo"), family, item_batch) if piece), item.get("parts"))
+    if wanted_order and _norm_code(item.get("orderNo")) != wanted_order:
+        return False
+    if wanted_batch:
+        tokens = _batch_tokens(item_batch) or _batch_tokens(item.get("moldNo"))
+        if len(tokens) > 1:
+            full = _norm_code(item_batch) or _norm_code(item.get("moldNo"))
+            if wanted_batch != full:
+                return False
+        elif wanted_batch not in {_norm_code(item_batch), _norm_code(item.get("moldNo")), *codes, *tokens}:
+            return False
+    if wanted_mold:
+        if wanted_mold not in codes and wanted_mold != _norm_code(family) and not any(
+            code.startswith(f"{wanted_mold}-P") for code in codes
+        ):
+            return False
+    return True
+
+
 def format_process_names(parts: list[Any], fallback: str = "") -> str:
     names = []
     seen = set()
@@ -321,6 +419,35 @@ def pending_quote_suppliers(invitations: list[Any], dispatch_pending: str = "") 
                 seen.add(text)
                 names.append(text)
     return "、".join(names)
+
+
+def resolve_supplier_ids(item: dict[str, Any], suppliers: list[str]) -> list[int]:
+    wanted = [_norm_code(name) for name in suppliers if str(name).strip()]
+    if not wanted:
+        raise DomainError("INVALID_TOOL_INPUT", "请提供加工商编码或名称", 400)
+    found: list[int] = []
+    invitations = item.get("invitations") or []
+    for token in wanted:
+        match = None
+        for invitation in invitations:
+            if not isinstance(invitation, dict):
+                continue
+            codes = {
+                _norm_code(invitation.get("supplierCode")),
+                _norm_code(invitation.get("supplier_code")),
+                _norm_code(invitation.get("supplierName")),
+                _norm_code(invitation.get("supplier_name")),
+            }
+            if token in codes - {""}:
+                supplier_id = invitation.get("supplierId") or invitation.get("supplier_id")
+                if supplier_id is None:
+                    continue
+                match = int(supplier_id)
+                break
+        if match is None:
+            raise DomainError("NOT_FOUND", f"查询结果中没有加工商 {token}，请用待发询价列出的编码或名称", 404)
+        found.append(match)
+    return found
 
 
 def parse_question(question: str) -> dict[str, str]:
@@ -424,6 +551,8 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
     if not quotes and awarded_amount is not None:
         supplier = str(row.get("supplier_name") or "").strip()
         quotes = f"{supplier} {awarded_amount}".strip() if supplier else str(awarded_amount)
+    mold_no = row.get("mold_no") or ""
+    mold_family, mold_batch = mold_labels(mold_no, parts)
     return {
         "station": station,
         "stationLabel": STATIONS[station],
@@ -433,7 +562,9 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "inquiryId": row.get("inquiry_id"),
         "orderId": row.get("awarded_order_id"),
         "orderNo": row.get("awarded_order_no") or "",
-        "moldNo": row.get("mold_no") or "",
+        "moldNo": mold_no,
+        "moldFamily": mold_family,
+        "moldBatch": mold_batch,
         "parts": parts,
         "partDetails": format_parts(parts),
         "processNames": format_process_names(parts, str(row.get("process_name") or "")),
@@ -487,7 +618,9 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
             if len(details) > 80:
                 details = details[:80] + "…"
             lines.append(
-                f"{item['stationLabel']} {item['outsourceTypeLabel']} {item['moldNo']} {details}"
+                f"{item['stationLabel']} {item['outsourceTypeLabel']} "
+                f"{item.get('orderNo') or '尚未下单'} {item.get('moldFamily') or item['moldNo']} "
+                f"{item.get('moldBatch') or item['moldNo']} {details}"
             )
         summary += "\n" + "\n".join(f"- {line}".rstrip() for line in lines)
         if len(visible) > 30:
@@ -562,7 +695,14 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
             hint = "接单或拒单。拒单后 ERP 自动把同一张工序单转给下一家，不要自己选下一家。"
         else:
             hint = "接单或拒单。拒单后由采购员重选加工商再发询价。"
-        return {"action": "accept_or_reject", "orderId": item.get("orderId"), "hint": hint}
+        family, batch = item_identity(item)
+        return {
+            "action": "accept_or_reject",
+            "orderNo": item.get("orderNo") or "",
+            "mold": family,
+            "batch": batch,
+            "hint": hint,
+        }
     if station in {"place_order", "order_approval"}:
         return {
             "action": "wait",
@@ -616,6 +756,41 @@ def find_item_by_order(order_id: int, *, mold: str | None = None) -> dict[str, A
         if item.get("orderId") == order_id:
             return item
     return None
+
+
+def find_item_by_identity(
+    *,
+    order_no: str | None = None,
+    mold: str | None = None,
+    batch: str | None = None,
+    require_inquiry: bool = False,
+) -> dict[str, Any] | None:
+    order_no = str(order_no or "").strip()
+    mold, batch = _promote_batch_code(str(mold or "").strip().upper(), str(batch or "").strip().upper())
+    if not order_no and not mold and not batch:
+        raise DomainError("INVALID_TOOL_INPUT", "请用订单号、模具号和批次号定位，不要使用内部数字编号")
+    hits = [
+        item
+        for item in _scan_items(batch or mold)
+        if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
+    ]
+    if order_no and not hits and (batch or mold):
+        hits = [
+            item
+            for item in _scan_items(None)
+            if item_matches_identity(item, order_no=order_no, mold=mold, batch=batch)
+        ]
+    if require_inquiry:
+        hits = [item for item in hits if item.get("inquiryId")]
+    if not hits:
+        return None
+    if len(hits) > 1:
+        raise DomainError(
+            "AMBIGUOUS",
+            "同一条件命中多张委外工单。尚未下单时请用单一批次号；合并多批次的询价要用表格里的完整批次号。禁止使用内部数字编号",
+            409,
+        )
+    return hits[0]
 
 
 def find_invitation(invitation_id: int, *, mold: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:

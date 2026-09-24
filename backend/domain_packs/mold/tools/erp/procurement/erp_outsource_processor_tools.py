@@ -14,6 +14,12 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.tools.erp.procurement.outsource_identity import (
+    CamelModel,
+    identity_batch,
+    identity_mold,
+    identity_order_no,
+)
 from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo
 
 QUOTE_TOOL = "prepare_erp_outsource_processor_quote"
@@ -49,11 +55,11 @@ TOOL_SPECS = {
         "permission": "erp_outsource_processor.execute",
     },
     ACCEPT_TOOL: {
-        "description": "准备确认接单。必须已锁定 orderId，且当前分站是待接单。本人确认后才写入 ERP。",
+        "description": "准备确认接单。用查询结果中的订单号，必要时加模具号、批次号定位。当前分站必须是待接单。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
     REJECT_TOOL: {
-        "description": "准备拒绝接单。必须已锁定 orderId 和 ERP 拒单原因编码。工序委外拒单后 ERP 自动转下一家。本人确认后才写入 ERP。",
+        "description": "准备拒绝接单。用查询结果中的订单号，必要时加模具号、批次号定位，并提供 ERP 拒单原因编码。工序委外拒单后 ERP 自动转下一家。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
 }
@@ -80,24 +86,26 @@ class ProcessorQuoteInput(StrictModel):
         return value.strip() or None if isinstance(value, str) else value
 
 
-class ProcessorAcceptInput(StrictModel):
-    order_id: int = Field(ge=1, description="查询结果中的 orderId。")
-    mold: str | None = Field(default=None, max_length=40)
+class ProcessorAcceptInput(CamelModel):
+    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
+    mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
+    batch: str | None = identity_batch(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
 
-    @field_validator("mold")
+    @field_validator("order_no", "mold", "batch")
     @classmethod
-    def strip_mold(cls, value):
+    def strip_identity(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
 
-class ProcessorRejectInput(StrictModel):
-    order_id: int = Field(ge=1, description="查询结果中的 orderId。")
-    mold: str | None = Field(default=None, max_length=40)
+class ProcessorRejectInput(CamelModel):
+    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
+    mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
+    batch: str | None = identity_batch(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
     reason_code: str = Field(min_length=1, max_length=80, description="ERP 拒单原因编码。")
 
-    @field_validator("mold")
+    @field_validator("order_no", "mold", "batch")
     @classmethod
-    def strip_mold(cls, value):
+    def strip_identity(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
     @field_validator("reason_code")
@@ -190,9 +198,13 @@ def _lookup_quote(data, tokens: list[str] | None) -> tuple[dict[str, Any], dict[
 
 
 def _lookup_order(data, tokens: list[str] | None) -> dict[str, Any]:
-    item = buyer_todo.find_item_by_order(data.order_id, mold=getattr(data, "mold", None))
+    item = buyer_todo.find_item_by_identity(
+        order_no=getattr(data, "order_no", None),
+        mold=getattr(data, "mold", None),
+        batch=getattr(data, "batch", None),
+    )
     if not item:
-        raise DomainError("NOT_FOUND", "没有找到这张仍待接单的委外工单，请重新查询", 404)
+        raise DomainError("NOT_FOUND", "没有找到这张仍待接单的委外工单，请用订单号、模具号和批次号重新查询", 404)
     _guard_scope(item, None, tokens)
     if item.get("station") != "accept":
         raise DomainError(
@@ -204,13 +216,12 @@ def _lookup_order(data, tokens: list[str] | None) -> dict[str, Any]:
 
 
 def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
-    display = {
-        "模具号": item.get("moldNo") or "未标注",
+    display = buyer_todo.identity_display(item)
+    display.update({
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType") or "委外",
         "当前分站": item.get("stationLabel") or item.get("station"),
         "零件": item.get("partDetails") or "未返回零件明细",
-        "工单": item.get("orderNo") or item.get("orderId") or "尚未下单",
-    }
+    })
     display.update(extra)
     return display
 
@@ -221,7 +232,6 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
         item, invitation = _lookup_quote(data, tokens)
         extra = {
             "操作": "提交本加工商报价",
-            "询价邀请": data.invitation_id,
             "报价金额": data.unit_price,
             "承诺交期": data.delivery_date,
             "是否含税": "含税" if data.tax_included else "不含税",
@@ -234,13 +244,11 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
     if key == ACCEPT_TOOL:
         extra = {
             "操作": "确认接单",
-            "工单ID": data.order_id,
             "说明": "本人确认后调用 ERP 接单。",
         }
     else:
         extra = {
             "操作": "拒绝接单",
-            "工单ID": data.order_id,
             "拒单原因编码": data.reason_code,
             "说明": (
                 "本人确认后调用 ERP 拒单。工序委外会自动转下一家；零件/模具委外由采购员重选加工商。"
@@ -339,14 +347,22 @@ def confirm(db, user, payload):
             "nextHint": _quote_hint(),
         }
     item, _ = preview(db, user, key, data)
+    order_id = item.get("orderId")
+    if not order_id:
+        raise DomainError("STATE_BLOCKED", "这张待办还没有委外订单，不能接单或拒单", 409)
+    identity = {
+        "order_no": item.get("orderNo") or data.order_no,
+        "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
+        "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
+    }
     if key == ACCEPT_TOOL:
         result = post_erp(
-            db, user, f"entrust/inquiry/order/{data.order_id}/accept",
+            db, user, f"entrust/inquiry/order/{order_id}/accept",
             intent_id=payload.get("_intent_id"), action="processor_accept",
-            native_id=f"order:{data.order_id}",
+            native_id=f"order:{order_id}",
         )
         return {
-            "order_id": data.order_id,
+            **identity,
             "action": "processor_accept",
             "status": "CONFIRMED",
             "erp": result,
@@ -354,14 +370,14 @@ def confirm(db, user, payload):
     result = post_erp(
         db,
         user,
-        f"entrust/inquiry/order/{data.order_id}/reject",
+        f"entrust/inquiry/order/{order_id}/reject",
         params={"reasonCode": data.reason_code},
         intent_id=payload.get("_intent_id"),
         action="processor_reject",
-        native_id=f"order:{data.order_id}",
+        native_id=f"order:{order_id}",
     )
     return {
-        "order_id": data.order_id,
+        **identity,
         "action": "processor_reject",
         "status": "CONFIRMED",
         "erp": result,

@@ -39,9 +39,9 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].title).toBe('ERP 委外待办')
     expect(tables[0].rows).toHaveLength(2)
     expect(tables[0].columns.map((column) => column.label)).toEqual([
-      '进度', '委外类型', '模具号', '零件明细', '核算价', '我方报价', '接单上限', '加工商报价', '成交价', '待报价加工商',
+      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '核算价', '我方报价', '接单上限', '加工商报价', '成交价', '待报价加工商',
     ])
-    expect(tables[0].columns.some((column) => /项目|工单|订单/.test(column.label))).toBe(false)
+    expect(tables[0].columns.some((column) => /项目|工单/.test(column.label))).toBe(false)
   })
 
   it('keeps one board table when the same tool returns an empty pass then rows', () => {

@@ -14,7 +14,14 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.tools.erp.procurement.outsource_identity import (
+    CamelModel,
+    identity_batch,
+    identity_mold,
+    identity_order_no,
+)
 from domain_packs.mold.tools.erp.procurement.outsource_queries import warehouse_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_warehouse_tasks"
 SHIP_TOOL = "prepare_erp_outsource_warehouse_ship"
@@ -39,6 +46,7 @@ SKILL_SPECS = {
         "priority_patterns": ["仓库发料|原料发货|备料完成|待备料|待发料|发料待办|备料待办"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -48,7 +56,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_warehouse.read",
     },
     SHIP_TOOL: {
-        "description": "准备确认仓库待发货明细。必须已锁定 taskIds，且明细仍是仓库 pending。热处理工序备料要带实际重量。本人确认后才写入 ERP。",
+        "description": "准备确认仓库待发货明细。用订单号，必要时加模具号、批次号定位仍是仓库 pending 的同一工单。热处理工序备料要带零件号和实际重量。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_warehouse.execute",
     },
 }
@@ -70,13 +78,19 @@ class WarehouseTodoInput(StrictModel):
 
 
 class LineWeightInput(StrictModel):
-    task_id: int = Field(ge=1)
+    part_no: str = Field(min_length=1, max_length=80, description="查询结果中的零件号。")
     actual_weight: float = Field(gt=0, description="热处理备料实际重量(kg)。")
 
+    @field_validator("part_no")
+    @classmethod
+    def strip_part(cls, value):
+        return value.strip()
 
-class WarehouseShipInput(StrictModel):
-    task_ids: list[int] = Field(min_length=1, description="查询结果中的 taskId 列表，须同一工单且同一来源。")
-    mold: str | None = Field(default=None, max_length=40)
+
+class WarehouseShipInput(CamelModel):
+    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号。禁止内部数字 id。")
+    mold: str | None = identity_mold(default=None, max_length=40)
+    batch: str | None = identity_batch(default=None, max_length=40)
     logistics_company: str | None = Field(default=None, max_length=80)
     tracking_no: str | None = Field(default=None, max_length=80)
     remark: str | None = Field(default=None, max_length=400)
@@ -138,12 +152,14 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
 
 
 def _lookup(data) -> list[dict[str, Any]]:
-    items = warehouse_todo.find_tasks(list(dict.fromkeys(data.task_ids)))
-    if len(items) != len(set(data.task_ids)):
-        raise DomainError("NOT_FOUND", "部分待发货明细不存在，请重新查询", 404)
+    items = warehouse_todo.find_pending_by_identity(
+        order_no=data.order_no, mold=data.mold, batch=data.batch,
+    )
+    if not items:
+        raise DomainError("NOT_FOUND", "没有找到这张仓库待发料/待备料，请用订单号重新查询", 404)
     for item in items:
         if item.get("status") != "pending" or item.get("sourceType") not in {"material_stock", "semi_finished_stock"}:
-            raise DomainError("STATE_BLOCKED", f"明细 {item.get('taskId')} 不是仓库待发料，不能确认", 409)
+            raise DomainError("STATE_BLOCKED", f"{item.get('partNo') or item.get('orderNo')} 不是仓库待发料，不能确认", 409)
     order_ids = {item.get("orderId") for item in items}
     sources = {item.get("sourceType") for item in items}
     if len(order_ids) != 1:
@@ -151,8 +167,8 @@ def _lookup(data) -> list[dict[str, Any]]:
     if len(sources) != 1:
         raise DomainError("STATE_BLOCKED", "同一张发货单只能选择同一个发货来源的明细", 409)
     if any(item.get("needsWeight") for item in items):
-        weighed = {int(row.task_id) for row in data.line_weights}
-        missing = [item["taskId"] for item in items if item["taskId"] not in weighed]
+        weighed = {str(row.part_no).strip().casefold() for row in data.line_weights}
+        missing = [item.get("partNo") for item in items if str(item.get("partNo") or "").strip().casefold() not in weighed]
         if missing:
             raise DomainError("STATE_BLOCKED", "热处理工序委外备料必须填写每个零件的实际重量", 409)
     return items
@@ -163,9 +179,8 @@ def preview(key: str, data) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     first = items[0]
     operation = first.get("outsourceType") == "operation"
     display = {
-        "模具号": first.get("moldNo") or "未标注",
+        **identity_display(first),
         "委外类型": first.get("outsourceTypeLabel") or first.get("outsourceType"),
-        "工单": first.get("orderNo") or first.get("orderId"),
         "加工商": first.get("processorName") or "未标注",
         "操作": "备料完成" if operation else "原料发货",
         "明细": "、".join(f"{item.get('partNo') or item.get('taskId')}×{item.get('qty')}" for item in items),
@@ -231,21 +246,26 @@ def validate_intent(db, user, payload):
 
 def confirm(db, user, payload):
     _, data = validate_intent(db, user, payload)
+    items = warehouse_todo.find_pending_by_identity(
+        order_no=data.order_no, mold=data.mold, batch=data.batch,
+    )
+    task_ids = [int(item["taskId"]) for item in items]
+    weights = {str(row.part_no).strip().casefold(): row.actual_weight for row in data.line_weights}
     result = post_erp(db, user, "entrust/material-supply/warehouse-tasks/confirm-shipped", {
-        "taskIds": data.task_ids,
+        "taskIds": task_ids,
         "logisticsCompany": data.logistics_company,
         "trackingNo": data.tracking_no,
         "remark": data.remark,
         "lineWeights": [
-            {"taskId": row.task_id, "actualWeight": row.actual_weight}
-            for row in data.line_weights
+            {"taskId": item["taskId"], "actualWeight": weights[str(item.get("partNo") or "").strip().casefold()]}
+            for item in items
+            if item.get("needsWeight")
         ],
     }, intent_id=payload.get("_intent_id"), action="warehouse_material_ship",
-        native_id="tasks:" + ",".join(str(task_id) for task_id in data.task_ids))
-    items = warehouse_todo.find_tasks(data.task_ids)
+        native_id="order:" + (data.order_no or items[0].get("orderNo") or ""))
     operation = items and items[0].get("outsourceType") == "operation"
     return {
-        "task_ids": data.task_ids,
+        "order_no": data.order_no,
         "action": "warehouse_prep" if operation else "warehouse_ship",
         "status": "CONFIRMED",
         "erp": result,

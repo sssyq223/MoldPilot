@@ -15,6 +15,7 @@ from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.tools.erp.procurement.outsource_queries import processor_fulfillment
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_processor_fulfillment"
 RECEIPT_TOOL = "prepare_erp_outsource_processor_receipt"
@@ -29,14 +30,15 @@ SKILL_SPECS = {
         "optional_tools": [RECEIPT_TOOL],
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
-            "确认收料", "确认来料", "原料收货", "收料待办",
+            "确认收料", "确认来料", "原料收货", "收料待办", "待收料", "履约待办",
         ],
         "auto_activation_queries": [
-            "确认收料", "确认来料", "原料收货", "收料待办",
+            "确认收料", "确认来料", "原料收货", "收料待办", "待收料", "履约待办",
         ],
-        "priority_patterns": ["确认收料|确认来料|原料收货|收料待办"],
+        "priority_patterns": ["确认收料|确认来料|原料收货|收料待办|待收料|履约待办"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -174,9 +176,8 @@ def _lookup_receipt(data, tokens: list[str] | None) -> dict[str, Any]:
 def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
     item = _lookup_receipt(data, _tokens(db, user))
     display = {
-        "模具号": item.get("moldNo") or "未标注",
+        **identity_display(item),
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType"),
-        "工单": item.get("orderNo") or item.get("orderId"),
         "发货单": item.get("shipmentNo") or item.get("shipmentId"),
         "操作": "确认原料收货",
         "明细行": "、".join(str(value) for value in item.get("confirmLineIds") or []),

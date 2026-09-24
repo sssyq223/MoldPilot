@@ -48,7 +48,9 @@ function table(
 const boardColumns: ErpDesignColumn[] = [
   { key: 'station', label: '进度', fields: ['stationLabel', 'station'], width: 110 },
   { key: 'outsourceType', label: '委外类型', fields: ['outsourceTypeLabel', 'outsourceType'], width: 100 },
-  { key: 'moldNo', label: '模具号', fields: ['moldNo', 'mold_no'], width: 160 },
+  { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 150 },
+  { key: 'moldFamily', label: '模具号', fields: ['moldFamily', 'mold_family'], width: 120 },
+  { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'moldNo', 'mold_no'], width: 140 },
   { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 240 },
   { key: 'referenceTotal', label: '核算价', fields: ['referenceTotal', 'reference_total'], width: 100, decimals: 2 },
   { key: 'ourQuote', label: '我方报价', fields: ['ourQuoteAmount', 'our_quote_amount'], width: 100, decimals: 2 },
@@ -68,7 +70,11 @@ function list(value: unknown): ErpDesignRow[] {
   return Array.isArray(value) ? value.filter(record) as ErpDesignRow[] : []
 }
 
-const BOARD_TOOLS = new Set(['query_erp_outsource_followup_board', 'query_buyer_todo'])
+const BOARD_TOOLS = new Set([
+  'query_erp_outsource_followup_board',
+  'query_erp_outsource_processor_board',
+  'query_buyer_todo',
+])
 const PROGRESS_TOOLS = new Set(['query_erp_outsource_order_progress', 'query_outsource_timeline'])
 
 export function erpOutsourceResultTablesFromRun(run: any): ErpDesignResultTable[] {

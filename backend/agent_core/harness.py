@@ -122,6 +122,50 @@ def _structured_result_text(content):
     return qwen_wrapper.group('payload').strip() if qwen_wrapper else stripped
 
 
+def _tool_call_from_mapping(item, index):
+    if not isinstance(item, dict):
+        return None
+    function = item.get("function") if isinstance(item.get("function"), dict) else {}
+    name = item.get("name") or function.get("name")
+    arguments = item.get("arguments")
+    if arguments is None:
+        arguments = function.get("arguments")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if arguments is None:
+        arguments = "{}"
+    elif isinstance(arguments, dict):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    elif not isinstance(arguments, str):
+        return None
+    digest = hashlib.sha256((name + "\n" + arguments).encode()).hexdigest()[:16]
+    return {
+        "id": item.get("id") or f"content_tool_{digest}_{index}",
+        "type": "function",
+        "function": {"name": name.strip(), "arguments": arguments},
+    }
+
+
+def _tool_calls_from_message(message):
+    """Recover tool calls when the model wrote them as JSON content instead of tool_calls."""
+    existing = message.get("tool_calls") if isinstance(message, dict) else None
+    if isinstance(existing, list) and existing:
+        return existing
+    try:
+        payload = json.loads(_structured_result_text((message or {}).get("content")))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("response_kind") or payload.get("summary") is not None:
+        return []
+    raw_calls = payload.get("tool_calls")
+    if isinstance(raw_calls, list) and raw_calls:
+        return [call for index, item in enumerate(raw_calls) if (call := _tool_call_from_mapping(item, index))]
+    call = _tool_call_from_mapping(payload, 0)
+    return [call] if call and payload.get("name") else []
+
+
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 evidence_ids。附件 ID、会话 ID、业务对象 ID 和历史轮次证据都不是本轮证据编号。请删除无效编号；若用户询问业务事实且尚无本轮证据，请先调用当前可用的只读工具取得事实，再用工具返回的 evidence_id 作答。"""
@@ -438,7 +482,12 @@ def _skill_tool_groups(skills, all_tools):
         required = skill.get("tools") or skill.get("dependencies") or spec.get("tools", [])
         optional = skill.get("optional_tools") or skill.get("optional_dependencies") or spec.get("optional_tools", [])
         activation = skill.get("activation_tools") or skill.get("activation_dependencies") or spec.get("activation_tools")
-        tool_names = [name for name in (activation or [*required, *optional]) if name in all_tools]
+        # Optional prepare_* tools must stay in the group catalog so a formal
+        # action can rank them.  Write tools are still withheld until
+        # action_intent; listing questions that only auto-activate a read
+        # surface will not expose them.
+        catalog = list(dict.fromkeys([*(activation or required), *optional]))
+        tool_names = [name for name in catalog if name in all_tools]
         if not tool_names:
             continue
         description = skill.get("agent_description") or spec.get("description") or spec.get("name") or ""
@@ -622,7 +671,11 @@ def _same_skill_deferred_tools(
             continue
         if _is_write_capable_tool(name, tool_annotations) and not action_intent:
             continue
-        if any(name in group["tools"] and group["key"] in active_skill_keys for group in tool_groups):
+        if any(
+            name in {*group["tools"], *group["required"], *group["optional"]}
+            and group["key"] in active_skill_keys
+            for group in tool_groups
+        ):
             allowed.append(name)
     return allowed
 
@@ -1567,7 +1620,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         if not isinstance(message, dict):
             request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
             continue
-        calls = message.get("tool_calls") or []
+        calls = _tool_calls_from_message(message)
         if calls:
             if finalizing:
                 request_protocol_repair(PROTOCOL_REPAIR_REMINDER)

@@ -37,7 +37,7 @@
 ## 工作流
 
 ```text
-先 query 锁定 invitationId / orderId + 当前分站
+先 query 锁定订单号 + 模具号 + 批次号（报价再加 invitationId）+ 当前分站
   → 用户明确要办且状态允许
   → prepare_* 出确认卡
   → 本人确认后才调 ERP
@@ -45,8 +45,8 @@
 用户只问「有几个 / 待报价 / 待接单」时不要激活本 Skill，走 `outsource_processor_query`。本 Skill 只在用户说提交报价、我要接单、拒绝接单时办理。
 ```
 
-1. 先用 `query_erp_outsource_processor_board`（或已有查询结果）锁定本供应商单据。同一模具多单时列出候选，等用户选定后再 prepare。
-2. 报价要 `invitationId`、金额、交期 `YYYY-MM-DD`、是否含税。接单要 `orderId`。拒单要 `orderId` 和 ERP 拒单原因编码。缺参数只澄清，不 prepare。
+1. 先用 `query_erp_outsource_processor_board`（或已有查询结果）锁定本供应商单据。同一模具多单时列出候选的订单号、模具号、批次号，等用户选定后再 prepare。
+2. 报价要 `invitationId`、金额、交期 `YYYY-MM-DD`、是否含税。接单要订单号，必要时加模具号和批次号。拒单同样用订单号/模具号/批次号，加上 ERP 拒单原因编码。禁止使用内部数字 id。缺参数只澄清，不 prepare。
 3. 报价确认后必须再查一次：
    - 待接单：提醒用户接单。
    - 待下单 / 审批中：说明超区间，等采购成交价和王群、李辉审批，不要自己接单。

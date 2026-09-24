@@ -15,6 +15,7 @@ from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.tools.erp.procurement.outsource_queries import quality_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_quality_tasks"
 CLAIM_TOOL = "prepare_erp_outsource_quality_claim"
@@ -38,6 +39,7 @@ SKILL_SPECS = {
         "priority_patterns": ["领取质检|质检任务|检验合格|质检合格|质检待办|有几个|有没有"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -161,7 +163,7 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
     display = {
         "质检单": item.get("inspectionNo") or item.get("taskId"),
         "入库单": item.get("inboundNo") or item.get("inboundId") or "未标注",
-        "工单": item.get("orderNo") or item.get("orderId") or "未标注",
+        **identity_display(item),
         "加工商": item.get("partnerName") or "未标注",
         "仓库": item.get("warehouse") or item.get("inboundTargetLabel") or "未标注",
         "操作": "领取质检" if key == CLAIM_TOOL else "提交全检合格",

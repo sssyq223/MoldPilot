@@ -21,6 +21,9 @@ const delegationNode=ref(''),delegationReason=ref(''),delegationValidTo=ref('')
 const proxyOptions=ref<any[]>([]),proxyUsers=ref<any[]>([]),proxyDelegations=ref<any[]>([]),proxyLoading=ref(false),proxySaving=ref(false),proxyNotice=ref('')
 const proxyNode=ref(''),proxyPrincipal=ref(''),proxyAgent=ref(''),proxyReason=ref(''),proxyValidFrom=ref(''),proxyValidTo=ref(''),proxyDecisions=ref<string[]>(['APPROVE'])
 const avatarInput=ref<HTMLInputElement|null>(null),avatarUploading=ref(false)
+const erpSession=ref<any>({bound:false,authenticated:false,authenticated_at:null,configured:false})
+const erpCaptcha=ref<{uuid:string;img:string;captcha_enabled:boolean}|null>(null)
+const erpUsername=ref(''),erpPassword=ref(''),erpCode=ref(''),erpBusy=ref(false),erpNotice=ref('')
 const selectedCapability=ref<{kind:'tool'|'skill';item:any}|null>(null)
 const allCapabilityItems=computed(()=>([...(props.capabilities.tools||[]),...(props.capabilities.skills||[])]))
 const capabilityDepartments=computed(()=>Array.from(new Map(allCapabilityItems.value.map((item:any)=>{const meta=capabilityMeta(item);return [meta.department,meta.departmentName]})).entries()))
@@ -33,7 +36,10 @@ function setCapabilityType(value:string){capabilityType.value=value;capabilityDr
 function closeCapabilityDropdown(event:PointerEvent){
  if(capabilityToolbar.value&&!capabilityToolbar.value.contains(event.target as Node))capabilityDropdown.value=''
 }
-onMounted(()=>document.addEventListener('pointerdown',closeCapabilityDropdown))
+onMounted(()=>{
+ document.addEventListener('pointerdown',closeCapabilityDropdown)
+ if(page.value==='account')void loadErpSession()
+})
 onBeforeUnmount(()=>document.removeEventListener('pointerdown',closeCapabilityDropdown))
 function capabilityMatches(item:any){
  const meta=capabilityMeta(item),keyword=capabilitySearch.value.trim().toLowerCase()
@@ -174,6 +180,42 @@ async function select(key:string){
  }
 }
 watch(()=>props.initialPage,key=>{if(key)select(key)},{immediate:true})
+watch(page,key=>{if(key==='account')void loadErpSession()})
+async function loadErpSession(){
+ try{
+  erpSession.value=await api('/erp-session/status')
+  erpNotice.value=''
+  if(erpSession.value.configured&&!erpSession.value.authenticated)await refreshErpCaptcha()
+ }catch(e:any){erpNotice.value=e.message}
+}
+async function refreshErpCaptcha(){
+ if(!erpSession.value.configured)return
+ try{
+  const result=await api('/erp-session/captcha')
+  erpCaptcha.value=result
+  erpCode.value=''
+ }catch(e:any){erpNotice.value=e.message}
+}
+function erpCaptchaSrc(img:string){
+ if(!img)return ''
+ return img.startsWith('data:')?img:'data:image/jpeg;base64,'+img
+}
+async function verifyErpSession(){
+ erpBusy.value=true;erpNotice.value=''
+ try{
+  erpSession.value=await post('/erp-session/login',{
+   username:erpUsername.value,
+   password:erpPassword.value,
+   code:erpCode.value||null,
+   uuid:erpCaptcha.value?.uuid||null,
+  })
+  erpPassword.value='';erpCode.value='';erpCaptcha.value=null
+  erpNotice.value='ERP 账号已验证，确认写入时将使用该会话。'
+ }catch(e:any){
+  erpNotice.value=e.message
+  if(erpSession.value.configured)await refreshErpCaptcha()
+ }finally{erpBusy.value=false}
+}
 async function loadModelConfig(){
  if(!props.me.super_admin)return
  modelLoading.value=true;modelSaved.value=''
@@ -360,6 +402,32 @@ async function clearAvatar(){
       <dl class="account-profile-facts"><dt>姓名</dt><dd>{{me.display_name}}</dd><dt>登录名</dt><dd>{{me.username}}</dd><dt>部门</dt><dd>{{me.department||'未设置'}}</dd><dt>身份</dt><dd>{{me.super_admin?'超级管理员':'普通用户'}}</dd><dt>系统时区</dt><dd>Asia/Shanghai</dd></dl>
      </section>
     </div>
+    <h3 class="settings-section-title">ERP 会话</h3>
+    <section class="surface erp-session-setting" aria-labelledby="erp-session-title">
+     <div>
+      <strong id="erp-session-title">验证本人 ERP 账号</strong>
+      <small class="muted">委外写入走 ERP HTTP。查询只读库不需要本会话。未验证时确认会提示先登录 ERP。</small>
+     </div>
+     <p v-if="!erpSession.configured" class="muted small">管理员尚未配置 ERP 服务地址。</p>
+     <template v-else>
+      <p class="muted small">{{erpSession.authenticated?'已验证':'尚未验证'}}<template v-if="erpSession.authenticated_at"> · {{shanghai(erpSession.authenticated_at)}}</template></p>
+      <form class="erp-session-form" @submit.prevent="verifyErpSession">
+       <div class="form-grid compact">
+        <label>ERP 用户名<input v-model.trim="erpUsername" autocomplete="username"/></label>
+        <label>ERP 密码<input v-model="erpPassword" type="password" autocomplete="current-password"/></label>
+       </div>
+       <div v-if="erpCaptcha?.captcha_enabled!==false" class="erp-captcha-row">
+        <label>验证码<input v-model.trim="erpCode" maxlength="16" autocomplete="off"/></label>
+        <button type="button" class="erp-captcha-button" :disabled="erpBusy" @click="refreshErpCaptcha">
+         <img v-if="erpCaptcha?.img" :src="erpCaptchaSrc(erpCaptcha.img)" alt="ERP 验证码"/>
+         <span v-else>获取验证码</span>
+        </button>
+       </div>
+       <button type="submit" :disabled="erpBusy||!erpUsername||!erpPassword">{{erpBusy?'正在验证…':'验证 ERP'}}</button>
+      </form>
+     </template>
+     <p v-if="erpNotice" class="muted small">{{erpNotice}}</p>
+    </section>
     <h3 class="settings-section-title">外观</h3>
    <section class="surface appearance-setting" aria-labelledby="appearance-title">
      <div><strong id="appearance-title">颜色模式</strong><small class="muted">选择更适合当前环境的工作台明暗外观，设置会保存在本机。</small></div>

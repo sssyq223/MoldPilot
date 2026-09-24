@@ -366,6 +366,19 @@ def test_invalid_tool_arguments_request_one_repair_instead_of_failing_the_run():
     assert gateway.saved['protocol_repairs'] == 1
 
 
+def test_json_tool_call_written_as_content_is_executed():
+    embedded = {'role': 'assistant', 'content': json.dumps({
+        'name': 'query_projects',
+        'arguments': {'query': 'visible'},
+        'description': '查询项目',
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    result = run_loop(context(), Model([embedded, FINAL]), gateway)
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
+    assert gateway.saved['protocol_repairs'] == 0
+
+
 def test_streaming_model_progress_is_checkpointed_then_cleared_after_completion():
     class RecordingGateway(Gateway):
         def __init__(self):

@@ -38,31 +38,35 @@ def test_warehouse_skill_is_registered():
 
 
 def test_warehouse_ship_prepare_returns_card(monkeypatch):
-    monkeypatch.setattr(warehouse_todo, "find_tasks", lambda task_ids: [dict(TASK, taskId=task_ids[0])])
+    monkeypatch.setattr(warehouse_todo, "find_pending_by_identity", lambda **kwargs: [dict(TASK)])
     result = erp_outsource_warehouse_tools.execute_tool(None, Admin(), erp_outsource_warehouse_tools.SHIP_TOOL, {
-        "task_ids": [7],
+        "order_no": "EO-3",
+        "mold": "M260063",
+        "batch": "M260063-P1",
     })
     assert result["proposal"]["kind"] == "erp_outsource_warehouse_ship"
     assert result["proposal"]["display"]["操作"] == "原料发货"
-    assert result["proposal"]["display"]["模具号"] == "M260063-P1"
+    assert result["proposal"]["display"]["订单号"] == "EO-3"
+    assert result["proposal"]["display"]["模具号"] == "M260063"
+    assert result["proposal"]["display"]["批次号"] == "M260063-P1"
 
 
 def test_warehouse_operation_card_is_prepare(monkeypatch):
-    monkeypatch.setattr(warehouse_todo, "find_tasks", lambda task_ids: [{
+    monkeypatch.setattr(warehouse_todo, "find_pending_by_identity", lambda **kwargs: [{
         **TASK,
         "outsourceType": "operation",
         "outsourceTypeLabel": "工序委外",
         "nextHint": "确认备料完成后 ERP 视为发货=收货，加工商不用再确认来料，可直接成品发货。",
     }])
     result = erp_outsource_warehouse_tools.execute_tool(None, Admin(), erp_outsource_warehouse_tools.SHIP_TOOL, {
-        "task_ids": [7],
+        "orderNo": "EO-3",
     })
     assert result["proposal"]["display"]["操作"] == "备料完成"
     assert "不用再确认" in result["proposal"]["display"]["说明"]
 
 
 def test_heat_treatment_requires_weight(monkeypatch):
-    monkeypatch.setattr(warehouse_todo, "find_tasks", lambda task_ids: [{
+    monkeypatch.setattr(warehouse_todo, "find_pending_by_identity", lambda **kwargs: [{
         **TASK,
         "outsourceType": "operation",
         "processName": "热处理",
@@ -71,7 +75,7 @@ def test_heat_treatment_requires_weight(monkeypatch):
     try:
         erp_outsource_warehouse_tools.preview(
             erp_outsource_warehouse_tools.SHIP_TOOL,
-            erp_outsource_warehouse_tools.parse(erp_outsource_warehouse_tools.SHIP_TOOL, {"task_ids": [7]}),
+            erp_outsource_warehouse_tools.parse(erp_outsource_warehouse_tools.SHIP_TOOL, {"order_no": "EO-3"}),
         )
     except DomainError as error:
         assert error.code == "STATE_BLOCKED"

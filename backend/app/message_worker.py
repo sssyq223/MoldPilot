@@ -13,7 +13,8 @@ from redis.exceptions import ResponseError
 from sqlalchemy import select,or_,exists,update
 from sqlalchemy.dialects.postgresql import insert
 from . import models as m
-from .db import SessionLocal,now
+from sqlalchemy.exc import OperationalError
+from .db import SessionLocal, engine, now
 from .config import settings
 
 from agent_core.message_contract import GROUP, STREAM
@@ -118,6 +119,11 @@ def main():
             consume_batch(SessionLocal,redis,reclaim_pending(redis,consumer))
             for _,messages in redis.xreadgroup(GROUP,consumer,{STREAM:'>'},count=25,block=1000):
                 consume_batch(SessionLocal,redis,messages)
+        except OperationalError:
+            log.warning("Message worker retry: OperationalError")
+            SessionLocal.remove()
+            engine.dispose()
+            time.sleep(2)
         except Exception as exc:
             # Exception bodies may contain connection URLs. Only emit the type.
             log.warning('Message worker retry: %s',type(exc).__name__)

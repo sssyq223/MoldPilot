@@ -4,8 +4,13 @@ chcp 65001 >nul
 
 set "ROOT=%~dp0"
 set "PYTHON_EXE=%ROOT%.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\python.exe" set "PYTHON_EXE=%CONDA_PREFIX%\python.exe"
+if not exist "%PYTHON_EXE%" if exist "%USERPROFILE%\.conda\envs\MoldPilot\python.exe" set "PYTHON_EXE=%USERPROFILE%\.conda\envs\MoldPilot\python.exe"
 set "WEB_DIR=%ROOT%web"
 set "WEB_MODULES=%WEB_DIR%\node_modules"
+set "PG_CTL=%ROOT%.local\pg18\pgsql\bin\pg_ctl.exe"
+if not exist "%PG_CTL%" set "PG_CTL=%ROOT%.local\pg18\bin\pg_ctl.exe"
+set "PGDATA=%ROOT%.local\pgdata18"
 
 pushd "%ROOT%" >nul 2>&1
 if errorlevel 1 (
@@ -27,9 +32,10 @@ if not exist "%ROOT%.env" (
 )
 
 if not exist "%PYTHON_EXE%" (
-    echo [ERROR] Missing Python virtual environment: .venv\Scripts\python.exe
+    echo [ERROR] Missing Python: .venv\Scripts\python.exe
     echo Run: py -3.12 -m venv .venv
-    echo Then run: .\.venv\Scripts\python.exe -m pip install -r requirements.lock
+    echo Or activate a conda env so CONDA_PREFIX\python.exe exists.
+    echo Then run: python -m pip install -r requirements.lock
     goto :failed
 )
 
@@ -46,6 +52,21 @@ if not exist "%WEB_MODULES%" (
 )
 
 set "PYTHONPATH=%ROOT%backend"
+
+if exist "%PG_CTL%" if exist "%PGDATA%" (
+    "%PG_CTL%" -D "%PGDATA%" status >nul 2>&1
+    if errorlevel 1 (
+        echo [CHECK] Starting portable PostgreSQL from .local\pgdata18...
+        if not exist "%PGDATA%\log" mkdir "%PGDATA%\log"
+        "%PG_CTL%" -D "%PGDATA%" -l "%PGDATA%\log\postgres.log" -w start
+        if errorlevel 1 (
+            echo [ERROR] Portable PostgreSQL failed to start. Review %PGDATA%\log\postgres.log
+            goto :failed
+        )
+    ) else (
+        echo [OK] Portable PostgreSQL is already running.
+    )
+)
 
 echo [CHECK] Validating backend imports...
 "%PYTHON_EXE%" -c "import app.api; import app.agent_worker; import app.message_worker"

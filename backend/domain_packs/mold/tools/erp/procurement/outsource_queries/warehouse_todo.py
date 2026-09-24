@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_all, fetch_one
+from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import mold_labels
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
 MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
@@ -122,9 +123,14 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any]:
         if operation
         else "确认发货后由加工商确认原料收货，再进入生产。"
     )
+    family, batch = mold_labels(item.get("moldNo"))
+    item["moldFamily"] = family
+    item["moldBatch"] = batch
     item["nextAction"] = {
         "action": item["action"],
-        "taskId": item.get("taskId"),
+        "orderNo": item.get("orderNo") or "",
+        "mold": family,
+        "batch": batch,
         "hint": item["nextHint"],
     }
     return item
@@ -149,6 +155,16 @@ def find_tasks(task_ids: list[int]) -> list[dict[str, Any]]:
         if item:
             items.append(item)
     return items
+
+
+def find_pending_by_identity(*, order_no: str | None = None, mold: str | None = None, batch: str | None = None) -> list[dict[str, Any]]:
+    from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import item_matches_identity
+
+    matched = [
+        item for item in query_items()
+        if item_matches_identity(item, order_no=order_no or "", mold=mold or "", batch=batch or "")
+    ]
+    return matched
 
 
 def present(items: list[dict[str, Any]], *, mold_family: str = "", mold_batch: str = "") -> dict[str, Any]:

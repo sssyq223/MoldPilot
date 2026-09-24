@@ -11,9 +11,7 @@ from typing import Any, Literal
 from pydantic import Field, ValidationError, model_validator
 
 from domain_packs.mold.erp.procurement.erp_outsource_scope import (
-    has_allow,
     require_allow,
-    require_outsource_buyer_scope,
     supplier_codes_for,
 )
 from domain_packs.mold.ports.db import now
@@ -59,6 +57,7 @@ SKILL_SPECS = {
         ],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
     "outsource_processor_query": {
         "name": "委外加工商待办查询",
@@ -74,6 +73,7 @@ SKILL_SPECS = {
         "priority_patterns": ["我的委外|加工商待办|待报价|待接单|有几个|有没有"],
         "requires_tool_evidence": True,
         "suppress_tool_search_on_auto_activation": True,
+        "host_auto_invoke_empty_arguments": True,
     },
 }
 
@@ -198,6 +198,48 @@ def _scope(data: Any, parsed: dict[str, str], *, spoken: str = "") -> dict[str, 
     return result
 
 
+def _compact_board_items(items: list[Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in items[:30]:
+        if not isinstance(item, dict):
+            continue
+        details = str(item.get("partDetails") or "")
+        if len(details) > 80:
+            details = details[:80] + "…"
+        compact.append({
+            "orderNo": item.get("orderNo") or "",
+            "mold": item.get("moldFamily") or item.get("moldNo") or "",
+            "batch": item.get("moldBatch") or item.get("moldNo") or "",
+            "station": item.get("stationLabel") or item.get("station"),
+            "kind": item.get("outsourceTypeLabel") or item.get("outsourceType"),
+            "parts": details,
+            "ourQuote": item.get("ourQuoteAmount"),
+            "deal": item.get("finalDealAmount"),
+            "pending": item.get("pendingQuoteSuppliers") or "",
+        })
+    return compact
+
+
+def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("status") == "NEED_MOLD_CODE":
+        return {"status": "NEED_MOLD_CODE", "summary": payload.get("summary") or ""}
+    if payload.get("steps") is not None:
+        return {
+            "summary": payload.get("summary") or "",
+            "currentStep": payload.get("currentStep"),
+            "steps": payload.get("steps") or [],
+        }
+    items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
+    return {
+        "summary": payload.get("summary") or "",
+        "counts": payload.get("counts") or {},
+        "typeCounts": payload.get("typeCounts") or {},
+        "item_count": len(items),
+        "truncated": bool(payload.get("truncated")),
+        "items": _compact_board_items(items),
+    }
+
+
 def tool_schema(key: str) -> dict[str, Any]:
     model = INPUT_MODELS[key]
     return {
@@ -215,9 +257,9 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
     if processor:
         require_allow(db, user, "erp_outsource_processor.read", "仅委外加工商可查询本供应商待办")
     else:
+        # Follow-up board is read-only. ERP purchase_buyer_scope is enforced on
+        # prepare/execute writes, not on “有没有委外单子” listing.
         require_allow(db, user, "erp_outsource_buyer.read", "仅委外采购员或采购主管可查询跟单看板")
-        if has_allow(db, user, "erp_outsource_buyer.execute"):
-            require_outsource_buyer_scope(db, user)
     model = INPUT_MODELS[key]
     try:
         data = model.model_validate(arguments or {})
@@ -244,6 +286,7 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
         payload = timeline.run(scoped)
     return {
         "data": payload,
+        "model_context": _model_context(payload),
         "source": "management-system ERP 委外待办只读查询",
         "as_of": now().isoformat(),
         "role_lens": "processor" if processor else "buyer",

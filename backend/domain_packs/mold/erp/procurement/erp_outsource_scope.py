@@ -52,7 +52,7 @@ def require_outsource_buyer_scope(db, user) -> None:
     if erp_user_id is None or fetch_one(OUTSOURCE_BUYER_SCOPE_SQL, {"erp_user_id": erp_user_id}) is None:
         raise DomainError(
             "FORBIDDEN",
-            "当前 ERP 账号不在有效的委外采购责任域，不能查询或办理采购委外",
+            "当前 ERP 账号不在有效的委外采购责任域，不能办理采购委外",
             403,
         )
 

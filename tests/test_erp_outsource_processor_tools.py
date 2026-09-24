@@ -48,7 +48,8 @@ def test_processor_quote_prepare_returns_confirmation_card(monkeypatch):
     })
     assert result["proposal"]["kind"] == "erp_outsource_processor_quote"
     assert result["proposal"]["display"]["报价金额"] == 330
-    assert result["proposal"]["display"]["模具号"] == "M260063-P1"
+    assert result["proposal"]["display"]["模具号"] == "M260063"
+    assert result["proposal"]["display"]["批次号"] == "M260063-P1"
 
 
 def test_processor_quote_requires_quote_station(monkeypatch):
@@ -89,38 +90,47 @@ def test_operation_order_cannot_prepare_processor_quote(monkeypatch):
 
 
 def test_processor_accept_prepare_returns_card(monkeypatch):
-    monkeypatch.setattr(buyer_todo, "find_item_by_order", lambda order_id, mold=None: {
-        "orderId": order_id,
-        "orderNo": "EO-1",
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
+        "orderId": 44,
+        "orderNo": kwargs.get("order_no") or "EO-1",
         "station": "accept",
         "stationLabel": "待接单",
         "outsourceType": "part",
         "outsourceTypeLabel": "零件委外",
         "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
         "partDetails": "PU-06 上垫板",
         "supplierName": "铂锐",
     })
     result = erp_outsource_processor_tools.execute_tool(None, Admin(), erp_outsource_processor_tools.ACCEPT_TOOL, {
-        "order_id": 44,
+        "order_no": "EO-1",
+        "mold": "M260063",
+        "batch": "M260063-P1",
     })
     assert result["proposal"]["kind"] == "erp_outsource_processor_accept"
-    assert result["proposal"]["display"]["工单ID"] == 44
+    assert result["proposal"]["display"]["订单号"] == "EO-1"
+    assert result["proposal"]["display"]["模具号"] == "M260063"
+    assert result["proposal"]["display"]["批次号"] == "M260063-P1"
+    assert "工单ID" not in result["proposal"]["display"]
 
 
 def test_processor_reject_operation_card_mentions_auto_next(monkeypatch):
-    monkeypatch.setattr(buyer_todo, "find_item_by_order", lambda order_id, mold=None: {
-        "orderId": order_id,
-        "orderNo": "EO-9",
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
+        "orderId": 9,
+        "orderNo": kwargs.get("order_no") or "EO-9",
         "station": "accept",
         "stationLabel": "待接单",
         "outsourceType": "operation",
         "outsourceTypeLabel": "工序委外",
         "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
         "partDetails": "CNC",
         "supplierName": "铂锐",
     })
     result = erp_outsource_processor_tools.execute_tool(None, Admin(), erp_outsource_processor_tools.REJECT_TOOL, {
-        "order_id": 9,
+        "order_no": "EO-9",
         "reason_code": "CAPACITY",
     })
     assert result["proposal"]["kind"] == "erp_outsource_processor_reject"
@@ -183,5 +193,8 @@ def test_operation_reject_next_action_mentions_auto_next():
     )
     action = buyer_todo.processor_next_action(item)
     assert action["action"] == "accept_or_reject"
-    assert action["orderId"] == 9
+    assert action["orderNo"] == "EO-9"
+    assert action["mold"] == "M260063"
+    assert action["batch"] == "M260063-P1"
+    assert "orderId" not in action
     assert "自动" in action["hint"]

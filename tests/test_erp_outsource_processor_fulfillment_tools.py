@@ -66,3 +66,16 @@ def test_fulfillment_question_picks_receipt_tab():
     parsed = processor_fulfillment.parse_question("M260063 确认来料")
     assert parsed["tab"] == "receipt"
     assert parsed["mold_family"] == "M260063"
+
+
+def test_wait_sql_requires_warehouse_pending_supply():
+    assert "entrust_material_supply_tasks" in processor_fulfillment.WAIT_SQL
+    assert "responsible_type" in processor_fulfillment.WAIT_SQL
+    assert "pending" in processor_fulfillment.WAIT_SQL.lower()
+
+
+def test_product_sql_does_not_block_operation_without_warehouse_pending():
+    sql = processor_fulfillment.PRODUCT_SQL.lower()
+    assert "outsource_type" in sql
+    assert "entrust_material_supply_tasks" in sql
+    assert "operation" in sql

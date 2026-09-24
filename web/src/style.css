@@ -897,6 +897,12 @@ html[data-theme="light"] .profile-menu button:hover{background:#edf3f8!important
 .account-profile-facts{display:grid;grid-template-columns:90px minmax(0,1fr);gap:12px 22px;margin:0;padding:18px 20px}
 .account-profile-facts dt{color:var(--muted);font-size:12px}
 .account-profile-facts dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.erp-session-setting.surface{display:flex;flex-direction:column;gap:10px;padding:16px 18px;margin:0}
+.erp-session-setting small,.erp-session-setting p{margin:0;line-height:1.5}
+.erp-session-form{display:flex;flex-direction:column;gap:10px;max-width:560px}
+.erp-captcha-row{display:grid;grid-template-columns:minmax(0,1fr) 128px;gap:10px;align-items:end}
+.erp-captcha-button{height:38px;padding:0;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--surface) 80%,transparent)}
+.erp-captcha-button img{width:100%;height:100%;object-fit:cover}
 .model-config-heading{margin-bottom:16px}
 .model-config-heading h2{margin:0}
 .model-config-heading p{margin:4px 0 0}
