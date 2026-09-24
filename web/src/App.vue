@@ -24,7 +24,7 @@ import ErpDesignTechnicalRequirements from './components/ErpDesignTechnicalRequi
 import ErpDrawingPreview from './components/ErpDrawingPreview.vue'
 import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
-import {erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
+import {erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,parseErpDesignDueDateCommand,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
 import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
 import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 import {runDurationSeconds as calculateRunDurationSeconds,shouldPollActiveRun} from './runTiming'
@@ -47,10 +47,11 @@ const erpDesignPreviewError=ref('')
 const erpDesignRepricing=ref(false)
 const erpDesignImporting=ref(false)
 const erpDesignPreviewNotice=ref('')
+const pendingErpDesignDueDate=ref('')
 const erpDesignDuplicateNotice=ref<{message:string;requestNo:string}|null>(null)
 const erpDesignImportReceipts=ref<Record<string,ErpDesignImportReceipt>>({})
 const erpDrawingPreviewRow=ref<ErpDesignRow|null>(null)
-const erpDesignDrafts=new Map<number,{expectedDate:string;remark:string}>()
+const erpDesignDrafts=new Map<number,{expectedDate:string;remark:string;designOrderType:string;purchaseReason:string}>()
 const erpDesignRowRepriceTokens=new Map<string,number>()
 let erpDesignPreviewPoll:number|null=null
 let erpDesignPreviewRequest=0
@@ -472,7 +473,7 @@ async function copyMessage(text:string,key:string){
 }
 function evidenceTitle(item:any){return item?.proposal?'操作建议':capabilityName(item?.tool||'')}
 function stopErpDesignPreviewPolling(){if(erpDesignPreviewPoll!=null){window.clearTimeout(erpDesignPreviewPoll);erpDesignPreviewPoll=null}}
-function closeErpDesignPreview(){erpDesignPreviewRequest++;stopErpDesignPreviewPolling();erpDrawingPreviewRow.value=null;erpDesignPreview.value=null;erpDesignPreviewLoading.value=false;erpDesignPreviewError.value='';erpDesignPreviewNotice.value='';erpDesignRepricing.value=false;erpDesignImporting.value=false;erpDesignDuplicateNotice.value=null}
+function closeErpDesignPreview(){erpDesignPreviewRequest++;stopErpDesignPreviewPolling();erpDrawingPreviewRow.value=null;erpDesignPreview.value=null;erpDesignPreviewLoading.value=false;erpDesignPreviewError.value='';erpDesignPreviewNotice.value='';erpDesignRepricing.value=false;erpDesignImporting.value=false;erpDesignDuplicateNotice.value=null;pendingErpDesignDueDate.value=''}
 function erpDesignImportReceipt(session:ErpDesignPreviewSession|null|undefined){return session?erpDesignImportReceipts.value[String(session.sessionId)]||null:null}
 function erpDesignUploadLabel(session:ErpDesignPreviewSession|null){return erpDesignUploadStatusLabel(session?.sheetType||'steel',Boolean(erpDesignImportReceipt(session)))}
 function setErpDesignImportReceipt(receipt:ErpDesignImportReceipt){erpDesignImportReceipts.value={...erpDesignImportReceipts.value,[String(receipt.sessionId)]:receipt}}
@@ -526,7 +527,7 @@ function openErpDesignPreview(session:ErpDesignPreviewSession|null){
  void loadErpDesignPreview()
 }
 function openErpDesignPreviewFromTool(item:any){openErpDesignPreview(erpDesignSessionFromTool(item))}
-function updateErpDesignDraft(draft:{expectedDate:string;remark:string}){
+function updateErpDesignDraft(draft:{expectedDate:string;remark:string;designOrderType:string;purchaseReason:string}){
  const current=erpDesignPreview.value
  if(!current)return
  erpDesignDrafts.set(current.sessionId,draft)
@@ -619,7 +620,7 @@ function erpDesignDuplicateFromResult(value:any):{message:string;requestNo:strin
  const message=erpDesignDisplayMessage(result.message||result.errorMessage||result.error_message,'检测到同类型、同模号且明细相同的重复上传。')
  return {message,requestNo:String(result.requestNo||result.request_no||erpDesignDuplicateRequestNo(message)||'')}
 }
-async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:string;remark:string;allowDuplicate:boolean}){
+async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:string;remark:string;designOrderType:string;purchaseReason:string;allowDuplicate:boolean}){
  const current=erpDesignPreview.value
  if(!current||erpDesignImporting.value)return
  if(!payload.expectedDate){erpDesignPreviewError.value='请先填写交期后再确认导入';return}
@@ -631,6 +632,8 @@ async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:
    session_id:current.sessionId,
    sheet_type:current.sheetType,
    mold_code:current.moldCode||null,
+   design_order_type:payload.designOrderType,
+   purchase_reason:payload.purchaseReason||null,
    preview_rows:payload.previewRows,
    confirm_import:true,
    urgency_level:'normal',
@@ -815,7 +818,59 @@ async function toggleConversationPin(c:any,event?:Event){event?.stopPropagation(
 async function archiveConversation(c:any,event?:Event){event?.stopPropagation();try{await post(`/conversations/${c.id}/archive`);if(conversation.value===c.id)newConversation();await refresh()}catch(e:any){fail(e.message)}}
 async function openArchivedConversation(c:any){settingsOpen.value=false;showNotices.value=false;await selectConversation(c.id,c.title,true)}
 function newConversation(){erpDesignOrdersDialog.value=null;conversationEpoch++;selectedFiles.value=[];conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;runs.value=[];lastRunProjectionSyncAt=0;conversationLoading.value=false;prompt.value='';detail.value=null;closeErpDesignPreview();collapse()}
-async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+function tryHandleErpDesignDueDateMessage(): boolean {
+ const text=prompt.value.trim()
+ const current=erpDesignPreview.value
+ if(!current)return false
+ if(pendingErpDesignDueDate.value&&/^(是|是的|确认|确认修改|要|改吧|好的|好|可以)[。！!]?$/i.test(text)){
+  const date=pendingErpDesignDueDate.value
+  pendingErpDesignDueDate.value=''
+  const validated=parseErpDesignDueDateCommand(`交期改为${date}`)
+  if(validated.kind!=='set'){
+   erpDesignPreviewError.value=validated.message||'交期不能早于今天，请重新选择。'
+   return true
+  }
+  updateErpDesignDraft({expectedDate:date,remark:current.remark||'',designOrderType:current.designOrderType||'new_model',purchaseReason:current.purchaseReason||''})
+  erpDesignPreviewError.value=''
+  erpDesignPreviewNotice.value=`已将交期改为 ${date}，请核对后点击“确认导入”。`
+  prompt.value=''
+  return true
+ }
+ if(pendingErpDesignDueDate.value&&/^(否|不|不用|不改|取消|不要)[。！!]?$/i.test(text)){
+  pendingErpDesignDueDate.value=''
+  erpDesignPreviewNotice.value='已取消本次交期修改，表单交期未变。'
+  prompt.value=''
+  return true
+ }
+ const command=parseErpDesignDueDateCommand(text)
+ if(command.kind==='none'){
+  pendingErpDesignDueDate.value=''
+  return false
+ }
+ prompt.value=''
+ if(command.kind==='invalid'){
+  pendingErpDesignDueDate.value=''
+  erpDesignPreviewError.value=command.message||'交期无效，请重新输入。'
+  return true
+ }
+ if(command.kind==='date_only'){
+  pendingErpDesignDueDate.value=command.date||''
+  erpDesignPreviewNotice.value=`检测到日期 ${command.date}，是否要将交期改为该日期？请回复“是”确认。`
+  return true
+ }
+ pendingErpDesignDueDate.value=''
+ updateErpDesignDraft({expectedDate:command.date||'',remark:current.remark||'',designOrderType:current.designOrderType||'new_model',purchaseReason:current.purchaseReason||''})
+ erpDesignPreviewError.value=''
+ erpDesignPreviewNotice.value=`已将交期改为 ${command.date}，请核对后点击“确认导入”。`
+ return true
+}
+async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;if(tryHandleErpDesignDueDateMessage())return;busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+async function queryGroupKeywordPage(result:any,page:number){
+ if(!result||page<1||busy.value)return
+ const filter=result.keywordText?`，包含“${result.keywordText}”`:''
+ prompt.value=`查询 ERP 分组关键词${filter}，第 ${page} 页，每页 ${result.pageSize} 条`
+ await send()
+}
 function reuseConversationFile(file:any){
  const id=String(file?.file_id||file?.id||'')
  if(!id||selectedFiles.value.some(item=>String(item?.file_id||item?.id||'')===id))return
@@ -986,7 +1041,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             <ErpDesignTechnicalRequirements :result="erpDesignTechnicalRequirementsFromRun(run)"/>
             <ErpDesignToleranceTable v-if="!erpDesignToleranceMergedIntoParameter(run)" :preview="erpDesignToleranceFromRun(run)"/>
             <ErpDesignParameterTable v-for="result in erpDesignParameterTablesFromRun(run)" :key="result.sessionId" :result="result"/>
-            <ErpDesignGroupKeywordTable v-for="(result,index) in erpDesignGroupKeywordsFromRun(run)" :key="`group-keywords:${index}`" :result="result"/>
+            <ErpDesignGroupKeywordTable v-for="(result,index) in erpDesignGroupKeywordsFromRun(run)" :key="`group-keywords:${index}`" :result="result" @page-change="queryGroupKeywordPage(result,$event)"/>
             <ErpDesignDrawingTable v-for="result in erpDesignDrawingsFromRun(run)" :key="`${result.source}:${result.sessionId??''}`" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignMasterDataTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignProcessingTablesFromRun(run)" :key="result.key" :result="result"/>

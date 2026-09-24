@@ -4,9 +4,9 @@
 
 查询工具 `erp_design_query_group_keywords` 经已有 MCP 调用 ERP `/design/group-keyword/list`。本机实际 ERP 工程位于 `D:\work2\management-system`，DAO 从 `design_group_keyword` 表读取，条件为 `is_deleted = 0`，按 ID 倒序排列。对照材质密度的数据表为 `material_density`。
 
-工具显式接收 `keyword_text`、`page_num`、`page_size`，转换为 ERP 的 `keywordText`、`pageNum`、`pageSize`；旧字符串查询也按关键词转换，不再误传 `moldNo`。不支持的筛选条件会被拒绝，避免 ERP 忽略条件后返回全表。默认每页 500 条，完整 ERP 回执保留用于审计和界面展示，模型读取精简的总数和分页信息。
+工具显式接收 `keyword_text`、`page_num`、`page_size`，转换为 ERP 的 `keywordText`、`pageNum`、`pageSize`；旧字符串查询也按关键词转换，不再误传 `moldNo`。不支持的筛选条件会被拒绝，避免 ERP 忽略条件后返回全表。默认每页 10 条（上限 500），排序和分页均由 ERP 执行，完整 ERP 回执保留用于审计和界面展示，模型读取精简的总数和分页信息。
 
-当前对话复用只读表格组件，展示 ID、关键词、备注、创建时间和更新时间。超过 8 条时提供“查看关键词表”入口；空结果明确显示未找到记录，不新增菜单、维护页面或 Agent 业务数据表。原基础资料授权兼容该更窄的只读能力，不增加写入权限。
+当前对话复用只读表格组件，展示 NO.、关键词、备注、创建时间和更新时间；真实 ID 仅保留在 ERP 回执中，不在表格展示。超过 8 条时提供“查看关键词表”入口，并提供基于 ERP 页码的上一页/下一页查询；空结果明确显示未找到记录，不新增菜单、维护页面或 Agent 业务数据表。原基础资料授权兼容该更窄的只读能力，不增加写入权限。
 
 2026-09-20 只读联调结果：
 

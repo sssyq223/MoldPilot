@@ -57,7 +57,12 @@ def _effective_contracts(db, project_id):
     )
     for subject in rows:
         detail = db.get(m.ContractDetail, subject.id)
-        receipt = db.get(m.ContractReceiptEvidence, subject.id)
+        receipt = db.scalar(
+            select(m.ContractReceiptEvidence)
+            .where(m.ContractReceiptEvidence.contract_subject_id == subject.id)
+            .order_by(m.ContractReceiptEvidence.material_version.desc())
+            .limit(1)
+        )
         attachments = list(
             db.scalars(
                 select(m.ContractAttachment).where(

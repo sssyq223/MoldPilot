@@ -408,6 +408,9 @@ class ContractDetail(Base):
     replaces_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
     relation_type: Mapped[str] = mapped_column(String(20), default='ORIGINAL')
     settlement_allocation_evidence: Mapped[str | None] = mapped_column(Text)
+    signed_date: Mapped[date | None] = mapped_column(Date)
+    external_order_number: Mapped[str | None] = mapped_column(String(120))
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (
         CheckConstraint('amount > 0'),
         CheckConstraint(
@@ -466,13 +469,23 @@ class PaymentStage(IdentityMixin, Base):
     schedule_evidence: Mapped[str | None] = mapped_column(Text)
     trigger_evidence: Mapped[str | None] = mapped_column(Text)
     special_mark: Mapped[str | None] = mapped_column(String(200))
+    sequence: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
+    ratio: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    term_days: Mapped[int | None] = mapped_column(Integer)
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
+    condition_profile: Mapped[dict] = mapped_column(J, default=dict)
+    condition_evidence_map: Mapped[dict] = mapped_column(J, default=dict)
+    special_approval_reference: Mapped[str | None] = mapped_column(String(160))
     __table_args__ = (
-        CheckConstraint('amount > 0'),
+        CheckConstraint('amount > 0', name='payment_stage_amount_positive'),
         CheckConstraint('ratio_percent IS NULL OR (ratio_percent > 0 AND ratio_percent <= 100)', name='payment_stage_ratio_percent'),
         CheckConstraint('credit_days IS NULL OR credit_days >= 0', name='payment_stage_credit_days'),
         CheckConstraint('trigger_date IS NULL OR expected_due_date IS NULL OR expected_due_date >= trigger_date', name='payment_stage_due_after_trigger'),
         CheckConstraint("NOT schedule_confirmed OR (trigger_event IS NOT NULL AND schedule_evidence IS NOT NULL AND (credit_days IS NOT NULL OR expected_due_date IS NOT NULL))", name='payment_stage_confirmed_schedule_fields'),
         CheckConstraint('trigger_date IS NULL OR trigger_evidence IS NOT NULL', name='payment_stage_trigger_evidence'),
+        CheckConstraint('sequence >= 1', name='payment_stage_sequence'),
+        CheckConstraint('ratio IS NULL OR (ratio > 0 AND ratio <= 1)', name='payment_stage_ratio'),
+        CheckConstraint('term_days IS NULL OR term_days >= 0', name='payment_stage_term_days'),
     )
 
 

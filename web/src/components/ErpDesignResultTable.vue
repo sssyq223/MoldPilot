@@ -17,7 +17,7 @@ defineProps<{ result: ErpDesignResultTable }>()
     view-label="查看完整表格"
     :rows="result.rows"
     :columns="result.columns"
-    :cell="erpDesignResultCell"
+    :cell="result.renderCell ?? erpDesignResultCell"
     :defer="result.defer"
   />
 </template>

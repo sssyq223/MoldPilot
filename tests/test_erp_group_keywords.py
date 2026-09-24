@@ -11,10 +11,10 @@ from domain_packs.mold.tools.erp.design import erp_design_mcp
 
 
 @pytest.mark.parametrize(('arguments', 'query'), [
-    ({}, {'pageNum': 1, 'pageSize': 500}),
+    ({}, {'pageNum': 1, 'pageSize': 10}),
     ({'keyword_text': '导柱', 'page_num': 2, 'page_size': 10},
      {'keywordText': '导柱', 'pageNum': 2, 'pageSize': 10}),
-    ({'query': ' 导柱 '}, {'keywordText': '导柱', 'pageNum': 1, 'pageSize': 500}),
+    ({'query': ' 导柱 '}, {'keywordText': '导柱', 'pageNum': 1, 'pageSize': 10}),
     ({'query': {'keywordText': '导柱', 'pageNum': 3, 'pageSize': 20}},
      {'keywordText': '导柱', 'pageNum': 3, 'pageSize': 20}),
 ])
@@ -54,7 +54,7 @@ def test_invalid_keyword_filters_fail_before_contacting_erp(monkeypatch, argumen
 
 def test_empty_keywords_and_failed_queries_remain_distinct(monkeypatch):
     monkeypatch.setattr(erp_design_mcp, 'call_mcp', lambda *_args: {
-        'rows': [], 'total': 0, 'pageNum': 1, 'pageSize': 500, 'hasNext': False,
+        'rows': [], 'total': 0, 'pageNum': 1, 'pageSize': 10, 'hasNext': False,
     })
     result = execute(None, SimpleNamespace(super_admin=True), 'erp_design_query_group_keywords', {})
     assert result['data']['rows'] == []

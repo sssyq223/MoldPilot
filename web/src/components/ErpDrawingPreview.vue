@@ -36,7 +36,8 @@ function cleanup() {
   requestId += 1
   try { viewer?.Destroy() } catch {}
   viewer = null
-  if (objectUrl.value) URL.revokeObjectURL(objectUrl.value)
+  // PDF 预览使用 ERP 接口直链，只有本地 Blob URL 才需要释放。
+  if (objectUrl.value.startsWith('blob:')) URL.revokeObjectURL(objectUrl.value)
   objectUrl.value = ''
 }
 
@@ -82,10 +83,11 @@ async function loadDrawing() {
     if (standardHardware ? !props.row.relativePath : !drawingId.value || !props.sessionId) {
       throw new Error('该行没有可预览的 ERP 图纸引用')
     }
+    const previewEndpoint = standardHardware
+      ? `/api/erp-design-uploads/standard-hardware/preview?relative_path=${encodeURIComponent(props.row.relativePath)}`
+      : `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`
     const response = await fetch(
-      standardHardware
-        ? `/api/erp-design-uploads/standard-hardware/preview?relative_path=${encodeURIComponent(props.row.relativePath)}`
-        : `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`,
+      previewEndpoint,
       { credentials: 'same-origin' },
     )
     if (!response.ok) {
@@ -115,7 +117,9 @@ async function loadDrawing() {
     }
     if (mediaType.includes('pdf')) {
       displayKind.value = 'pdf'
-      objectUrl.value = URL.createObjectURL(blob)
+      // ERP 对 PDF 使用浏览器原生预览。直链可保留原生工具栏、缩放及页面拖动，
+      // 也避免把 ERP 返回的 PDF 固化成不支持范围请求的 Blob URL。
+      objectUrl.value = previewEndpoint
       return
     }
     const buffer = await blob.arrayBuffer()

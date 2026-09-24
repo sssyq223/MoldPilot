@@ -28,6 +28,7 @@ import {
   normalizeErpDesignPreview,
   normalizeErpDesignParameterResult,
   normalizeErpDesignTechnicalRequirements,
+  parseErpDesignDueDateCommand,
 } from './erpDesignPreview'
 
 const tool = {
@@ -43,6 +44,22 @@ const tool = {
 }
 
 describe('ERP design preview', () => {
+  it('parses explicit and relative due-date changes, asks for confirmation on a bare date, and rejects past dates', () => {
+    const today = new Date(2026, 8, 23)
+    expect(parseErpDesignDueDateCommand('帮我把交期改为2026-10-15', today)).toMatchObject({
+      kind: 'set', date: '2026-10-15',
+    })
+    expect(parseErpDesignDueDateCommand('交期改为三天之后', today)).toMatchObject({
+      kind: 'set', date: '2026-09-26',
+    })
+    expect(parseErpDesignDueDateCommand('10月15号', today)).toMatchObject({
+      kind: 'date_only', date: '2026-10-15',
+    })
+    expect(parseErpDesignDueDateCommand('交期改为2026-09-22', today)).toMatchObject({
+      kind: 'invalid', date: '2026-09-22',
+    })
+  })
+
   it('labels an upload-ready result with its actual sheet type', () => {
     expect(erpDesignUploadStatusLabel('hardware')).toBe('五金清单上传已就绪')
     expect(erpDesignUploadStatusLabel('steel')).toBe('钢料清单上传已就绪')

@@ -1,5 +1,90 @@
 export type ErpDesignRow = Record<string, any>
 
+export type ErpDesignDueDateCommand = {
+  kind: 'set' | 'date_only' | 'invalid' | 'none'
+  date?: string
+  message?: string
+}
+
+const CHINESE_DIGITS: Record<string, number> = {
+  '零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+  '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+}
+
+function chineseInteger(value: string): number | null {
+  const text = String(value || '').trim()
+  if (/^\d+$/.test(text)) return Number(text)
+  if (!text || [...text].some(char => CHINESE_DIGITS[char] == null)) return null
+  if (text === '十') return 10
+  if (text.startsWith('十')) return 10 + (CHINESE_DIGITS[text.slice(1)] ?? 0)
+  if (text.includes('十')) {
+    const [tens, ones] = text.split('十')
+    return (CHINESE_DIGITS[tens] ?? 0) * 10 + (ones ? CHINESE_DIGITS[ones] ?? 0 : 0)
+  }
+  return CHINESE_DIGITS[text] ?? null
+}
+
+function localDateString(value: Date): string {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+}
+
+function parseAbsoluteDate(value: string, today: Date): string | null {
+  const text = String(value || '').trim()
+  const full = text.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日|号)?$/)
+  const short = text.match(/^(\d{1,2})月(\d{1,2})(?:日|号)?$/)
+  const year = full ? Number(full[1]) : today.getFullYear()
+  const month = full ? Number(full[2]) : short ? Number(short[1]) : NaN
+  const day = full ? Number(full[3]) : short ? Number(short[2]) : NaN
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
+  const candidate = new Date(year, month - 1, day)
+  if (candidate.getFullYear() !== year || candidate.getMonth() !== month - 1 || candidate.getDate() !== day) return null
+  return localDateString(candidate)
+}
+
+function extractDueDate(value: string, today: Date): string | null {
+  const text = String(value || '').trim()
+  const relativeDays: Array<[RegExp, number]> = [
+    [/大后天/, 3], [/后天/, 2], [/明天/, 1], [/今天/, 0],
+  ]
+  for (const [pattern, days] of relativeDays) {
+    if (pattern.test(text)) {
+      const candidate = new Date(today)
+      candidate.setDate(candidate.getDate() + days)
+      return localDateString(candidate)
+    }
+  }
+  const relative = text.match(/(\d+|[零一二两三四五六七八九十]+)\s*(?:天|日)\s*(?:后|之后|以后)/)
+  if (relative) {
+    const days = chineseInteger(relative[1])
+    if (days == null || days < 0) return null
+    const candidate = new Date(today)
+    candidate.setDate(candidate.getDate() + days)
+    return localDateString(candidate)
+  }
+  const absolute = text.match(/\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?/)
+  return absolute ? parseAbsoluteDate(absolute[0], today) : null
+}
+
+/** Parse only explicit due-date changes; a bare date is deliberately not a change. */
+export function parseErpDesignDueDateCommand(input: string, now = new Date()): ErpDesignDueDateCommand {
+  const text = String(input || '').trim()
+  if (!text) return { kind: 'none' }
+  const dateOnly = /^(?:\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?)$/.test(text)
+  const date = extractDueDate(text, now)
+  if (dateOnly) {
+    if (!date) return { kind: 'invalid', message: '日期格式或日期本身无效。' }
+    return { kind: 'date_only', date }
+  }
+  const mentionsDueDate = /交期|交货期|交付日期/.test(text)
+  const asksToChange = /改|调整|变更|设为|设置|定为/.test(text)
+  const explicit = mentionsDueDate && asksToChange
+  if (!explicit) return { kind: 'none' }
+  if (!date) return { kind: 'invalid', message: '请提供有效的完整日期，或使用“几天后”的表达。' }
+  const today = localDateString(now)
+  if (date < today) return { kind: 'invalid', date, message: `交期不能早于今天（${today}）。` }
+  return { kind: 'set', date }
+}
+
 // Keep these choices in step with the ERP upload page. Heat treatment remains
 // editable in the browser (the ERP page allows a newly typed value), whereas
 // post-treatment is a constrained pricing choice.
@@ -51,6 +136,9 @@ export type ErpDesignPreviewSession = {
   expectedDate: string
   remark: string
   designOrderType: string
+  purchaseReason: string
+  designOrderTypeOptions: Array<{ value: string; label: string }>
+  purchaseReasonOptions: Array<{ value: string; label: string }>
   designerName: string
   submitDate: string
   requestNo: string
@@ -282,6 +370,8 @@ export function normalizeErpDesignPreview(
   if (!Number.isInteger(sessionId) || sessionId < 1) return null
   const previewRows = rows(source)
   const resolvedRows = previewRows.length || !fallback ? previewRows : fallback.previewRows
+  const designOrderTypeOptions = source?.designOrderTypeOptions ?? source?.design_order_type_options
+  const purchaseReasonOptions = source?.purchaseReasonOptions ?? source?.purchase_reason_options
   return {
     sessionId,
     sheetType: String(source?.sheetType ?? source?.sheet_type ?? fallback?.sheetType ?? 'steel'),
@@ -298,6 +388,13 @@ export function normalizeErpDesignPreview(
     expectedDate: String(source?.expectedDate ?? source?.expected_date ?? fallback?.expectedDate ?? ''),
     remark: String(source?.remark ?? fallback?.remark ?? ''),
     designOrderType: String(source?.designOrderType ?? source?.design_order_type ?? fallback?.designOrderType ?? 'new_model'),
+    purchaseReason: String(source?.purchaseReason ?? source?.purchase_reason ?? fallback?.purchaseReason ?? ''),
+    designOrderTypeOptions: Array.isArray(designOrderTypeOptions)
+      ? designOrderTypeOptions
+      : (Array.isArray(fallback?.designOrderTypeOptions) ? fallback.designOrderTypeOptions : []),
+    purchaseReasonOptions: Array.isArray(purchaseReasonOptions)
+      ? purchaseReasonOptions
+      : (Array.isArray(fallback?.purchaseReasonOptions) ? fallback.purchaseReasonOptions : []),
     designerName: String(source?.designerName ?? source?.designer_name ?? source?.designerAccount ?? source?.designer_account ?? fallback?.designerName ?? ''),
     submitDate: String(source?.submitDate ?? source?.submit_date ?? fallback?.submitDate ?? ''),
     requestNo: String(source?.requestNo ?? source?.request_no ?? fallback?.requestNo ?? ''),

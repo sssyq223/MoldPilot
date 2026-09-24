@@ -193,7 +193,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                     'suppress_tool_search_on_auto_activation':True},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_baseline'],
-                   'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度']},
+                   'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度','交期','客户交期','承诺交期','交付期','预计交期']},
                'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_change','prepare_plan_department_confirmation'],
                    'activation_queries':['项目计划变更','计划变更','节点顺延','部门影响确认']},
@@ -377,6 +377,18 @@ SKILLS.update({
         # management-system uses this mold-number shape as its stable design
         # order lookup key. The Harness treats the matching ERP workspace as
         # authoritative before considering the local design-route context.
+        'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
+    },
+    'erp_design_upload_context_review': {
+        'name': 'ERP 解析清单与业务上下文核对',
+        'tools': ['erp_design_get_upload_result'],
+        'optional_tools': ['erp_design_query_orders', 'query_project_plan_context'],
+        'activation_tools': ['erp_design_get_upload_result'],
+        'activation_queries': [
+            '解析结果', '上传结果', '清单类型', '材料类型', '订单类型', '设计类型',
+            '交期', '客户交期', '承诺交期', '交付期', '交货期', '预计交期',
+            '当前解析', '刚才解析的清单', '这个清单的交期',
+        ],
         'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
     },
     'erp_design_drawing_version_review': {
@@ -961,6 +973,16 @@ def skill_context(db, user):
                 assigned(db, user, "SKILL", "erp_design_tolerance_evaluation")
                 or assigned(db, user, "SKILL", "erp_new_mold_design_upload")
                 or assigned(db, user, "SKILL", "erp_design_modify_mold_upload")
+            )
+        # Parsed upload results are a durable read-only follow-up object. Keep
+        # the reader available to existing upload/order readers without asking
+        # administrators to create a second assignment solely for follow-up
+        # questions such as “清单类型是什么” or “这个清单的交期”。
+        if (not enabled and key == "erp_design_upload_context_review"):
+            enabled = (
+                assigned(db, user, "SKILL", "erp_new_mold_design_upload")
+                or assigned(db, user, "SKILL", "erp_design_modify_mold_upload")
+                or assigned(db, user, "SKILL", "erp_design_workspace_review")
             )
         if enabled and set(spec["tools"]) <= allowed:
             route = skill_paths()[key]

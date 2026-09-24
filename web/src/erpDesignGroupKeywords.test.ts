@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { erpDesignGroupKeywordsFromRun, erpDesignGroupKeywordsFromTool } from './erpDesignGroupKeywords'
+import { erpDesignGroupKeywordColumns, erpDesignGroupKeywordsFromRun, erpDesignGroupKeywordsFromTool } from './erpDesignGroupKeywords'
 
 const page = { code: 200, rows: [{ id: 19, keywordText: '导柱', remark: null }], total: 21, pageNum: 2, pageSize: 10, hasNext: true }
 const tool = { tool: 'erp_design_query_group_keywords', data: page, as_of: '2026-09-20T12:00:00Z', model_context: { query: { keywordText: '导柱' } } }
 
 describe('ERP group keyword tables', () => {
+  it('keeps ERP ids in the receipt without exposing an ID column', () => {
+    expect(erpDesignGroupKeywordColumns.map(column => column.key)).toEqual(['keyword', 'remark', 'created', 'updated'])
+  })
+
   it('preserves actual ERP fields, filter, timestamp and pagination', () => {
     expect(erpDesignGroupKeywordsFromTool(tool)).toEqual({
       rows: page.rows, total: 21, pageNum: 2, pageSize: 10, hasNext: true,

@@ -79,31 +79,34 @@ onUnmounted(() => window.removeEventListener('keydown', onEscape))
             >
               <template v-if="$slots.cell" #cell="scope"><slot name="cell" v-bind="scope"/></template>
             </ErpReadOnlyTable>
+            <slot name="footer" />
           </div>
         </section>
       </div>
     </Teleport>
   </template>
-  <ErpReadOnlyTable
-    v-else
-    :title="props.title"
-    :context="props.context"
-    :summary="props.summary"
-    :source-note="props.sourceNote"
-    :table-label="props.tableLabel"
-    :empty-text="props.emptyText"
-    :rows="props.rows"
-    :columns="props.columns"
-    :cell="props.cell"
-  >
-    <template v-if="$slots.cell" #cell="scope"><slot name="cell" v-bind="scope"/></template>
-  </ErpReadOnlyTable>
+  <template v-else>
+    <ErpReadOnlyTable
+      :title="props.title"
+      :context="props.context"
+      :summary="props.summary"
+      :source-note="props.sourceNote"
+      :table-label="props.tableLabel"
+      :empty-text="props.emptyText"
+      :rows="props.rows"
+      :columns="props.columns"
+      :cell="props.cell"
+    >
+      <template v-if="$slots.cell" #cell="scope"><slot name="cell" v-bind="scope"/></template>
+    </ErpReadOnlyTable>
+    <slot name="footer" />
+  </template>
 </template>
 
 <style scoped>
 .erp-readonly-result-action{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;max-width:100%;min-width:0;margin-top:12px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 18%,var(--border));border-radius:11px;background:color-mix(in srgb,var(--accent) 6%,var(--surface));overflow:hidden}
 .erp-readonly-result-action span{min-width:0}.erp-readonly-result-action strong{display:block;font-size:13px;line-height:1.4}.erp-readonly-result-action small{margin-top:3px;color:var(--muted);font-size:11px;line-height:1.4;overflow-wrap:anywhere}.erp-readonly-result-action button{flex:0 0 auto;height:32px;padding:0 12px;border-radius:8px;font-size:12px}
 .erp-readonly-detail-shade{z-index:125;padding:18px}.erp-readonly-detail-modal{width:min(1480px,calc(100vw - 36px));height:min(900px,calc(100dvh - 36px));max-width:none;display:flex;flex-direction:column;padding:0;overflow:hidden;background:var(--surface)}
-.erp-readonly-detail-head{min-height:68px;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 18px;border-bottom:1px solid color-mix(in srgb,var(--border) 72%,transparent)}.erp-readonly-detail-head>div{min-width:0}.erp-readonly-detail-head h2{margin:0;font-size:18px;line-height:1.35}.erp-readonly-detail-head p{margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.45;overflow-wrap:anywhere}.erp-readonly-detail-body{min-width:0;min-height:0;flex:1;padding:14px;overflow:hidden}.erp-readonly-detail-body :deep(.erp-readonly-table){width:100%;max-width:100%;height:100%;margin:0;border:0}.erp-readonly-detail-body :deep(.erp-readonly-table-scroll){width:100%;max-width:100%;max-height:none;height:100%;overflow:auto}
+.erp-readonly-detail-head{min-height:68px;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 18px;border-bottom:1px solid color-mix(in srgb,var(--border) 72%,transparent)}.erp-readonly-detail-head>div{min-width:0}.erp-readonly-detail-head h2{margin:0;font-size:18px;line-height:1.35}.erp-readonly-detail-head p{margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.45;overflow-wrap:anywhere}.erp-readonly-detail-body{min-width:0;min-height:0;flex:1;padding:14px;overflow:hidden}.erp-readonly-detail-body :deep(.erp-readonly-table){display:flex;flex-direction:column;width:100%;max-width:100%;min-width:0;min-height:0;height:100%;margin:0;border:0}.erp-readonly-detail-body :deep(.erp-readonly-table-scroll){flex:1 1 auto;width:100%;max-width:100%;min-width:0;min-height:0;max-height:none;height:auto;overflow:auto}.erp-readonly-detail-body :deep(.erp-readonly-table.is-processing-diff .erp-readonly-table-scroll){scrollbar-width:thin;scrollbar-color:#8291a2 #252b32}.erp-readonly-detail-body :deep(.erp-readonly-table.is-processing-diff .erp-readonly-table-scroll::-webkit-scrollbar){width:12px;height:12px}.erp-readonly-detail-body :deep(.erp-readonly-table.is-processing-diff .erp-readonly-table-scroll::-webkit-scrollbar-thumb){border:3px solid #252b32;border-radius:8px;background:#8291a2}
 @media(max-width:700px){.erp-readonly-result-action{align-items:flex-start;flex-direction:column}.erp-readonly-result-action button{width:100%}.erp-readonly-detail-shade{padding:0}.erp-readonly-detail-modal{width:100vw;height:100dvh;border:0;border-radius:0}.erp-readonly-detail-head{align-items:flex-start}.erp-readonly-detail-body{padding:8px}}
 </style>

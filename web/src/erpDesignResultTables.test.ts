@@ -7,15 +7,21 @@ import {
 } from './erpDesignResultTables'
 
 describe('ERP design result tables', () => {
-  it('renders processing before/after/reason rows', () => {
+  it('shows ERP post-processing details in the design table format, one row per source row', () => {
     const tables = erpDesignProcessingTablesFromRun({
       status: 'SUCCEEDED',
       trace: [{ tool: 'erp_design_reprice_rows', data: {
-        processingDiff: [{ field: '长', before: 100, after: 101, reason: 'ERP 重新核算' }],
+        processingDiff: [
+          { rowIndex: 3, field: '长', before: 100, after: 101, reason: 'ERP 重新核算' },
+          { rowIndex: 3, field: '宽', before: 20, after: 21, reason: 'ERP 重新核算' },
+        ],
       } }],
     })
-    expect(tables[0].columns.map(column => column.label)).toEqual(['处理字段', '处理前', '处理后', '原因'])
-    expect(tables[0].rows[0]).toMatchObject({ before: 100, after: 101, reason: 'ERP 重新核算' })
+    expect(tables[0].columns.map(column => column.label)).toEqual(expect.arrayContaining(['总价', '计算过程', '加工工艺', '公差档位']))
+    expect(tables[0].columns.map(column => column.label)).not.toContain('处理前')
+    expect(tables[0].rows).toHaveLength(1)
+    expect(tables[0].rows[0]).toMatchObject({ rowIndex: 3, length: 101, width: 21, calculation_process: 'ERP 重新核算' })
+    expect(tables[0].defer).toBe(false)
   })
 
   it('turns ERP drawing comparison payload into one old/new table row', () => {

@@ -77,6 +77,9 @@ class RepriceInput(RowsInput):
 
 class ImportInput(RowsInput):
     confirm_import: Literal[True]
+    # The ERP order form owns this choice.  Parsing a file only prepares the
+    # session; the browser may select 新模 or 改模 before the final import.
+    design_order_type: Literal["new_model", "repair_other"] | None = None
     urgency_level: Literal["normal", "important", "urgent"] = "normal"
     expected_date: str = Field(min_length=10, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")
     purchase_reason: str | None = Field(default=None, max_length=200)
@@ -225,6 +228,12 @@ def _import_result(value) -> dict:
     return nested if isinstance(nested, dict) else value
 
 
+def _with_form_options(value):
+    if not isinstance(value, dict):
+        return value
+    return {**value, **erp_design_mcp.design_upload_form_options()}
+
+
 def _import_receipt_detail(value, row_count: int) -> dict:
     result = _import_result(value)
     return {
@@ -291,21 +300,21 @@ def parse_design(data: ParseInput, user=Depends(current_user), db=Depends(get_db
         "file_id": str(source.id), "filename": filename, "sheet_type": detected_sheet_type,
     })
     db.commit()
-    return result
+    return _with_form_options(result)
 
 
 @router.post("/status")
 def upload_status(data: StatusInput, user=Depends(current_user), db=Depends(get_db)):
     require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
-    return call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result})
+    return _with_form_options(call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result}))
 
 
 @router.post("/result")
 def upload_result(data: SessionInput, user=Depends(current_user), db=Depends(get_db)):
     require(db, user, "design_route.read")
     _owned_session(db, user, data.session_id)
-    return call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
+    return _with_form_options(call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id}))
 
 
 @router.get("/{session_id}/drawings/{drawing_id}/preview")
@@ -421,15 +430,21 @@ def import_design(data: ImportInput, user=Depends(current_user), db=Depends(get_
     if not _validation_allows_import(validation):
         raise DomainError("ERP_VALIDATION_FAILED", "ERP 校验未通过，不能导入。请处理明细错误后重新校验", 409)
     detail = session_event.detail if isinstance(session_event.detail, dict) else {}
-    design_order_type = str(detail.get("design_order_type") or "new_model").strip().lower()
+    design_order_type = str(
+        data.design_order_type or detail.get("design_order_type") or "new_model"
+    ).strip().lower()
     common_arguments = {
         "sessionId": data.session_id, "sheetType": data.sheet_type, "moldCode": data.mold_code,
         "previewRows": data.preview_rows, "urgencyLevel": data.urgency_level, "expectedDate": data.expected_date,
         "purchaseReason": data.purchase_reason, "remark": data.remark, "allowDuplicate": data.allow_duplicate,
     }
     if design_order_type == "repair_other":
-        if not data.purchase_reason:
-            raise DomainError("ERP_MODIFY_PURCHASE_REASON_REQUIRED", "修模改模导入必须填写 ERP 请购原因", 422)
+        allowed_reasons = {
+            str(item["value"])
+            for item in erp_design_mcp.MODIFY_MOLD_PURCHASE_REASON_OPTIONS
+        }
+        if data.purchase_reason not in allowed_reasons:
+            raise DomainError("ERP_MODIFY_PURCHASE_REASON_INVALID", "请从 ERP 提供的修模改模请购原因选项中选择", 422)
         # Reuse the existing ERP control MCP flow; do not downgrade a
         # repair_other session to the new-model import endpoint.
         result = erp_design_mcp.call_design_control_mcp("import_modify_mold_design", common_arguments)

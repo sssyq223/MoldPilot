@@ -28,9 +28,9 @@ const emit = defineEmits<{
   reprice: [rows: ErpDesignRow[]]
   repriceRow: [row: ErpDesignRow]
   previewDrawing: [row: ErpDesignRow]
-  updateDraft: [draft: { expectedDate: string; remark: string }]
+  updateDraft: [draft: { expectedDate: string; remark: string; designOrderType: string; purchaseReason: string }]
   updateRows: [rows: ErpDesignRow[]]
-  import: [payload: { previewRows: ErpDesignRow[]; expectedDate: string; remark: string; allowDuplicate: boolean }]
+  import: [payload: { previewRows: ErpDesignRow[]; expectedDate: string; remark: string; designOrderType: string; purchaseReason: string; allowDuplicate: boolean }]
 }>()
 
 const localRows = ref<ErpDesignRow[]>([])
@@ -41,6 +41,8 @@ const pageStart = computed(() => (currentPage.value - 1) * pageSize)
 const pagedRows = computed(() => localRows.value.slice(pageStart.value, pageStart.value + pageSize))
 const expectedDate = ref('')
 const remark = ref('')
+const designOrderType = ref('new_model')
+const purchaseReason = ref('')
 const minExpectedDate = (() => {
   const value = new Date()
   value.setHours(12, 0, 0, 0)
@@ -48,12 +50,13 @@ const minExpectedDate = (() => {
 })()
 
 const columns = computed(() => erpDesignColumns(props.preview.sheetType))
-const designOrderTypeLabel = computed(() => {
-  const value = String(props.preview.designOrderType || '').trim().toLowerCase()
-  return value === 'repair_other' || value.includes('repair') || value.includes('modify')
-    ? '修模改模'
-    : '新模'
-})
+const normalizedDesignOrderType = computed(() => (
+  designOrderType.value === 'repair_other' ? 'repair_other' : 'new_model'
+))
+const designOrderTypeOptions = computed(() => props.preview.designOrderTypeOptions?.length
+  ? props.preview.designOrderTypeOptions
+  : [{ value: 'new_model', label: '新模' }, { value: 'repair_other', label: '改模' }])
+const purchaseReasonOptions = computed(() => props.preview.purchaseReasonOptions || [])
 const displayCell = (row: ErpDesignRow, column: ErpDesignColumn) => (
   erpDesignCell(row, column, props.preview.techRequirements)
 )
@@ -167,8 +170,17 @@ watch(() => props.preview.sessionId, () => {
   // or sheet type; an omitted date must result in a follow-up question.
   expectedDate.value = props.preview.expectedDate || ''
   remark.value = props.preview.remark || ''
+  purchaseReason.value = ''
+  designOrderType.value = String(props.preview.designOrderType || '').toLowerCase().includes('repair')
+    || String(props.preview.designOrderType || '').toLowerCase().includes('modify')
+    ? 'repair_other' : 'new_model'
   updateDraft()
 }, { immediate: true })
+
+watch(() => props.preview.expectedDate, value => {
+  const nextValue = String(value || '')
+  if (expectedDate.value !== nextValue) expectedDate.value = nextValue
+})
 
 function sumField(fields: string[], fallbackToQty = false): number {
   return localRows.value.reduce((total, row) => {
@@ -185,7 +197,12 @@ function sumField(fields: string[], fallbackToQty = false): number {
 }
 
 function updateDraft() {
-  emit('updateDraft', { expectedDate: expectedDate.value, remark: remark.value })
+  emit('updateDraft', {
+    expectedDate: expectedDate.value,
+    remark: remark.value,
+    designOrderType: normalizedDesignOrderType.value,
+    purchaseReason: purchaseReason.value,
+  })
 }
 
 function updateRows() {
@@ -638,6 +655,8 @@ function submitImport(allowDuplicate: boolean) {
     previewRows: localRows.value.map(row => ({ ...row })),
     expectedDate: expectedDate.value,
     remark: remark.value,
+    designOrderType: normalizedDesignOrderType.value,
+    purchaseReason: purchaseReason.value,
     allowDuplicate,
   })
 }
@@ -650,7 +669,8 @@ const canImport = computed(() => Boolean(
   && !props.repricing
   && !props.importing
   && !props.preview.drawingProcessing
-  && !props.preview.errors.length,
+  && !props.preview.errors.length
+  && (normalizedDesignOrderType.value !== 'repair_other' || purchaseReason.value.trim())
 ))
 
 function applyDrawingDimensionField(row: ErpDesignRow) {
@@ -737,7 +757,8 @@ const toleranceRows = computed(() => {
   <div class="erp-design-table-view">
     <div class="erp-design-order-form">
       <label><span>模具号</span><input :value="preview.moldCode||'-'" readonly></label>
-      <label><span>类型</span><input :value="designOrderTypeLabel" readonly></label>
+      <label><span>类型</span><select v-model="designOrderType" aria-label="ERP 设计订单类型" @change="updateDraft"><option v-for="option in designOrderTypeOptions" :key="option.value" :value="option.value">{{option.label}}</option></select></label>
+      <label v-if="normalizedDesignOrderType==='repair_other'"><span>请购原因</span><select v-model="purchaseReason" aria-label="ERP 修模改模请购原因" @change="updateDraft"><option value="" disabled>{{purchaseReasonOptions.length?'请选择 ERP 请购原因':'ERP 未返回请购原因选项'}}</option><option v-for="option in purchaseReasonOptions" :key="option.value" :value="option.value">{{option.label}}</option></select></label>
       <label><span><b>*</b> 交期</span><input v-model="expectedDate" :min="minExpectedDate" type="date" @change="updateDraft"><small v-if="!expectedDate" class="erp-design-required-hint">请先选择交期，系统不会自动推算</small><small v-else-if="expectedDate<minExpectedDate" class="erp-design-required-hint">交期不能早于今天，请重新选择</small></label>
       <label class="erp-design-remark"><span>备注</span><textarea v-model="remark" maxlength="1000" placeholder="请输入备注" @input="updateDraft"></textarea><small>{{remark.length}} / 1000</small></label>
     </div>

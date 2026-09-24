@@ -548,7 +548,7 @@ html[data-theme="light"] .final-answer-title{color:#14283f}
 .erp-design-order-form label>span{white-space:nowrap}
 .erp-design-required-hint{grid-column:2;color:#c87922;font-size:11px}
 .erp-design-order-form b{color:#e25d52}
-.erp-design-order-form input,.erp-design-order-form textarea{min-height:34px;padding:6px 9px;border-color:var(--border);background:color-mix(in srgb,var(--surface) 85%,var(--bg));color:var(--text);font-size:12px}
+.erp-design-order-form input,.erp-design-order-form select,.erp-design-order-form textarea{min-height:34px;padding:6px 9px;border-color:var(--border);background:color-mix(in srgb,var(--surface) 85%,var(--bg));color:var(--text);font-size:12px}
 .erp-design-order-form input[readonly]{color:var(--muted)}
 .erp-design-order-form .erp-design-remark{position:relative;grid-column:1/-1;align-items:start}
 .erp-design-order-form .erp-design-remark textarea{height:48px;min-height:48px;resize:none}

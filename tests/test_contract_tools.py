@@ -226,8 +226,8 @@ def test_prepare_sales_contract_requires_confirmation_then_submits_bpm():
             detail=db.get(m.ContractDetail,subject.id)
             assert detail.contract_number=='SC-PREPARE-001'
             assert detail.customer_id==args['customer_id']
-            assert db.get(m.ContractReceiptEvidence,subject.id).received_date==date.today()
-            terms=db.get(m.ContractBusinessTerms,subject.id)
+            assert db.get(m.ContractReceiptEvidence, {"material_version": 1, "contract_subject_id": subject.id}).received_date==date.today()
+            terms=db.get(m.ContractBusinessTerms, {"material_version": 1, "contract_subject_id": subject.id})
             assert terms.signed_date==date.today()
             assert terms.delivery_due_date==date.today()+timedelta(days=60)
             assert terms.association_snapshot['internal_molds'][0]['internal_number']=='MOLD-CONTRACT-PREPARE'

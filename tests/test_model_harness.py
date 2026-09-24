@@ -1178,13 +1178,13 @@ def test_design_business_vocabulary_allows_tool_search(prompt):
     })
 
 
-def test_design_upload_attachment_exposes_tool_search():
+def test_design_upload_attachment_uses_erp_parser_without_tool_search():
     class InspectingModel(Model):
         def generate(self, messages, tools):
-            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
-            assert 'ToolSearch query="上传新模钢料表"' in messages[0]['content']
+            assert [tool['function']['name'] for tool in tools] == ['erp_design_parse_new_mold_upload']
+            assert '# 按需工具' not in messages[0]['content']
             return {'content': json.dumps({'response_kind': 'CLARIFICATION',
-                                           'summary': '请确认清单类型。',
+                                           'summary': 'ERP 解析器已就绪。',
                                            'evidence_ids': [], 'suggestions': []})}
 
     run_loop(context(prompt='帮我解析当前附件', core_tool_names=[],
@@ -1203,14 +1203,88 @@ def test_design_upload_attachment_exposes_tool_search():
              InspectingModel([]), Gateway())
 
 
-def test_design_upload_route_requires_choice_when_both_erp_types_are_authorized():
+def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
+    names = [
+        'erp_design_parse_new_mold_upload', 'erp_design_get_upload_result',
+        'erp_design_validate_rows', 'erp_design_get_approval_config',
+        'erp_design_import_new_mold', 'erp_design_parse_modify_mold_upload',
+        'erp_design_get_modify_mold_approval_config', 'erp_design_import_modify_mold',
+    ]
+    tools = [{'type': 'function', 'function': {'name': name, 'description': name}}
+             for name in names]
+    skills = [
+        {'key': 'erp_new_mold_design_upload',
+         'tools': ['erp_design_parse_new_mold_upload', 'erp_design_get_upload_result',
+                   'erp_design_validate_rows'],
+         'optional_tools': ['erp_design_get_approval_config', 'erp_design_import_new_mold']},
+        {'key': 'erp_design_modify_mold_upload',
+         'tools': ['erp_design_parse_modify_mold_upload', 'erp_design_get_upload_result',
+                   'erp_design_validate_rows'],
+         'optional_tools': ['erp_design_get_modify_mold_approval_config',
+                            'erp_design_import_modify_mold']},
+    ]
+
+    read_result = {'role': 'assistant', 'tool_calls': [{
+        'id': 'read-upload-result', 'type': 'function',
+        'function': {'name': 'erp_design_get_upload_result', 'arguments': '{}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '已读取 ERP 上传会话，继续按其表单类型处理。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class InspectingModel(Model):
+        def generate(self, messages, visible_tools):
+            self.names = getattr(self, 'names', [])
+            self.names.append([tool['function']['name'] for tool in visible_tools])
+            self.system = messages[0]['content']
+            return copy.deepcopy(self.replies.pop(0))
+
+    model = InspectingModel([read_result, final])
+    gateway = Gateway()
+    run_loop(context(
+        prompt='导入', core_tool_names=[], tools=tools, skills=skills,
+        conversation_history=[{
+            'status': 'completed',
+            'user': {'content': '解析当前附件', 'attachments': [{'filename': '料单.csv'}]},
+            'assistant': {'summary': '已成功解析附件，ERP 上传会话已建立，请确认后导入。'},
+        }],
+        conversation_files=[{'filename': '料单.csv'}],
+    ), model, gateway)
+
+    assert all('ToolSearch' not in names for names in model.names)
+    assert all('erp_design_parse_new_mold_upload' not in names for names in model.names)
+    assert 'erp_design_get_upload_result' in model.names[0]
+    assert 'erp_design_get_approval_config' in model.names[0]
+    assert 'erp_design_get_modify_mold_approval_config' in model.names[0]
+    assert 'erp_design_import_new_mold' in model.names[0]
+    assert 'erp_design_import_modify_mold' in model.names[0]
+    assert 'prepare_project_erp_import' not in str(model.names)
+    assert 'prepare_project_proposal' not in str(model.names)
+    assert '严禁虚构 prepare_project_erp_import' in model.system
+    assert gateway.physical_calls == 1
+
+
+def test_old_or_unrelated_assistant_message_does_not_activate_design_import_tools():
+    assert not harness_module._is_design_upload_import_continuation({
+        'prompt': '导入',
+        'conversation_history': [
+            {'assistant': {'summary': '已解析，ERP 上传会话已建立。'},
+             'user': {'attachments': [{'filename': 'old.csv'}]}},
+            {'assistant': {'summary': '模型服务连接中断。'}, 'user': {'content': '继续'}},
+        ],
+    })
+
+
+def test_design_upload_route_defers_type_to_erp_form_when_unspecified():
     skills = [
         {'key': 'erp_new_mold_design_upload'},
         {'key': 'erp_design_modify_mold_upload'},
     ]
     assert harness_module._design_upload_route({
         'prompt': '解析当前附件', 'skills': skills,
-    }) == 'ambiguous'
+    }) == 'form'
     assert harness_module._design_upload_route({
         'prompt': '解析新模清单', 'skills': skills,
     }) == 'new'
@@ -1222,9 +1296,16 @@ def test_design_upload_route_requires_choice_when_both_erp_types_are_authorized(
         'skills': skills,
         'active_skill_keys': ['erp_design_modify_mold_upload'],
     }) == 'modify'
+    assert harness_module._design_upload_route({
+        'prompt': '解析当前附件',
+        'skills': [{'key': 'erp_new_mold_design_upload'}],
+    }) == 'form'
     assert harness_module._design_upload_group_keys(
         'modify', [{'key': 'erp_new_mold_design_upload'}]
     ) == ()
+    assert harness_module._design_upload_group_keys(
+        'form', skills
+    ) == ('erp_new_mold_design_upload',)
     assert harness_module._business_tool_activation_allowed({
         'prompt': '新模',
         'files': [{'filename': 'design-list.xlsx'}],
@@ -1232,10 +1313,138 @@ def test_design_upload_route_requires_choice_when_both_erp_types_are_authorized(
     })
 
 
+def test_sheet_subtype_question_does_not_reuse_previous_new_mold_activation():
+    skills = [
+        {'key': 'erp_new_mold_design_upload',
+         'tools': ['erp_design_parse_new_mold_upload']},
+        {'key': 'erp_design_modify_mold_upload',
+         'tools': ['erp_design_parse_modify_mold_upload']},
+    ]
+    context_value = {
+        'prompt': '是钢料还是五金',
+        'files': [{'filename': 'M250238-P4-五金清单.xlsx'}],
+        'skills': skills,
+        'active_skill_keys': ['erp_new_mold_design_upload'],
+        'active_tool_names': ['erp_design_parse_new_mold_upload'],
+    }
+    assert harness_module._design_upload_route(context_value) == 'form'
+    assert harness_module._is_design_attachment_upload_request(context_value)
+
+
+def test_sheet_subtype_question_does_not_reuse_recent_upload_business_type():
+    assert harness_module._design_upload_route({
+        'prompt': '是钢料还是五金',
+        'design_upload_history': [{'route': 'modify', 'session_id': 12}],
+    }) == 'form'
+
+
+def test_new_conversation_does_not_reuse_matching_historical_mold_type():
+    assert harness_module._design_upload_route({
+        'prompt': '解析',
+        'files': [{'filename': 'M250238-P4-五金清单.csv'}],
+        'design_upload_history': [{
+            'route': 'new', 'session_id': 340, 'mold_code': 'M250238-P4',
+        }],
+    }) == 'form'
+
+
+def test_unspecified_upload_activates_erp_parser_for_form_type_selection():
+    new_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '解析上传的设计清单',
+    }}
+    modify_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_modify_mold_upload',
+        'description': '解析改模设计清单',
+    }}
+    parser_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'parse-form', 'type': 'function',
+        'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': 'ERP 表单已就绪',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    })}
+    model = InspectingRepliesModel([parser_call, final])
+    result = run_loop(context(
+        prompt='解析',
+        files=[{'filename': 'M250238-P4-五金请购单.CSV'}],
+        tools=[new_tool, modify_tool],
+        skills=[
+            {'key': 'erp_new_mold_design_upload', 'tools': ['erp_design_parse_new_mold_upload']},
+            {'key': 'erp_design_modify_mold_upload', 'tools': ['erp_design_parse_modify_mold_upload']},
+        ],
+        core_tool_names=[],
+    ), model, Gateway())
+    assert result['summary'] == 'ERP 表单已就绪'
+    assert model.tool_names[0] == ['erp_design_parse_new_mold_upload']
+
+
+def test_explicit_new_mold_upload_omits_unrelated_skill_and_tool_catalog_context():
+    new_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '通过 ERP 解析当前新模设计清单附件。',
+    }}
+    modify_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_modify_mold_upload',
+        'description': '通过 ERP 解析当前修模改模设计清单附件。',
+    }}
+    unrelated_tool = {'type': 'function', 'function': {
+        'name': 'erp_query_supplier_invoice',
+        'description': '查询供应商发票。',
+    }}
+    parser_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'parse-explicit-new', 'type': 'function',
+        'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '新模清单已由 ERP 解析。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class CapturingModel(InspectingRepliesModel):
+        def __init__(self):
+            super().__init__([parser_call, final])
+            self.messages = []
+
+        def generate(self, messages, tools):
+            self.messages.append(copy.deepcopy(messages))
+            return super().generate(messages, tools)
+
+    model = CapturingModel()
+    result = run_loop(context(
+        prompt='解析新模钢料清单',
+        files=[{'filename': 'M250238-P4-钢料清单.csv'}],
+        tools=[new_tool, modify_tool, unrelated_tool],
+        skills=[
+            {'key': 'erp_new_mold_design_upload', 'name': 'ERP 新模设计上传流程',
+             'tools': ['erp_design_parse_new_mold_upload'],
+             'activation_tools': ['erp_design_parse_new_mold_upload'],
+             'activation_queries': ['解析新模钢料清单']},
+            {'key': 'erp_design_modify_mold_upload', 'name': 'ERP 修模改模上传流程',
+             'tools': ['erp_design_parse_modify_mold_upload'],
+             'activation_tools': ['erp_design_parse_modify_mold_upload'],
+             'activation_queries': ['解析修模改模钢料清单']},
+            {'key': 'supplier_invoice_lookup', 'name': '无关供应商发票查询',
+             'tools': ['erp_query_supplier_invoice'],
+             'activation_tools': ['erp_query_supplier_invoice'],
+             'activation_queries': ['查询供应商发票']},
+        ],
+        core_tool_names=[],
+    ), model, Gateway())
+
+    assert result['summary'] == '新模清单已由 ERP 解析。'
+    assert model.tool_names[0] == ['erp_design_parse_new_mold_upload']
+    system_message = next(m['content'] for m in model.messages[0] if m['role'] == 'system')
+    assert '无关供应商发票查询' not in system_message
+    assert 'ERP 修模改模上传流程' not in system_message
+    assert '# 按需工具' not in system_message
+
+
 def test_design_upload_followup_uses_historical_attachment_context():
     class InspectingModel(Model):
         def generate(self, messages, tools):
-            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
+            assert [tool['function']['name'] for tool in tools] == ['erp_design_parse_new_mold_upload']
             transcript='\n'.join(str(message.get('content') or '') for message in messages)
             assert '历史用户消息（仅用于连续对话和指代解析）：\n111' in transcript
             assert 'M250238-P4料单.XLSX' in transcript
@@ -1324,19 +1533,19 @@ def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
         def generate(self, messages, tools):
             names = [tool['function']['name'] for tool in tools]
             if self.calls == 0:
-                assert names == ['ToolSearch']
+                assert names == ['erp_design_parse_new_mold_upload']
                 self.calls += 1
                 return {'role': 'assistant', 'tool_calls': [{
                     'id': 'search-hardware-upload',
                     'type': 'function',
-                    'function': {'name': 'ToolSearch',
-                                 'arguments': json.dumps({'query': '五金清单'})},
+                    'function': {'name': 'erp_design_parse_new_mold_upload',
+                                 'arguments': '{}'},
                 }]}
-            assert names == ['ToolSearch', 'erp_design_parse_new_mold_upload']
+            assert names == ['erp_design_parse_new_mold_upload']
             self.calls += 1
             return {'role': 'assistant', 'content': json.dumps({
                 'response_kind': 'CLARIFICATION',
-                'summary': '已选择附件解析上传能力。',
+                'summary': '附件已由 ERP 解析。',
                 'evidence_ids': [],
                 'suggestions': [],
             }, ensure_ascii=False)}
@@ -1366,7 +1575,7 @@ def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
     ), InspectingModel([]), gateway)
 
     assert gateway.saved['active_tool_names'] == ['erp_design_parse_new_mold_upload']
-    assert gateway.physical_calls == 0
+    assert gateway.physical_calls == 1
 
 
 def test_xlsx_attachment_without_design_upload_skill_does_not_activate_tools():

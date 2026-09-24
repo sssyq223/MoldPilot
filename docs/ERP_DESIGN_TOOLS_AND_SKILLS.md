@@ -120,7 +120,7 @@ flowchart LR
 | `erp_design_drawing_version_review`<br>ERP 图纸版本查询与对比 | “查图纸版本”“查看某条图纸版本”“对比两个图纸版本” | 图号、模号、版本关键词；详情或对比时提供明确的版本 ID | 仅在用户明确提出图纸版本时查询；订单 ID 不会被猜测为图纸版本 ID。 |
 | `erp_design_order_adjustment`<br>ERP 设计明细与闲置料调整 | “修改设计订单明细”“这条闲置料要部分使用”“释放占用的余料” | 订单/明细 ID；当前 `detailVersion`；材质、规格、原因；余料库存和数量（如适用） | 先查订单和明细，确认当前版本和可编辑状态；确认后写入明细修改或闲置料决定。 |
 | `erp_design_density_review`<br>ERP 材质密度查询与维护 | “查 CR12MOV 的材质密度”“新增 718 的材质密度” | 材质牌号；维护时提供密度及记录 ID | 调用 ERP 密度工具取得实时证据，维护操作需确认。 |
-| `erp_design_group_keyword_review`<br>ERP 分组关键词查询与维护 | “查询分组关键词，返回 ERP 表格”“查看包含定位的分组关键字” | 可选 `keyword_text`、`page_num`、`page_size` | 通过 MCP 查询 ERP `design_group_keyword` 表；默认每页最多 500 条，在当前对话展示原始只读表格和分页范围。必须取得工具证据；维护操作需确认。 |
+| `erp_design_group_keyword_review`<br>ERP 分组关键词查询与维护 | “查询分组关键词，返回 ERP 表格”“查看包含定位的分组关键字” | 可选 `keyword_text`、`page_num`、`page_size` | 通过 MCP 查询 ERP `design_group_keyword` 表；默认每页 10 条（上限 500），由 ERP 按 ID 正序分页，在当前对话展示原始只读表格和分页范围。必须取得工具证据；维护操作需确认。 |
 | `erp_design_master_data_maintenance`<br>ERP 设计基础数据维护 | “查设计基础资料”“停用某分组规则” | `include` 指定查询类别；规则维护提供记录 ID 和拟修改字段 | 综合查询使用聚合工具；单独密度、关键词查询走各自技能。规则维护需确认。 |
 | `erp_design_standard_hardware_maintenance`<br>ERP 厂内标准件图纸维护 | “上传标准件图纸”“改这个标准件文件名”“删除标准件目录” | 当前聊天附件和目标文件夹；或现有相对路径、新文件名 | 先查询目录和文件；确认后上传、改名或删除。不能引用模型编造的本机路径。 |
 | `erp_design_change_management`<br>ERP 设变申请与明细管理 | “创建设变”“提交设变 62”“评审/确认设变”“执行设变明细” | 设变 ID、明细 ID；操作类型；变更原因/前后内容/影响等业务字段 | 先查询设变、详情和影响，再通过受限的设变或设变明细接口创建、修改、提交、评审、确认或执行。 |
@@ -172,7 +172,7 @@ flowchart LR
 | `erp_design_query_master_data` | “查 CR12MOV 的密度”“查设计分组规则/关键词” | 可选 `query` 筛选；省略 `include` 时返回三类基础资料 | 统一读取材质密度、设计分组规则和分组关键词；不写入 ERP。 |
 | `erp_design_query_densities` | “查材质密度配置” | 材质标识或关键字（可省略） | 调 ERP 密度配置查询。 |
 | `erp_design_query_group_rules` | “查设计分组/采购拆分规则” | 关键词、分类、状态（可省略） | 调 ERP 分组规则查询。 |
-| `erp_design_query_group_keywords` | “查分组关键词” | 可选 `keyword_text`（模糊查询）、`page_num`（默认 1）、`page_size`（默认及上限 500） | 经 MCP 调 `/design/group-keyword/list`，ERP 读取 `design_group_keyword` 并排除软删除记录；返回完整原始回执和只读表格，显示总数、本页条数、是否还有下一页。 |
+| `erp_design_query_group_keywords` | “查分组关键词” | 可选 `keyword_text`（模糊查询）、`page_num`（默认 1）、`page_size`（默认 10，上限 500） | 经 MCP 调 `/design/group-keyword/list`，由 ERP 按 ID 正序分页读取 `design_group_keyword` 并排除软删除记录；原始回执保留 ID，但只读表格不展示 ID，显示总数、本页条数、是否还有下一页。 |
 | `erp_design_get_record` | “查看这一条订单/图纸/BOM/设变/规则的详情” | 资源类型和记录 ID | 按固定资源类型读取单条 ERP 详情。 |
 | `erp_design_compare_drawing_versions` | “比较图纸两个版本” | 起始版本 ID、目标版本 ID | 调 ERP 图纸版本比较接口。 |
 | `erp_design_analyze_change` | “分析这个设变的影响” | 设变 ID，或模具/零件/工序/合同筛选 | 调 ERP 设变影响分析，只读。 |

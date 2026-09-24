@@ -740,6 +740,7 @@ def confirm(db,user,payload):
         remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
     if data.contract_kind=='sales_contract':
         db.add(m.ContractReceiptEvidence(
+            material_version=1,
             contract_subject_id=subject.id,
             received_date=data.received_date,
             recorded_by=user.id,
@@ -752,7 +753,8 @@ def confirm(db,user,payload):
             source_contract_id=item['source_contract_id'],target_stage_id=target.id,
             record_type=item['record_type'],source_record_id=item['source_record_id'],
             amount=item['amount'],currency=item['currency'],
-            evidence=data.settlement_allocation_evidence,recorded_by=user.id))
+            evidence=data.settlement_allocation_evidence,recorded_by=user.id,
+            material_version=1))
     db.flush()
     contract_documents.link_initial(db,user,subject,blobs,data.document_source)
     from domain_packs.mold.erp.core.business import submit_subject

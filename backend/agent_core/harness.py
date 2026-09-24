@@ -302,10 +302,10 @@ def _design_upload_route(context):
     """Resolve the user's ERP upload type without guessing from the file.
 
     ``new`` and ``modify`` select one of the existing ERP parser skills;
-    ``ambiguous`` means both are authorized but the request only says to
-    parse/upload an attachment.  A prior active skill is used only for a
-    short confirmation turn (for example, the user's “好的” after choosing
-    新模), never as a substitute for a conflicting current-turn type.
+    ``form`` means the type was not specified and must remain selectable in
+    the ERP order form.  A prior active skill is used only for a short
+    confirmation turn (for example, the user's “好的” after choosing 新模),
+    never as a substitute for a conflicting current-turn type.
     """
     prompt = str(context.get("prompt") or "").strip().lower()
     new_hit = any(str(term).lower() in prompt for term in DESIGN_UPLOAD_NEW_TERMS)
@@ -316,6 +316,11 @@ def _design_upload_route(context):
         return "new"
     if modify_hit:
         return "modify"
+    # “钢料/五金” identifies the sheet subtype, not the mold business type.
+    # Never let a previous active skill turn this question into an implicit
+    # new-mold selection.
+    if _contains_any(prompt, ("钢料", "五金", "steel", "hardware")):
+        return "form"
 
     active = {
         str(key) for key in (context.get("active_skill_keys") or [])
@@ -324,14 +329,7 @@ def _design_upload_route(context):
     if len(active) == 1:
         return "new" if "erp_new_mold_design_upload" in active else "modify"
 
-    authorized = {
-        str(skill.get("key") or "")
-        for skill in (context.get("skills") or [])
-        if isinstance(skill, dict) and str(skill.get("key") or "") in DESIGN_UPLOAD_SKILL_KEYS
-    }
-    if len(authorized) == 1:
-        return "new" if "erp_new_mold_design_upload" in authorized else "modify"
-    return "ambiguous"
+    return "form"
 
 
 def _design_upload_group_keys(route, tool_groups):
@@ -340,6 +338,11 @@ def _design_upload_group_keys(route, tool_groups):
         "modify": "erp_design_modify_mold_upload",
     }
     selected = key_by_route.get(route)
+    if route == "form":
+        available = {str(group.get("key") or "") for group in tool_groups}
+        selected = next((key for key in (
+            "erp_new_mold_design_upload", "erp_design_modify_mold_upload"
+        ) if key in available), None)
     if selected:
         return (selected,) if any(group.get("key") == selected for group in tool_groups) else ()
     return tuple(
@@ -349,11 +352,51 @@ def _design_upload_group_keys(route, tool_groups):
 
 
 def _is_design_attachment_upload_request(context):
+    prompt = context.get("prompt") or ""
+    sheet_type_question = _contains_any(prompt, ("钢料", "五金", "steel", "hardware"))
     return bool(
-        _contains_any(context.get("prompt") or "", DESIGN_ATTACHMENT_ACTION_HINTS)
+        (_contains_any(prompt, DESIGN_ATTACHMENT_ACTION_HINTS) or sheet_type_question)
         and _has_design_list_attachment(context)
         and _has_design_upload_skill(context)
     )
+
+
+def _is_design_upload_import_continuation(context):
+    """Recognize an explicit import action after a successful ERP parse turn.
+
+    Historical attachments remain available for reference on every turn.  They
+    must not make a short follow-up such as “导入” look like a fresh upload,
+    because the upload entry point intentionally activates only the parser.
+    Require a recent assistant parse receipt before switching to the ERP import
+    workflow, so an initial attachment/import request still takes the parser
+    path and unrelated historical files cannot activate write tools.
+    """
+    prompt = str(context.get("prompt") or "").strip()
+    if not _contains_any(prompt, ("导入", "提交erp", "提交到erp", "确认导入")):
+        return False
+    if _contains_any(prompt, ("不要导入", "暂不导入", "取消导入", "不提交")):
+        return False
+
+    history = context.get("conversation_history") or []
+    for turn in reversed(history):
+        if not isinstance(turn, dict):
+            continue
+        assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
+        text = " ".join(str(assistant.get(key) or "") for key in ("summary", "message", "content"))
+        if not text.strip():
+            return False
+        normalized = _compact_intent_text(text)
+        has_parse_receipt = any(marker in normalized for marker in (
+            "解析成功", "成功解析", "解析完成", "上传会话", "会话卡片", "已解析",
+        ))
+        user = turn.get("user") if isinstance(turn.get("user"), dict) else {}
+        has_attachment = bool(user.get("attachments"))
+        if has_parse_receipt and (has_attachment or "上传会话" in normalized or "会话卡片" in normalized):
+            return True
+        # Only the immediately preceding assistant turn can establish this
+        # continuation; older uploads must not activate write tools here.
+        return False
+    return False
 
 
 def _business_tool_activation_allowed(context):
@@ -584,7 +627,11 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
 
 
 def _is_read_query_tool(name):
-    return str(name).startswith(("query_", "erp_design_query_"))
+    # ERP read tools include both query_* catalogues and get_* readers for
+    # opaque upload sessions.  Treating the latter as non-read meant a matched
+    # upload-context Skill could expose no concrete tool for follow-up questions
+    # such as “解析结果是什么” or “这个清单的类型”。
+    return str(name).startswith(("query_", "erp_design_query_", "erp_design_get_"))
 
 
 def _is_write_capable_tool(name, tool_annotations=None):
@@ -674,11 +721,14 @@ def _optional_tools_prompt(deferred_tools, tool_groups, current_prompt="", prefe
     ])
 
 
-def _compact_skills(skills):
+def _compact_skills(skills, active_keys=None):
     registered = _registered_skill_catalog()
+    selected_keys = set(active_keys or ())
     result = []
     for skill in skills:
         key = skill.get("key")
+        if selected_keys and key not in selected_keys:
+            continue
         item = {"name": (registered.get(key, {}) or {}).get("name") or skill.get("name"),
                 "version": skill.get("version")}
         result.append({k: v for k, v in item.items() if v})
@@ -948,9 +998,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         resolution_decision == "approved" and isinstance(resolution_receipt, dict)
         and resolution_receipt
     )
-    design_attachment_upload_requested = _is_design_attachment_upload_request(context)
+    design_upload_import_continuation = _is_design_upload_import_continuation(context)
+    design_attachment_upload_requested = (
+        _is_design_attachment_upload_request(context)
+        and not design_upload_import_continuation
+    )
     preferred_group_keys = ()
-    business_tools_allowed = _business_tool_activation_allowed(context) and not proposal_resolution
+    business_tools_allowed = (
+        _business_tool_activation_allowed(context) or design_upload_import_continuation
+    ) and not proposal_resolution
     formal_action_requested = bool(
         _has_formal_action_intent(context.get("prompt", ""))
         and _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
@@ -990,10 +1046,23 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         design_attachment_upload_requested
         and design_upload_route == "ambiguous"
         and len(authorized_design_groups) > 1
+        and not _contains_any(
+            context.get("prompt") or "",
+            ("图纸预览", "预览图纸", "查看图纸", "看图纸", "打开图纸"),
+        )
     )
     active_skill_keys = set(context.get("active_skill_keys") or []) & {
         group["key"] for group in tool_groups
     }
+    if ambiguous_design_upload:
+        # A previous parser activation cannot survive an unresolved current
+        # turn. Otherwise the model can call the stale new-mold parser before
+        # it asks the user to choose between new and repair/modify.
+        active_tool_names.difference_update({
+            "erp_design_parse_new_mold_upload",
+            "erp_design_parse_modify_mold_upload",
+        })
+        active_skill_keys.difference_update(DESIGN_UPLOAD_SKILL_KEYS)
 
     def load_selected_skills(names, matched_groups=()):
         selected = set(matched_groups)
@@ -1017,6 +1086,49 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         active_tool_names.clear()
         active_skill_keys.clear()
     else:
+        if design_upload_import_continuation:
+            # A short explicit “导入” after parsing is a continuation of the
+            # ERP upload workflow, not another request to parse the historical
+            # attachment. Expose the compact ERP import chain only, and only
+            # where those tools are currently authorized; never synthesize
+            # prepare_project_* aliases. The ERP receipt determines
+            # new_model vs repair_other.
+            import_workflow_tools = {
+                "erp_design_get_upload_result",
+                "erp_design_validate_rows",
+                "erp_design_get_approval_config",
+                "erp_design_get_modify_mold_approval_config",
+                "erp_design_import_new_mold",
+                "erp_design_import_modify_mold",
+            }
+            for group in tool_groups:
+                if group["key"] not in DESIGN_UPLOAD_SKILL_KEYS:
+                    continue
+                workflow_tools = ({*group["required"], *group["optional"]}
+                                  & import_workflow_tools)
+                active_tool_names.update(workflow_tools & set(all_tools))
+                if workflow_tools & set(all_tools):
+                    active_skill_keys.add(group["key"])
+            if active_tool_names:
+                suppress_tool_search = True
+        if (design_attachment_upload_requested
+                and design_upload_route in {"new", "modify", "form"}):
+            # A design-list upload has one ERP parser entry point for the
+            # selected route.  Do not spend context on ToolSearch or unrelated
+            # ERP capability examples; the staged order form owns the type
+            # choice when the user did not specify new vs. modify.
+            selected_groups = set(authorized_design_groups)
+            for group in tool_groups:
+                if group["key"] not in selected_groups:
+                    continue
+                parser_names = [name for name in group["tools"]
+                                if name in {"erp_design_parse_new_mold_upload",
+                                            "erp_design_parse_modify_mold_upload"}
+                                and name in all_tools]
+                active_tool_names.update(parser_names)
+                active_skill_keys.add(group["key"])
+            if active_tool_names:
+                suppress_tool_search = True
         # Continuations such as “是的” inherit only the immediately preceding
         # explicit attachment confirmation. Activate the parser for the next
         # model turn; the model still has to issue the normal tool call, so the
@@ -1124,9 +1236,25 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             tools.insert(0, _tool_search_schema())
         return tools
 
-    skill_prompt = "授权技能摘要："+json.dumps(_compact_skills(context["skills"]), ensure_ascii=False)
+    skill_prompt = "授权技能摘要："+json.dumps(
+        _compact_skills(context["skills"], active_skill_keys), ensure_ascii=False,
+    )
     design_upload_selection_prompt = ""
-    if ambiguous_design_upload:
+    if design_upload_import_continuation:
+        design_upload_selection_prompt = (
+            "本轮是对上一轮 ERP 设计清单解析结果的明确导入请求，不是重新解析附件。"
+            "只能调用本轮工具列表中真实存在的 erp_design_* 工具，严禁虚构 prepare_project_erp_import、"
+            "prepare_project_proposal 等名称。先读取 ERP 上传会话结果以确认 ERP 表单实际选择的类型和明细；"
+            "按 ERP 返回的类型分别使用对应审批配置、校验和导入工具，不得猜新模/改模或请购原因。"
+            "如果 ERP 表单尚未选择类型或缺少必填字段，保留 ERP 现有选项并明确指出缺项；"
+            "仅在用户已明确确认提交且必填项、校验均满足时调用对应导入工具。"
+        )
+    elif design_attachment_upload_requested and design_upload_route == "form":
+        design_upload_selection_prompt = (
+            "用户没有指定新模或修模改模。不要在对话中询问类型，也不要把本次解析视为已选择某一类型。"
+            "先调用 ERP 设计上传封装解析附件；解析完成后，在 ERP 订单表单的“类型”选项中保留“新模/改模”供用户选择。"
+        )
+    elif ambiguous_design_upload:
         design_upload_selection_prompt = (
             "当前附件可通过 ERP 的两条既有解析流程处理：新模，或修模改模（ERP 类型 repair_other）。"
             "用户只说了解析/上传但没有指定类型时，必须先输出 CLARIFICATION，请用户选择“新模”或“修模改模”；"

@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from base64 import b64decode
 from copy import deepcopy
+from datetime import date
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Literal
 from .upload_projection import DEFAULT_UPLOAD_FIELDS, UploadField, project_upload_rows
 from uuid import UUID, uuid4
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
 
 from domain_packs.mold import files, models as m
@@ -52,6 +53,39 @@ _MODIFY_MOLD_PURCHASE_REASON = Literal[
     "process_improvement",
     "other_abnormal",
 ]
+MODIFY_MOLD_PURCHASE_REASON_OPTIONS = (
+    {"value": "customer_change", "label": "客户设变"},
+    {"value": "design_abnormal", "label": "设计异常"},
+    {"value": "machining_abnormal", "label": "加工异常"},
+    {"value": "assembly_abnormal", "label": "组立异常"},
+    {"value": "trial_mold_abnormal", "label": "试模异常"},
+    {"value": "outsource_abnormal", "label": "外协异常"},
+    {"value": "process_improvement", "label": "制程改善"},
+    {"value": "other_abnormal", "label": "其他异常"},
+)
+
+
+def design_upload_form_options() -> dict:
+    """Return the ERP-owned order-form choices for the upload dialog."""
+    return {
+        "designOrderTypeOptions": [
+            {"value": "new_model", "label": "新模"},
+            {"value": "repair_other", "label": "改模"},
+        ],
+        "purchaseReasonOptions": [dict(item) for item in MODIFY_MOLD_PURCHASE_REASON_OPTIONS],
+    }
+
+
+def _validate_not_past_delivery_date(value: str) -> str:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("交期日期无效，请使用 YYYY-MM-DD 格式") from exc
+    if parsed < date.today():
+        raise ValueError("交期不能早于今天，请重新选择合理交期")
+    return value
+
+
 _DESIGN_FILE_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 _MOLD_REPAIR_FILENAME = re.compile(r"(?i)^M\d{6}-P")
 _MOLD_CODE = re.compile(r"(?i)(?<![A-Z0-9])M?(\d{6}-P\d+)(?![A-Z0-9])")
@@ -73,7 +107,7 @@ _ERP_FIXED_STEEL_TECH_REQUIREMENTS = {
 
 TOOL_SPECS = {
     "erp_design_parse_new_mold_upload": {
-        "description": "通过 ERP MCP 上传并解析当前唯一的 XLSX、XLS 或 CSV 新模设计清单；由 ERP 自动识别钢料或五金并创建上传会话，不重复询问附件类型；图纸处理请随后查询状态。",
+        "description": "通过 ERP MCP 上传并解析当前唯一的 XLSX、XLS 或 CSV 设计清单；由 ERP 自动识别钢料或五金并创建上传会话。未指定新模/改模时，此工具仅作为 ERP 表单封装的解析入口，最终类型在 ERP 订单表单中选择；图纸处理请随后查询状态。",
         "permission": "design_route.create",
     },
     "erp_design_parse_modify_mold_upload": {
@@ -323,7 +357,11 @@ class ModifyMoldParseInput(StrictModel):
 
 
 class SessionInput(StrictModel):
-    session_id: int = Field(ge=1)
+    session_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ERP 上传会话编号；当前会话追问时可省略，由宿主绑定最近一次本人解析会话。",
+    )
 
 
 class EmptyInput(StrictModel):
@@ -400,6 +438,11 @@ class ImportInput(RowsInput):
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = Field(default=False, description="仅在 ERP 返回重复上传提示且用户再次明确确认后设为 true。")
 
+    @field_validator("expected_date")
+    @classmethod
+    def expected_date_must_not_be_past(cls, value: str) -> str:
+        return _validate_not_past_delivery_date(value)
+
 
 class ModifyMoldImportInput(RowsInput):
     mold_code: str = Field(min_length=1, max_length=120, description="ERP 模具号；改模清单导入前必须核对。")
@@ -416,6 +459,11 @@ class ModifyMoldImportInput(RowsInput):
     )
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = Field(default=False, description="仅在 ERP 返回重复上传提示且用户再次明确确认后设为 true。")
+
+    @field_validator("expected_date")
+    @classmethod
+    def expected_date_must_not_be_past(cls, value: str) -> str:
+        return _validate_not_past_delivery_date(value)
 
 
 class QueryInput(StrictModel):
@@ -495,7 +543,7 @@ class GroupKeywordQueryInput(StrictModel):
     keyword_text: str | None = Field(default=None, min_length=1, max_length=200,
                                     description="按 ERP 关键词文本模糊查询；省略时查询全部。")
     page_num: int = Field(default=1, ge=1, description="ERP 页码，从 1 开始。")
-    page_size: int = Field(default=500, ge=1, le=500, description="每页条数，最多 500 条。")
+    page_size: int = Field(default=10, ge=1, le=500, description="每页条数，默认 10 条，最多 500 条；分页由 ERP 执行。")
 
     @model_validator(mode="before")
     @classmethod
@@ -1410,6 +1458,7 @@ def _upload_parse_model_context(value: dict):
         "drawingProcessing", "drawingProcessingStatus", "drawingProcessingMessage",
     )
     result = {key: value[key] for key in fields if key in value}
+    result.update(design_upload_form_options())
     rows = value.get("previewRows")
     result["previewRowCount"] = len(rows) if isinstance(rows, list) else 0
     for key in ("errors", "warnings"):
@@ -2311,6 +2360,8 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             value = call_design_control_mcp(control_tool, control_arguments)
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+        if isinstance(value, dict):
+            value = {**value, **design_upload_form_options()}
         session_id = value.get("sessionId") if isinstance(value, dict) else None
         if not isinstance(session_id, int) or session_id < 1:
             _failure("ERP 未返回有效上传会话编号")
@@ -2323,7 +2374,19 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             "design_order_type": design_order_type,
         })
         db.commit()
-        return _result(value, model_context=_upload_parse_model_context(value))
+        parse_context = _upload_parse_model_context(value)
+        # The ERP parser returns the detected material-list type; the business
+        # order type is owned by the selected upload route and is therefore
+        # added here as a separate fact rather than inferred from the file.
+        parse_context["designOrderType"] = design_order_type
+        return _result(value, model_context=parse_context)
+    if key in {
+        "erp_design_get_drawing_status",
+        "erp_design_get_upload_result",
+        "erp_design_get_approval_config",
+        "erp_design_get_modify_mold_approval_config",
+    } and data.session_id is None:
+        data.session_id = _latest_conversation_upload_session(db, user, run)
     _owned_session(db, user, data.session_id)
     if key == "erp_design_get_drawing_status":
         value = call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result})

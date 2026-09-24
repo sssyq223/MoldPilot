@@ -1,4 +1,4 @@
-import type { ErpDesignColumn, ErpDesignRow } from './erpDesignPreview'
+import { erpDesignCell, erpDesignColumns, type ErpDesignColumn, type ErpDesignRow } from './erpDesignPreview'
 
 export type ErpDesignResultTable = {
   key: string
@@ -8,6 +8,7 @@ export type ErpDesignResultTable = {
   sourceNote: string
   rows: ErpDesignRow[]
   columns: ErpDesignColumn[]
+  renderCell?: (row: ErpDesignRow, column: ErpDesignColumn) => string
   defer?: boolean
 }
 
@@ -153,20 +154,43 @@ export function erpDesignProcessingTablesFromRun(run: any): ErpDesignResultTable
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const payload = sourceData(item?.data)
     if (!Array.isArray(payload.processingDiff)) continue
-    const rowsValue = payload.processingDiff.filter((row: unknown) => record(row)) as ErpDesignRow[]
+    const changes = payload.processingDiff.filter((row: unknown) => record(row)) as ErpDesignRow[]
+    const previewRows = rows(payload.previewRows)
+    const fallbackRows = new Map<string, ErpDesignRow>()
+    for (const [index, change] of changes.entries()) {
+      const rowIndex = change.rowIndex ?? change.row_index ?? index + 1
+      const key = String(rowIndex)
+      const row = fallbackRows.get(key) ?? {
+        rowIndex,
+        item_code_full: change.item_code_full ?? change.itemCodeFull,
+        item_name: change.item_name ?? change.itemName,
+      }
+      const fieldKey = ({
+        '材质': 'material_mark', '规格': 'spec_raw', '料型': 'material_shape', '长': 'length', '宽': 'width',
+        '厚/高': 'height', '外径': 'outer_diameter', '内径': 'inner_diameter', '数量': 'qty',
+        '采购数量': 'purchase_quantity', '单价': 'unit_price', '核算单价': 'accounting_unit_price',
+        '核算金额': 'material_amount', '总价': 'total_price', '公差档位': 'tolerance_tier',
+        '长度允许范围': 'length_allowed_range', '宽度允许范围': 'width_allowed_range',
+        '厚度允许范围': 'thickness_allowed_range', '对角公差': 'diagonal_tolerance',
+      } as Record<string, string>)[String(change.field)] ?? String(change.field)
+      row[fieldKey] = change.after
+      const reasons = String(row.calculation_process ?? '').split('\n').filter(Boolean)
+      if (change.reason && !reasons.includes(String(change.reason))) reasons.push(String(change.reason))
+      row.calculation_process = reasons.join('\n')
+      fallbackRows.set(key, row)
+    }
+    const rowsValue = previewRows.length ? previewRows : [...fallbackRows.values()]
+    const sheetType = String(payload.sheetType ?? payload.sheet_type ?? 'steel')
     result.push({
       key: `processing:${item?.id ?? item?.call_id ?? result.length}`,
-      title: 'ERP 参数处理前后对比',
-      summary: `共 ${rowsValue.length} 项变更`,
-      sourceNote: '处理前、处理后和原因均来自 ERP 返回结果',
+      title: 'ERP 处理后的设计明细',
+      context: String(payload.moldCode ?? payload.mold_code ?? ''),
+      summary: `共 ${rowsValue.length} 条明细 · ${changes.length} 项参数变化`,
+      sourceNote: '处理结果来自 ERP 当前设计明细',
       rows: rowsValue,
-      columns: [
-        { key: 'field', label: '处理字段', fields: ['field'], width: 150 },
-        { key: 'before', label: '处理前', fields: ['before'], width: 220 },
-        { key: 'after', label: '处理后', fields: ['after'], width: 220 },
-        { key: 'reason', label: '原因', fields: ['reason'], width: 380 },
-      ],
-      defer: rowsValue.length > 8,
+      columns: erpDesignColumns(sheetType),
+      renderCell: (row, column) => erpDesignCell(row, column, payload.techRequirements ?? payload.tech_requirements ?? null),
+      defer: false,
     })
   }
   return result

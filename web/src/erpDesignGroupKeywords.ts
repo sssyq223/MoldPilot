@@ -45,7 +45,6 @@ export function erpDesignGroupKeywordsFromRun(run: any): ErpDesignGroupKeywords[
 }
 
 export const erpDesignGroupKeywordColumns: ErpDesignColumn[] = [
-  { key: 'id', label: 'ID', fields: ['id'], width: 75 },
   { key: 'keyword', label: '关键词', fields: ['keywordText', 'keyword_text'], width: 210 },
   { key: 'remark', label: '备注', fields: ['remark'], width: 220 },
   { key: 'created', label: '创建时间', fields: ['createdAt', 'created_at'], width: 190 },
