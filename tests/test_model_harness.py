@@ -291,10 +291,12 @@ def context(core_tool_names=_DEFAULT_CORE, **kwargs):
 def test_business_tools_are_deferred_and_direct_calls_are_blocked():
     gateway = Gateway()
     model = InspectingRepliesModel([PROPOSAL])
-    with pytest.raises(RuntimeError, match='TOOL_FORBIDDEN'):
-        run_loop(context(core_tool_names=[]), model, gateway)
+    result = run_loop(context(core_tool_names=[]), model, gateway)
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert result['summary'] == harness_module.NOT_QUERIED_SUMMARY
     assert model.tool_names == [['ToolSearch']]
     assert gateway.physical_calls == 0
+    assert gateway.final == result
 
 
 def test_tool_search_activates_deferred_business_tool_for_next_turn():
@@ -1942,6 +1944,29 @@ def test_recovery_does_not_reset_deadline():
     assert model.calls == 0 and gateway.physical_calls == 0
 
 
+def test_deadline_after_prepared_proposal_closes_awaiting_approval():
+    messages = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'accept-1', 'type': 'function',
+            'function': {'name': 'query_projects', 'arguments': '{}'},
+        }]},
+        {'role': 'tool', 'tool_call_id': 'accept-1', 'content': json.dumps({
+            'evidence_id': 'e1',
+            'proposal': {'title': '确认接单'},
+        }, ensure_ascii=False)},
+    ]
+    gateway = Gateway()
+    result = run_loop(context(
+        deadline=time.time() - 1,
+        messages=messages,
+        evidence_ids=['e1'],
+    ), Model([]), gateway)
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert result['summary'] == harness_module.AWAITING_PREPARED_CARD_SUMMARY
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.final == result
+
+
 def test_default_main_run_has_no_arbitrary_wall_clock_deadline():
     gateway = Gateway()
     reply = {'role': 'assistant', 'content': json.dumps({
@@ -1997,8 +2022,11 @@ def test_loaded_skill_allows_sibling_read_tool_without_second_search():
 def test_unregistered_tool_is_not_executed():
     bad = copy.deepcopy(PROPOSAL); bad['tool_calls'][0]['function']['name'] = 'write_database'
     gateway = Gateway()
-    with pytest.raises(RuntimeError, match='TOOL_FORBIDDEN'): run_loop(context(), Model([bad]), gateway)
+    result = run_loop(context(), Model([bad]), gateway)
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert result['summary'] == harness_module.NOT_QUERIED_SUMMARY
     assert gateway.physical_calls == 0
+    assert gateway.final == result
 
 
 def test_fabricated_evidence_requests_repair_then_uses_a_real_tool_receipt():
@@ -2175,11 +2203,31 @@ def test_elliptical_action_can_use_recent_request_only_to_supply_business_object
 def test_recent_business_request_does_not_open_tools_for_unrelated_current_lookup():
     class InspectingConversationModel:
         def generate(self, messages, tools):
-            assert tools == []
+            names = [(tool.get('function') or {}).get('name') for tool in tools]
+            assert 'ToolSearch' in names or 'query_projects' in names
             return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '这是一般问题。',
                                            'evidence_ids': [], 'suggestions': []})}
+    gateway = Gateway()
     run_loop(context(prompt='查一下天气', recent_requests=['查询 SMOKE-M001 的项目计划']),
-             InspectingConversationModel(), Gateway())
+             InspectingConversationModel(), gateway)
+    assert gateway.physical_calls == 0
+
+
+def test_spoken_todo_question_allows_business_tools_without_object_keyword():
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': '有需要处理的待办吗',
+        'recent_requests': [],
+    })
+    assert harness_module._business_tool_activation_allowed({
+        'prompt': '重新查询',
+        'recent_requests': [],
+    })
+    assert not harness_module._business_tool_activation_allowed({
+        'prompt': '你好',
+        'recent_requests': ['查询 SMOKE-M001 的项目计划'],
+    })
+    assert harness_module._may_host_auto_authorized_read('有需要处理的待办吗')
+    assert not harness_module._may_host_auto_authorized_read('查一下天气')
 
 
 def test_duplicate_tool_call_enters_finalization_without_reexecuting():
@@ -2341,12 +2389,238 @@ def test_natural_language_final_after_evidence_gets_protocol_repair_not_wrapped(
     assert gateway.saved["protocol_repairs"] == 1
 
 
+def test_situational_protocol_close_distinguishes_not_queried_from_empty_board():
+    empty_messages = [{
+        'role': 'tool',
+        'content': json.dumps({
+            'model_context': {'summary': '本次查询结果是 0 条。', 'item_count': 0, 'items': []},
+            'evidence_id': 'e1',
+        }, ensure_ascii=False),
+    }]
+    not_queried = harness_module._situational_protocol_close(
+        prompt='查看现在有多少需要处理的待办',
+        messages=[],
+        evidence_ids=[],
+        attempted_tools=set(),
+        formal_action_requested=False,
+    )
+    assert not_queried['summary'] == harness_module.NOT_QUERIED_SUMMARY
+    assert not_queried['response_kind'] == 'CLARIFICATION'
+
+    empty = harness_module._situational_protocol_close(
+        prompt='查看现在有多少需要处理的待办',
+        messages=empty_messages,
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_board'},
+        formal_action_requested=False,
+        last_model_message={'content': json.dumps({
+            'response_kind': 'BUSINESS',
+            'summary': '目前没有需要处理的待办事项，待办列表为空。',
+            'evidence_ids': ['e1'],
+        }, ensure_ascii=False)},
+    )
+    assert empty['summary'] == '目前没有需要处理的待办事项，待办列表为空。'
+    assert empty['response_kind'] == 'BUSINESS'
+
+    accept_empty = harness_module._situational_protocol_close(
+        prompt='EO-260924-DJ9X 帮我接单',
+        messages=empty_messages,
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_board'},
+        formal_action_requested=True,
+    )
+    assert accept_empty['summary'] == harness_module.EMPTY_BOARD_ACTION_SUMMARY
+
+    buyer_empty = harness_module.spoken_close_from_checkpoint(
+        'PH-01这一笔订单帮我填价格：400，上限是600',
+        {
+            'messages': empty_messages,
+            'evidence_ids': ['e1'],
+            'attempted_tools': ['query_erp_outsource_followup_board'],
+            'last_model_message': {'content': json.dumps({
+                'response_kind': 'BUSINESS',
+                'summary': '当前没有待采购填报价。',
+            }, ensure_ascii=False)},
+        },
+    )
+    assert buyer_empty['summary'] == '当前没有待采购填报价。'
+    assert buyer_empty['response_kind'] == 'BUSINESS'
+
+    not_ready = harness_module._situational_protocol_close(
+        prompt='EO-260924-DJ9X 帮我接单',
+        messages=[{'role': 'tool', 'content': json.dumps({
+            'model_context': {'summary': '待接单 1 条', 'item_count': 1, 'items': [{'orderNo': 'EO-1'}]},
+        }, ensure_ascii=False)}],
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_board'},
+        formal_action_requested=True,
+    )
+    assert not_ready['summary'] == harness_module.ACTION_NOT_READY_SUMMARY
+    assert not_ready['response_kind'] == 'CLARIFICATION'
+
+    accept_ready = harness_module._situational_protocol_close(
+        prompt='有需要我处理的待办任务吗',
+        messages=[{'role': 'tool', 'content': json.dumps({
+            'model_context': {
+                'summary': '待接单 1 条',
+                'item_count': 1,
+                'items': [{'orderNo': 'EO-260924-IT01', 'mold': 'M260063', 'batch': 'M260063-P4', 'station': '待接单'}],
+            },
+        }, ensure_ascii=False)}],
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_board'},
+        formal_action_requested=False,
+    )
+    assert 'EO-260924-IT01' in accept_ready['summary']
+    assert '接单' in accept_ready['summary']
+    assert accept_ready['suggestions'] == ['接单', '拒单']
+    assert accept_ready['response_kind'] == 'BUSINESS'
+
+
+def test_empty_board_protocol_exhaustion_speaks_instead_of_failing():
+    class EmptyBoardGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'summary': '本次查询结果是 0 条。',
+                    'item_count': 0,
+                    'items': [],
+                },
+            }
+
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'board-call', 'type': 'function',
+        'function': {'name': 'query_projects', 'arguments': '{}'},
+    }]}
+    invalid = {'content': '目前没有待办。'}
+    gateway = EmptyBoardGateway()
+    result = run_loop(
+        context(prompt='查看现在有多少需要处理的待办'),
+        Model([call, invalid, invalid, invalid]),
+        gateway,
+    )
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['summary'] == harness_module.EMPTY_BOARD_SUMMARY
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.final == result
+    assert 'error_code' not in result
+
+
+def test_pending_accept_board_unlocks_prepare_and_speaks_instead_of_forbidden():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+    }}
+    accept = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_accept',
+        'description': '准备确认接单',
+        'parameters': {'type': 'object', 'properties': {'order_no': {'type': 'string'}}, 'required': ['order_no']},
+    }}
+    reject = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_reject',
+        'description': '准备拒绝接单',
+        'parameters': {'type': 'object', 'properties': {'order_no': {'type': 'string'}}, 'required': ['order_no']},
+    }}
+
+    class BoardGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            self.names = getattr(self, 'names', [])
+            self.names.append(key)
+            if key == 'query_erp_outsource_processor_board':
+                return {
+                    'evidence_id': 'e-board',
+                    'model_context': {
+                        'summary': '待接单 1 条',
+                        'item_count': 1,
+                        'counts': {'待接单': 1},
+                        'items': [{
+                            'orderNo': 'EO-260924-IT01',
+                            'mold': 'M260063',
+                            'batch': 'M260063-P4',
+                            'station': '待接单',
+                        }],
+                    },
+                }
+            return {
+                'evidence_id': 'e-accept',
+                'proposal': {'title': '确认接单 EO-260924-IT01'},
+            }
+
+    skills = [{
+        'key': 'outsource_processor_ops',
+        'activation_route': 'authorized',
+        'tools': ['query_erp_outsource_processor_board'],
+        'optional_tools': [
+            'prepare_erp_outsource_processor_accept',
+            'prepare_erp_outsource_processor_reject',
+        ],
+        'activation_tools': ['query_erp_outsource_processor_board'],
+        'auto_activation_queries': ['待办'],
+        'host_auto_invoke_empty_arguments': True,
+    }]
+    annotations = {
+        'prepare_erp_outsource_processor_accept': {'readOnlyHint': False},
+        'prepare_erp_outsource_processor_reject': {'readOnlyHint': False},
+    }
+    prepare_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'accept-1', 'type': 'function',
+        'function': {
+            'name': 'prepare_erp_outsource_processor_accept',
+            'arguments': json.dumps({'order_no': 'EO-260924-IT01'}),
+        },
+    }]}
+    awaiting = {'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请确认是否接单 EO-260924-IT01，也可以拒单。',
+        'evidence_ids': ['e-accept'],
+        'suggestions': ['拒单'],
+    }, ensure_ascii=False)}
+    gateway = BoardGateway()
+    model = InspectingRepliesModel([prepare_call, awaiting])
+    result = run_loop(context(
+        prompt='有需要我处理的待办任务吗',
+        core_tool_names=[],
+        tools=[board, accept, reject],
+        skills=skills,
+        tool_annotations=annotations,
+    ), model, gateway)
+    assert gateway.names == [
+        'query_erp_outsource_processor_board',
+        'prepare_erp_outsource_processor_accept',
+    ]
+    assert any('prepare_erp_outsource_processor_accept' in names for names in model.tool_names)
+    assert any('prepare_erp_outsource_processor_reject' in names for names in model.tool_names)
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert '接单' in result['summary']
+
+    forbidden = copy.deepcopy(PROPOSAL)
+    forbidden['tool_calls'][0]['function']['name'] = 'write_database'
+    spoken = run_loop(context(
+        prompt='有需要我处理的待办任务吗',
+        core_tool_names=[],
+        tools=[board, accept, reject],
+        skills=skills,
+        tool_annotations=annotations,
+    ), Model([forbidden]), BoardGateway())
+    assert spoken['response_kind'] == 'BUSINESS'
+    assert 'EO-260924-IT01' in spoken['summary']
+    assert spoken['suggestions'] == ['接单', '拒单']
+    assert 'error_code' not in spoken
+
+
 def test_protocol_repair_is_bounded_and_fails_closed():
     gateway = Gateway()
     invalid = {"content": "根据已有证据，当前未见客户验收依据。"}
-    with pytest.raises(RuntimeError, match="MODEL_OUTPUT_INVALID"):
-        run_loop(context(), Model([PROPOSAL, invalid, invalid, invalid]), gateway)
-    assert gateway.final is None
+    result = run_loop(context(), Model([PROPOSAL, invalid, invalid, invalid]), gateway)
+    assert result['response_kind'] == 'BUSINESS'
+    assert result['summary'] == harness_module.QUERIED_FALLBACK_SUMMARY
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.final == result
+    assert gateway.saved['protocol_repairs'] == 2
 
 
 def test_evidence_loop_is_forced_to_finalize_at_model_turn_budget():
@@ -2791,6 +3065,112 @@ def test_context_budget_compacts_old_dialogue_but_keeps_attachment_index_and_cur
     assert gateway.saved['context_compactions'][0]['strategy'] == 'tool-and-conversation-summary'
 
 
+
+
+def test_empty_processor_board_on_accept_is_not_protocol_failure():
+    from app.tool_gateway import SKILLS
+
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '只读读取本加工商可见的委外待办：待报价、待接单等。不含其他供应商订单。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    fulfillment = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_fulfillment',
+        'description': '只读查询本加工商收料待办：零件委外待确认收料，以及仍在等仓库发料/备料的工单。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    ship = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_product_ship',
+        'description': '只读查询本加工商可成品发货行。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    accept = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_accept',
+        'description': '准备确认接单',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    receipt = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_receipt',
+        'description': '准备确认零件/模具委外原料收货',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    ship_write = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_product_ship',
+        'description': '准备成品发货',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+
+    class EmptyBoardGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'summary': 'M260063-P2 的零件/工序委外全部分站共 0 条。\n本次查询结果是 0 条。',
+                    'item_count': 0,
+                    'items': [],
+                },
+            }
+
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'board-call', 'type': 'function',
+        'function': {
+            'name': 'query_erp_outsource_processor_board',
+            'arguments': json.dumps({
+                'todo_tab': 'accept',
+                'batch': 'M260063-P2',
+                'order_no': 'EO-260924-DJ9X',
+            }),
+        },
+    }]}
+    conversation = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CONVERSATION',
+        'summary': '订单 EO-260924-DJ9X、模具号 M260063-P2 目前没有待接单。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    business = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '查了当前 ERP，EO-260924-DJ9X / M260063-P2 已经不在待接单，没法接。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    skills = [
+        {'key': 'outsource_processor_query', **SKILLS['outsource_processor_query']},
+        {'key': 'outsource_processor_ops', **SKILLS['outsource_processor_ops']},
+        {'key': 'outsource_processor_fulfillment', **SKILLS['outsource_processor_fulfillment']},
+        {'key': 'outsource_processor_product_ship', **SKILLS['outsource_processor_product_ship']},
+    ]
+    tools = [board, fulfillment, ship, accept, receipt, ship_write]
+    annotations = {
+        'query_erp_outsource_processor_board': {'readOnlyHint': True},
+        'query_erp_outsource_processor_fulfillment': {'readOnlyHint': True},
+        'query_erp_outsource_processor_product_ship': {'readOnlyHint': True},
+        'prepare_erp_outsource_processor_accept': {'readOnlyHint': False},
+        'prepare_erp_outsource_processor_receipt': {'readOnlyHint': False},
+        'prepare_erp_outsource_processor_product_ship': {'readOnlyHint': False},
+    }
+    prompt = 'EO-260924-DJ9X M260063 M260063-P2 订单和模具号是这个的帮我接单'
+
+    for final in (conversation, business):
+        gateway = EmptyBoardGateway()
+        result = run_loop(
+            context(
+                prompt=prompt,
+                core_tool_names=[],
+                tools=tools,
+                skills=skills,
+                tool_annotations=annotations,
+            ),
+            TranscriptModel([call, final]),
+            gateway,
+        )
+        assert result['evidence_ids'] == ['e1']
+        assert gateway.physical_calls == 1
+        assert gateway.saved['protocol_repairs'] == 0
+        assert result['summary']
 
 
 def test_followup_user_context_is_data_and_current_request_is_last():

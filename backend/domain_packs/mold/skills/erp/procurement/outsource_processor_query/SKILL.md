@@ -15,7 +15,7 @@
 | 我的委外、待报价、待接单、有几个 | `query_erp_outsource_processor_board` |
 | 某一模具到哪一步 | `query_erp_outsource_processor_progress`（要模具号） |
 
-没有模具号的「有没有 / 有几个」直接查看板。已经查过且列表为空时，明确说「现在是 0 条」。
+没有模具号的「有没有 / 有几个」直接查看板。已经查过且列表为空时，明确说「现在是 0 条」。查到待接单时提醒可以接单或拒单，办理走 `outsource_processor_ops` 的 prepare，不要改口去查履约或发货。
 
 ## 有证据后展示
 

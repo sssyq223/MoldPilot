@@ -42,7 +42,7 @@
   → prepare_* 出确认卡
   → 本人确认后才调 ERP
 
-按用户本轮意图选工具，不要等特定口令。只问数量或待办时先 query，不要 prepare。用户要报价、接单或拒单时，用对应 `prepare_*` 出确认卡。
+按用户本轮意图选工具，不要等特定口令。只问数量或待办时先 query。查到待接单且能锁定唯一订单时，本轮直接 `prepare_erp_outsource_processor_accept` 出接单确认卡，并说明也可以拒单；不要再 ToolSearch 履约或发货。多条待接单先列出订单号等用户选定。用户明确要报价、接单或拒单时，用对应 `prepare_*` 出确认卡。
 ```
 
 1. 先用 `query_erp_outsource_processor_board`（或已有查询结果）锁定本供应商单据。同一模具多单时列出候选的订单号、模具号、批次号，等用户选定后再 prepare。

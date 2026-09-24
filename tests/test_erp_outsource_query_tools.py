@@ -1,3 +1,5 @@
+import json
+
 from domain_packs.mold import tool_gateway
 from domain_packs.mold.erp.procurement import erp_outsource_scope
 from domain_packs.mold.ports.errors import DomainError
@@ -59,6 +61,29 @@ def test_outsource_query_tools_use_role_read_permission():
         assert key in tool_gateway.TOOLS
 
 
+def test_board_input_accepts_order_no():
+    data = erp_outsource_query_tools.FollowupBoardInput.model_validate({
+        "order_no": "EO-260924-DJ9X",
+        "mold": "M260063",
+        "batch": "M260063-P2",
+        "todo_tab": "accept",
+        "reason": "ignored extra",
+    })
+    assert data.order_no == "EO-260924-DJ9X"
+    assert data.mold == "M260063"
+    assert data.batch == "M260063-P2"
+    assert data.todo_tab == "accept"
+
+
+def test_board_question_extracts_eo_order_no():
+    parsed = buyer_todo.parse_question(
+        "EO-260924-DJ9X M260063 M260063-P2 订单和模具号是这个的帮我接单"
+    )
+    assert parsed["order_no"] == "EO-260924-DJ9X"
+    assert parsed["mold_batch"] == "M260063-P2"
+    assert parsed["station"] == "accept"
+
+
 def test_progress_input_accepts_empty_order_no():
     data = erp_outsource_query_tools.FollowupProgressInput.model_validate({
         "mold": "M260063",
@@ -69,6 +94,37 @@ def test_progress_input_accepts_empty_order_no():
     assert data.mold == "M260063"
     assert data.batch == "M260063-P1"
     assert data.order_no is None
+
+
+def test_buyer_todo_question_treats_spoken_accept_as_station():
+    parsed = buyer_todo.parse_question("需要我接单的工单有几个")
+    assert parsed["station"] == "accept"
+
+
+def test_model_context_keeps_board_short():
+    payload = {
+        "summary": "ERP 委外待办 的零件/工序委外全部分站共 10 条。\n- 待接单：10 条\n" + "\n".join(
+            f"- 待接单 工序委外 EO-{index} M260063 M260063-P1 零件很长很长很长"
+            for index in range(10)
+        ),
+        "counts": {"待接单": 10, "待报价": 0},
+        "items": [{
+            "orderNo": f"EO-{index}",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "stationLabel": "待接单",
+            "outsourceTypeLabel": "工序委外",
+            "partDetails": "PH-01 上夹板（很长很长的规格说明）",
+            "ourQuoteAmount": 300,
+            "finalDealAmount": 400,
+        } for index in range(10)],
+    }
+    context = erp_outsource_query_tools._model_context(payload)
+    assert context["item_count"] == 10
+    assert len(context["items"]) == 8
+    assert "ourQuote" not in context["items"][0]
+    assert "\n-" not in context["summary"]
+    assert len(json.dumps(context, ensure_ascii=False)) < 1200
 
 
 def test_buyer_todo_question_picks_station():

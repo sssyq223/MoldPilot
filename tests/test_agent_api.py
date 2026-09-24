@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -202,11 +203,60 @@ def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monk
     assert client.post(f"/internal/runs/{run['id']}/fail", headers=worker_headers(),
                        json={'epoch': claimed['epoch'], 'code': 'MODEL_OUTPUT_INVALID'}).status_code == 200
     history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
-    failed = history[0]
-    assert failed['status'] == 'FAILED'
-    assert failed['trace'][0]['type'] == 'tool_interrupted'
-    assert failed['trace'][0]['tool'] == 'ToolSearch'
-    assert failed['trace'][-1]['error_code'] == 'MODEL_OUTPUT_INVALID'
+    closed = history[0]
+    assert closed['status'] == 'SUCCEEDED'
+    assert closed['trace'][0]['type'] == 'tool_interrupted'
+    assert closed['trace'][0]['tool'] == 'ToolSearch'
+    assert closed['trace'][-1].get('error_code') in {None, ''}
+    assert closed['trace'][-1].get('summary')
+
+
+def test_budget_fail_with_proposal_stays_awaiting_approval(client, data, monkeypatch):
+    ids, factory = data
+    run, claimed = start(client, monkeypatch)
+    with factory.begin() as db:
+        db.add(Step(
+            id='step-accept',
+            run_id=run['id'],
+            sequence=0,
+            tool='prepare_erp_outsource_processor_accept',
+            request_hash='hash',
+            result={'proposal': {'kind': 'erp_outsource_processor_accept', 'title': '接单'}},
+        ))
+    assert client.post(f"/internal/runs/{run['id']}/fail", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'code': 'BUDGET_EXCEEDED'}).status_code == 200
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    closed = history[0]
+    assert closed['status'] == 'SUCCEEDED'
+    assert closed['result']['response_kind'] == 'AWAITING_APPROVAL'
+    assert '确认卡' in (closed['result'].get('summary') or '')
+    assert closed['trace'][-1].get('error_code') in {None, ''}
+    assert closed['trace'][-1].get('response_kind') == 'AWAITING_APPROVAL'
+
+
+def test_tool_forbidden_fail_speaks_instead_of_error_code(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    checkpoint = {
+        'messages': [{'role': 'tool', 'content': json.dumps({
+            'model_context': {
+                'summary': '待接单 1 条',
+                'item_count': 1,
+                'items': [{'orderNo': 'EO-260924-IT01', 'station': '待接单'}],
+            },
+        }, ensure_ascii=False)}],
+        'evidence_ids': [],
+        'attempted_tools': ['query_erp_outsource_processor_board'],
+        'turn': 1, 'phase': 'VALIDATING',
+    }
+    assert client.post(f"/internal/runs/{run['id']}/checkpoint", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'checkpoint': checkpoint}).status_code == 200
+    assert client.post(f"/internal/runs/{run['id']}/fail", headers=worker_headers(),
+                       json={'epoch': claimed['epoch'], 'code': 'TOOL_FORBIDDEN'}).status_code == 200
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()
+    closed = history[0]
+    assert closed['status'] == 'SUCCEEDED'
+    assert closed['trace'][-1].get('error_code') in {None, ''}
+    assert closed['trace'][-1].get('summary')
 
 
 def test_tool_search_result_is_projected_as_harness_activity(client, data, monkeypatch):

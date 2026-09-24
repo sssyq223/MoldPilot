@@ -27,6 +27,8 @@ READ_ONLY_INTENT_TERMS = getattr(_policy, "READ_ONLY_INTENT_TERMS", ())
 OUTSOURCE_BOARD_NOUNS = getattr(_policy, "OUTSOURCE_BOARD_NOUNS", ())
 READ_ONLY_QUESTION_TERMS = getattr(_policy, "READ_ONLY_QUESTION_TERMS", ())
 WRITE_SIGNAL_TERMS = getattr(_policy, "WRITE_SIGNAL_TERMS", ())
+STATION_PREPARE_TOOLS = getattr(_policy, "STATION_PREPARE_TOOLS", {})
+STATION_NEXT_SUGGESTIONS = getattr(_policy, "STATION_NEXT_SUGGESTIONS", {})
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = getattr(_policy, "UNAMBIGUOUS_FORMAL_ACTION_TERMS", FORMAL_ACTION_TERMS)
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
@@ -252,6 +254,288 @@ def _tool_result_for_model(result, *, prefer_model_context=False):
     return projected
 
 
+NOT_QUERIED_SUMMARY = "这一遍还没有查。请再说一次要看哪些单，我马上帮你查。"
+NOT_QUERIED_ACTION_SUMMARY = "这一遍还没有查到可办的单，还不能办理。请再说一次要办哪一张。"
+EMPTY_BOARD_SUMMARY = "已经查过了，当前没有需要处理的待办。"
+EMPTY_BOARD_ACTION_SUMMARY = "已经查过了，当前看不到可办的单，没法办理。"
+QUERY_FAILED_SUMMARY = "查了，但这次没有拿到查询结果。请再说一次要看哪些单。"
+ACTION_NOT_READY_SUMMARY = "已经查到可办的单，但确认卡还没准备好，这一遍没有办成。请再说一次要办哪一张。"
+QUERIED_FALLBACK_SUMMARY = "已经查过了，请看上面的查询结果。"
+ACTIONABLE_BOARD_SUMMARY = "已经查到可办的待办。请确认下一步是接单还是拒单。"
+AWAITING_PREPARED_CARD_SUMMARY = "已准备好确认卡，请在下方核对后确认。"
+EMPTY_BOARD_MARKERS = (
+    "0 条", "没有待", "没有需要处理", "不在待接单", "列表为空", "看不到", "没法办理", "没有可办",
+)
+
+
+def _last_model_summary(last_model_message):
+    raw = last_model_message
+    if isinstance(raw, dict):
+        raw = raw.get("content") or raw.get("summary")
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("summary") or "").strip()
+
+
+def _summary_reports_empty(summary):
+    text = str(summary or "")
+    return any(marker in text for marker in EMPTY_BOARD_MARKERS)
+
+
+def _situational_protocol_close(
+    *,
+    prompt,
+    messages,
+    evidence_ids,
+    attempted_tools,
+    formal_action_requested,
+    last_model_message=None,
+):
+    """Close a bounded protocol loop with a spoken business reply, not a crash.
+
+    “没调用工具”和“查了但是 0 条”必须分开说；用户面不得出现协议失败。
+    """
+    queried = bool(evidence_ids)
+    attempted = bool(attempted_tools)
+    empty = _reads_show_no_actionable_item(messages)
+    last_summary = _last_model_summary(last_model_message)
+    if _messages_have_proposal(messages):
+        return {
+            "response_kind": "AWAITING_APPROVAL",
+            "summary": last_summary or AWAITING_PREPARED_CARD_SUMMARY,
+            "evidence_ids": [item for item in evidence_ids if isinstance(item, str)],
+            "suggestions": [],
+        }
+    if not queried and not attempted:
+        kind = "CLARIFICATION"
+        summary = NOT_QUERIED_ACTION_SUMMARY if formal_action_requested else NOT_QUERIED_SUMMARY
+    elif not queried:
+        kind = "CLARIFICATION"
+        summary = QUERY_FAILED_SUMMARY
+    elif empty:
+        kind = "BUSINESS"
+        if last_summary and _summary_reports_empty(last_summary):
+            summary = last_summary
+        else:
+            summary = EMPTY_BOARD_ACTION_SUMMARY if formal_action_requested else EMPTY_BOARD_SUMMARY
+    else:
+        actionable = _actionable_board_close(messages)
+        if actionable:
+            kind = "CLARIFICATION" if formal_action_requested else "BUSINESS"
+            summary = last_summary or actionable["summary"]
+            return {
+                "response_kind": kind,
+                "summary": summary,
+                "evidence_ids": [item for item in evidence_ids if isinstance(item, str)],
+                "suggestions": list(actionable.get("suggestions") or []),
+            }
+        kind = "CLARIFICATION" if formal_action_requested else "BUSINESS"
+        summary = ACTION_NOT_READY_SUMMARY if formal_action_requested else (last_summary or QUERIED_FALLBACK_SUMMARY)
+    return {
+        "response_kind": kind,
+        "summary": summary,
+        "evidence_ids": [item for item in evidence_ids if isinstance(item, str)],
+        "suggestions": [],
+    }
+
+
+PROTOCOL_CLOSE_CODES = (
+    "MODEL_OUTPUT_INVALID",
+    "TOOL_FORBIDDEN",
+    "CONTEXT_BUDGET_EXCEEDED",
+    "BUDGET_EXCEEDED",
+)
+
+
+def spoken_close_from_checkpoint(prompt, checkpoint=None):
+    """Host-wide spoken close for any role when the model envelope cannot be kept.
+
+    Buyer, processor, warehouse, quality and approval all share this path.
+    """
+    ck = checkpoint if isinstance(checkpoint, dict) else {}
+    formal = bool(_has_formal_action_intent(prompt) and _has_business_object(prompt))
+    return _situational_protocol_close(
+        prompt=prompt or "",
+        messages=ck.get("messages") or [],
+        evidence_ids=ck.get("evidence_ids") or [],
+        attempted_tools=set(ck.get("attempted_tools") or []),
+        formal_action_requested=formal,
+        last_model_message=ck.get("last_model_message"),
+    )
+
+
+def _result_has_proposal(payload, checkpoint):
+    evidence = payload.get("evidence") if isinstance(payload, dict) else None
+    if isinstance(evidence, list) and any(
+        isinstance(item, dict) and isinstance(item.get("proposal"), dict)
+        for item in evidence
+    ):
+        return True
+    ck = checkpoint if isinstance(checkpoint, dict) else {}
+    return _messages_have_proposal(ck.get("messages") or [])
+
+
+def public_spoken_result(prompt, result=None, checkpoint=None):
+    """Replace protocol crash codes with a spoken close for every user-facing trace.
+
+    Historical runs that already stored TOOL_FORBIDDEN / MODEL_OUTPUT_INVALID
+    must not keep leaking the error bar after the host learned to speak.
+    A prepared confirmation card always wins over a budget/protocol close.
+    """
+    payload = result if isinstance(result, dict) else {}
+    if str(payload.get("error_code") or "") not in PROTOCOL_CLOSE_CODES:
+        return payload
+    spoken = spoken_close_from_checkpoint(prompt, checkpoint)
+    if _result_has_proposal(payload, checkpoint):
+        spoken["response_kind"] = "AWAITING_APPROVAL"
+        spoken["summary"] = AWAITING_PREPARED_CARD_SUMMARY
+        spoken["suggestions"] = list(spoken.get("suggestions") or [])
+    cleaned = {key: value for key, value in spoken.items() if key != "error_code"}
+    if payload.get("evidence"):
+        cleaned["evidence"] = payload["evidence"]
+    return cleaned
+
+
+def _reads_show_no_actionable_item(messages):
+    """True when an authoritative board/todo read already returned an empty list.
+
+    A formal 接单/办理 request must not fail the protocol just because the
+    ticket disappeared between the last UI glance and this turn.  The model
+    may then say the current board is empty instead of inventing a prepare.
+    """
+    for message in messages or []:
+        if message.get("role") != "tool":
+            continue
+        raw = message.get("content")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict) or payload.get("tool_error"):
+            continue
+        context = payload.get("model_context")
+        if isinstance(context, dict) and context.get("item_count") == 0:
+            return True
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("items"), list) and not data.get("items"):
+            return True
+        summary = " ".join(
+            str(part or "")
+            for part in (
+                payload.get("summary"),
+                context.get("summary") if isinstance(context, dict) else "",
+                data.get("summary") if isinstance(data, dict) else "",
+            )
+        )
+        if "共 0 条" in summary or "本次查询结果是 0 条" in summary:
+            return True
+    return False
+
+
+def _iter_tool_payloads(messages):
+    for message in messages or []:
+        if message.get("role") != "tool":
+            continue
+        raw = message.get("content")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and not payload.get("tool_error"):
+            yield payload
+
+
+def _messages_have_proposal(messages):
+    return any(isinstance(payload.get("proposal"), dict) for payload in _iter_tool_payloads(messages))
+
+
+def _board_actionable_items(messages):
+    """Visible board/todo rows that already name a current station."""
+    found = []
+    seen = set()
+    for payload in _iter_tool_payloads(messages):
+        buckets = []
+        context = payload.get("model_context")
+        data = payload.get("data")
+        if isinstance(context, dict):
+            buckets.append(context)
+        if isinstance(data, dict):
+            buckets.append(data)
+        for bucket in buckets:
+            for item in bucket.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                station = str(item.get("station") or item.get("stationLabel") or "").strip()
+                if not station:
+                    continue
+                identity = (
+                    station,
+                    str(item.get("orderNo") or item.get("order_no") or "").strip(),
+                    str(item.get("mold") or item.get("moldNo") or item.get("moldFamily") or "").strip(),
+                    str(item.get("batch") or item.get("moldBatch") or "").strip(),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                found.append({
+                    "station": station,
+                    "orderNo": identity[1],
+                    "mold": identity[2],
+                    "batch": identity[3],
+                })
+            counts = bucket.get("counts")
+            if isinstance(counts, dict):
+                for station, count in counts.items():
+                    if station in STATION_PREPARE_TOOLS and isinstance(count, (int, float)) and count > 0:
+                        identity = (str(station), "", "", "")
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        found.append({"station": str(station), "orderNo": "", "mold": "", "batch": ""})
+    return found
+
+
+def _station_prepare_names(items, available_names=None):
+    names = []
+    allowed = set(available_names) if available_names is not None else None
+    for item in items or []:
+        station = item if isinstance(item, str) else (item or {}).get("station")
+        for name in STATION_PREPARE_TOOLS.get(station) or ():
+            if allowed is not None and name not in allowed:
+                continue
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _actionable_board_close(messages):
+    items = [item for item in _board_actionable_items(messages)
+             if item.get("station") in STATION_PREPARE_TOOLS]
+    if not items:
+        return None
+    first = items[0]
+    ident = " ".join(part for part in (first.get("orderNo"), first.get("mold"), first.get("batch")) if part)
+    station = first["station"]
+    if station == "待接单":
+        summary = f"已经查到待接单{(' ' + ident) if ident else ''}。请确认接单，也可以拒单。"
+    else:
+        summary = f"已经查到{station}{(' ' + ident) if ident else ''}。请确认下一步办理。"
+    return {
+        "summary": summary or ACTIONABLE_BOARD_SUMMARY,
+        "suggestions": list(STATION_NEXT_SUGGESTIONS.get(station) or ()),
+    }
+
+
 def _tool_accepts_empty_arguments(tool):
     """Whether a declared function can be invoked with an empty JSON object.
 
@@ -473,6 +757,12 @@ def _is_design_attachment_upload_request(context):
 
 
 def _business_tool_activation_allowed(context):
+    """Whether this turn may see business tools. The model then chooses.
+
+    Do not require a business-object keyword in the current sentence.
+    Keep tools hidden only for greetings and workbench/debug chatter, or
+    when an upload-shaped attachment has no design-upload skill.
+    """
     current_prompt = context.get("prompt") or ""
     # A short affirmative answer to the parser's own confirmation is a
     # continuation of that attachment request. It must retain ToolSearch, but
@@ -490,24 +780,32 @@ def _business_tool_activation_allowed(context):
                 normalized = _compact_intent_text(text)
                 return "解析" in normalized and ("确认" in normalized or "是否" in normalized)
         return False
-    has_current_business_object = _has_business_object(current_prompt)
     has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
                           or _contains_any(current_prompt, DESIGN_BUSINESS_ACTION_HINTS)
                           or _has_formal_action_intent(current_prompt))
-    has_design_attachment_request = _is_design_attachment_upload_request(context)
     has_workbench_support = _contains_any(current_prompt, WORKBENCH_SUPPORT_HINTS)
     if has_workbench_support and not has_current_action:
         return False
-    # Exposing ToolSearch is not a business read by itself. Once the current
-    # turn names a business object, let the model select a bounded read tool
-    # even when the question uses no allow-listed verb (for example 密度是多少).
-    if has_current_business_object or has_design_attachment_request:
+    if (
+        _contains_any(current_prompt, DESIGN_ATTACHMENT_ACTION_HINTS)
+        and _has_design_list_attachment(context)
+        and not _has_design_upload_skill(context)
+    ):
+        return False
+    return True
+
+
+def _may_host_auto_authorized_read(prompt):
+    """Host may auto-read a listing; the model still sees tools either way.
+
+    A generic 查一下 is not enough, otherwise “查一下天气” would dump the
+    processor board. 待办/工单/分站名 or a named business object is enough.
+    """
+    if not _is_read_only_request(prompt):
+        return False
+    if _has_business_object(prompt):
         return True
-    # Prior requests never activate tools by themselves. They may only supply
-    # the omitted object after this turn explicitly asks to inspect/continue it.
-    recent_text = "\n".join(context.get("recent_requests") or [])
-    return bool(_is_elliptical_business_action(current_prompt)
-                and _has_business_object(recent_text))
+    return _contains_any(prompt, (*OUTSOURCE_BOARD_NOUNS, "待办", "工单", "单子"))
 
 
 def _tool_search_schema():
@@ -682,6 +980,10 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
         searchable = (name + " " + _tool_description(tool)).lower()
         if terminal_term and terminal_term in searchable:
             score += 400
+        if (("接了" in normalized or "我接" in normalized) and "接单" in searchable):
+            score += 500
+        if (("过了" in normalized or "先过" in normalized) and "通过" in searchable):
+            score += 500
         if name in required and _is_read_query_tool(name):
             score += 240
         scored.append((score, position, name))
@@ -727,6 +1029,7 @@ def _same_skill_deferred_tools(
     active_skill_keys,
     tool_annotations,
     action_intent=False,
+    allowed_writes=(),
 ):
     """Read tools whose owning skill is already loaded may skip a second ToolSearch.
 
@@ -734,12 +1037,15 @@ def _same_skill_deferred_tools(
     follow-up reader from the same skill (for example query_quote_compare after
     query_buyer_todo) is still authorized; failing the run as TOOL_FORBIDDEN
     after a successful read is worse than activating the sibling tool.
+    Write tools stay hidden on a look-up unless the board already named a
+    matching station (for example 待接单 → accept/reject).
     """
     allowed = []
+    extra_writes = set(allowed_writes or ())
     for name in names:
         if not name or name not in deferred_tools:
             continue
-        if _is_write_capable_tool(name, tool_annotations) and not action_intent:
+        if _is_write_capable_tool(name, tool_annotations) and not action_intent and name not in extra_writes:
             continue
         if any(
             name in {*group["tools"], *group["required"], *group["optional"]}
@@ -1257,21 +1563,41 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 continue
             group_already_active = any(name in active_tool_names for name in group["tools"])
             if authorized_route:
-                selected = [name for name in group["tools"] if name in all_tools]
-                required = set(group.get("required") or [])
+                required = [name for name in (group.get("required") or []) if name in all_tools]
+                is_board_group = any(
+                    name.endswith("_board") or name.endswith("_todos") for name in required
+                )
                 if write_tools_allowed:
-                    # Board + prepare_*. Extra read-detail tools such as
-                    # order_progress steal the turn after the board already
-                    # listed the row the user asked to fill.
-                    selected = [
-                        name for name in selected
-                        if name in required or _is_write_capable_tool(name, tool_annotations)
+                    ranked = _rank_group_tools(
+                        normalized_prompt, group, auto_deferred,
+                        action_intent=True,
+                        current_prompt=auto_prompt,
+                        tool_annotations=tool_annotations,
+                    )
+                    writes = [
+                        name for name in ranked
+                        if _is_write_capable_tool(name, tool_annotations)
                     ]
+                    if writes:
+                        selected = list(dict.fromkeys([*required, *writes]))
+                    elif is_board_group:
+                        selected = required
+                    else:
+                        selected = []
                 else:
-                    selected = [
-                        name for name in selected
-                        if not _is_write_capable_tool(name, tool_annotations)
+                    reads = [
+                        name for name in (required or group["tools"])
+                        if name in all_tools and not _is_write_capable_tool(name, tool_annotations)
                     ]
+                    if is_board_group:
+                        selected = required
+                    elif _group_priority_matches(auto_prompt, group):
+                        selected = reads
+                    else:
+                        selected = [
+                            name for name in reads
+                            if name.endswith("_board") or name.endswith("_todos")
+                        ]
             else:
                 selected = _rank_group_tools(
                     normalized_prompt, group, auto_deferred,
@@ -1282,14 +1608,23 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             active_tool_names.update(selected)
             if selected or group_already_active:
                 load_selected_skills(selected, [group["key"]])
-            if group.get("requires_tool_evidence"):
-                required_evidence_tools.update(group.get("required") or selected)
+            if group.get("requires_tool_evidence") and (selected or group_already_active):
+                # Authorized packs share one login.  A 接单 turn must not inherit
+                # 收料/发货 evidence obligations just because those skills are
+                # assigned.  Only demand reads from skills this prompt actually
+                # named, or from non-authorized groups that already matched.
+                prompt_relevant = (
+                    _group_priority_matches(auto_prompt, group)
+                    or any(alias in normalized_prompt for alias in aliases)
+                )
+                if (not authorized_route) or prompt_relevant:
+                    required_evidence_tools.update(group.get("required") or selected)
             host_auto_queries = [str(alias).strip().lower()
                                  for alias in group.get("host_auto_invoke_queries", [])
                                  if str(alias).strip()]
             host_auto_ok = bool(group.get("host_auto_invoke_empty_arguments"))
             if host_auto_ok and authorized_route:
-                host_auto_ok = _is_read_only_request(auto_prompt)
+                host_auto_ok = _may_host_auto_authorized_read(auto_prompt)
             elif host_auto_ok:
                 host_auto_ok = (not host_auto_queries
                                 or any(alias in normalized_prompt for alias in host_auto_queries))
@@ -1441,10 +1776,53 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         digest = hashlib.sha256((name + "\n" + canonical).encode("utf-8")).hexdigest()
         return name + ":" + digest, arguments
 
+    spoken_result = None
+
+    def spoken_protocol_close():
+        nonlocal spoken_result, streaming_model_message
+        if spoken_result is not None:
+            return
+        spoken_result = _situational_protocol_close(
+            prompt=current_prompt,
+            messages=messages,
+            evidence_ids=evidence_ids,
+            attempted_tools=attempted_tools,
+            formal_action_requested=formal_action_requested,
+            last_model_message=last_model_message,
+        )
+        streaming_model_message = None
+        save()
+        gateway.finish(spoken_result)
+
+    def close_if_proposal_ready():
+        if _messages_have_proposal(messages) or any(
+            outcome.get("status") == "success" for outcome in action_outcomes.values()
+        ):
+            spoken_protocol_close()
+            return True
+        return False
+
+    def station_write_names():
+        return _station_prepare_names(_board_actionable_items(messages), set(all_tools))
+
+    def activate_named_tools(names):
+        activated = []
+        for name in names:
+            if name not in all_tools:
+                continue
+            if name not in active_tool_names:
+                active_tool_names.add(name)
+                deferred_tools.pop(name, None)
+                activated.append(name)
+        if activated:
+            load_selected_skills(activated)
+        return activated
+
     def request_protocol_repair(reminder):
         nonlocal finalizing, protocol_repairs, next_model_instructions, streaming_model_message
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
-            raise RuntimeError("MODEL_OUTPUT_INVALID")
+            spoken_protocol_close()
+            return
         finalizing = True
         protocol_repairs += 1
         streaming_model_message = None
@@ -1454,7 +1832,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     def request_tool_repair(reminder):
         nonlocal protocol_repairs, next_model_instructions, streaming_model_message
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
-            raise RuntimeError("MODEL_OUTPUT_INVALID")
+            spoken_protocol_close()
+            return
         protocol_repairs += 1
         streaming_model_message = None
         next_model_instructions.append(reminder)
@@ -1491,6 +1870,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     def check_budget():
         nonlocal messages, compactions
         if deadline is not None and time.time() >= deadline:
+            if close_if_proposal_ready():
+                return
             raise RuntimeError("BUDGET_EXCEEDED")
         visible_tools = [] if finalizing else active_tools()
         usage = usage_snapshot(model_messages(), visible_tools,
@@ -1514,11 +1895,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                    compactions=compactions,
                                    use_provider_input_tokens=False)
         if usage["used_tokens"] > usage["safe_limit"]:
+            if close_if_proposal_ready():
+                return
             raise RuntimeError("CONTEXT_BUDGET_EXCEEDED")
 
     while True:
+        if spoken_result is not None:
+            return spoken_result
         gateway.check()
         if deadline is not None and time.time() >= deadline:
+            if close_if_proposal_ready():
+                continue
             raise RuntimeError("BUDGET_EXCEEDED")
         if pending:
             check_budget()
@@ -1526,7 +1913,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             for call in pending[pending_index:]:
                 gateway.check()
                 check_budget()
-                if count >= max_tools: raise RuntimeError("BUDGET_EXCEEDED")
+                if count >= max_tools:
+                    if close_if_proposal_ready():
+                        break
+                    raise RuntimeError("BUDGET_EXCEEDED")
                 name = call["function"]["name"]
                 if name not in batch_allowed_names:
                     sibling = _same_skill_deferred_tools(
@@ -1536,9 +1926,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         active_skill_keys=active_skill_keys,
                         tool_annotations=tool_annotations,
                         action_intent=write_tools_allowed,
+                        allowed_writes=station_write_names(),
                     )
-                    if name not in sibling:
-                        raise RuntimeError("TOOL_FORBIDDEN")
+                    if name not in sibling and name not in station_write_names():
+                        spoken_protocol_close()
+                        return spoken_result
                     active_tool_names.add(name)
                     deferred_tools.pop(name, None)
                     load_selected_skills([name])
@@ -1614,6 +2006,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                           or result.get("model_context_complete") is True),
                 )
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(model_result, ensure_ascii=False)})
+                activate_named_tools(station_write_names())
                 save()
             pending, pending_index = [], 0
             # A narrowly auto-activated authoritative reader has already
@@ -1659,6 +2052,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             next_model_instructions.append(FINALIZE_REMINDER)
             save()
         if not finalizing and turn >= max_turns:
+            if close_if_proposal_ready():
+                continue
             raise RuntimeError("BUDGET_EXCEEDED")
         check_budget()
         # Reserve the model turn before network I/O; a crashed call still consumes budget.
@@ -1742,6 +2137,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
                 continue
             if count + len(calls) > max_tools:
+                if close_if_proposal_ready():
+                    continue
                 raise RuntimeError("BUDGET_EXCEEDED")
             invalid_names = {(call.get("function") or {}).get("name") for call in calls
                              if (call.get("function") or {}).get("name") not in allowed_names}
@@ -1757,18 +2154,26 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     active_skill_keys=active_skill_keys,
                     tool_annotations=tool_annotations,
                     action_intent=write_tools_allowed,
+                    allowed_writes=station_write_names(),
                 )
                 leftover = set(invalid_names) - set(sibling)
+                station_hit = leftover & set(station_write_names())
+                if station_hit:
+                    sibling = list(dict.fromkeys([*sibling, *station_hit]))
+                    leftover -= station_hit
                 if leftover:
-                    prepares = sorted(name for name in allowed_names if str(name).startswith("prepare_"))
-                    if prepares:
+                    prepares = sorted(name for name in {*allowed_names, *station_write_names()}
+                                      if str(name).startswith("prepare_"))
+                    if prepares and all(str(name).startswith("prepare_") for name in leftover):
+                        activate_named_tools(prepares)
                         request_tool_repair(
                             AVAILABLE_PREPARE_REMINDER
                             + "\n本轮可调用办理工具："
                             + json.dumps(prepares, ensure_ascii=False)
                         )
                         continue
-                    raise RuntimeError("TOOL_FORBIDDEN")
+                    spoken_protocol_close()
+                    continue
                 for name in sibling:
                     active_tool_names.add(name)
                     deferred_tools.pop(name, None)
@@ -1825,12 +2230,18 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             )
             continue
         kind = result.get('response_kind', 'BUSINESS')
-        if kind not in {'BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION'}: raise RuntimeError('MODEL_OUTPUT_INVALID')
+        if kind not in {'BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION'}:
+            request_protocol_repair(PROTOCOL_REPAIR_REMINDER)
+            continue
         result['response_kind'] = kind
         missing_authoritative_reads = required_evidence_tools - evidence_tools
         attempted_required_reads = required_evidence_tools & attempted_tools
+        empty_actionable_reads = _reads_show_no_actionable_item(messages)
         if missing_authoritative_reads and not (
-                kind == 'CLARIFICATION' and attempted_required_reads):
+                kind in {'CLARIFICATION', 'CONVERSATION'} and attempted_required_reads
+        ) and not (
+                kind == 'BUSINESS' and attempted_required_reads and empty_actionable_reads
+        ):
             request_tool_repair(
                 AUTHORITATIVE_READ_REMINDER
                 + "\n必须调用的只读工具："
@@ -1858,7 +2269,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             request_protocol_repair(ACTION_OUTCOME_REPAIR_REMINDER + "\n未解决的工具错误：" + details)
             continue
         if ((kind == 'AWAITING_APPROVAL' or (formal_action_requested and kind == 'BUSINESS'))
-                and not successful_action_evidence and not trusted_action_resolved):
+                and not successful_action_evidence and not trusted_action_resolved
+                and not (kind == 'BUSINESS' and empty_actionable_reads)):
             request_tool_repair(ACTION_NOT_COMPLETED_REPAIR_REMINDER)
             continue
         if kind == 'BUSINESS' and successful_action_evidence and not successful_action_evidence <= set(result['evidence_ids']):
@@ -1868,7 +2280,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 and not (proposal_resolution and resolution_decision == 'approved'
                          and result.get('proposal_decision') == 'approved')):
             result = {
-                "summary": "这一遍还没有查。请再说一次要看哪些单，我马上帮你查。",
+                "response_kind": "CLARIFICATION",
+                "summary": NOT_QUERIED_SUMMARY,
                 "evidence_ids": [],
                 "suggestions": [],
             }

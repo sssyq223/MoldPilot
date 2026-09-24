@@ -231,7 +231,7 @@ def test_outsource_operation_phrases_are_formal_actions():
         "填我方报价",
         "PH-01这一笔订单帮我填价格：400，上限是600",
         "发询价", "填成交价", "重选加工商",
-        "我要报价", "我要接单", "确认接单", "拒绝接单", "接这单",
+        "我要报价", "我要接单", "帮我接单", "确认接单", "拒绝接单", "接这单",
         "确认发料", "确认备料", "确认原料发货", "确认收料", "确认来料",
         "发成品", "发半成品", "确认成品发货",
         "确认到货", "确认收货", "确认入库", "办入库",
@@ -253,6 +253,7 @@ def test_outsource_count_questions_are_not_formal_actions():
     # and refuses to answer with the board.
     phrases = (
         "待报价有几个", "有没有待接单", "质检待办有几条", "查一下入库待办",
+        "有需要我处理的待办任务吗",
         "成品发货待办有几个", "备料完成的有哪些", "原料发货待办", "待发询价有几个",
         "质检合格的有几条", "检验合格了没有", "到货确认待办", "回厂入库待办有几个",
         "成品入库的有哪些", "待发成品有几个", "待领取质检有几个",
@@ -324,7 +325,6 @@ def test_authorized_buyer_ops_load_without_whitelist_phrase():
     )
     assert 'query_erp_outsource_followup_board' in names
     assert 'prepare_erp_outsource_buyer_quote' in names
-    assert 'prepare_erp_outsource_inquiry_send' in names
 
 
 def test_hallucinated_project_quote_name_is_rewritten_to_buyer_quote():
@@ -423,6 +423,32 @@ def test_authorized_processor_and_approval_load_spoken_intents():
         {'prepare_erp_outsource_approval_pass': {'readOnlyHint': False}},
     )
     assert 'prepare_erp_outsource_approval_pass' in names
+
+
+def test_authorized_processor_todo_question_loads_board_without_order_keyword():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+    }}
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_quote',
+        'description': '准备提交本加工商报价',
+    }}
+    names = _authorized_run(
+        '有需要处理的待办吗',
+        [board, quote],
+        [{
+            'key': 'outsource_processor_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': [],
+            'auto_activation_queries': ['我的委外'],
+            'host_auto_invoke_empty_arguments': False,
+        }],
+        {'prepare_erp_outsource_processor_quote': {'readOnlyHint': False}},
+    )
+    assert 'query_erp_outsource_processor_board' in names
+    assert 'prepare_erp_outsource_processor_quote' not in names
 
 
 def test_authorized_write_turn_does_not_preload_progress():

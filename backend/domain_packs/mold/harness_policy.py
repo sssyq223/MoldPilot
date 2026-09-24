@@ -13,7 +13,7 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
     "我要报价", "填我方报价", "填报价", "填价格", "帮我填报价", "帮我填价格",
     "发询价", "填成交价", "重选加工商",
     # 加工商 报价 / 接单
-    "我要接单", "确认接单", "接这单", "拒绝接单", "我要拒单", "拒这单",
+    "我要接单", "帮我接单", "确认接单", "接这单", "拒绝接单", "我要拒单", "拒这单",
     # 仓管 供料
     "确认发料", "确认备料", "确认原料发货", "办发料", "办备料",
     # 加工商 收料 / 成品回厂
@@ -31,6 +31,7 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
 # (“待发询价的这单帮我发询价”) still wins.
 OUTSOURCE_STATUS_PHRASES = (
     "待发询价", "待填报价", "待填成交价",
+    "待接单", "全部拒单",
     "待确认接单", "待确认发料", "待确认备料", "待确认收料", "待确认来料",
     "待发成品", "待发半成品", "待确认到货", "待确认收货", "待确认入库",
     "待领取质检", "待判合格", "待确认合格",
@@ -86,12 +87,55 @@ FORMAL_ACTION_NEGATED_PHRASES = (
 READ_ONLY_INTENT_TERMS = (
     "只读", "仅查询", "只查询", "仅核对", "只核对", "read only",
 )
+# After a board/todo read, these station labels unlock the matching prepare
+# tools even if the original sentence was a look-up.  Confirmation cards are
+# still required before any ERP write.
+STATION_PREPARE_TOOLS = {
+    "待接单": (
+        "prepare_erp_outsource_processor_accept",
+        "prepare_erp_outsource_processor_reject",
+    ),
+    "待报价": ("prepare_erp_outsource_processor_quote",),
+    "待采购填报价": ("prepare_erp_outsource_buyer_quote",),
+    "待发询价": ("prepare_erp_outsource_inquiry_send",),
+    "待下单": ("prepare_erp_outsource_final_deal",),
+    "全部拒单": ("prepare_erp_outsource_reselect",),
+    "审批中": (
+        "prepare_erp_outsource_approval_pass",
+        "prepare_erp_outsource_approval_reject",
+    ),
+    "待领取": ("prepare_erp_outsource_quality_claim",),
+    "待检验": ("prepare_erp_outsource_quality_pass",),
+    "待仓库收货": ("prepare_erp_outsource_warehouse_arrival",),
+    "待入库": ("prepare_erp_outsource_warehouse_inbound",),
+    "待发料": ("prepare_erp_outsource_warehouse_ship",),
+    "待备料": ("prepare_erp_outsource_warehouse_ship",),
+    "待确认来料": ("prepare_erp_outsource_processor_receipt",),
+    "待成品发货": ("prepare_erp_outsource_processor_product_ship",),
+}
+STATION_NEXT_SUGGESTIONS = {
+    "待接单": ("接单", "拒单"),
+    "待报价": ("提交报价",),
+    "待采购填报价": ("填写我方报价",),
+    "待发询价": ("发询价",),
+    "待下单": ("填写成交价",),
+    "全部拒单": ("重选加工商",),
+    "审批中": ("通过这单", "驳回这单"),
+    "待领取": ("领取质检",),
+    "待检验": ("提交合格",),
+    "待仓库收货": ("确认到货",),
+    "待入库": ("确认入库",),
+    "待发料": ("确认发料",),
+    "待备料": ("确认备料",),
+    "待确认来料": ("确认来料",),
+    "待成品发货": ("确认成品发货",),
+}
 # Board nouns that look like operations (“待填价”) but are only to-do labels.
 # Stripped before deciding whether a turn may see write tools.
 OUTSOURCE_BOARD_NOUNS = (
     *OUTSOURCE_STATUS_PHRASES,
     "待填价", "待报价", "待下单", "待接单", "待采购填报价",
-    "委外待办", "采购待办",
+    "委外待办", "采购待办", "待办", "工单",
 )
 # Look-up questions.  These hide write tools.  They do not decide whether the
 # model understood a spoken write such as “把价钱写成400”.

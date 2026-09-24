@@ -14,6 +14,7 @@ MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
 MOLD_BATCH_CODE = re.compile(r"(?i)^M\d{5,}-P\d+$")
 MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
 PROJECT_NO = re.compile(r"(?i)(?<![A-Z0-9])(E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])")
+ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
 ROW_LIMIT = 200
 STATIONS = {
     "buyer_quote": "待采购填报价",
@@ -511,10 +512,13 @@ def parse_question(question: str) -> dict[str, str]:
     batch = MOLD_BATCH.search(text)
     family = None if batch else MOLD_FAMILY.search(text)
     project = PROJECT_NO.search(text)
+    order = ORDER_NO.search(text)
     station = ""
     if any(word in text for word in ("全部拒单", "都拒", "拒完")):
         station = "exhausted"
-    elif any(word in text for word in ("待接单", "还没接", "未接单")):
+    elif any(word in text for word in ("待接单", "还没接", "未接单")) or (
+        "接单" in text and "拒" not in text and "上限" not in text
+    ):
         station = "accept"
     elif any(word in text for word in ("审批中", "在审批", "下单审批", "待审批")):
         station = "order_approval"
@@ -541,6 +545,7 @@ def parse_question(question: str) -> dict[str, str]:
         "mold_family": "" if batch else (family.group(1).upper() if family else ""),
         "mold_batch": batch.group(1).upper() if batch else "",
         "project_no": project.group(1).upper() if project else "",
+        "order_no": order.group(1).upper() if order else "",
         "outsource_type": outsource_type,
     }
 
@@ -591,6 +596,7 @@ def query_params(parsed: dict[str, str]) -> dict[str, str]:
         "mold_family": parsed.get("mold_family") or "",
         "mold_batch": parsed.get("mold_batch") or "",
         "project_no": parsed.get("project_no") or "",
+        "order_no": parsed.get("order_no") or "",
         "outsource_type": parsed.get("outsource_type") or "",
     }
 
@@ -639,8 +645,9 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
 
 def query_items(parsed: dict[str, str]) -> list[dict[str, Any]]:
     scoped = query_params(parsed)
+    sql_params = {key: value for key, value in scoped.items() if key != "order_no"}
     items = []
-    for row in fetch_all(SQL, scoped):
+    for row in fetch_all(SQL, sql_params):
         station = classify(row)
         if station is None:
             continue
@@ -659,7 +666,7 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
         counts[item["stationLabel"]] += 1
         type_counts[item.get("outsourceTypeLabel") or ""] = type_counts.get(item.get("outsourceTypeLabel") or "", 0) + 1
     scoped = query_params(parsed)
-    scope = scoped["project_no"] or scoped["mold_batch"] or scoped["mold_family"] or "ERP 委外待办"
+    scope = scoped["order_no"] or scoped["project_no"] or scoped["mold_batch"] or scoped["mold_family"] or "ERP 委外待办"
     station_label = STATIONS.get(scoped["station"], "全部分站")
     type_label = OUTSOURCE_TYPE_LABELS.get(scoped["outsource_type"], "零件/工序委外")
     summary = f"{scope} 的{type_label}{station_label}共 {len(visible)} 条。"
@@ -855,6 +862,9 @@ def find_invitation(invitation_id: int, *, mold: str | None = None) -> tuple[dic
 
 def run(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) -> dict[str, Any]:
     items = query_items(parsed)
+    order_no = str(parsed.get("order_no") or "").strip()
+    if order_no:
+        items = [item for item in items if item_matches_identity(item, order_no=order_no)]
     if processor_tokens is not None:
         items = [
             clip_for_processor(item, processor_tokens)

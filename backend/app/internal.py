@@ -10,6 +10,11 @@ from . import tool_gateway as tools
 from .bpm import content_hash
 from .authorization import fingerprint
 from .run_events import publish_run_update
+from agent_core.harness import (
+    AWAITING_PREPARED_CARD_SUMMARY,
+    PROTOCOL_CLOSE_CODES,
+    spoken_close_from_checkpoint,
+)
 from agent_core.run_status import (LEGACY_QUEUED, LEGACY_RUNNING, RUNNING_STATUSES,
                                    SCOPED_QUEUED, SCOPED_RUNNING, public_run_status)
 
@@ -208,7 +213,23 @@ def install(app):
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
                        "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。",
                        "CONTEXT_BUDGET_EXCEEDED": "模型请求超过当前配置的安全上下文预算。请检查模型窗口配置及工具返回内容；附件大小不一定是原因。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
-            run.status = "FAILED"; run.result = {"message": message, "error_code": code}
+            if code in PROTOCOL_CLOSE_CODES:
+                steps = list(db.scalars(select(Step).where(Step.run_id == run.id)))
+                spoken = spoken_close_from_checkpoint(run.prompt, run.checkpoint)
+                known = {step.id for step in steps}
+                spoken["evidence_ids"] = [item for item in spoken.get("evidence_ids") or [] if item in known]
+                if any(isinstance(step.result, dict) and step.result.get("proposal") for step in steps):
+                    spoken["response_kind"] = "AWAITING_APPROVAL"
+                    spoken["summary"] = AWAITING_PREPARED_CARD_SUMMARY
+                    spoken["suggestions"] = list(spoken.get("suggestions") or [])
+                run.status = "SUCCEEDED"
+                run.result = {
+                    **spoken,
+                    "evidence": [{"id": step.id, "tool": step.tool, **step.result} for step in steps],
+                }
+            else:
+                run.status = "FAILED"
+                run.result = {"message": message, "error_code": code}
             run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()
             publish_run_update(run.conversation_id, run.id, public_run_status(run.status))

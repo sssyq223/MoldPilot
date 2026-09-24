@@ -22,6 +22,7 @@ from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
 from agent_core.context_budget import is_historical_model_context
+from agent_core.harness import public_spoken_result
 from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, public_run_status
 
 active_manifest = load_domain_manifest()
@@ -185,10 +186,22 @@ def run_trace(run, steps, decisions=None):
                     "message_key": f"assistant:{assistant_turn}",
                 })
                 assistant_turn += 1
-    result = run.result if isinstance(run.result, dict) else {}
+    result = public_spoken_result(
+        getattr(run, "prompt", ""),
+        run.result if isinstance(run.result, dict) else {},
+        getattr(run, "checkpoint", None),
+    )
     if result:
-        trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),
-                      "suggestions": result.get("suggestions", []), "error_code": result.get("error_code")})
+        item = {
+            "type": "final",
+            "summary": result.get("summary"),
+            "message": result.get("message"),
+            "suggestions": result.get("suggestions", []),
+            "response_kind": result.get("response_kind"),
+        }
+        if result.get("error_code"):
+            item["error_code"] = result.get("error_code")
+        trace.append(item)
     return trace
 
 

@@ -10,7 +10,10 @@ from domain_packs.mold.authorization import fingerprint
 from domain_packs.mold.erp.procurement.erp_outsource_http import post_erp
 from domain_packs.mold.erp.procurement.erp_outsource_scope import require_allow, supplier_codes_for
 from domain_packs.mold.ports.bpm import content_hash
-from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_policy
+from domain_packs.mold.ports.confirmation_policy import (
+    proposal_confirmation_policy,
+    proposal_run_is_open,
+)
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
@@ -288,7 +291,7 @@ def source(db, user, step_id):
     run = db.get(m.Run, step.run_id) if step else None
     if not run or run.user_id != user.id:
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
-    if run.status not in {"RUNNING", "RUNNING_SCOPED", "SUCCEEDED"}:
+    if not proposal_run_is_open(run):
         raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)

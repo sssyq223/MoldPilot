@@ -112,15 +112,22 @@ TODO_TABS = Literal[
 
 
 class FollowupBoardInput(StrictModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
     question: str | None = Field(default=None, max_length=500, description="用户原话。")
     todo_tab: TODO_TABS | None = Field(default=None, description="ERP 待办分站。")
     outsource_kind: Literal["part", "operation", "mold", "all"] | None = None
     mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。看全部待办时可空。")
     batch: str | None = Field(default=None, max_length=40, description="模具批次，例如 M260063-P4。")
+    order_no: str | None = Field(
+        default=None,
+        max_length=80,
+        validation_alias=AliasChoices("order_no", "orderNo"),
+        description="订单号，例如 EO-260924-DJ9X。看全部待办时可空。",
+    )
 
     @model_validator(mode="after")
     def strip_values(self):
-        for name in ("question", "mold", "batch"):
+        for name in ("question", "mold", "batch", "order_no"):
             value = getattr(self, name)
             if isinstance(value, str):
                 setattr(self, name, value.strip() or None)
@@ -204,27 +211,27 @@ def _scope(data: Any, parsed: dict[str, str], *, spoken: str = "") -> dict[str, 
     elif MOLD_FAMILY_CODE.match(mold) or MOLD_FAMILY_CODE.match(batch):
         result["mold_family"] = mold or batch
         result["mold_batch"] = ""
+    order_no = str(getattr(data, "order_no", None) or parsed.get("order_no") or "").strip().upper()
+    if order_no:
+        result["order_no"] = order_no
     return result
 
 
-def _compact_board_items(items: list[Any]) -> list[dict[str, Any]]:
+def _compact_board_items(items: list[Any], *, limit: int = 8) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
-    for item in items[:30]:
+    for item in items[:limit]:
         if not isinstance(item, dict):
             continue
-        details = str(item.get("partDetails") or "")
-        if len(details) > 80:
-            details = details[:80] + "…"
+        details = str(item.get("partDetails") or item.get("parts") or "")
+        if len(details) > 36:
+            details = details[:36] + "…"
         compact.append({
             "orderNo": item.get("orderNo") or "",
-            "mold": item.get("moldFamily") or item.get("moldNo") or "",
-            "batch": item.get("moldBatch") or item.get("moldNo") or "",
+            "mold": item.get("moldFamily") or item.get("mold") or item.get("moldNo") or "",
+            "batch": item.get("moldBatch") or item.get("batch") or item.get("moldNo") or "",
             "station": item.get("stationLabel") or item.get("station"),
-            "kind": item.get("outsourceTypeLabel") or item.get("outsourceType"),
+            "kind": item.get("outsourceTypeLabel") or item.get("kind") or item.get("outsourceType"),
             "parts": details,
-            "ourQuote": item.get("ourQuoteAmount"),
-            "deal": item.get("finalDealAmount"),
-            "pending": item.get("pendingQuoteSuppliers") or "",
         })
     return compact
 
@@ -239,12 +246,30 @@ def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
             "steps": payload.get("steps") or [],
         }
     items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
+    counts = payload.get("counts") or {}
+    head = str(payload.get("summary") or "").split("\n", 1)[0].strip()
+    live = [f"{label}{count}条" for label, count in counts.items() if count]
+    summary = head or ("共 {0} 条。".format(len(items)))
+    if live and not any(label in summary for label, _ in counts.items() if _):
+        summary = (summary + " " + "，".join(live)).strip()
+    if not items:
+        summary = (
+            summary
+            + " 当前看板没有可办的待办。不要调用 prepare，用 CLARIFICATION 或 BUSINESS 说明这张单已经不在待接单。"
+        ).strip()
+    else:
+        stations = {
+            str(item.get("station") or item.get("stationLabel") or "")
+            for item in items
+        }
+        if "待接单" in stations:
+            summary = (summary + " 本轮 prepare 接单确认卡，并说明可拒单。").strip()
+        elif "待报价" in stations:
+            summary = (summary + " 本轮 prepare 报价确认卡。").strip()
     return {
-        "summary": payload.get("summary") or "",
-        "counts": payload.get("counts") or {},
-        "typeCounts": payload.get("typeCounts") or {},
+        "summary": summary[:240],
         "item_count": len(items),
-        "truncated": bool(payload.get("truncated")),
+        "truncated": bool(payload.get("truncated")) or len(items) > 8,
         "items": _compact_board_items(items),
     }
 

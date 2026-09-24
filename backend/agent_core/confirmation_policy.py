@@ -1,5 +1,16 @@
 """User-visible confirmation and delegated approval policy."""
 
+# A prepared confirmation card stays executable after a protocol/budget close.
+# Those runs are stored as FAILED or SUCCEEDED; CANCELLED still means the user
+# stopped the work and must prepare again.
+CONFIRMABLE_RUN_STATUSES = frozenset({
+    "RUNNING", "RUNNING_SCOPED", "SUCCEEDED", "FAILED",
+})
+
+
+def proposal_run_is_open(run):
+    return bool(run) and getattr(run, "status", None) in CONFIRMABLE_RUN_STATUSES
+
 
 def run_agent_permission_mode(run):
     checkpoint = run.checkpoint if run and isinstance(run.checkpoint, dict) else {}

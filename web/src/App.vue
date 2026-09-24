@@ -171,7 +171,7 @@ const runErrorMessages:Record<string,string>={
  HTTPStatusError:'Harness 保存运行状态或调用内部接口时发生 HTTP 异常。',
  HARNESS_BACKEND_REJECTED:'Harness 的内部请求被后端拒绝。',
  TOOL_FORBIDDEN:'模型请求了本轮未激活或当前无权使用的工具。',
- MODEL_OUTPUT_INVALID:'模型返回的工具调用或最终结果不符合协议。',
+ MODEL_OUTPUT_INVALID:'这一遍没能给出业务结论。请再说一次要查或要办的内容。',
  MODEL_HTTP_FAILED:'模型服务返回异常状态。',
  MODEL_CONNECT_TIMEOUT:'连接模型服务超时。',
  MODEL_READ_TIMEOUT:'等待模型回复超时。',
@@ -180,6 +180,20 @@ const runErrorMessages:Record<string,string>={
  BUDGET_EXCEEDED:'本轮执行已达到时间、回合或工具预算上限。',
 }
 function runFailureReason(code:any){return runErrorMessages[String(code||'')]||'执行链路发生未分类异常，请按错误码核对服务日志。'}
+function isProtocolCloseError(code:any){
+ return ['MODEL_OUTPUT_INVALID','TOOL_FORBIDDEN','CONTEXT_BUDGET_EXCEEDED','BUDGET_EXCEEDED'].includes(String(code||''))
+}
+function protocolCloseText(code:any){
+ const key=String(code||'')
+ if(key==='TOOL_FORBIDDEN')return '这一遍已经查过了。请再说一次要办哪一张，或直接说接单、拒单。'
+ if(key==='CONTEXT_BUDGET_EXCEEDED'||key==='BUDGET_EXCEEDED')return '这一遍没能说完。请再说一次要查或要办的内容。'
+ return runErrorMessages.MODEL_OUTPUT_INVALID
+}
+function finalDisplayText(item:any){
+ if(item?.summary)return item.summary
+ if(isProtocolCloseError(item?.error_code))return protocolCloseText(item.error_code)
+ return item?.message
+}
 const compactHidden=new Set(['id','subject_id','plan_id','created_at','updated_at','analysis','detail','snapshot','project','subject','lines','history','tasks','attachments'])
 const titleKeys=['number','code','internal_number','project_code','name','title','project_name','status','project_status']
 const compactKeys=['execution_mode','customer_due_date','due_date','drawing_revision','revision','version','scope_confirmed','business_status','remark','description']
@@ -296,7 +310,24 @@ function hasBusinessFactHighlights(row:any){
  const analysis=row?.analysis
  return Boolean(analysis?.project_lifecycle||analysis?.kickoff_lifecycle||analysis?.execution_lifecycle||analysis?.completion_lifecycle||analysis?.tasks?.length||analysis?.revision_impact||analysis?.plan_change_candidates?.length)
 }
-function runTrace(run:any){
+function spokenFinalItem(item:any, hasPendingProposal=false){
+ if(!item)return item
+ if(hasPendingProposal){
+  const looksProtocol=isProtocolCloseError(item.error_code)||!item.summary||/没能说完|任务执行未完成|请再说一次/.test(String(item.summary||item.message||''))
+  return {
+   ...item,
+   summary:looksProtocol?'已准备好确认卡，请在下方核对后确认。':item.summary,
+   error_code:'',
+  }
+ }
+ if(!isProtocolCloseError(item.error_code))return item
+ return {
+  ...item,
+  summary:item.summary||protocolCloseText(item.error_code),
+  error_code:'',
+ }
+}
+function rawRunItems(run:any){
  if(Array.isArray(run.trace)&&run.trace.length)return run.trace
  const items:any[]=[]
  for(const e of run.result?.evidence??[])items.push({type:'tool',...e})
@@ -304,6 +335,15 @@ function runTrace(run:any){
   items.push({type:'final',summary:run.result?.summary,message:run.result?.message,suggestions:run.result?.suggestions??[],error_code:run.result?.error_code})
  }
  return items
+}
+function rawHasUnusedProposal(run:any){
+ if(['QUEUED','RUNNING'].includes(run.status))return false
+ return rawRunItems(run).some((item:any)=>item?.proposal&&item.id&&!item.proposal_decision)
+}
+function runTrace(run:any){
+ const raw=rawRunItems(run)
+ const pending=rawHasUnusedProposal(run)
+ return raw.map((item:any)=>item?.type==='final'?spokenFinalItem(item,pending):item)
 }
 function isHistoricalProcessMessage(item:any){
  if(item?.historical)return true
@@ -985,8 +1025,8 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               </div>
             </div>
             <div v-for="(finalItem,finalIndex) in runFinalTraces(run)" :key="'final:'+finalIndex" class="assistant-prose final">
-              <MarkdownText v-if="(finalItem.summary || finalItem.message) && !erpDesignTechnicalRequirementsFromRun(run) && !erpOutsourceResultTablesFromRun(run).length" :text="finalItem.summary ?? finalItem.message"/>
-              <div v-if="finalItem.error_code" class="run-error-detail" role="note">
+              <MarkdownText v-if="finalDisplayText(finalItem)" :text="finalDisplayText(finalItem)"/>
+              <div v-if="finalItem.error_code && !isProtocolCloseError(finalItem.error_code)" class="run-error-detail" role="note">
                 <strong>失败原因</strong><span>{{runFailureReason(finalItem.error_code)}}</span><code>错误码 {{finalItem.error_code}}</code>
               </div>
               <ul v-if="finalItem.suggestions?.length">
