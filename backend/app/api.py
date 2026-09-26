@@ -50,6 +50,8 @@ from .files import router as file_router
 app.include_router(file_router)
 from .proposal_api import router as proposal_router
 app.include_router(proposal_router)
+from .model_catalog_api import router as model_catalog_router
+app.include_router(model_catalog_router)
 
 _conversation_flags_checked = False
 
@@ -329,6 +331,12 @@ def update_my_avatar(data: s.AvatarInput, user=Depends(current_user), db=Depends
     record(db, user, "user.avatar.updated", user.id, {"has_avatar": bool(avatar)})
     db.commit()
     return public_user_with_profile(db, user)
+
+
+@app.get('/api/chat-models')
+def chat_models(user=Depends(current_user)):
+    from .run_model_selection import chat_catalog
+    return chat_catalog(user)
 
 
 @app.get("/api/model-config")
@@ -1081,13 +1089,18 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
     db.commit()
     if resumed_run:
         publish_run_update(resumed_run.conversation_id, resumed_run.id, resumed_run.status)
+    if result.get('run_id') and (not resumed_run or str(resumed_run.id) != str(result['run_id'])):
+        created_run = db.get(m.Run, result['run_id'])
+        if created_run:
+            publish_run_update(created_run.conversation_id, created_run.id, created_run.status)
     return result
 
 
 @app.get("/api/notifications")
 def notifications(user=Depends(current_user), db=Depends(get_db)):
     from .message_worker import permitted
-    return [{"id": n.id, "title": n.title, "kind":event.kind,"resource_id": n.resource_id, "read": n.read, "created_at": n.created_at.isoformat()}
+    target = getattr(component('notification_policy'), 'target', lambda db,user,event: {})
+    return [{"id": n.id, "title": n.title, "kind":event.kind,"resource_id": n.resource_id, "read": n.read, "created_at": n.created_at.isoformat(), **target(db,user,event)}
             for n,event in db.execute(select(m.Notification,m.Outbox).join(m.Outbox).where(m.Notification.user_id == user.id).order_by(m.Notification.created_at.desc()).limit(100))
             if permitted(db,user,event)]
 
@@ -1187,22 +1200,33 @@ def unarchive_conversation(conversation_id: str, user=Depends(current_user), db=
 
 @app.post("/api/runs")
 def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db)):
+    prompt = data.prompt if data.prompt.strip() else "处理本次上传附件"
     if data.conversation_id:
         conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id, m.Conversation.archived == False))
         if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)
     else:
-        conversation = m.Conversation(user_id=user.id, title=compact_conversation_title(data.prompt)); db.add(conversation); db.flush()
+        conversation = m.Conversation(user_id=user.id, title=compact_conversation_title(prompt)); db.add(conversation); db.flush()
     model_config = model_settings()
+    from .run_model_selection import select_model
+    selection = select_model(user, data.model_profile_id, data.reasoning_effort,
+                             default_enabled=model_config.llm_enabled)
     permission_mode = data.agent_permission_mode
-    run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=data.prompt,
-                status="QUEUED" if model_config.llm_enabled else "WAITING_CONFIGURATION",
-                checkpoint={"agent_permission_mode": permission_mode})
+    run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=prompt,
+                status="QUEUED" if selection else "WAITING_CONFIGURATION",
+                checkpoint={"agent_permission_mode": permission_mode, "run_trigger": data.trigger,
+                            'model_selection': selection})
     db.add(run); db.flush()
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
-    record(db, user, "agent.run.created", run.id, {"agent_permission_mode": permission_mode}); db.commit()
+    record(db, user, "agent.run.created", run.id, {
+        "agent_permission_mode": permission_mode,
+        "run_trigger": data.trigger,
+        'model_selection': selection,
+    }); db.commit()
     publish_run_update(run.conversation_id, run.id, run.status)
-    return {"id": run.id, "conversation_id": conversation.id, "status": run.status, "agent_permission_mode": permission_mode}
+    return {"id": run.id, "conversation_id": conversation.id, "status": run.status,
+            "agent_permission_mode": permission_mode, "trigger": data.trigger,
+            'model_selection': selection}
 
 
 @app.get("/api/conversations/{conversation_id}/runs")

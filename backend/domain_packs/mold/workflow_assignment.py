@@ -16,6 +16,7 @@ PROJECT_ROLES = {
     "ASSEMBLY_OWNER": ("装配负责人", "装配齐套与完工责任人"),
     "TRIAL_OWNER": ("试模负责人", "试模排期与问题闭环责任人"),
     "QUALITY_OWNER": ("质量负责人", "质量检验与整改复核责任人"),
+    "SALES_SUPERVISOR": ("业务主管", "销售合同资料与客户项目关系审核责任人"),
     "FINANCE_OWNER": ("财务负责人", "项目收付款节点责任人"),
 }
 

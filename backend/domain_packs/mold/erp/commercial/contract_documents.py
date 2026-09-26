@@ -100,6 +100,38 @@ def link_initial(db, user, subject, blobs, source_kind):
     return links
 
 
+def link_intake(db, user, subject, files):
+    """Link OCR source PDFs through the canonical immutable attachment model."""
+    links = []
+    for intake_file, blob in files:
+        link = m.ContractAttachment(
+            contract_subject_id=subject.id,
+            file_id=blob.id,
+            document_id=str(uuid4()),
+            version=1,
+            title=blob.filename,
+            source_kind="ELECTRONIC",
+            previous_id=None,
+            uploaded_by=user.id,
+            intake_file_id=intake_file.id,
+            role=intake_file.confirmed_role or "OTHER",
+        )
+        db.add(link)
+        db.flush()
+        record(db, user, "contract.attachment_linked", subject.id, {
+            "attachment_id": link.id,
+            "file_id": blob.id,
+            "filename": blob.filename,
+            "sha256": blob.sha256,
+            "version": 1,
+            "source_kind": link.source_kind,
+            "intake_file_id": intake_file.id,
+            "role": link.role,
+        })
+        links.append(link)
+    return links
+
+
 def cards(db, contract_subject_id):
     rows = list(db.execute(
         select(m.ContractAttachment, m.FileObject)

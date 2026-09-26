@@ -1057,7 +1057,12 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
     elif (handler := handler_for_action(intent.action)) is not None:
-        result=handler.implementation().confirm(db,user,intent.payload)
+         handler_payload = intent.payload
+         # 文档分类确认需要把人工动作的不可变操作号写入事件信封；
+         # 其他业务 Handler 保持原始 payload，不扩大通用协议。
+         if intent.action == "document_workflow.execute":
+             handler_payload = {**intent.payload, "operation_id": intent.id}
+         result=handler.implementation().confirm(db,user,handler_payload)
     elif intent.action.startswith('domain.'):
         from domain_packs.mold.erp.core.domain_commands import execute_command
         result=execute_command(db,user,intent.action[7:],intent.resource_id,intent.payload)

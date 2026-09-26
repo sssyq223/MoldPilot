@@ -111,9 +111,11 @@ def _installed_version_tables() -> set[str]:
 def _adopt_legacy_database(repo_root: Path | None = None) -> bool:
     """Upgrade and verify a legacy mold schema, then attach split version heads.
 
-    No business row is copied or rewritten. Stamping Core is allowed only
-    after the legacy repository reports zero model drift; the domain baseline
-    independently verifies that every frozen domain table already exists.
+    No business row is copied or rewritten. The legacy repository is first
+    upgraded to its frozen head, then split baselines are attached and all
+    current split migrations run. Model drift is checked only after that full
+    sequence because newer domain revisions intentionally differ from the
+    frozen legacy head.
     """
     legacy = legacy_alembic_config(repo_root)
     if legacy is None:
@@ -127,7 +129,6 @@ def _adopt_legacy_database(repo_root: Path | None = None) -> bool:
         return False
 
     command.upgrade(legacy, "head")
-    command.check(legacy)
     installed = _installed_version_tables()
     for stage, config in configs:
         if stage.version_table in installed:
@@ -137,6 +138,8 @@ def _adopt_legacy_database(repo_root: Path | None = None) -> bool:
         else:
             command.upgrade(config, "head")
         installed = _installed_version_tables()
+    for _, config in configs:
+        command.check(config)
     return True
 
 

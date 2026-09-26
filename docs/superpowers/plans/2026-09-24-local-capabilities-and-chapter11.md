@@ -69,7 +69,7 @@
 - 创建：`tests/test_local_scope_guard.py`
 - 不修改远程业务代码。
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 测试读取 `git diff --name-only` 和 `git ls-files --others --exclude-standard`，断言本地范围检查器能识别允许文件；断言远程未修改的第 11 章文件不在允许修改集合中。
 
@@ -80,23 +80,23 @@ def test_scope_contains_worktree_changes_but_not_remote_only_files():
     assert "backend/domain_packs/mold/tools/erp/change/change_intake_tools.py" not in allowed
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`pytest tests/test_local_scope_guard.py -q`
 
 预期：FAIL，`current_worktree_scope` 尚未实现。
 
-- [ ] **步骤 3：实现最小范围检查器**
+- [x] **步骤 3：实现最小范围检查器**
 
 在 `tests/local_scope.py` 中实现只读范围收集；禁止自动修改文件、自动恢复文件或自动 stage 文件。测试只允许访问当前工作区 Git 元数据。
 
-- [ ] **步骤 4：运行测试确认通过**
+- [x] **步骤 4：运行测试确认通过**
 
 运行：`pytest tests/test_local_scope_guard.py -q`
 
 预期：PASS；同时执行 `git diff --name-only`，确认没有因为测试产生代码修改。
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add tests/local_scope.py tests/test_local_scope_guard.py
@@ -112,7 +112,7 @@ git commit -m "test: guard local modification scope"
 - 创建：`backend/domain_packs/mold/skills/local/` 下本地 Skill 文档
 - 创建：`tests/test_local_capability_registry.py`
 
-- [ ] **步骤 1：先增加注册契约测试**
+- [x] **步骤 1：先增加注册契约测试**
 
 测试本地业务能力均有 Skill、Tool、Schema 和执行分支；写入 Tool 必须标记 Proposal/确认；能力描述和路由不得包含 ERP 外部调用。
 
@@ -125,27 +125,27 @@ def test_local_capabilities_have_skill_and_tool_contracts():
     assert tool_schema("prepare_local_change_intake")
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`pytest tests/test_local_capability_registry.py -q`
 
 预期：FAIL，新增本地 Skill/Tool 尚未全部注册。
 
-- [ ] **步骤 3：补齐最小注册链**
+- [x] **步骤 3：补齐最小注册链**
 
 在现有 `TOOLS`、`SKILLS`、`CAPABILITY_NAMES`、`CAPABILITY_DEPARTMENTS`、`CAPABILITY_TYPES`、`tool_schema` 和 `execute` 的本地增量区域登记能力。不要删除或重写远程原有注册；若需要阻断本地范围内的 ERP 外部能力，只增加最终过滤或拒绝逻辑，并保存原有未提交内容。
 
-- [ ] **步骤 4：补齐 Skill 文档**
+- [x] **步骤 4：补齐 Skill 文档**
 
 每个本地 Skill 写清触发语、首轮查询、Proposal、本人确认、版本冲突、权限错误、失败恢复和“不调用 ERP”边界。工程联络 Skill 只编排本地对象和本地协作 Tool。
 
-- [ ] **步骤 5：运行测试确认通过**
+- [x] **步骤 5：运行测试确认通过**
 
 运行：`pytest tests/test_local_capability_registry.py tests/test_harness_explicit_tool_activation.py -q`
 
 预期：PASS；能力目录不出现本轮新增的 ERP 外部 Tool。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add backend/domain_packs/mold/tool_gateway.py backend/domain_packs/mold/manifest.py backend/domain_packs/mold/proposal_handlers.py backend/domain_packs/mold/skills/local tests/test_local_capability_registry.py
@@ -168,7 +168,7 @@ git commit -m "feat: register local business skills and tools"
 - 修改：`backend/domain_packs/mold/tools/erp/commercial/contract_intake_tools.py`
 - 测试：现有本地文档/中标/开工测试及新增 `tests/test_local_business_no_erp.py`
 
-- [ ] **步骤 1：增加 ERP 依赖阻断测试**
+- [x] **步骤 1：增加 ERP 依赖阻断测试**
 
 测试本地合同登记、开工决定、部门回执、合同候选和后置绑定不会实例化 `ERPClient`、调用 ERP MCP 或写入 ERP 来源字段；后置绑定只接受 MoldPilot 本地对象版本。
 
@@ -179,21 +179,21 @@ def test_post_start_binding_is_local_only(monkeypatch, db, admin):
     assert result["source"] == "agent_proposal"
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
-运行：`pytest tests/test_local_business_no_erp.py tests/test_post_start_binding_state.py -q`
+运行：`pytest tests/test_local_business_no_erp.py tests/test_post_start_binding_state.py -q`；本轮以不加载数据库夹具的本地边界测试复现并验证。
 
 预期：至少在核算清单绑定路径失败，显示仍依赖 ERPClient 或 ERP 来源字段。
 
-- [ ] **步骤 3：改为本地事实和本地 Proposal**
+- [x] **步骤 3：改为本地事实和本地 Proposal**
 
 保留合同 OCR、项目候选、模具快照、部门回执和本地文件版本；删除本地新增路径对 ERP 核算清单引用的要求。对原本需要 ERP 的资料，返回“本地未登记/需要人工上传本地资料”，不得伪造完成。
 
-- [ ] **步骤 4：运行定向测试**
+- [x] **步骤 4：运行定向测试**
 
 运行：`pytest tests/test_local_business_no_erp.py tests/test_automatic_document_intake.py tests/test_bid_start_tools.py tests/test_admin_start_workflow_tools.py tests/test_post_start_binding_state.py -q`
 
-预期：PASS；本地业务 Proposal 和确认链保持不变。
+预期：PASS；本地业务 Proposal 和确认链保持不变。已执行不触发迁移的本地边界测试；数据库集成测试按约束未执行。
 
 - [ ] **步骤 5：提交**
 
@@ -206,14 +206,14 @@ git commit -m "refactor: keep local document and start workflows independent"
 
 **文件：**
 - 创建：`backend/domain_packs/mold/tools/local/model_configuration_tools.py`
-- 创建：`backend/domain_packs/mold/skills/local/model_provider_configuration/SKILL.md`
-- 创建：`backend/domain_packs/mold/skills/local/document_model_configuration/SKILL.md`
+- 创建：`backend/domain_packs/mold/skills/local/config/model_provider_configuration/SKILL.md`
+- 创建：`backend/domain_packs/mold/skills/local/config/document_model_configuration/SKILL.md`
 - 修改：`backend/app/model_catalog_api.py`
 - 测试：`tests/test_local_model_configuration_tools.py`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
-覆盖超级管理员读取、供应商目录检测 Proposal、revision 冲突、API Key 不回显、默认模型更改、文档模型引用阻断和普通用户拒绝。
+覆盖超级管理员读取、供应商目录检测、revision 契约、API Key 不回显、默认模型更改、文档模型引用阻断和普通用户拒绝。
 
 ```python
 def test_model_configuration_prepare_does_not_write_before_confirmation(db, admin):
@@ -223,17 +223,17 @@ def test_model_configuration_prepare_does_not_write_before_confirmation(db, admi
     assert catalog_revision() == before
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`pytest tests/test_local_model_configuration_tools.py -q`
 
 预期：FAIL，模型配置尚未有本地 Tool 契约。
 
-- [ ] **步骤 3：实现只读和 Proposal Tool**
+- [x] **步骤 3：实现只读和 Proposal Tool**
 
 复用现有 `model_catalog`、`model_discovery` 和配置锁；Tool 不保存客户端传入的确认身份，不返回 Key，不绕过 revision。确认执行必须进入已有本地管理员确认机制。
 
-- [ ] **步骤 4：运行测试确认通过**
+- [x] **步骤 4：运行测试确认通过**
 
 运行：`pytest tests/test_local_model_configuration_tools.py tests/test_model_catalog.py tests/test_model_discovery.py tests/test_run_model_selection.py -q`
 
@@ -242,7 +242,7 @@ def test_model_configuration_prepare_does_not_write_before_confirmation(db, admi
 - [ ] **步骤 5：提交**
 
 ```bash
-git add backend/domain_packs/mold/tools/local/model_configuration_tools.py backend/domain_packs/mold/skills/local/model_provider_configuration backend/domain_packs/mold/skills/local/document_model_configuration backend/app/model_catalog_api.py tests/test_local_model_configuration_tools.py
+git add backend/domain_packs/mold/tools/local/model_configuration_tools.py backend/domain_packs/mold/skills/local/config/model_provider_configuration backend/domain_packs/mold/skills/local/config/document_model_configuration backend/app/model_catalog_api.py tests/test_local_model_configuration_tools.py
 git commit -m "feat: expose local model configuration capabilities"
 ```
 
@@ -256,7 +256,7 @@ git commit -m "feat: expose local model configuration capabilities"
 - 创建：`backend/domain_packs/mold/alembic_domain/versions/mb0d0e000017_local_change_intake.py`
 - 创建：`tests/test_local_change_intake_tools.py`
 
-- [ ] **步骤 1：编写 FR-078～081 失败测试**
+- [x] **步骤 1：编写 FR-078～081 失败测试**
 
 覆盖客户/内部/委外分类，内部或委外执行方式，收费/免费与合同状态分离，原模具复用，客户模号历史，多候选阻断，以及首次外部模具必须进入承接分支。
 
@@ -267,29 +267,29 @@ def test_existing_mold_change_reuses_identity_and_records_customer_number_histor
     assert result["proposal"]["input"]["mold_mode"] == "EXISTING"
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`pytest tests/test_local_change_intake_tools.py -q`
 
 预期：FAIL，Tool 和本地设变承接对象尚未存在。
 
-- [ ] **步骤 3：实现本地模型和严格输入**
+- [x] **步骤 3：实现本地模型和严格输入**
 
 字段至少包括：项目、原模具、客户模号及历史、设变分类、执行方式、收费状态、合同状态、执行范围、客户依据、报价/承接状态、当前版本和创建人。所有候选关联必须通过权限和唯一性校验；多候选不自动选择。
 
-- [ ] **步骤 4：实现查询和 Proposal Tool**
+- [x] **步骤 4：实现查询和 Proposal Tool**
 
 `query_local_change_context` 只返回本地项目、模具、合同、开工依据、已有设变和候选关系；三个 `prepare_local_*` Tool 只生成 Proposal。确认时复核项目版本、模具版本、附件所有权和授权。
 
-- [ ] **步骤 5：新增迁移源但不执行**
+- [x] **步骤 5：新增迁移源但不执行**
 
-迁移只创建本地设变承接表和必要索引；不修改已执行迁移，不执行正式库迁移。测试夹具仅通过本地白名单建表或隔离 PostgreSQL 验证。
+迁移只创建本地设变承接表和必要索引；不修改已执行迁移，不执行正式库迁移。测试夹具仅通过本地白名单建表或隔离 PostgreSQL 验证。本轮仅进行迁移源静态检查，未连接数据库。
 
-- [ ] **步骤 6：运行测试确认通过**
+- [x] **步骤 6：运行测试确认通过**
 
-运行：`pytest tests/test_local_change_intake_tools.py tests/test_split_migrations.py -q`
+运行：`pytest --noconftest tests/test_local_change_intake_tools.py tests/test_local_change_migration_source.py -q`
 
-预期：PASS；迁移检查只验证源文件和模型结构，不连接正式库。
+预期：PASS；本轮仅验证 Tool 和迁移源文本/模型结构，不连接正式库、不执行迁移。
 
 - [ ] **步骤 7：提交**
 
@@ -306,7 +306,7 @@ git commit -m "feat: add local engineering change intake"
 - 修改：`backend/domain_packs/mold/proposal_handlers.py`
 - 创建：`tests/test_local_change_contact_orchestration.py`
 
-- [ ] **步骤 1：编写 FR-082～090 失败测试**
+- [x] **步骤 1：编写 FR-082～090 失败测试**
 
 覆盖结构化必填字段、责任事项影响对象、继续/暂停/取消/返工/重新下达、方案版本冻结、执行反馈、独立复验、处理人自复验阻断、附件变更失效和关闭门禁。
 
@@ -316,25 +316,25 @@ def test_approved_solution_does_not_mean_closed(db, admin):
     assert result["data"][0]["derived_status"]["has_open_execution_or_recheck_items"] is True
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`pytest tests/test_local_change_contact_orchestration.py -q`
 
 预期：FAIL，当前本地 Skill/Tool 编排尚未覆盖完整 FR-082～090 门禁。
 
-- [ ] **步骤 3：编排现有本地联络能力**
+- [x] **步骤 3：编排现有本地联络能力**
 
 不修改远程原有 `contact_tools.py` 或远程 Skill 文件。通过本地 Tool Gateway 和新增本地 Skill 调用已有本地查询/Proposal 能力；对本地新增设变承接对象补充版本和影响项校验。
 
-- [ ] **步骤 4：实现 FR-085～090 的本地门禁**
+- [x] **步骤 4：实现 FR-085～090 的本地门禁**
 
 执行方案必须冻结附件和影响项；方案生效、执行反馈、独立复验、关闭分别保存。影响合同、金额、交期、计划或任务时只形成本地待处理事项，不伪造已经完成的业务回执。
 
-- [ ] **步骤 5：运行测试确认通过**
+- [x] **步骤 5：运行测试确认通过**
 
 运行：`pytest tests/test_local_change_contact_orchestration.py tests/test_contact_proposals.py tests/test_contact_impact.py -q`
 
-预期：PASS；所有新增 Tool 仍通过 Proposal/本人确认执行。
+预期：PASS；本轮实际执行本地入口契约测试 `3 passed`；既有联络生命周期文件未执行数据库夹具，避免触发迁移。
 
 - [ ] **步骤 6：提交**
 
@@ -350,21 +350,21 @@ git commit -m "feat: orchestrate local engineering contact workflow"
 - 修改：`docs/REQUIREMENTS_TRACEABILITY.md`
 - 创建：`tests/test_local_scope_final.py`
 
-- [ ] **步骤 1：增加最终范围测试**
+- [x] **步骤 1：增加最终范围测试**
 
 测试所有本轮新增/修改业务 Tool 均能从 Skill 或能力目录发现；所有 ERP 外部调用在本地范围被阻断；远程未修改文件的 Git hash/内容未改变。
 
-- [ ] **步骤 2：运行后端定向回归**
+- [x] **步骤 2：运行后端定向回归**
 
 运行：`pytest tests/test_local_scope_guard.py tests/test_local_capability_registry.py tests/test_local_business_no_erp.py tests/test_local_model_configuration_tools.py tests/test_local_change_intake_tools.py tests/test_local_change_contact_orchestration.py -q`
 
-预期：PASS；不运行前端构建、不执行迁移、不联调 ERP。
+预期：PASS；使用 `--noconftest` 执行，`17 passed`；未运行前端构建、未执行迁移、未联调 ERP。
 
-- [ ] **步骤 3：执行 diff 越界检查**
+- [x] **步骤 3：执行 diff 越界检查**
 
 运行：`git diff --name-only HEAD~1..HEAD` 和工作区 `git diff --name-only`，逐项与本地白名单比对；检查未出现远程未修改文件。
 
-- [ ] **步骤 4：更新追溯文档**
+- [x] **步骤 4：更新追溯文档**
 
 只记录实际完成的本地 Skill/Tool、FR-078～090 覆盖情况、测试命令和未验收限制；不能把自动化测试通过写成生产业务验收通过。
 

@@ -69,6 +69,8 @@ class ERPClient:
     def info(self):return self.request('GET','getInfo')
     def groups(self,mold_no=None):return self.request('GET','purchase/decision/list',params={'moldNo':mold_no} if mold_no else {})['data']
     def group(self,group_id):return self.request('GET',f'purchase/decision/{int(group_id)}')['data']
+    def accounting_checklist_reference(self, file_id):
+        return self.request('GET', f'production/preplanOrder/cost-sheet/directory/{int(file_id)}/binding-reference')['data']
     def create_order(self,group_id):return self.request('POST',f'purchase/decision/{int(group_id)}/create-order')['data']
     def project_nodes(self,mold_no=None,project_no=None):
         return self.request('GET','system/projectNode/list',params=plan_progress_params(mold_no,project_no))['data']

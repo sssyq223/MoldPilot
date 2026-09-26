@@ -7,6 +7,8 @@ PUBLIC_METADATA = {
     "product_name": "MoldPilot",
     "display_name": "模具项目智能工作台",
     "tagline": "从一个任务开始，让业务能力协同工作。",
+    "attachment_run": {"enabled": False, "media_types": ["application/pdf", "image/png", "image/jpeg"]},
+    "attachment_processing": {"enabled": True, "batch_upload": True, "media_types": ["application/pdf", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]},
     "workspace_tabs": [
         {"key": "approvals", "name": "审批材料", "hint": "查看待审批事项、节点和依据"},
         {"key": "contacts", "name": "联络单材料", "hint": "查看工程联络单、附件和协作进度"},
@@ -77,6 +79,19 @@ def conversation_title(prompt: str) -> str:
     return (cleaned[:28] + "…") if len(cleaned) > 28 else (cleaned or "新对话")
 
 
+def after_files_uploaded(db, user, blobs, request_key):
+    """上传事务内登记识别作业，不通过 Agent 调度，不确认任何机器候选。"""
+    from uuid import UUID, uuid5
+    from domain_packs.mold.erp.commercial import contract_intake
+    documents = [blob for blob in blobs if blob.media_type in {
+        'application/pdf', 'image/png', 'image/jpeg',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }]
+    if documents:
+        contract_intake.create(db, user, conversation_id=documents[0].conversation_id,
+                              file_ids=[blob.id for blob in documents], request_key=str(uuid5(UUID(request_key), 'document-intake')))
+
+
 def install(app, domain_router) -> None:
     """Install only the mold product's HTTP surface into the generic host."""
     app.include_router(domain_router)
@@ -98,6 +113,10 @@ def install(app, domain_router) -> None:
 
     app.include_router(contact_router)
     app.include_router(erp_design_upload_router)
+    from domain_packs.mold.erp.commercial.document_workflow_api import router as document_workflow_router
+    app.include_router(document_workflow_router)
+    # 中标到开工通知的领域模型对应 mb0d0e000014～mb0d0e000016 迁移。
+    # 本地设变承接对应 mb0d0e000017；工作台入口走 Skill/Tool/Proposal，正式库迁移获批并落地前不执行这些领域写入。
     install_domain_api(app)
     for router in (
         contact_proposal_router,

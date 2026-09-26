@@ -1,7 +1,10 @@
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const cookies=document.cookie.split('; ')
   const csrf=cookies.find(c=>c.startsWith('agent_csrf='))?.split('=')[1]??''
-  const response = await fetch(`/api${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf, ...options.headers } })
+  const headers=new Headers(options.headers)
+  if(!headers.has('Content-Type')&&!(options.body instanceof FormData))headers.set('Content-Type','application/json')
+  headers.set('X-CSRF-Token',csrf)
+  const response = await fetch(`/api${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers })
   const raw=await response.text()
   let body:any={}
   try{body=raw?JSON.parse(raw):{}}catch{}

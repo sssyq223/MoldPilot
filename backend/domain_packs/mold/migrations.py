@@ -14,7 +14,8 @@ STAGES = (
 )
 
 # Existing deployments are upgraded through this frozen compatibility chain,
-# checked for model drift, then stamped into the two authoritative stages.
+# stamped into the two authoritative stages, upgraded through current split
+# revisions, then checked for final model drift.
 LEGACY = {
     "config": "backend/domain_packs/mold/alembic.ini",
     "version_table": "alembic_version",

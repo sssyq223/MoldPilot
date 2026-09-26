@@ -5,6 +5,7 @@ import uuid
 import httpx
 from .domain_pack import component
 from .model_adapter import ModelError
+from .model_capabilities import reasoning_parameters
 
 
 _policy = component("harness_policy")
@@ -74,7 +75,9 @@ def _matches_input_schema(value, schema):
 
 
 class OllamaAdapter:
-    def __init__(self,base_url,model,max_output_tokens=2048,read_timeout=75,transport=None,context_window=8192):
+    def __init__(self,base_url,model,max_output_tokens=2048,read_timeout=75,transport=None,context_window=8192,
+                 reasoning_effort='',reasoning_policy='default'):
+        self._reasoning_parameters=reasoning_parameters('ollama',model,reasoning_policy,reasoning_effort)
         url=httpx.URL(base_url)
         if url.scheme!='http' or url.host not in {'127.0.0.1','localhost','::1'} or url.username or url.password or url.query or url.fragment:
             raise ValueError('Ollama must use an explicit local loopback HTTP endpoint')
@@ -111,7 +114,7 @@ class OllamaAdapter:
         # This installed template consumes only the last system message, so merge instructions.
         system='\n'.join(m['content'] for m in converted if m['role']=='system')+'\n'+instruction
         converted=[{'role':'system','content':system}]+[m for m in converted if m['role']!='system']
-        payload={'model':self.model,'messages':converted,'stream':False,'think':False,
+        payload={'model':self.model,'messages':converted,'stream':False,**self._reasoning_parameters,
                  'keep_alive':'10m','format':schema,
                  'options':{'temperature':0,'num_predict':self.max_tokens,'num_ctx':self.context_window}}
         self.last_metrics={'tool_count':len(tools),'request_bytes':len(json.dumps(payload,ensure_ascii=False).encode('utf-8'))}

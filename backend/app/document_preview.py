@@ -37,18 +37,18 @@ try {
 }
 finally {
     if ($null -ne $document) {
-        $document.Close($false)
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($document)
+        try { $document.Close($false) } catch { }
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($document) } catch { }
     }
     if ($null -ne $documents) {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($documents)
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($documents) } catch { }
     }
     if ($null -ne $options) {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($options)
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($options) } catch { }
     }
     if ($null -ne $word) {
-        $word.Quit()
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($word)
+        try { $word.Quit() } catch { }
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($word) } catch { }
     }
     [GC]::Collect()
     [GC]::WaitForPendingFinalizers()

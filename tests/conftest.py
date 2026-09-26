@@ -1,6 +1,6 @@
 import os
 import pytest
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from agent_core.migration_runtime import upgrade_all
@@ -39,8 +39,11 @@ def test_engine():
 
 @pytest.fixture
 def data(test_engine):
-    tables = ','.join('"'+t.name+'"' for t in Base.metadata.sorted_tables)
-    with test_engine.begin() as conn: conn.execute(text('TRUNCATE TABLE '+tables+' CASCADE'))
+    existing_tables = set(inspect(test_engine).get_table_names())
+    tables = ','.join('"'+t.name+'"' for t in Base.metadata.sorted_tables if t.name in existing_tables)
+    with test_engine.begin() as conn:
+        conn.execute(text("SET LOCAL statement_timeout = '120s'"))
+        conn.execute(text('TRUNCATE TABLE '+tables+' CASCADE'))
     factory = sessionmaker(test_engine, expire_on_commit=False)
     with factory.begin() as db:
         create_admin(db, 'admin', '测试管理员', PASSWORD)

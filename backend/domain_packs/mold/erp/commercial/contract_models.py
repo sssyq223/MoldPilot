@@ -18,11 +18,17 @@ class ContractAttachment(IdentityMixin, Base):
     source_kind: Mapped[str] = mapped_column(String(30), default="ELECTRONIC")
     previous_id: Mapped[str | None] = mapped_column(ForeignKey("contract_attachment.id"))
     uploaded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    intake_file_id: Mapped[str | None] = mapped_column(ForeignKey("document_intake_file.id"), unique=True)
+    role: Mapped[str | None] = mapped_column(String(30))
     __table_args__ = (
         UniqueConstraint("contract_subject_id", "document_id", "version"),
         UniqueConstraint("contract_subject_id", "file_id"),
         CheckConstraint("version > 0"),
         CheckConstraint("source_kind IN ('ELECTRONIC','PAPER_SCAN','OTHER')"),
+        CheckConstraint(
+            "role IS NULL OR role IN ('MAIN','ATTACHMENT','STAMP_PAGE','PAYMENT_TERMS','OTHER')",
+            name="contract_attachment_intake_role",
+        ),
     )
 
 

@@ -53,6 +53,11 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert policy.SYSTEM_PROMPT
     assert product.PUBLIC_METADATA["id"] == "mold"
     assert product.PUBLIC_METADATA["product_name"] == "MoldPilot"
+    assert product.PUBLIC_METADATA["attachment_run"] == {
+        "enabled": False, "media_types": ["application/pdf"],
+    }
+    assert product.PUBLIC_METADATA['attachment_processing']['batch_upload'] is True
+    assert 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in product.PUBLIC_METADATA['attachment_processing']['media_types']
     assert product.PUBLIC_METADATA["proposal_presentation"]["value_names"]["supplier_design"] == "供应商设计"
     assert product.PUBLIC_METADATA["proposal_presentation"]["detail_links"]["contact"] == {
         "target": "contacts",
@@ -190,6 +195,22 @@ def test_generic_host_config_and_frontend_shell_are_product_neutral():
     assert "tsconfig.template.json" in package["scripts"]["build:template"]
     app_source = (project_root / "web" / "src" / "App.vue").read_text(encoding="utf-8")
     assert "__DOMAIN_PACK_ID__" in app_source
+
+
+def test_generic_shell_starts_configured_attachment_runs_without_mold_contract_language():
+    project_root = Path(__file__).resolve().parents[1]
+    app_source = (project_root / "web" / "src" / "App.vue").read_text(encoding="utf-8")
+    assert "attachmentRun=product.value?.attachment_run" in app_source
+    assert "allowedMediaTypes.includes(file.media_type)" in app_source
+    assert "trigger:'ATTACHMENT_UPLOAD'" in app_source
+    for mold_term in ("销售合同", "中标通知", "/api/document-intakes"):
+        assert mold_term not in app_source
+    assert not (project_root / "backend" / "domain_packs" / "mold" / "erp" /
+                "commercial" / "contract_intake_api.py").exists()
+    assert not (project_root / "web" / "src" / "domain-packs" / "mold" /
+                "components" / "ContractIntakePanel.vue").exists()
+    assert not (project_root / "web" / "src" / "domain-packs" / "mold" /
+                "components" / "DomainUploadFlow.vue").exists()
 
 
 def test_agent_core_source_does_not_embed_mold_business_policy():

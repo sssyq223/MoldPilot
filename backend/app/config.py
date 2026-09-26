@@ -55,6 +55,30 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = _compatible("llm_max_output_tokens", 2048)
     llm_context_window: int = _compatible("llm_context_window", 8192)
     llm_enabled: bool = _compatible("llm_enabled", False)
+    ocr_service_url: str = _compatible("ocr_service_url", "http://127.0.0.1:18081")
+    ocr_service_token: str = _compatible("ocr_service_token", "")
+    ocr_service_connect_timeout: float = _compatible("ocr_service_connect_timeout", 5, gt=0, le=30)
+    ocr_service_read_timeout: float = _compatible("ocr_service_read_timeout", 120, gt=0, le=180)
+    ocr_render_dpi: int = _compatible("ocr_render_dpi", 300, ge=72, le=600)
+    ocr_min_text_chars: int = _compatible("ocr_min_text_chars", 40, ge=0, le=10000)
+    ocr_image_coverage_threshold: float = _compatible(
+        "ocr_image_coverage_threshold", 0.25, ge=0, le=1
+    )
+    ocr_max_pages: int = _compatible("ocr_max_pages", 200, ge=1, le=500)
+    ocr_max_attempts: int = _compatible("ocr_max_attempts", 5, ge=1, le=10)
+    document_model_profile_id: str = _compatible("document_model_profile_id", "")
+    document_model_reasoning_effort: Literal['','low','high','max'] = _compatible("document_model_reasoning_effort", "")
+    document_model_total_timeout: float = _compatible("document_model_total_timeout", 240, gt=0, le=600)
+    document_model_base_url: str = _compatible("document_model_base_url", "")
+    document_model_api_key: str = _compatible("document_model_api_key", "")
+    document_model: str = _compatible("document_model", "Qwen3-30B-A3B-Instruct")
+    document_model_trusted_http_origin: str = _compatible("document_model_trusted_http_origin", "")
+    document_model_connect_timeout: float = _compatible(
+        "document_model_connect_timeout", 10, gt=0, le=30
+    )
+    document_model_read_timeout: float = _compatible(
+        "document_model_read_timeout", 75, gt=0, le=180
+    )
     worker_secret: str = _compatible("worker_secret", "")
     api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8000")
     file_backend: Literal['local','s3'] = _compatible("file_backend", "local")
@@ -143,6 +167,9 @@ def _environment_profile() -> dict:
 def _profile_document() -> dict:
     """Read v2 profiles or present the legacy file and .env as migratable profiles."""
     raw = _runtime_model_config()
+    if raw.get('version') == 3:
+        from .model_catalog import flatten_catalog
+        return flatten_catalog(raw)
     profiles = raw.get("profiles")
     if isinstance(profiles, list) and profiles:
         valid = [dict(item) for item in profiles
@@ -172,11 +199,15 @@ def _profile_document() -> dict:
 
 
 def _write_profile_document(document: dict) -> None:
-    path = _model_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    from .model_catalog import config_lock
+    with config_lock():
+        if _runtime_model_config().get('version') == 3:
+            raise ValueError('MODEL_CONFIG_V3_REQUIRED')
+        path = _model_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
 
 
 def _active_profile(document: dict | None = None) -> dict:
@@ -203,6 +234,8 @@ def _settings_values(data: dict) -> dict:
         "llm_model": str(data.get("llm_model", base.llm_model) or ""),
         "ollama_base_url": str(data.get("ollama_base_url", base.ollama_base_url) or ""),
         "ollama_model": str(data.get("ollama_model", base.ollama_model) or ""),
+        "llm_reasoning_policy": str(data.get('llm_reasoning_policy') or 'default'),
+        "llm_reasoning_effort": str(data.get('llm_reasoning_effort') or ''),
         "llm_max_turns": int(data.get("llm_max_turns", base.llm_max_turns)),
         "llm_max_output_tokens": int(data.get("llm_max_output_tokens", base.llm_max_output_tokens)),
         "llm_context_window": int(data.get("llm_context_window", base.llm_context_window)),
@@ -211,6 +244,28 @@ def _settings_values(data: dict) -> dict:
     }
     values["active_model"] = values["ollama_model"] if values["llm_provider"] == "ollama" else values["llm_model"]
     return values
+
+
+def document_model_settings():
+    """固定引用文档专用 profile，不随聊天窗口切换模型，也不复制 API Key。"""
+    base = settings()
+    values = base.model_dump()
+    if base.document_model_profile_id:
+        profile = next((p for p in _profile_document()['profiles']
+                        if str(p['id']) == base.document_model_profile_id), None)
+        if profile is None:
+            raise ValueError('Document model profile not found')
+        runtime = _settings_values(profile)
+        if runtime['llm_provider'] != 'company' or not runtime['llm_enabled']:
+            raise ValueError('Document model requires an enabled OpenAI-compatible profile')
+        for target, source in {
+            'document_model_base_url':'llm_base_url', 'document_model_api_key':'llm_api_key',
+            'document_model':'llm_model', 'document_model_trusted_http_origin':'llm_trusted_http_origin',
+            'document_model_proxy_url':'llm_proxy_url', 'document_model_tls_max_version':'llm_tls_max_version',
+            'document_model_tls_key_exchange':'llm_tls_key_exchange',
+        }.items():
+            values[target] = runtime[source]
+    return SimpleNamespace(**values)
 
 
 def model_settings():

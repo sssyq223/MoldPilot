@@ -1,8 +1,7 @@
 """Code-registered tools; no runtime imports, shell, arbitrary URL or write SQL."""
 from pathlib import Path
 from functools import lru_cache
-import re
-from sqlalchemy import select, or_
+from sqlalchemy import inspect as sqlalchemy_inspect, select, or_
 from domain_packs.mold.erp.core.business import visible_requests, request_data
 from agent_core.errors import DomainError
 from agent_core.host_ports import host_ports
@@ -18,6 +17,22 @@ require = _host.require
 select_fields = _host.select_fields
 now = _host.now
 content_hash = _host.content_hash
+
+LOCAL_CHANGE_TOOLS = frozenset({
+    'query_local_change_context', 'prepare_local_change_intake',
+    'prepare_local_change_association', 'prepare_local_change_acceptance',
+})
+LOCAL_CHANGE_TABLES = frozenset({
+    'local_change_intake', 'local_change_customer_mold_history', 'local_change_association',
+})
+
+
+def local_change_schema_available(db):
+    try:
+        inspector = sqlalchemy_inspect(db.get_bind())
+        return all(inspector.has_table(table, schema='public') for table in LOCAL_CHANGE_TABLES)
+    except Exception:
+        return False
 
 
 def skill_agent_description(content: str) -> str:
@@ -64,8 +79,24 @@ TOOLS.update({
     'prepare_quotation_feedback':{'description':'准备登记指定生效报价版本的客户反馈；本人确认后仅追加反馈事实，不自动承接、拒单或生成新报价。','permission':'quotation.execute'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
     'prepare_bid_intake_draft':{'description':'使用本轮明确上传的中标、外部开工、合同参考或模具图片资料，准备登记或补充同一条中标接收草稿；可人工登记客户工艺确认、外部订单、开工日期和交期，确认后追加不可变版本，不自动承接、拒单、建正式合同或内部开工。','permission':'quote_acceptance.create'},
+    'query_confirmed_bid_notices':{'description':'查询当前人员仍有权限访问且尚未消费的人工确认中标事件；只读，不消费、不匹配项目。','permission':'quote_acceptance.read'},
+    'prepare_bid_notice_match':{'description':'准备消费一个已人工确认的中标事件；本人确认后仅创建 PENDING_MATCH，不自动匹配项目或生成开工通知。','permission':'quote_acceptance.create'},
+    'prepare_bid_project_match':{'description':'准备人工确认中标通知对应项目；本人确认后只推进到 MATCHED，不创建开工通知。','permission':'quote_acceptance.create'},
+    'prepare_bid_intake_confirmation':{'description':'准备人工确认中标接收版本；本人确认后推进到 INTAKE_CONFIRMED，不代填资料。','permission':'quote_acceptance.create'},
+    'prepare_start_notice':{'description':'准备正式开工通知草稿；本人确认后冻结客户开工条件、项目、模具和中标接收版本，并初始化部门回执。','permission':'internal_start.create'},
+    'prepare_department_ack':{'description':'准备当前部门对开工通知的独立回执；本人确认后只写入本部门状态和依据。','permission':'internal_start.execute'},
+    'prepare_project_start_decision':{'description':'准备项目部最终开工决定；本人确认后才形成 PROJECT_ACCEPTED、FULL_OUTSOURCE_ACCEPTED、REJECTED 或 RETURNED。','permission':'internal_start.execute'},
+    'prepare_post_start_binding':{'description':'准备合同或 ERP 核算清单后置绑定；本人确认后才写入正式绑定，并再次核验版本和模具快照。','permission':'project.dossier.read'},
+    'query_admin_start_notices':{'description':'查询仅供超级管理员处理的中标后内部开工通知草稿；只读，不自动作出承接或委外决定。','permission':'internal_start.read'},
+    'prepare_admin_start_notice_update':{'description':'准备补充内部开工通知资料；仅超级管理员可用，本人确认后追加版本留痕。','permission':'internal_start.execute'},
+    'prepare_admin_start_notice_decision':{'description':'准备超级管理员对内部开工通知作出内部承接、整套委外或拒绝决定；本人确认后才生效。','permission':'internal_start.execute'},
+    'prepare_admin_start_department_dispatch':{'description':'准备项目部分发内部开工通知单给选定部门；本人确认后仅创建部门送达记录，不代填部门回执。','permission':'internal_start.execute'},
+    'prepare_admin_start_department_ack':{'description':'准备记录单个部门对内部开工通知单的确认回执；本人确认后仅写入该部门已收到状态和依据。','permission':'internal_start.execute'},
+    'prepare_contract_match_confirmation':{'description':'准备确认合同与已确认开工通知草稿的匹配候选；不会绕过版本校验或直接静默绑定。','permission':'project.dossier.read'},
     'query_contract_context':{'description':'按项目或合同线索读取销售合同、整套委外合同、付款节点、编号关联、替代关系和资金时序风险；只读，不上传、不OCR、不确认收付款。','permission':'project.dossier.read'},
-    'prepare_contract_record':{'description':'使用本轮明确上传的 PDF、图片或 DOCX 原件，准备销售合同或整套委外合同的原始、替代或追加登记审批建议；冻结签订/交付日期、付款方式、客户编号、项目模具订单和开工关联；替代合同必须逐条把前序版本链的历史实收实付归属到新付款节点，追加合同保持独立；必须使用真实项目、项目版本、附件 ID 和流程 ID，本人确认后才提交 Agent BPM。','permission':'project.dossier.read'},
+    'query_sales_contract_intake':{'description':'读取本人可见且已经人工确认的销售合同 OCR 记录、项目、模具和付款节点；只读，不创建合同。','permission':'sales_contract.read'},
+    'prepare_sales_contract_from_intake':{'description':'从已人工确认的 OCR 记录准备销售合同审批建议；必须选择业务主管到财务的顺序两级流程，本人确认后才创建合同。','permission':'sales_contract.create'},
+    'prepare_contract_record':{'description':'使用本轮明确上传的 PDF、图片或 DOCX 原件，准备销售合同或整套委外合同的原始、替代或追加登记审批建议；冻结签订/交付日期、付款方式、客户编号、项目模具订单和开工关联；替代合同必须逐条把前序版本链的历史实收实付归属到新付款节点，追加合同保持独立；必须使用真实项目、项目版本、附件 ID 和流程 ID，本人确认后才冻结附件并提交 Agent BPM。','permission':'project.dossier.read'},
     'prepare_contract_signing_record':{'description':'准备整套委外合同签署文件或签署状态证据登记建议；必须使用真实项目版本、已生效整套委外合同和签署依据，本人确认后才写入签署记录，不发起电子签署。','permission':'full_outsource_contract.execute'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
@@ -113,10 +144,29 @@ from domain_packs.mold import contact_tools
 from domain_packs.mold import erp_design_mcp
 
 TOOLS.update(erp_design_mcp.TOOL_SPECS)
-TOOLS['query_uploaded_files']={'description':'查询当前会话中本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
+TOOLS['query_uploaded_files']={'description':'查询本次 Agent Run 绑定、本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
+TOOLS.update({
+    'prepare_document_intake': {'description':'准备创建文档接收批次；本人确认后才排队预分类 OCR。','permission':'file.upload'},
+    'query_document_intake': {'description':'读取当前 Agent Run 绑定文件对应的文档接收分类、OCR 与失败状态；若本 Run 没有附件，则读取当前用户当前会话已登记的接收批次；不传参数查询当前范围，也可传 file_id 查询当前会话文件；document_intake_id 只能填写真实接收批次 ID，不能填写文件 ID。','permission':'file.upload'},
+    'prepare_document_type_confirmation': {'description':'准备确认本批次全部文档的类型和销售合同分组；本人确认后才排队完整 OCR。','permission':'file.upload'},
+    'prepare_document_ocr_retry': {'description':'准备重新排队已最终失败的 OCR 任务；本人确认后才重置失败任务。','permission':'file.upload'},
+    'prepare_sales_contract_intake_review': {'description':'准备确认销售合同 OCR 字段、既有项目、正式模具映射和合同关系；本人确认后才形成可登记合同的复核事实。','permission':'sales_contract.create'},
+})
 TOOLS['query_contact_context']={'description':'读取指定工程联络单的主信息、结构化影响与动作、实际执行/复验材料、事项标识，以及可用责任部门或候选处理人。','permission':'contact.read'}
 for action,(_,permission,title) in contact_tools.SPECS.items():
     TOOLS['prepare_contact_'+action]={'description':title+'的操作建议。仅在用户要求办理时使用；先查询真实项目、联络单、事项和人员标识；不执行业务，等待用户核对确认。','permission':'contact.'+permission}
+
+TOOLS.update({
+    'query_local_change_context': {'description': '读取 MoldPilot 本地设变承接、项目/模具关联、收费合同状态和承接版本；只读，不调用 ERP。', 'permission': 'engineering_change.read'},
+    'prepare_local_change_intake': {'description': '准备本地客户设变、内部修模或委外设变承接记录；只生成 Proposal，本人确认后才写入。', 'permission': 'engineering_change.create'},
+    'prepare_local_change_association': {'description': '准备本地设变与项目、模具、合同或文件版本的关联；不自动选择多候选。', 'permission': 'engineering_change.create'},
+    'prepare_local_change_acceptance': {'description': '准备本地设变承接接受或拒绝记录；接受不等于执行完成或联络单关闭。', 'permission': 'engineering_change.create'},
+    'query_model_configuration': {'description': '读取本机模型供应商、模型目录、默认模型和文档模型占用状态；不返回 API Key。', 'permission': 'model_config.read'},
+    'query_model_provider_directory': {'description': '按已保存供应商和当前 revision 检测模型目录；只返回模型名称，不保存配置、不证明模型可调用。', 'permission': 'model_config.read'},
+    'prepare_model_provider_save': {'description': '准备管理员保存本机模型供应商连接元数据；不接收或回显 API Key，本人确认后才写入。', 'permission': 'model_config.write'},
+    'prepare_model_save': {'description': '准备管理员新增或修改本机模型目录条目；必须携带目录 revision，本人确认后才写入。', 'permission': 'model_config.write'},
+    'prepare_model_default': {'description': '准备管理员切换本机默认模型；必须携带目录 revision，本人确认后才写入。', 'permission': 'model_config.write'},
+})
 
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
@@ -141,9 +191,28 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'bid_intake_review':{'name':'中标接收与客户规则核对','tools':['query_bid_intake_context'],
                    'optional_tools':['prepare_bid_intake_draft','query_business_object_candidates'],
                    'activation_queries':['中标接收','客户分类','客户规则','模具关联','开工依据']},
+               'bid_to_start_notice':{'name':'中标到开工通知及后置关联','tools':['query_confirmed_bid_notices','prepare_bid_notice_match'],
+                   'optional_tools':['query_admin_start_notices','prepare_admin_start_notice_update',
+                       'prepare_admin_start_notice_decision','prepare_admin_start_department_dispatch','prepare_admin_start_department_ack','prepare_bid_project_match',
+                       'prepare_bid_intake_confirmation','prepare_start_notice','prepare_department_ack',
+                       'prepare_project_start_decision','prepare_post_start_binding',
+                       'prepare_contract_match_confirmation'],
+                   'activation_triggers':['bid_notice.confirmed'],
+                   'activation_queries':['中标通知到开工','中标匹配项目','开工通知回执','部门回执','项目部开工决定','合同后置绑定','核算清单绑定']},
                'contract_context_review':{'name':'合同上下文核对','tools':['query_contract_context'],
                    'optional_tools':['prepare_contract_record','prepare_contract_signing_record'],
                    'activation_queries':['合同','合同登记','销售合同','整套委外合同','合同号','付款节点','补齐合同','替代合同','合同签署','签署文件']},
+               'sales_contract_intake':{
+                   'name':'销售合同 PDF 接收、识别复核与审批',
+                   'tools':['query_uploaded_files','query_document_intake'],
+                   'optional_tools':['prepare_document_intake','prepare_document_type_confirmation',
+                                     'prepare_document_ocr_retry','query_sales_contract_intake',
+                                     'prepare_sales_contract_intake_review','prepare_sales_contract_from_intake'],
+                   'trusted_activation_tools':['query_uploaded_files','prepare_document_intake'],
+                   'activation_triggers':['ATTACHMENT_UPLOAD'],
+                   'activation_media_types':['application/pdf'],
+                   'suppress_tool_search_on_trusted_activation':True,
+                   'activation_queries':['合同识别','OCR合同','识别结果','合同PDF','文档类型确认','OCR重试','从识别记录登记合同']},
                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                    'optional_tools':['prepare_internal_start'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工'],
@@ -410,6 +479,46 @@ SKILLS.update({
         'activation_queries': ['ERP BOM维护', 'ERP BOM导入', 'BOM缺料'],
     },
 })
+SKILLS.update({
+    'engineering_change_intake': {
+        'name': '本地设变承接',
+        'tools': ['query_local_change_context'],
+        'optional_tools': ['prepare_local_change_intake', 'prepare_local_change_association', 'prepare_local_change_acceptance'],
+        'activation_queries': ['客户设变', '内部修模', '内部改模', '委外设变', '设变承接', '原模具复用', '客户模号历史'],
+    },
+    'engineering_contact_collaboration': {
+        'name': '本地工程联络协作',
+        'tools': ['query_contact_cases'],
+        'optional_tools': ['query_contact_context', 'prepare_contact_create', 'prepare_contact_note', 'prepare_contact_task',
+                           'prepare_contact_assign', 'prepare_contact_respond', 'prepare_contact_resolution',
+                           'prepare_contact_review', 'prepare_contact_close', 'prepare_contact_set_reviewer',
+                           'prepare_contact_cancel_task', 'prepare_contact_attach'],
+        'activation_queries': ['工程联络', '联络单', '处理方案', '执行反馈', '独立复验', '联络关闭'],
+    },
+    'document_engineering_contact_intake': {
+        'name': '工程联络单文档接收',
+        'tools': ['query_document_intake'],
+        'optional_tools': ['query_business_object_candidates', 'query_contact_cases', 'prepare_contact_create',
+                           'prepare_contact_attach', 'prepare_contact_task'],
+        'activation_triggers': ['DOCUMENT_CLASSIFICATION_CONFIRMED'],
+        'activation_media_types': ['application/pdf', 'image/png', 'image/jpeg', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        'trusted_activation_tools': ['query_document_intake', 'query_business_object_candidates', 'query_contact_cases'],
+        'suppress_tool_search_on_trusted_activation': False,
+        'activation_queries': ['上传工程联络单', '识别工程联络单', '工程联络单文档'],
+    },
+    'model_provider_configuration': {
+        'name': '本地模型供应商配置',
+        'tools': ['query_model_configuration'],
+        'optional_tools': ['query_model_provider_directory', 'prepare_model_provider_save', 'prepare_model_save', 'prepare_model_default'],
+        'activation_queries': ['模型供应商', '模型目录', '默认模型', '模型配置', '模型 Key'],
+    },
+    'document_model_configuration': {
+        'name': '本地文档模型配置',
+        'tools': ['query_model_configuration'],
+        'optional_tools': ['prepare_model_save', 'prepare_model_default'],
+        'activation_queries': ['文档模型', 'OCR 模型', '文档识别模型'],
+    },
+})
 
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
@@ -449,7 +558,28 @@ CAPABILITY_NAMES = {
     'prepare_quotation_feedback': '准备客户报价反馈',
     'query_bid_intake_context': '读取中标接收上下文',
     'prepare_bid_intake_draft': '准备中标接收草稿',
+    'query_confirmed_bid_notices': '读取已确认中标事件',
+    'prepare_bid_notice_match': '准备登记中标匹配记录',
+    'prepare_bid_project_match': '准备人工匹配中标项目',
+    'prepare_bid_intake_confirmation': '准备确认中标接收版本',
+    'prepare_start_notice': '准备开工通知草稿',
+    'prepare_department_ack': '准备部门回执',
+    'prepare_project_start_decision': '准备项目部开工决定',
+    'prepare_post_start_binding': '准备合同/清单后置绑定',
+    'query_admin_start_notices': '查询超级管理员开工草稿',
+    'prepare_admin_start_notice_update': '补充内部开工通知资料',
+    'prepare_admin_start_notice_decision': '确认内部承接/委外/拒绝',
+    'prepare_admin_start_department_dispatch': '分发内部通知单给部门',
+    'prepare_admin_start_department_ack': '记录部门确认回执',
+    'prepare_contract_match_confirmation': '确认合同匹配候选',
     'query_contract_context': '读取合同上下文',
+    'query_sales_contract_intake': '读取销售合同识别记录',
+    'prepare_sales_contract_from_intake': '从识别记录准备销售合同',
+    'prepare_document_intake': '准备接收文档',
+    'query_document_intake': '读取文档接收状态',
+    'prepare_document_type_confirmation': '准备确认文档类型',
+    'prepare_document_ocr_retry': '准备重试失败 OCR',
+    'prepare_sales_contract_intake_review': '准备确认销售合同识别结果',
     'prepare_contract_record': '准备合同登记',
     'prepare_contract_signing_record': '准备合同签署记录',
     'query_internal_start_readiness': '核对正式开工条件',
@@ -506,6 +636,15 @@ CAPABILITY_NAMES = {
     'prepare_contact_close': '准备人工关闭联络单',
     'prepare_contact_set_reviewer': '准备指定验收负责人',
     'prepare_contact_cancel_task': '准备撤销联络事项',
+    'query_local_change_context': '读取本地设变承接上下文',
+    'prepare_local_change_intake': '准备本地设变承接记录',
+    'prepare_local_change_association': '准备本地设变对象关联',
+    'prepare_local_change_acceptance': '准备本地设变承接决定',
+    'query_model_configuration': '读取本地模型配置',
+    'query_model_provider_directory': '检测本地模型供应商目录',
+    'prepare_model_provider_save': '准备保存本地模型供应商',
+    'prepare_model_save': '准备保存本地模型目录',
+    'prepare_model_default': '准备切换本地默认模型',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -520,9 +659,20 @@ CAPABILITY_DEPARTMENTS = {
     'query_quote_evaluation_context': 'sales', 'prepare_quotation_version': 'sales',
     'prepare_quotation_feedback': 'sales',
     'query_bid_intake_context': 'sales', 'prepare_bid_intake_draft': 'sales',
+    'query_confirmed_bid_notices': 'sales', 'prepare_bid_notice_match': 'sales',
+    'prepare_bid_project_match': 'sales', 'prepare_bid_intake_confirmation': 'sales',
+    'prepare_start_notice': 'project', 'prepare_department_ack': 'project',
+    'prepare_project_start_decision': 'project', 'prepare_post_start_binding': 'finance',
+    'query_admin_start_notices': 'project', 'prepare_admin_start_notice_update': 'project',
+    'prepare_admin_start_notice_decision': 'project', 'prepare_admin_start_department_dispatch': 'project', 'prepare_admin_start_department_ack': 'project', 'prepare_contract_match_confirmation': 'finance',
+    'bid_to_start_notice': 'sales',
     'quote_acceptance_review': 'sales', 'quote_evaluation_review': 'sales',
     'bid_intake_review': 'sales', 'query_contract_context': 'finance', 'prepare_contract_record': 'finance',
-    'prepare_contract_signing_record': 'finance',
+    'query_sales_contract_intake': 'sales', 'prepare_sales_contract_from_intake': 'sales',
+    'prepare_document_intake': 'sales', 'query_document_intake': 'sales',
+    'prepare_document_type_confirmation': 'sales', 'prepare_document_ocr_retry': 'sales',
+    'prepare_sales_contract_intake_review': 'sales',
+    'sales_contract_intake': 'sales', 'prepare_contract_signing_record': 'finance',
     'contract_context_review': 'finance',
     'query_finance_context': 'finance', 'prepare_customer_receivable_schedule': 'finance', 'prepare_supplier_deduction_settlement': 'finance',
     'prepare_mold_transfer_receipt': 'finance',
@@ -561,6 +711,13 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contact_note': 'engineering', 'prepare_contact_task': 'engineering',
     'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
     'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
+    'query_local_change_context': 'engineering', 'prepare_local_change_intake': 'engineering',
+    'prepare_local_change_association': 'engineering', 'prepare_local_change_acceptance': 'engineering',
+    'engineering_change_intake': 'engineering', 'engineering_contact_collaboration': 'engineering',
+    'document_engineering_contact_intake': 'engineering',
+    'query_model_configuration': 'system', 'query_model_provider_directory': 'system', 'prepare_model_provider_save': 'system',
+    'prepare_model_save': 'system', 'prepare_model_default': 'system',
+    'model_provider_configuration': 'system', 'document_model_configuration': 'system',
 }
 # ERP design skills are the guided entry points for the same design capabilities
 # as the registered ERP design tools.  They do not carry a permission field of
@@ -577,6 +734,12 @@ CAPABILITY_TYPES = {
     'prepare_quote_acceptance_decision': 'approval',
     'prepare_quotation_version': 'approval', 'prepare_quotation_feedback': 'operation',
     'prepare_bid_intake_draft': 'operation',
+    'prepare_bid_notice_match': 'operation', 'prepare_bid_project_match': 'approval',
+    'prepare_bid_intake_confirmation': 'operation', 'prepare_start_notice': 'approval',
+    'prepare_department_ack': 'operation', 'prepare_project_start_decision': 'approval',
+    'prepare_post_start_binding': 'operation',
+    'query_admin_start_notices': 'review', 'prepare_admin_start_notice_update': 'operation',
+    'prepare_admin_start_notice_decision': 'approval', 'prepare_admin_start_department_dispatch': 'operation', 'prepare_admin_start_department_ack': 'operation', 'prepare_contract_match_confirmation': 'approval',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
     'finance_context_review': 'review', 'governance_context_review': 'review',
@@ -606,6 +769,13 @@ CAPABILITY_TYPES = {
     'prepare_contact_set_reviewer': 'operation', 'prepare_contact_cancel_task': 'operation',
     'prepare_customer_receivable_schedule': 'operation', 'prepare_supplier_deduction_settlement': 'operation',
     'prepare_mold_transfer_receipt': 'operation',
+    'query_local_change_context': 'query', 'prepare_local_change_intake': 'operation',
+    'prepare_local_change_association': 'operation', 'prepare_local_change_acceptance': 'approval',
+    'engineering_change_intake': 'review', 'engineering_contact_collaboration': 'review',
+    'document_engineering_contact_intake': 'review',
+    'query_model_configuration': 'query', 'query_model_provider_directory': 'query', 'prepare_model_provider_save': 'operation',
+    'prepare_model_save': 'operation', 'prepare_model_default': 'operation',
+    'model_provider_configuration': 'review', 'document_model_configuration': 'review',
 }
 
 
@@ -669,10 +839,26 @@ def available_tools(db, user):
     if ("erp_design_query_master_data" not in allowed
             and legacy_master_reads <= set(allowed)):
         allowed.append("erp_design_query_master_data")
+    if not local_change_schema_available(db):
+        allowed = [key for key in allowed if key not in LOCAL_CHANGE_TOOLS]
     return allowed
 
 
 def tool_schema(key):
+    if key in {'query_local_change_context', 'prepare_local_change_intake',
+               'prepare_local_change_association', 'prepare_local_change_acceptance'}:
+        from domain_packs.mold.tools.local.change_intake_tools import schema
+        return {'type': 'function', 'function': {
+            'name': key, 'description': TOOLS[key]['description'],
+            'parameters': schema(key),
+        }}
+    if key in {'query_model_configuration', 'query_model_provider_directory', 'prepare_model_provider_save',
+               'prepare_model_save', 'prepare_model_default'}:
+        from domain_packs.mold.tools.local.model_configuration_tools import schema
+        return {'type': 'function', 'function': {
+            'name': key, 'description': TOOLS[key]['description'],
+            'parameters': schema(key),
+        }}
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.tool_schema(key)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
@@ -719,6 +905,26 @@ def tool_schema(key):
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         from domain_packs.mold.tools.erp.commercial.bid_intake_tools import bid_intake_schema
         parameters=bid_intake_schema() if key=='prepare_bid_intake_draft' else QuoteContextInput.model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key == 'query_confirmed_bid_notices' or key.startswith('prepare_bid_') or key in {
+        'prepare_start_notice','prepare_department_ack','prepare_project_start_decision','prepare_post_start_binding'}:
+        from domain_packs.mold.tools.erp.commercial.bid_start_tools import INPUTS
+        parameters = {} if key == 'query_confirmed_bid_notices' else INPUTS[key].model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key == 'query_admin_start_notices' or key in {
+        'prepare_admin_start_notice_update','prepare_admin_start_notice_decision',
+        'prepare_admin_start_department_dispatch','prepare_admin_start_department_ack',
+        'prepare_contract_match_confirmation'}:
+        from domain_packs.mold.tools.erp.commercial.admin_start_notice_tools import INPUTS
+        parameters = INPUTS[key].model_json_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key in {'query_document_intake','prepare_document_intake','prepare_document_type_confirmation',
+               'prepare_document_ocr_retry','prepare_sales_contract_intake_review'}:
+        from domain_packs.mold.tools.erp.commercial.document_intake_tools import schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema(key)}}
+    if key in {'query_sales_contract_intake','prepare_sales_contract_from_intake'}:
+        from domain_packs.mold.tools.erp.commercial.contract_intake_tools import proposal_schema, query_schema
+        parameters = proposal_schema() if key == 'prepare_sales_contract_from_intake' else query_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_contract_context','prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import ContractContextInput, contract_schema, contract_signing_record_schema
@@ -818,6 +1024,12 @@ def skill_context(db, user):
                                spec.get("suppress_tool_search_on_auto_activation", False)
                            ),
                            "priority_patterns": spec.get("priority_patterns", []),
+                           "trusted_activation_tools": spec.get("trusted_activation_tools", []),
+                           "activation_triggers": spec.get("activation_triggers", []),
+                           "activation_media_types": spec.get("activation_media_types", []),
+                           "suppress_tool_search_on_trusted_activation": bool(
+                               spec.get("suppress_tool_search_on_trusted_activation", False)
+                           ),
                            "skill_layer": route["layer"], "skill_domain": route["domain"],
                            "route_terms": route["route_terms"]})
     return result
@@ -840,6 +1052,7 @@ def skill_paths():
         ("erp", "change"): ["设变", "工程变更", "工程联络", "联络单", "协作事项"],
         ("erp", "delivery"): ["交付", "物流", "发货", "签收", "客户验收"],
         ("erp", "finance"): ["财务", "回款", "付款", "发票", "结算", "扣款"],
+        ("local", "change"): ["设变", "工程变更", "工程联络", "联络单", "承接", "复验", "关闭"],
     }
     paths = {}
     for path in root.rglob("SKILL.md"):
@@ -858,91 +1071,21 @@ def skill_paths():
     return paths
 
 
-_ERP_MOLD_NUMBER = re.compile(r"(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])")
-
-
-def _local_design_context_is_empty(result):
-    if not isinstance(result, dict):
-        return True
-    if result.get("resolution") in {"NOT_FOUND", "NOT_FOUND_OR_FORBIDDEN"}:
-        return True
-    rows = result.get("data")
-    if not isinstance(rows, list) or not rows:
-        return True
-    if result.get("resolution") != "RESOLVED":
-        return False
-    return all(not isinstance(row, dict) or not row.get("design_routes") for row in rows)
-
-
-def _erp_result_rows(result):
-    payload = result.get("data") if isinstance(result, dict) else None
-    if not isinstance(payload, dict):
-        return []
-    for key in ("rows", "records", "list"):
-        rows = payload.get(key)
-        if isinstance(rows, list):
-            return rows
-    return []
-
-
 def _fallback_empty_design_context_to_erp(db, user, data, allowed, local_result, run=None):
-    """Use ERP design orders when an ERP-shaped mold number has no local facts."""
-    identifier = str(data.identifier or "").strip()
-    match = _ERP_MOLD_NUMBER.search(identifier)
-    if not match or not _local_design_context_is_empty(local_result):
-        return local_result
-    mold_number = match.group(0).upper()
-    limitations = list(local_result.get("limitations") or [])
-    if "erp_design_query_orders" not in allowed:
-        limitations.append("当前会话未分配 ERP 设计订单查询工具，不能自动回退到 ERP。")
-        return {**local_result, "limitations": limitations}
-
-    order_result = erp_design_mcp.execute_tool(
-        db, user, "erp_design_query_orders", {"query": {"moldNo": mold_number}}, run=run)
-    rows = _erp_result_rows(order_result)
-    fallback = {
-        "attempted": True,
-        "from": "agent_db",
-        "reason": "LOCAL_DESIGN_CONTEXT_EMPTY",
-        "identifier": identifier,
-        "mold_number": mold_number,
-        "matched": bool(rows),
-    }
-    if not rows:
-        limitations.append("本地设计上下文为空，已按模具号自动查询 ERP，但 ERP 也未返回设计订单。")
-        return {**local_result, "limitations": limitations, "erp_fallback": fallback}
-
-    exact = next((row for row in rows if isinstance(row, dict)
-                  and str(row.get("moldNo") or "").casefold() == mold_number.casefold()), None)
-    detail = None
-    detail_error = False
-    record_id = (exact or {}).get("id") or (exact or {}).get("requestId")
-    if record_id and "erp_design_get_record" in allowed:
-        try:
-            record_result = erp_design_mcp.execute_tool(
-                db, user, "erp_design_get_record",
-                {"resource": "design_order", "id": int(record_id)}, run=run)
-            detail = record_result.get("data") if isinstance(record_result, dict) else None
-        except (DomainError, TypeError, ValueError):
-            detail_error = True
-
-    limitations.extend(order_result.get("limitations") or [])
-    limitations.append("本地设计上下文为空，结果已自动回退到 management-system ERP。")
-    if detail_error:
-        limitations.append("已找到 ERP 设计订单，但订单详情读取失败；当前仅返回订单列表事实。")
-    return {
-        "resolution": "RESOLVED",
-        "data": [{"mold_number": mold_number, "erp_design_orders": rows,
-                  "erp_design_order_detail": detail}],
-        "source": order_result.get("source") or "management-system ERP via erp-design-upload MCP",
-        "as_of": order_result.get("as_of") or now().isoformat(),
-        "limitations": list(dict.fromkeys(limitations)),
-        "erp_fallback": fallback,
-    }
+    """保留兼容入口，但本地查询不得自动调用 ERP。"""
+    return local_result
 
 
 def execute(db, user, key, arguments, run=None):
     if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
+    if key in {'query_local_change_context', 'prepare_local_change_intake',
+               'prepare_local_change_association', 'prepare_local_change_acceptance'}:
+        from domain_packs.mold.tools.local.change_intake_tools import execute_tool
+        return execute_tool(db, user, key, arguments, run=run)
+    if key in {'query_model_configuration', 'query_model_provider_directory', 'prepare_model_provider_save',
+               'prepare_model_save', 'prepare_model_default'}:
+        from domain_packs.mold.tools.local.model_configuration_tools import execute_tool
+        return execute_tool(db, user, key, arguments, run=run)
     if key in erp_design_mcp.TOOL_SPECS:
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
@@ -969,6 +1112,23 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_bid_intake_draft':
         from domain_packs.mold.tools.erp.commercial.bid_intake_tools import execute_bid_intake_tool
         return execute_bid_intake_tool(db,user,key,arguments,run=run)
+    if key == 'query_confirmed_bid_notices' or key.startswith('prepare_bid_') or key in {
+        'prepare_start_notice','prepare_department_ack','prepare_project_start_decision','prepare_post_start_binding'}:
+        from domain_packs.mold.tools.erp.commercial.bid_start_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
+    if key == 'query_admin_start_notices' or key in {
+        'prepare_admin_start_notice_update','prepare_admin_start_notice_decision',
+        'prepare_admin_start_department_dispatch','prepare_admin_start_department_ack',
+        'prepare_contract_match_confirmation'}:
+        from domain_packs.mold.tools.erp.commercial.admin_start_notice_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
+    if key in {'query_document_intake','prepare_document_intake','prepare_document_type_confirmation',
+               'prepare_document_ocr_retry','prepare_sales_contract_intake_review'}:
+        from domain_packs.mold.tools.erp.commercial.document_intake_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
+    if key in {'query_sales_contract_intake','prepare_sales_contract_from_intake'}:
+        from domain_packs.mold.tools.erp.commercial.contract_intake_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
     if key in {'prepare_contract_record','prepare_contract_signing_record'}:
         from domain_packs.mold.tools.erp.commercial.contract_tools import execute_contract_tool
         return execute_contract_tool(db,user,key,arguments,run=run)
@@ -1123,7 +1283,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='query_uploaded_files':
         from fastapi.encoders import jsonable_encoder
         if not run or run.user_id!=user.id:raise DomainError("FILE_CONTEXT_INVALID","附件查询须绑定当前任务",403)
-        return jsonable_encoder({"data":_host.conversation_files(run.conversation_id,user,db),"source":"agent_db","as_of":now(),"limitations":["仅当前会话可见附件元数据；文件内容尚未解析，不能据此声称已识别文本或完成审批"]})
+        return jsonable_encoder({"data":_host.run_files(db,user,run),"source":"agent_db","as_of":now(),"limitations":["仅返回本次 Agent Run 绑定的附件元数据；文件内容尚未解析，不能据此声称已识别文本或完成审批"]})
     if key == "query_projects":
         p = predicate(db, user, "project.read", {"project_id": Project.id})
         data = [select_fields({"id": row.id, "code": row.code, "name": row.name, "status": row.status},

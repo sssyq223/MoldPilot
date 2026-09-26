@@ -24,6 +24,13 @@ class ProposalHandler:
 
 
 HANDLERS = (
+    ProposalHandler("model_configuration.execute", "domain_packs.mold.tools.local.model_configuration_tools", frozenset({
+        "prepare_model_provider_save", "prepare_model_save", "prepare_model_default",
+    })),
+    ProposalHandler("local_change.execute", "domain_packs.mold.tools.local.change_intake_tools", frozenset({
+        "prepare_local_change_intake", "prepare_local_change_association", "prepare_local_change_acceptance",
+    })),
+    ProposalHandler("document_workflow.execute", "domain_packs.mold.erp.commercial.document_workflow", frozenset()),
     ProposalHandler("contact.execute", "domain_packs.mold.tools.erp.change.contact_tools", frozenset({
         "prepare_contact_create", "prepare_contact_note", "prepare_contact_task",
         "prepare_contact_assign", "prepare_contact_respond", "prepare_contact_attach",
@@ -50,8 +57,26 @@ HANDLERS = (
     ProposalHandler("bid_intake.execute", "domain_packs.mold.tools.erp.commercial.bid_intake_tools", frozenset({
         "prepare_bid_intake_draft",
     })),
+    ProposalHandler("bid_start.execute", "domain_packs.mold.tools.erp.commercial.bid_start_tools", frozenset({
+        "prepare_bid_notice_match", "prepare_bid_project_match",
+        "prepare_bid_intake_confirmation", "prepare_start_notice",
+        "prepare_department_ack", "prepare_project_start_decision",
+        "prepare_post_start_binding",
+    })),
+    ProposalHandler("admin_start_notice.execute", "domain_packs.mold.tools.erp.commercial.admin_start_notice_tools", frozenset({
+        "prepare_admin_start_notice_update", "prepare_admin_start_notice_decision",
+        "prepare_admin_start_department_dispatch", "prepare_admin_start_department_ack",
+        "prepare_contract_match_confirmation",
+    })),
     ProposalHandler("contract.execute", "domain_packs.mold.tools.erp.commercial.contract_tools", frozenset({
         "prepare_contract_record", "prepare_contract_signing_record",
+    })),
+    ProposalHandler("document_intake.execute", "domain_packs.mold.tools.erp.commercial.document_intake_tools", frozenset({
+        "prepare_document_intake", "prepare_document_type_confirmation",
+        "prepare_document_ocr_retry", "prepare_sales_contract_intake_review",
+    })),
+    ProposalHandler("contract_intake.execute", "domain_packs.mold.tools.erp.commercial.contract_intake_tools", frozenset({
+        "prepare_sales_contract_from_intake",
     })),
     ProposalHandler("design_approval.execute", "domain_packs.mold.tools.erp.design.design_approval_tools", frozenset({
         "prepare_design_order_approval",

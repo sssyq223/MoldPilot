@@ -66,36 +66,39 @@ class Gateway:
 
 def create_model(config):
     if not config.llm_enabled or not config.worker_secret or (config.llm_provider=='company' and (not config.llm_base_url or not config.llm_model or (not config.llm_api_key and not config.llm_trusted_http_origin))):
-        raise SystemExit("Model or worker configuration missing; no simulated model is substituted.")
-    return OllamaAdapter(config.ollama_base_url,config.ollama_model,config.llm_max_output_tokens,context_window=config.llm_context_window) if config.llm_provider=='ollama' else ModelAdapter(config.llm_base_url, config.llm_api_key, config.llm_model,
+        raise ModelError('MODEL_CONFIGURATION_MISSING')
+    reasoning = {'reasoning_effort':getattr(config,'llm_reasoning_effort',''),
+                 'reasoning_policy':getattr(config,'llm_reasoning_policy','default')}
+    return OllamaAdapter(config.ollama_base_url,config.ollama_model,config.llm_max_output_tokens,
+                         context_window=config.llm_context_window,read_timeout=config.llm_read_timeout,
+                         **reasoning) if config.llm_provider=='ollama' else ModelAdapter(config.llm_base_url, config.llm_api_key, config.llm_model,
                          config.llm_max_output_tokens, proxy=config.llm_proxy_url,
                          trusted_http_origin=config.llm_trusted_http_origin,
                          tls_max_version=config.llm_tls_max_version,
                          tls_key_exchange=config.llm_tls_key_exchange,
-                         connect_timeout=config.llm_connect_timeout, read_timeout=config.llm_read_timeout)
+                         connect_timeout=config.llm_connect_timeout, read_timeout=config.llm_read_timeout, **reasoning)
 
 
 def main():
     config = settings()
-    runtime_config = model_settings()
-    model = create_model(runtime_config)
-    model_config_version = runtime_config.config_version
+    from .run_model_selection import runtime_for_selection
+    model, model_config_version = None, None
     with httpx.Client(base_url=config.api_base_url, headers={"Authorization": "Bearer "+config.worker_secret}, timeout=30, trust_env=False) as client:
         while True:
             try:
-                runtime_config = model_settings()
-                if runtime_config.config_version != model_config_version:
-                    previous_model = model
-                    model = create_model(runtime_config)
-                    model_config_version = runtime_config.config_version
-                    close = getattr(previous_model, "close", None)
-                    if callable(close):
-                        close()
                 response = client.post("/internal/runs/claim"); response.raise_for_status()
                 context = response.json()["run"]
                 if not context: time.sleep(0.5); continue
                 gateway = Gateway(client, context)
                 try:
+                    runtime_config = runtime_for_selection(context.get('model_selection'))
+                    if runtime_config.config_version != model_config_version:
+                        previous_model = model
+                        model = create_model(runtime_config)
+                        model_config_version = runtime_config.config_version
+                        close = getattr(previous_model, 'close', None)
+                        if callable(close):
+                            close()
                     context['tools']=gateway.discover()
                     context['tool_annotations']=gateway.tool_annotations
                     run_loop(context, model, gateway, max_turns=runtime_config.llm_max_turns,

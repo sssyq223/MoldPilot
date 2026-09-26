@@ -598,6 +598,52 @@ def test_prepare_contract_signing_record_requires_confirmation_then_records():
         engine.dispose()
 
 
+def test_contract_family_and_current_contracts_preserve_version_history():
+    from domain_packs.mold.tools.erp.commercial.contract_tools import contract_family, current_contracts
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, 'family-admin', True)
+            p = project(db, 'CONTRACT-FAMILY')
+            old = contract(db, p, admin, 'sales_contract', 'SC-FAMILY-OLD', status='CLOSED', amount='1000.00')
+            replacement = contract(db, p, admin, 'sales_contract', 'SC-FAMILY-NEW', amount='1200.00')
+            supplement = contract(db, p, admin, 'sales_contract', 'SC-FAMILY-SUP', amount='200.00')
+            db.add_all([
+                m.ContractRelation(source_contract_id=replacement.id, target_contract_id=old.id,
+                    relation_type='REPLACEMENT', reason='替代旧合同', confirmed_by=admin.id),
+                m.ContractRelation(source_contract_id=supplement.id, target_contract_id=replacement.id,
+                    relation_type='SUPPLEMENT', reason='补充金额', confirmed_by=admin.id),
+            ])
+            family_ids = contract_family(db, replacement.id)
+            current_ids = {row.id for row in current_contracts(db, p.id, 'sales_contract')}
+            assert family_ids == {old.id, replacement.id, supplement.id}
+            assert current_ids == {replacement.id, supplement.id}
+    finally:
+        engine.dispose()
+
+
+def test_replacement_and_revision_close_target_but_supplement_does_not():
+    from domain_packs.mold.erp.core.domains import apply
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, 'relation-admin', True)
+            p = project(db, 'CONTRACT-RELATION')
+            old = contract(db, p, admin, 'sales_contract', 'SC-REL-OLD')
+            replacement = contract(db, p, admin, 'sales_contract', 'SC-REL-NEW', status='APPROVED')
+            db.add(m.ContractRelation(source_contract_id=replacement.id, target_contract_id=old.id,
+                relation_type='REPLACEMENT', reason='正式替代', confirmed_by=admin.id))
+            apply(db, admin, replacement)
+            assert old.status == 'CLOSED'
+            supplement = contract(db, p, admin, 'sales_contract', 'SC-REL-SUP', status='APPROVED')
+            db.add(m.ContractRelation(source_contract_id=supplement.id, target_contract_id=replacement.id,
+                relation_type='SUPPLEMENT', reason='补充条款', confirmed_by=admin.id))
+            apply(db, admin, supplement)
+            assert replacement.status == 'EFFECTIVE'
+    finally:
+        engine.dispose()
+
+
 def test_prepare_contract_signing_record_rejects_duplicate_and_missing_signed_date():
     engine,Session=factory()
     try:

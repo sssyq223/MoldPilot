@@ -1,13 +1,25 @@
 from datetime import timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import now
-from app.models import Grant, Run, Step, User
+from app.models import Grant, Run, RunFile, Step, User
 from app.agent_resume import queue_after_proposal_decision
 from conftest import sign_in
+
+
+PDF = b'%PDF-1.4\n% synthetic material\n%%EOF'
+
+
+def upload(client, content=PDF, filename='合成材料.pdf', cid=None):
+    params = {'filename': filename, 'request_key': str(uuid4())}
+    if cid:
+        params['conversation_id'] = cid
+    return client.post('/api/files', params=params, content=content,
+                       headers={'Content-Type': 'application/octet-stream'})
 
 
 def worker_headers(): return {'Authorization': 'Bearer '+settings().worker_secret}
@@ -25,6 +37,161 @@ def start(client, monkeypatch, username='test_buyer'):
 def execute(client, context):
     return client.post(f"/internal/runs/{context['id']}/tools", headers=worker_headers(),
                        json={'epoch': context['epoch'], 'sequence': 0, 'key': 'query_purchase_requests', 'arguments': {}})
+
+
+def test_attachment_upload_run_requires_bound_files_and_records_trusted_trigger(client, data, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    monkeypatch.setattr(settings(), 'file_backend', 'local')
+    monkeypatch.setattr(settings(), 'file_local_root', str(tmp_path / 'objects'))
+    sign_in(client)
+    first = upload(client, PDF, '合同主件.pdf').json()
+    second = upload(client, PDF + b'\nattachment', '合同附件.pdf', cid=first['conversation_id']).json()
+
+    missing = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': first['conversation_id'],
+        'file_ids': [],
+        'trigger': 'ATTACHMENT_UPLOAD',
+    })
+    empty_user_prompt = client.post('/api/runs', json={
+        'prompt': '   ',
+        'conversation_id': first['conversation_id'],
+        'file_ids': [],
+        'trigger': 'USER',
+    })
+    created = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': first['conversation_id'],
+        'file_ids': [first['id'], second['id']],
+        'trigger': 'ATTACHMENT_UPLOAD',
+        'agent_permission_mode': 'ask',
+    })
+
+    assert missing.status_code == 422
+    assert empty_user_prompt.status_code == 422
+    assert created.status_code == 200, created.text
+    with data[1]() as db:
+        run = db.get(Run, created.json()['id'])
+        assert run.prompt == '处理本次上传附件'
+        assert run.checkpoint['run_trigger'] == 'ATTACHMENT_UPLOAD'
+        assert list(db.scalars(select(RunFile.file_id).where(
+            RunFile.run_id == run.id,
+        ).order_by(RunFile.file_id))) == sorted([first['id'], second['id']])
+
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert claimed['run_trigger'] == 'ATTACHMENT_UPLOAD'
+    attachment_skills = [skill for skill in claimed['skills'] if
+                         'ATTACHMENT_UPLOAD' in skill.get('activation_triggers', [])]
+    assert [skill['key'] for skill in attachment_skills] == ['sales_contract_intake']
+    assert attachment_skills[0]['activation_media_types'] == ['application/pdf']
+    assert attachment_skills[0]['trusted_activation_tools'] == [
+        'query_uploaded_files', 'prepare_document_intake',
+    ]
+    assert '每个 Agent Run 只推进当前可办理的一步' in attachment_skills[0]['instructions']
+    assert client.post(f"/internal/runs/{claimed['id']}/checkpoint", headers=worker_headers(), json={
+        'epoch': claimed['epoch'],
+        'checkpoint': {'messages': [], 'turn': 0},
+    }).status_code == 200
+    with data[1]() as db:
+        assert db.get(Run, created.json()['id']).checkpoint['run_trigger'] == 'ATTACHMENT_UPLOAD'
+
+
+def test_attachment_trigger_is_recovered_from_creation_audit_when_checkpoint_loses_it(client, data, monkeypatch):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client)
+    uploaded = upload(client, PDF, '合同触发恢复.pdf').json()
+    created = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': uploaded['conversation_id'],
+        'file_ids': [uploaded['id']],
+        'trigger': 'ATTACHMENT_UPLOAD',
+    }).json()
+    with data[1].begin() as db:
+        run = db.get(Run, created['id'])
+        run.checkpoint = {key: value for key, value in run.checkpoint.items()
+                          if key != 'run_trigger'}
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+
+    assert claimed['run_trigger'] == 'ATTACHMENT_UPLOAD'
+
+
+def test_checkpoint_restores_attachment_trigger_from_creation_audit(client, data, monkeypatch):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client)
+    uploaded = upload(client, PDF, '确认卡触发恢复.pdf').json()
+    created = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': uploaded['conversation_id'],
+        'file_ids': [uploaded['id']],
+        'trigger': 'ATTACHMENT_UPLOAD',
+    }).json()
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    with data[1].begin() as db:
+        run = db.get(Run, created['id'])
+        run.checkpoint = {key: value for key, value in run.checkpoint.items()
+                          if key != 'run_trigger'}
+    response = client.post(f"/internal/runs/{created['id']}/checkpoint",
+                           headers=worker_headers(), json={
+                               'epoch': claimed['epoch'],
+                               'checkpoint': {'messages': [], 'turn': 0},
+                           })
+
+    assert response.status_code == 200
+    with data[1]() as db:
+        assert db.get(Run, created['id']).checkpoint['run_trigger'] == 'ATTACHMENT_UPLOAD'
+
+
+def test_claim_keeps_host_attachment_context_authoritative_over_checkpoint(client, data, monkeypatch):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client)
+    uploaded = upload(client, PDF, '宿主上下文优先.pdf').json()
+    created = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': uploaded['conversation_id'],
+        'file_ids': [uploaded['id']],
+        'trigger': 'ATTACHMENT_UPLOAD',
+    }).json()
+    with data[1].begin() as db:
+        run = db.get(Run, created['id'])
+        run.checkpoint = {
+            'run_trigger': None,
+            'files': [],
+            'tools': [],
+            'skills': [],
+        }
+
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+
+    assert claimed['run_trigger'] == 'ATTACHMENT_UPLOAD'
+    assert claimed['files'][0]['id'] == uploaded['id']
+    assert any((tool.get('function') or {}).get('name') == 'query_uploaded_files'
+               for tool in claimed['tools'])
+    assert any(skill.get('key') == 'sales_contract_intake' for skill in claimed['skills'])
+
+
+def test_checkpoint_recovers_null_attachment_trigger_from_creation_audit(client, data, monkeypatch):
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    sign_in(client)
+    uploaded = upload(client, PDF, '空触发恢复.pdf').json()
+    created = client.post('/api/runs', json={
+        'prompt': '',
+        'conversation_id': uploaded['conversation_id'],
+        'file_ids': [uploaded['id']],
+        'trigger': 'ATTACHMENT_UPLOAD',
+    }).json()
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    with data[1].begin() as db:
+        run = db.get(Run, created['id'])
+        run.checkpoint = {**run.checkpoint, 'run_trigger': None}
+    response = client.post(f"/internal/runs/{created['id']}/checkpoint",
+                           headers=worker_headers(), json={
+                               'epoch': claimed['epoch'],
+                               'checkpoint': {'messages': [], 'turn': 0},
+                           })
+
+    assert response.status_code == 200
+    with data[1]() as db:
+        assert db.get(Run, created['id']).checkpoint['run_trigger'] == 'ATTACHMENT_UPLOAD'
 
 
 def test_run_persists_agent_permission_mode_for_worker_context(client, data, monkeypatch):
@@ -136,6 +303,41 @@ def test_confirmed_proposal_is_requeued_as_a_new_model_turn(monkeypatch):
     tool_receipt = run.checkpoint['messages'][-2]
     assert tool_receipt['tool_call_id'].startswith('proposal_resolution_')
     assert '"event": "proposal_resolved"' in tool_receipt['content']
+
+
+def test_contact_create_resume_allows_next_attachment_proposal(monkeypatch):
+    run = Run(
+        id='contact-resume-run', conversation_id='conversation', user_id='user-1', security_version=1,
+        prompt='处理工程联络单', status='SUCCEEDED',
+        checkpoint={'messages': [], 'turn': 11, 'tool_count': 8,
+                    'evidence_ids': ['old-evidence'],
+                    'executed_tool_signatures': ['old-signature'],
+                    'completed_at': '2026-09-17T10:00:00+08:00'},
+        result={'response_kind': 'AWAITING_APPROVAL', 'summary': '请确认创建工程联络单。'},
+    )
+    step = Step(id='contact-create-step', run_id=run.id, sequence=0,
+                tool='prepare_contact_create', request_hash='hash', result={})
+
+    class FakeDb:
+        def get(self, model, identity):
+            if model is Step and identity == step.id:
+                return step
+            if model is Run and identity == run.id:
+                return run
+            return None
+
+    monkeypatch.setattr('app.agent_resume.model_settings', lambda: SimpleNamespace(llm_enabled=True))
+    assert queue_after_proposal_decision(
+        FakeDb(), SimpleNamespace(id='user-1'), step.id, 'approved',
+        {'action': 'create', 'status': 'CONFIRMED', 'case_id': 'case-1'},
+    ) is True
+    assert run.checkpoint['post_proposal_continuation'] is True
+    assert run.checkpoint['finalizing'] is False
+    assert run.checkpoint['turn'] == 0
+    # tool_count also supplies the durable Step.sequence and must remain global.
+    assert run.checkpoint['tool_count'] == 8
+    assert run.checkpoint['evidence_ids'] == ['old-evidence']
+    assert run.checkpoint['executed_tool_signatures'] == ['old-signature']
 
 
 def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monkeypatch):

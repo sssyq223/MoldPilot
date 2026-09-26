@@ -50,6 +50,32 @@ def put(key,data,media_type):
     except Exception:raise DomainError('STORAGE_UNAVAILABLE','文件存储暂不可用，文件尚未登记',503)
 
 
+def discard(backend, key, namespace=None, version=None):
+    """Best-effort compensation for an object written before DB commit."""
+    key_ok(key)
+    try:
+        if backend == 'local':
+            path = local_path(key)
+            path.unlink(missing_ok=True)
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
+            return True
+        if backend == 's3':
+            if settings().file_s3_bucket != namespace:
+                return False
+            if not version or version == 'null':
+                return False
+            s3_client().delete_object(
+                Bucket=namespace, Key=key, VersionId=version,
+            )
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def read(blob):
     key_ok(blob.object_key)
     try:

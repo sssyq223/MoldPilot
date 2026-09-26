@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mold/document-classification/v1",
+  "title": "文档类型与业务事件分类结果",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document_type", "event_type", "decision", "confidence", "evidence", "conflicts", "extracted", "classifier_version", "needs_human_confirmation"],
+  "properties": {
+    "document_type": {"enum": ["BID_NOTICE", "CUSTOMER_START_NOTICE", "SALES_CONTRACT", "MOLD_DRAWING", "OTHER"]},
+    "event_type": {"enum": ["BID_WON", "CUSTOMER_START", "CONTRACT_SIGNED", "UNKNOWN"]},
+    "decision": {"enum": ["CONFIRMED", "NEEDS_REVIEW", "REJECTED"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "evidence": {
+      "type": "array", "maxItems": 50,
+      "items": {"type": "object", "additionalProperties": false, "required": ["page", "text", "rule"], "properties": {
+        "page": {"type": "integer", "minimum": 1}, "text": {"type": "string", "minLength": 1, "maxLength": 500}, "rule": {"type": "string", "minLength": 1, "maxLength": 80}
+      }}
+    },
+    "conflicts": {
+      "type": "array", "maxItems": 20,
+      "items": {"type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": {
+        "type": {"type": "string", "minLength": 1, "maxLength": 80}, "message": {"type": "string", "minLength": 1, "maxLength": 500}
+      }}
+    },
+    "extracted": {"type": "object", "additionalProperties": false, "properties": {
+      "customer_name": {"type": ["string", "null"]}, "project_name": {"type": ["string", "null"]}, "customer_mold_number": {"type": ["string", "null"]}, "amount": {}, "currency": {"type": ["string", "null"]}
+    }},
+    "classifier_version": {"type": "string", "minLength": 1, "maxLength": 120},
+    "needs_human_confirmation": {"type": "boolean"}
+  }
+}

@@ -2,7 +2,7 @@ import os
 
 import pytest
 from dotenv import dotenv_values
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -59,9 +59,11 @@ def _migrate(url: str) -> None:
 
 
 def _truncate(engine) -> None:
-    tables = ",".join('"' + table.name + '"' for table in Base.metadata.sorted_tables)
+    existing_tables = set(inspect(engine).get_table_names())
+    tables = ",".join('"' + table.name + '"' for table in Base.metadata.sorted_tables if table.name in existing_tables)
     with engine.begin() as conn:
-        conn.execute(text("SET LOCAL statement_timeout = '60s'"))
+        # 合同 OCR 测试包含大量关系表；仅测试库清理允许更长超时，避免被生产级默认值打断。
+        conn.execute(text("SET LOCAL statement_timeout = '120s'"))
         conn.execute(text("TRUNCATE TABLE " + tables + " CASCADE"))
 
 

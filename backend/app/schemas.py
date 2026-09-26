@@ -2,7 +2,7 @@ from datetime import date, datetime
 from uuid import UUID
 from decimal import Decimal
 from typing import Literal
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from agent_core.schemas import StrictModel, SubmitInput
 
@@ -165,10 +165,21 @@ class ConfirmationInput(StrictModel):
 
 
 class RunInput(StrictModel):
-    prompt: str = Field(min_length=1, max_length=6000)
+    prompt: str = Field(default="", max_length=6000)
     conversation_id: str | None = None
-    file_ids:list[UUID]=Field(default_factory=list,max_length=10)
+    file_ids: list[UUID] = Field(default_factory=list, max_length=10)
+    trigger: Literal["USER", "ATTACHMENT_UPLOAD"] = "USER"
     agent_permission_mode: Literal["ask", "delegated_auto"] = "ask"
+    model_profile_id: str | None = Field(default=None, min_length=1, max_length=80)
+    reasoning_effort: str | None = Field(default=None, max_length=20)
+
+    @model_validator(mode="after")
+    def valid_trigger_payload(self):
+        if self.trigger == "USER" and not self.prompt.strip():
+            raise ValueError("用户任务不能为空")
+        if self.trigger == "ATTACHMENT_UPLOAD" and not self.file_ids:
+            raise ValueError("附件触发任务必须绑定本次上传文件")
+        return self
 
 
 class CapabilityInput(StrictModel):

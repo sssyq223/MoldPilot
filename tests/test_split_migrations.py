@@ -62,7 +62,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
         _run(probe_url, "scripts/migrate.py", "upgrade", "head")
         current = _run(probe_url, "scripts/migrate.py", "current")
         assert "a10c0e000008 (head)" in current
-        assert "mb0d0e000012 (head)" in current
+        assert "mb0d0e000017 (head)" in current
         assert "No new upgrade operations detected" in _run(
             probe_url, "scripts/migrate.py", "check"
         )
@@ -77,7 +77,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                    )) == "mb0d0e000012"
+            )) == "mb0d0e000017"
             revision_columns = set(connection.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema=:schema AND table_name='bid_intake_revision'
@@ -94,7 +94,10 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
                 "quotation_source_link", "quotation_feedback", "bid_intake_case",
                 "bid_intake_revision", "bid_intake_attachment", "bid_intake_lifecycle_link",
                 "internal_start_dispatch", "internal_start_snapshot",
-                "contract_receipt_evidence", "contract_business_terms"} <= tables
+                "contract_receipt_evidence", "contract_business_terms",
+                "document_intake", "contract_intake_group", "document_intake_file",
+                "document_recognized_page", "document_ocr_job", "document_extracted_field",
+                "contract_intake_mold_match", "contract_mold_line", "contract_relation"} <= tables
         with probe.connect() as connection:
             immutable = set(connection.execute(text("""
                 SELECT event_object_table FROM information_schema.triggers
@@ -162,7 +165,7 @@ def test_existing_legacy_mold_schema_is_adopted_without_rewriting_business_rows(
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-                    )) == "mb0d0e000012"
+            )) == "mb0d0e000017"
             assert connection.scalar(text(
                 "SELECT display_name FROM app_user WHERE username='migration-sentinel'"
             )) == "迁移哨兵"

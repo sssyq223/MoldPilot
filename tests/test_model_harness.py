@@ -257,14 +257,17 @@ class TranscriptModel(Model):
     def __init__(self, replies):
         super().__init__(replies)
         self.transcripts = []
+        self.tool_names = []
     def generate(self, messages, tools):
         self.transcripts.append(copy.deepcopy(messages))
+        self.tool_names.append([(tool.get('function') or {}).get('name') for tool in tools])
         return super().generate(messages, tools)
 
 
 class Gateway:
     def __init__(self):
         self.saved, self.receipts, self.physical_calls, self.final = {}, {}, 0, None
+        self.executed_tools = []
         self.crash_after_execution = False
         self.cancelled = False
     def check(self):
@@ -273,6 +276,7 @@ class Gateway:
     def execute(self, seq, key, arguments):
         if seq not in self.receipts:
             self.physical_calls += 1
+            self.executed_tools.append(key)
             self.receipts[seq] = {'evidence_id': 'e1', 'data': [{'code': 'DEMO-A'}]}
         if self.crash_after_execution:
             self.crash_after_execution = False
@@ -286,6 +290,116 @@ def context(core_tool_names=_DEFAULT_CORE, **kwargs):
     if core_tool_names is _DEFAULT_CORE:
         core_tool_names = ['query_projects']
     return {'prompt': '查询项目', 'tools': [TOOL], 'skills': [], 'core_tool_names': core_tool_names, **kwargs}
+
+
+def test_pdf_attachment_trigger_is_visible_without_forcing_a_tool_call():
+    tool = {'type': 'function', 'function': {
+        'name': 'query_uploaded_files',
+        'description': '读取本轮上传文件。',
+    }}
+    model = TranscriptModel([{
+        'role': 'assistant',
+        'content': json.dumps({
+            'response_kind': 'CLARIFICATION',
+            'summary': '我先等待明确的业务意图。',
+            'evidence_ids': [],
+            'suggestions': [],
+        }, ensure_ascii=False),
+    }])
+    gateway = Gateway()
+
+    result = run_loop(context(
+        prompt='处理本次上传附件',
+        core_tool_names=[],
+        tools=[tool],
+        run_trigger='ATTACHMENT_UPLOAD',
+        files=[{'id': 'file-1', 'filename': '材料.pdf', 'media_type': 'application/pdf'}],
+        skills=[{
+            'key': 'sales_contract_intake',
+            'tools': ['query_uploaded_files'],
+            'trusted_activation_tools': ['query_uploaded_files'],
+            'activation_triggers': ['ATTACHMENT_UPLOAD'],
+            'activation_media_types': ['application/pdf'],
+            'instructions': '模型自行判断是否调用工具。',
+        }],
+    ), model, gateway)
+
+    assert result['response_kind'] == 'CLARIFICATION'
+    assert gateway.physical_calls == 0
+    assert model.tool_names[0] == ['query_uploaded_files']
+    assert 'ATTACHMENT_UPLOAD' in model.transcripts[0][1]['content']
+
+
+def test_trusted_pdf_upload_activates_authorized_skill_with_full_instructions():
+    tool = {'type': 'function', 'function': {
+        'name': 'query_uploaded_files',
+        'description': '读取本轮上传文件。',
+    }}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'query-upload', 'type': 'function',
+        'function': {'name': 'query_uploaded_files', 'arguments': '{}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '已读取上传附件。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    })}
+    model = TranscriptModel([call, final])
+    gateway = Gateway()
+
+    result = run_loop(context(
+        prompt='处理本次上传附件',
+        core_tool_names=[],
+        tools=[tool],
+        run_trigger='ATTACHMENT_UPLOAD',
+        files=[{'id': 'file-1', 'filename': '材料.pdf', 'media_type': 'application/pdf'}],
+        skills=[{
+            'key': 'sales_contract_intake',
+            'name': '销售合同接收',
+            'tools': ['query_uploaded_files'],
+            'trusted_activation_tools': ['query_uploaded_files'],
+            'activation_triggers': ['ATTACHMENT_UPLOAD'],
+            'activation_media_types': ['application/pdf'],
+            'suppress_tool_search_on_trusted_activation': True,
+            'instructions': '# 销售合同接收\n\n完整技能步骤：只能按持久化状态续办。',
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '已读取上传附件。'
+    assert model.tool_names[0] == ['query_uploaded_files']
+    system = model.transcripts[0][0]['content']
+    assert '# 销售合同接收' in system
+    assert '完整技能步骤：只能按持久化状态续办。' in system
+    assert gateway.saved['activated_skill_keys'] == ['sales_contract_intake']
+
+
+def test_user_run_or_untrusted_mime_does_not_activate_attachment_skill():
+    tool = {'type': 'function', 'function': {
+        'name': 'query_uploaded_files',
+        'description': '读取本轮上传文件。',
+    }}
+    skill = {
+        'key': 'sales_contract_intake',
+        'tools': ['query_uploaded_files'],
+        'trusted_activation_tools': ['query_uploaded_files'],
+        'activation_triggers': ['ATTACHMENT_UPLOAD'],
+        'activation_media_types': ['application/pdf'],
+        'instructions': '不得出现在普通 Run 的完整技能正文。',
+    }
+    conversation = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CONVERSATION', 'summary': '请说明任务。',
+        'evidence_ids': [], 'suggestions': [],
+    })}
+    model = TranscriptModel([conversation])
+
+    run_loop(context(
+        prompt='处理本次上传附件', core_tool_names=[], tools=[tool],
+        run_trigger='ATTACHMENT_UPLOAD',
+        files=[{'id': 'file-1', 'filename': '材料.png', 'media_type': 'image/png'}],
+        skills=[skill],
+    ), model, Gateway())
+
+    assert model.tool_names[0] == ['ToolSearch']
+    assert '不得出现在普通 Run 的完整技能正文。' not in model.transcripts[0][0]['content']
 
 
 def test_business_tools_are_deferred_and_direct_calls_are_blocked():
@@ -661,11 +775,12 @@ def test_tool_search_activates_bounded_skill_tool_pack_for_next_turn():
     assert result['summary'] == 'one visible project'
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_project_plan_context'],
-        ['ToolSearch', 'query_project_plan_context'],
+        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
+        ['ToolSearch', 'query_project_plan_context', 'prepare_project_plan_baseline'],
     ]
     assert gateway.physical_calls == 1
-    assert gateway.saved['active_tool_names'] == ['query_project_plan_context']
+    assert gateway.executed_tools == ['query_project_plan_context']
+    assert gateway.saved['active_tool_names'] == ['prepare_project_plan_baseline', 'query_project_plan_context']
 
 
 def test_tool_search_exact_tool_name_does_not_activate_whole_skill_pack():
@@ -705,11 +820,11 @@ def test_tool_search_uses_curated_activation_tools_instead_of_all_optional_tools
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
-        ['ToolSearch', 'query_contact_cases', 'query_contact_context'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context', 'prepare_contact_close'],
+        ['ToolSearch', 'query_contact_cases', 'query_contact_context', 'prepare_contact_close'],
     ]
     assert len(gateway.saved['active_tool_names']) <= 4
-    assert 'prepare_contact_close' not in gateway.saved['active_tool_names']
+    assert gateway.executed_tools == ['query_contact_context']
     assert 'prepare_contact_resolution' not in gateway.saved['active_tool_names']
     assert 'prepare_contact_assign' not in gateway.saved['active_tool_names']
 
@@ -864,7 +979,7 @@ def test_tool_search_selects_supplier_material_verification_without_loading_unre
     ]
 
 
-def test_read_only_prompt_cannot_open_prepare_tool_from_action_worded_group_search():
+def test_group_discovery_does_not_execute_preparation_for_read_only_model_choice():
     tools = [
         {'type': 'function', 'function': {'name': 'query_full_outsource_context',
                                           'description': '读取整套委外合同、资料交接和供应商核验上下文。'}},
@@ -886,13 +1001,13 @@ def test_read_only_prompt_cannot_open_prepare_tool_from_action_worded_group_sear
              model, gateway)
     assert model.tool_names == [
         ['ToolSearch'],
-        ['ToolSearch', 'query_full_outsource_context'],
-        ['ToolSearch', 'query_full_outsource_context'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
+        ['ToolSearch', 'query_full_outsource_context', 'prepare_supplier_material_verification'],
     ]
-    assert gateway.saved['active_tool_names'] == ['query_full_outsource_context']
+    assert gateway.executed_tools == ['query_full_outsource_context']
 
 
-def test_read_only_prompt_cannot_open_exact_prepare_tool_name():
+def test_exact_prepare_schema_discovery_does_not_require_keyword_authorization():
     prepare_tool = {'type': 'function', 'function': {
         'name': 'prepare_supplier_material_verification',
         'description': '准备供应商资料核验结果登记建议。',
@@ -902,7 +1017,7 @@ def test_read_only_prompt_cannot_open_exact_prepare_tool_name():
         {'prepare_supplier_material_verification': prepare_tool},
         action_intent=False,
         current_prompt='只读查询资料核验情况，不要准备或执行任何操作。',
-    ) == ([], [], [])
+    ) == (['prepare_supplier_material_verification'], ['prepare_supplier_material_verification'], [])
 
 
 def test_logistics_tool_search_opens_only_the_requested_route_or_quote_action():
@@ -938,7 +1053,7 @@ def test_logistics_tool_search_opens_only_the_requested_route_or_quote_action():
     assert quote_candidates == ['query_delivery_logistics_context', 'prepare_logistics_quote']
 
 
-def test_read_only_logistics_query_never_activates_route_or_quote_prepare_tools():
+def test_logistics_discovery_remains_bounded_and_includes_the_reader():
     query_tool = {'type': 'function', 'function': {
         'name': 'query_delivery_logistics_context',
         'description': '读取交付物流上下文。',
@@ -963,10 +1078,10 @@ def test_read_only_logistics_query_never_activates_route_or_quote_prepare_tools(
         '查询物流路线和报价', deferred, groups,
         action_intent=False,
         current_prompt='只读查询 BROWSER-OUT-001 的物流路线和报价，不要准备或执行任何操作。')
-    assert candidates == ['query_delivery_logistics_context']
+    assert candidates == ['query_delivery_logistics_context', 'prepare_logistics_quote']
 
 
-def test_master_data_lookup_exposes_one_reader_and_hides_maintenance_until_requested():
+def test_master_data_discovery_can_expose_relevant_maintenance_without_executing_it():
     master = {'type': 'function', 'function': {
         'name': 'erp_design_query_master_data',
         'description': '一次查询 ERP 设计基础资料：材质密度、设计分组规则和分组关键词；只读。'}}
@@ -1001,7 +1116,7 @@ def test_master_data_lookup_exposes_one_reader_and_hides_maintenance_until_reque
         '维护 ERP 材质密度', deferred, groups, action_intent=True,
         current_prompt='维护 CR12MOV 的 ERP 材质密度', tool_annotations=annotations)
 
-    assert read_candidates == ['erp_design_query_master_data']
+    assert read_candidates == ['erp_design_query_master_data', 'erp_design_manage_density']
     assert write_candidates == ['erp_design_query_master_data', 'erp_design_manage_density']
 
 
@@ -1171,8 +1286,8 @@ def test_business_query_mentioning_model_still_allows_tool_search():
     '导入BOM并核对缺料和采购进度',
     '上传厂内标准件图纸',
 ])
-def test_design_business_vocabulary_allows_tool_search(prompt):
-    assert harness_module._business_tool_activation_allowed({
+def test_design_business_vocabulary_can_prefetch_tools(prompt):
+    assert harness_module._business_tool_auto_activation_allowed({
         'prompt': prompt,
         'recent_requests': [],
     })
@@ -1203,8 +1318,8 @@ def test_design_upload_attachment_exposes_tool_search():
              InspectingModel([]), Gateway())
 
 
-def test_csv_design_upload_attachment_exposes_tool_search():
-    assert harness_module._business_tool_activation_allowed({
+def test_csv_design_upload_attachment_can_prefetch_tools():
+    assert harness_module._business_tool_auto_activation_allowed({
         'prompt': '解析当前附件',
         'files': [{'filename': 'M250238-P4五金.csv', 'media_type': 'text/csv'}],
         'skills': [{'key': 'erp_new_mold_design_upload'}],
@@ -1279,8 +1394,8 @@ def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
     assert gateway.physical_calls == 0
 
 
-def test_xlsx_attachment_without_design_upload_skill_does_not_activate_tools():
-    assert not harness_module._business_tool_activation_allowed({
+def test_xlsx_attachment_without_design_upload_skill_does_not_prefetch_tools():
+    assert not harness_module._business_tool_auto_activation_allowed({
         'prompt': '解析当前附件',
         'files': [{'filename': 'M250238-P4料单.XLSX'}],
         'skills': [],
@@ -1288,8 +1403,8 @@ def test_xlsx_attachment_without_design_upload_skill_does_not_activate_tools():
     })
 
 
-def test_design_elliptical_action_uses_recent_design_object():
-    assert harness_module._business_tool_activation_allowed({
+def test_design_elliptical_action_uses_recent_design_object_for_prefetch():
+    assert harness_module._business_tool_auto_activation_allowed({
         'prompt': '重新匹配',
         'recent_requests': ['解析这个钢料新模清单'],
     })
@@ -1389,20 +1504,19 @@ def test_erp_mold_number_overrides_model_shortened_local_design_search():
     assert 'query_design_route_context' not in activated
 
 
-def test_workbench_support_request_hides_tool_search_and_business_catalog():
+def test_workbench_support_request_keeps_discovery_without_forced_business_calls():
     many_tools = [{'type': 'function', 'function': {'name': f'query_dummy_{index}', 'description': f'虚拟工具 {index}'}} for index in range(30)]
     class PromptInspectingModel:
         def generate(self, messages, tools):
-            prompt = messages[0]['content']
-            assert tools == []
-            assert '按需工具' not in prompt
-            assert 'query_dummy_0' not in prompt
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
             return {'content': json.dumps({'response_kind': 'CONVERSATION',
                                            'summary': '这是技术排障，不调用业务工具。',
                                            'evidence_ids': [], 'suggestions': []})}
+    gateway = Gateway()
     result = run_loop(context(prompt='测试 500 定位', core_tool_names=['query_dummy_0'], tools=many_tools, skills=[]),
-                      PromptInspectingModel(), Gateway())
+                      PromptInspectingModel(), gateway)
     assert result['response_kind'] == 'CONVERSATION'
+    assert gateway.physical_calls == 0
 
 
 def test_business_request_on_demand_prompt_lists_bounded_capability_catalog_not_every_tool():
@@ -1471,9 +1585,12 @@ def test_unregistered_tool_is_not_executed():
 
 def test_fabricated_evidence_is_rejected():
     gateway = Gateway()
-    bad = {'content': json.dumps({'summary':'fake','evidence_ids':['foreign-run']})}
-    with pytest.raises(RuntimeError, match='EVIDENCE_INVALID'): run_loop(context(), Model([bad]), gateway)
+    bad = {'content': json.dumps({'response_kind': 'BUSINESS', 'summary':'fake',
+                                  'evidence_ids':['foreign-run'], 'suggestions':[]})}
+    with pytest.raises(RuntimeError, match='MODEL_OUTPUT_INVALID'):
+        run_loop(context(), TranscriptModel([bad, bad, bad]), gateway)
     assert gateway.final is None
+    assert gateway.saved['protocol_repairs'] == 2
 
 
 @pytest.mark.parametrize('kind',['CONVERSATION','CLARIFICATION'])
@@ -1509,16 +1626,17 @@ def test_mixed_greeting_and_business_request_can_call_tools():
 
 
 @pytest.mark.parametrize('prompt', ['你好', '您好，谢谢', '好的', '收到', '对', '辛苦了'])
-def test_pure_conversation_turn_hides_business_tools_even_with_recent_business_context(prompt):
+def test_pure_conversation_leaves_tool_discovery_to_model_without_forced_calls(prompt):
     class InspectingConversationModel:
         def generate(self, messages, tools):
-            assert tools == []
-            assert '按需工具' not in messages[0]['content']
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
             return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '你好',
                                            'evidence_ids': [], 'suggestions': []})}
+    gateway = Gateway()
     result = run_loop(context(prompt=prompt, recent_requests=['查询 SMOKE-M001 的项目计划']),
-                      InspectingConversationModel(), Gateway())
+                      InspectingConversationModel(), gateway)
     assert result['response_kind'] == 'CONVERSATION'
+    assert gateway.physical_calls == 0
 
 
 @pytest.mark.parametrize('prompt', ['你好，帮我看看 SMOKE-M001 的计划', '老弟，看下这个项目'])
@@ -1536,14 +1654,16 @@ def test_elliptical_action_can_use_recent_request_only_to_supply_business_object
     assert gateway.physical_calls == 1
 
 
-def test_recent_business_request_does_not_open_tools_for_unrelated_current_lookup():
+def test_recent_business_request_does_not_force_calls_for_unrelated_current_lookup():
     class InspectingConversationModel:
         def generate(self, messages, tools):
-            assert tools == []
+            assert [tool['function']['name'] for tool in tools] == ['ToolSearch']
             return {'content': json.dumps({'response_kind': 'CONVERSATION', 'summary': '这是一般问题。',
                                            'evidence_ids': [], 'suggestions': []})}
+    gateway = Gateway()
     run_loop(context(prompt='查一下天气', recent_requests=['查询 SMOKE-M001 的项目计划']),
-             InspectingConversationModel(), Gateway())
+             InspectingConversationModel(), gateway)
+    assert gateway.physical_calls == 0
 
 
 def test_duplicate_tool_call_enters_finalization_without_reexecuting():
@@ -1613,6 +1733,70 @@ def test_confirmed_proposal_resume_cannot_return_to_awaiting_approval():
     assert '不得再次输出 AWAITING_APPROVAL' in model.transcripts[1][0]['content']
     assert gateway.saved['protocol_repairs'] == 1
     assert gateway.saved['next_model_instructions'] == []
+
+
+def test_contact_proposal_resume_keeps_tools_for_next_attachment_proposal():
+    query = {'type': 'function', 'function': {
+        'name': 'query_contact_context', 'description': '查询工程联络单当前版本',
+    }}
+    attach = {'type': 'function', 'function': {
+        'name': 'prepare_contact_attach', 'description': '准备关联原始附件 Proposal',
+    }}
+    call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'query-case', 'type': 'function',
+        'function': {'name': 'query_contact_context', 'arguments': '{"case_id":"case-1"}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'proposal_decision': 'approved',
+        'summary': '已查询新联络单版本，并准备后续 Proposal。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([call, final])
+    result = run_loop(context(
+        prompt='继续工程联络单文档流程',
+        core_tool_names=[], tools=[query, attach],
+        run_trigger='DOCUMENT_CLASSIFICATION_CONFIRMED',
+        files=[{'id': 'file-1', 'filename': '工程联络单.pdf', 'media_type': 'application/pdf'}],
+        skills=[{
+            'key': 'document_engineering_contact_intake',
+            'tools': ['query_contact_context', 'prepare_contact_attach'],
+            'trusted_activation_tools': ['query_contact_context', 'prepare_contact_attach'],
+            'activation_triggers': ['DOCUMENT_CLASSIFICATION_CONFIRMED'],
+            'activation_media_types': ['application/pdf'],
+            'suppress_tool_search_on_trusted_activation': True,
+            'instructions': '创建确认后查询联络单并准备附件关联 Proposal。',
+        }],
+        proposal_resolution={'decision': 'approved', 'authoritative_receipt': {'status': 'CONFIRMED'}},
+        post_proposal_continuation=True,
+    ), model, gateway)
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.physical_calls == 1
+    assert model.tool_names[0] == ['query_contact_context', 'prepare_contact_attach']
+
+
+def test_proposal_receipt_resource_id_is_repaired_to_step_evidence_id():
+    invalid = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'proposal_decision': 'approved',
+        'summary': '登记完成，资源 resource-1 已创建。',
+        'evidence_ids': ['resource-1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'proposal_decision': 'approved',
+        'summary': '已收到本人确认，登记已完成。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = TranscriptModel([invalid, corrected])
+    result = run_loop(context(
+        prompt='请准备项目正式操作确认卡', evidence_ids=['e1'], finalizing=True,
+        action_outcomes={'prepare_demo_action': {'status': 'success', 'evidence_id': 'e1'}},
+        proposal_resolution={'decision': 'approved', 'authoritative_receipt': {'status': 'executed', 'resource_id': 'resource-1'}},
+    ), model, gateway)
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.saved['protocol_repairs'] == 1
+    assert 'evidence_ids 只能填写本 Run 已返回的步骤证据编号' in model.transcripts[1][0]['content']
 
 
 def test_legacy_mid_history_system_messages_are_consolidated_at_provider_boundary():

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from fastapi import APIRouter, Depends
 from pydantic import Field, ValidationError, field_validator, model_validator
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from domain_packs.mold import models as m, domains, domain_schemas as s, workflow_selection
 from domain_packs.mold.authorization import access, fingerprint, predicate, require, select_fields
 from domain_packs.mold.ports.bpm import content_hash
@@ -250,6 +250,31 @@ def _totals(records,statuses=None):
             if stage_currency and stage_amount is not None:stages[stage_currency]+=stage_amount
     return [{'currency':currency,'contract_amount':str(amount[currency]),'stage_amount':str(stages[currency]),
              'contract_count':counts[currency]} for currency in sorted(set(amount)|set(stages))]
+
+
+def contract_family(db, subject_id: str) -> set[str]:
+    pending = [subject_id]
+    result = set()
+    while pending:
+        current = pending.pop()
+        if current in result:
+            continue
+        result.add(current)
+        relations = db.scalars(select(m.ContractRelation).where(or_(
+            m.ContractRelation.source_contract_id == current,
+            m.ContractRelation.target_contract_id == current,
+        )))
+        for relation in relations:
+            pending.extend([relation.source_contract_id, relation.target_contract_id])
+    return result
+
+
+def current_contracts(db, project_id: str, kind: str):
+    return list(db.scalars(select(m.BusinessSubject).where(
+        m.BusinessSubject.project_id == project_id,
+        m.BusinessSubject.kind == kind,
+        m.BusinessSubject.status == "EFFECTIVE",
+    ).order_by(m.BusinessSubject.created_at, m.BusinessSubject.id)))
 
 
 def _replacement_map(records):

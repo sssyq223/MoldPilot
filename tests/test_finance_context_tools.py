@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 
 import pytest
@@ -165,6 +166,27 @@ def seed_finance_project(db, code="FIN-M001", with_customer_receipt=True):
     contact_cost(db, p, admin)
     closure_finance(db, p, admin)
     return admin, p
+
+
+def test_finance_analysis_uses_current_contract_amount_and_preserves_historical_receipts():
+    from domain_packs.mold.tools.erp.finance.finance_context_tools import _analysis
+    sales = [
+        {"id": "old", "status": "CLOSED", "amount": "1000.00", "currency": "CNY"},
+        {"id": "new", "status": "EFFECTIVE", "amount": "1200.00", "currency": "CNY"},
+    ]
+    receipts = {
+        "receipts": [{"contract_id": "old", "amount": "300.00", "currency": "CNY"}],
+        "confirmed_totals": [{"currency": "CNY", "amount": "300.00"}],
+        "by_stage": [], "unallocated_receipts": [],
+    }
+    result = _analysis(
+        SimpleNamespace(id="p", status="ACTIVE"), {}, [], sales, [], receipts, [],
+        {"requests": [], "confirmed_totals": [], "outstanding_reservations": [],
+         "outstanding_reservation_totals": []},
+        [], [], [],
+    )
+    assert result["current_receivable_contract_totals"] == [{"currency": "CNY", "amount": "1200.00"}]
+    assert result["customer_receipt_summary"]["confirmed_totals"] == [{"currency": "CNY", "amount": "300.00"}]
 
 
 def test_finance_context_schema_and_summary():

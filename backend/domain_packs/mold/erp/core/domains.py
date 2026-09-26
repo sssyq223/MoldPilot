@@ -481,15 +481,29 @@ def apply(db,user,subject):
         if kind=='full_outsource_contract':
             profile=db.get(m.ProjectProfile,project.id)
             if not profile or profile.execution_mode!='FULL_OUTSOURCE':raise DomainError('MODE_CONFLICT','整套委外合同要求项目确认为整套委外',409)
-        from domain_packs.mold.erp.commercial.contract_relations import apply_relation
-        relation=apply_relation(db,subject)
-        if relation['relation_type']!='ORIGINAL':
-            record(db,user,'contract.relation.effective',subject.id,{
-                'relation_type':relation['relation_type'],
-                'predecessor_id':relation['predecessor'].id,
-                'allocation_total':str(relation['allocation_total']),
-                'allocation_count':relation['allocation_count'],
-            },[subject.created_by])
+        intake_relations=(list(db.scalars(select(m.ContractRelation).where(
+            m.ContractRelation.source_contract_id==subject.id).with_for_update()))
+            if kind=='sales_contract' else [])
+        if intake_relations:
+            for intake_relation in intake_relations:
+                target=db.scalar(select(m.BusinessSubject).where(
+                    m.BusinessSubject.id==intake_relation.target_contract_id).with_for_update())
+                if not target or target.kind!='sales_contract' or target.project_id!=project.id:
+                    raise DomainError('CONTRACT_RELATION_INVALID','关联合同必须是同项目销售合同',409)
+                if intake_relation.relation_type in {'REVISION','REPLACEMENT'}:
+                    if target.status!='EFFECTIVE':
+                        raise DomainError('CONTRACT_RELATION_STATE','修订或替代只能关闭当前有效合同',409)
+                    target.status='CLOSED'
+        else:
+            from domain_packs.mold.erp.commercial.contract_relations import apply_relation
+            relation=apply_relation(db,subject)
+            if relation['relation_type']!='ORIGINAL':
+                record(db,user,'contract.relation.effective',subject.id,{
+                    'relation_type':relation['relation_type'],
+                    'predecessor_id':relation['predecessor'].id,
+                    'allocation_total':str(relation['allocation_total']),
+                    'allocation_count':relation['allocation_count'],
+                },[subject.created_by])
     elif kind in {'project_plan','plan_change'}:
         if project.status!='ACTIVE':raise DomainError('PROJECT_BLOCKED','项目未处于执行状态',409)
         prior=db.get(m.PlanDetail,subject.id).previous_id

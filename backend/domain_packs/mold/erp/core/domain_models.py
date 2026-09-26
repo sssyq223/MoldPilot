@@ -404,6 +404,8 @@ class ContractDetail(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
     currency: Mapped[str] = mapped_column(String(3))
     contract_number: Mapped[str] = mapped_column(String(100))
+    signed_date: Mapped[date | None] = mapped_column(Date)
+    external_order_number: Mapped[str | None] = mapped_column(String(120))
     expected_date: Mapped[date | None] = mapped_column(Date)
     replaces_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
     relation_type: Mapped[str] = mapped_column(String(20), default='ORIGINAL')
@@ -452,9 +454,12 @@ class PaymentStage(IdentityMixin, Base):
     __tablename__ = 'payment_stage'
     contract_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
     name: Mapped[str] = mapped_column(String(100))
+    sequence: Mapped[int] = mapped_column(Integer, default=1)
     amount: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    ratio: Mapped[Decimal | None] = mapped_column(Numeric(9,6))
     currency: Mapped[str] = mapped_column(String(3))
     condition: Mapped[str] = mapped_column(Text)
+    term_days: Mapped[int | None] = mapped_column(Integer)
     condition_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     condition_evidence: Mapped[str | None] = mapped_column(Text)
     ratio_percent: Mapped[Decimal | None] = mapped_column(Numeric(7,4))
@@ -467,7 +472,10 @@ class PaymentStage(IdentityMixin, Base):
     trigger_evidence: Mapped[str | None] = mapped_column(Text)
     special_mark: Mapped[str | None] = mapped_column(String(200))
     __table_args__ = (
-        CheckConstraint('amount > 0'),
+        CheckConstraint('sequence >= 1', name='payment_stage_sequence'),
+        CheckConstraint('amount > 0', name='payment_stage_amount_positive'),
+        CheckConstraint('ratio IS NULL OR (ratio > 0 AND ratio <= 1)', name='payment_stage_ratio'),
+        CheckConstraint('term_days IS NULL OR term_days >= 0', name='payment_stage_term_days'),
         CheckConstraint('ratio_percent IS NULL OR (ratio_percent > 0 AND ratio_percent <= 100)', name='payment_stage_ratio_percent'),
         CheckConstraint('credit_days IS NULL OR credit_days >= 0', name='payment_stage_credit_days'),
         CheckConstraint('trigger_date IS NULL OR expected_due_date IS NULL OR expected_due_date >= trigger_date', name='payment_stage_due_after_trigger'),

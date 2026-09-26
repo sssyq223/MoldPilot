@@ -20,6 +20,8 @@ _MODULE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 class HostPorts:
     models: ModuleType
     object_storage: ModuleType
+    model_catalog: ModuleType
+    model_discovery: ModuleType
     access: Callable[..., Any]
     grants_for: Callable[..., Any]
     fingerprint: Callable[..., str]
@@ -35,6 +37,7 @@ class HostPorts:
     record: Callable[..., Any]
     current_user: Callable[..., Any]
     conversation_files: Callable[..., Any]
+    run_files: Callable[..., Any]
     uploaded_file: Callable[..., Any]
     file_metadata: Callable[..., dict]
     validate_file: Callable[..., tuple[str, str]]

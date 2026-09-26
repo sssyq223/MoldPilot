@@ -9,8 +9,11 @@ Amount = Decimal
 
 class StageInput(StrictModel):
     name: str = Field(min_length=1, max_length=100)
+    sequence: int = Field(default=1, ge=1)
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    ratio: Decimal | None = Field(default=None, gt=0, le=1, max_digits=9, decimal_places=6)
     condition: str = Field(min_length=1, max_length=2000)
+    term_days: int | None = Field(default=None, ge=0)
     ratio_percent: Decimal | None = Field(default=None, gt=0, le=100, max_digits=7, decimal_places=4)
     trigger_event: str | None = Field(default=None, min_length=1, max_length=120)
     trigger_date: date | None = None
@@ -40,6 +43,8 @@ class ContractInput(StrictModel):
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     currency: str = Field(pattern=r'^[A-Z]{3}$')
     contract_number: str = Field(min_length=1, max_length=100)
+    signed_date: date | None = None
+    external_order_number: str | None = Field(default=None, max_length=120)
     expected_date: date | None = None
     replaces_id: str | None = None
     relation_type: Literal['ORIGINAL','REPLACEMENT','ADDITION'] = 'ORIGINAL'
@@ -261,6 +266,7 @@ READ_FIELDS = ['id','kind','number','project_id','category','warehouse_id','rema
 PERMISSIONS = {f'{kind}.{action}': READ_FIELDS if action=='read' else ['*']
                for kind in CATALOG for action in ['read','create','submit','approve','execute']}
 PERMISSIONS.update({
+    'model_config.read': ['*'], 'model_config.write': ['*'],
     'master.manage':['*'], 'order.read':['id','number','project_id','supplier_id','status','currency','version','lines'],
     'order.edit':['*'], 'order.issue':['*'], 'shipment.confirm':['*'], 'exception.report':['*'],
     'exception.close':['*'], 'warehouse.read':['*'], 'warehouse.configure':['*'], 'receipt.confirm':['*'],

@@ -8,7 +8,7 @@ from sqlalchemy import select,func,text
 from sqlalchemy.exc import DBAPIError
 from app.config import settings
 from app.models import FileObject,ContactAttachment,ContactCase,Grant,Capability,RunFile,Outbox,Notification,AuditEvent
-from app import object_storage,document_preview
+from app import document_preview, object_storage, models as m, files as file_routes
 from app.errors import DomainError
 from conftest import sign_in
 from test_contacts import create,grant,add_task,operation
@@ -37,6 +37,37 @@ def link(client,context,case,file,sequence=0,previous=None):
         'file_id':file['id'],'title':'设计讨论材料','previous_id':previous},sequence)
     r=confirm(client,intent(client,e));assert r.status_code==200,r.text
     return client.get('/api/contacts/'+case['id']).json()
+
+
+def test_upload_worker_receives_scalar_user_context_not_request_session(client, data, monkeypatch):
+    sign_in(client)
+    captured = {}
+
+    async def fake_run_in_threadpool(function, *args):
+        captured['function'] = function
+        captured['args'] = args
+        return {'id': 'file-1', 'conversation_id': 'conversation-1', 'filename': '合成材料.pdf'}
+
+    monkeypatch.setattr(file_routes, 'run_in_threadpool', fake_run_in_threadpool)
+    response = upload(client)
+
+    assert response.status_code == 200
+    assert captured['args'][0] == data[0]['admin']
+    assert not hasattr(captured['args'][0], 'execute')
+
+
+def test_batch_failure_removes_objects_after_db_rollback(data, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings(), 'file_local_root', str(tmp_path / 'objects'))
+    monkeypatch.setattr(file_routes, '_after_upload', lambda *args: (_ for _ in ()).throw(RuntimeError('callback failed')))
+    with pytest.raises(RuntimeError, match='callback failed'):
+        with data[1].begin() as db:
+            user = db.get(m.User, data[0]['admin'])
+            file_routes.persist_batch(
+                db, user,
+                [('one.pdf', PDF), ('two.pdf', PDF + b'2')],
+                uuid4(), None,
+            )
+    assert not list((tmp_path / 'objects').rglob('*'))
 
 
 def test_upload_private_original_retry_and_download(client,data):
@@ -212,6 +243,36 @@ def test_uploader_cannot_bypass_business_revocation(client,data,monkeypatch):
     assert client.get('/api/conversations/'+blob['conversation_id']+'/files').json()==[]
     sign_in(client)
     assert client.get('/api/files/'+blob['id']+'/content').status_code==200
+
+
+def test_uploader_cannot_bypass_sales_contract_read_revocation(client, data):
+    ids, factory = data
+    with factory.begin() as db:
+        admin = db.get(m.User, ids['admin'])
+        buyer = db.get(m.User, ids['buyer'])
+        db.add(Grant(user_id=buyer.id, permission='file.upload', effect='ALLOW', scope={'all': True},
+            fields=['*'], reason='contract upload', granted_by=admin.id))
+        db.add(Grant(user_id=buyer.id, permission='sales_contract.read', effect='ALLOW',
+            scope={'project_id': [ids['project']]}, fields=['*'], reason='contract read', granted_by=admin.id))
+    sign_in(client, 'test_buyer')
+    blob = upload(client, PDF, '待撤权合同.pdf').json()
+    with factory.begin() as db:
+        subject = m.BusinessSubject(kind='sales_contract', number='SC-FILE-REVOCATION',
+            project_id=ids['project'], created_by=ids['admin'], status='EFFECTIVE')
+        db.add(subject); db.flush()
+        intake_file = db.scalar(select(m.DocumentIntakeFile).where(m.DocumentIntakeFile.file_id==blob['id']))
+        intake_file.confirmed_type='SALES_CONTRACT'
+        intake_file.confirmed_role='MAIN'
+        db.get(m.DocumentIntake,intake_file.intake_id).status='CONTRACT_DRAFT_CREATED'
+        db.flush()
+        db.add(m.ContractAttachment(contract_subject_id=subject.id, file_id=blob['id'],
+            document_id=str(uuid4()), version=1, title=blob['filename'], source_kind='ELECTRONIC',
+            previous_id=None, uploaded_by=ids['admin'], intake_file_id=intake_file.id, role='MAIN'))
+    assert client.get(f"/api/files/{blob['id']}/content").status_code == 200
+    with factory.begin() as db:
+        db.query(Grant).filter(Grant.user_id == ids['buyer'],
+            Grant.permission == 'sales_contract.read').delete()
+    assert client.get(f"/api/files/{blob['id']}/content").status_code == 404
 
 
 def test_run_files_and_query_bound_to_current_conversation(client,data,monkeypatch):

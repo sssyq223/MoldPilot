@@ -747,6 +747,9 @@ def _analysis(project, profile, starts, start_materials, contract_follow_up, dep
             "settlement_status": (profile or {}).get("settlement_status"),
         },
         "sales_contracts": sales_contracts,
+        "current_receivable_contract_totals": _money_total([
+            contract for contract in sales_contracts if contract.get("status") == "EFFECTIVE"
+        ]),
         "customer_receivable_nodes": customer_nodes,
         "customer_receivable_schedule": receivable_schedule,
         "customer_receipt_summary": customer_receipts,

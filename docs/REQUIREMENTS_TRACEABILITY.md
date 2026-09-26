@@ -1,8 +1,24 @@
 # V1.1 全量需求开发覆盖表
 
+## 第 11 章 FR-078～FR-090：本地 Skill/Tool 增量（2026-09-24）
+
+- FR-078～081：新增本地 `engineering_change_intake` Skill、`LocalChangeIntake`、客户模号历史和本地关联对象。支持客户/内部/委外分类、内部/委外执行、收费与合同独立记录、已有模具复用和首次外部模具人工承接分支；多候选和外部 ERP 标识不自动合并。由于本机库仍为 `mb0d0e000016` 且未批准迁移，当前启动预检会隐藏该组依赖新表的 Tool；Proposal/确认链代码已通过非迁移测试，但未宣称正式库可用。
+- FR-082～090：新增本地 `engineering_contact_collaboration` Skill，编排既有本地联络查询、方案、反馈、复验、责任人和关闭 Proposal；不修改远程联络实现。既有 `tests/test_contact_lifecycle.py`、`tests/test_contact_impact.py` 覆盖方案批准不等于关闭、影响项冻结、独立复验和自复验阻断；本轮增加注册、本地边界及 Proposal/本人确认链测试；完整真实业务资料、角色和页面验收仍未完成。
+- 上传识别入口：新增 `document_engineering_contact_intake` Skill 设计与工程联络分类/图片归一化实现；PDF/PNG/JPG 及可编辑 DOCX 均进入 DocumentIntake，DOCX 在本机 Word COM 转成临时 PDF 后复用 OCR 页面、坐标和 AuditEvent，并记录原件/派生 PDF SHA256；不新增迁移。分类确认后由受信任 Agent Run 激活 Skill，后续仍需人工确认创建、附件关联和责任事项 Proposal；表格型 Word 的真实字段/复选框及工作台上传闭环尚未完成。
+- 本地模型能力：新增 `model_provider_configuration`、`document_model_configuration`，目录/检测/保存/默认切换均保留管理员、revision、Key 不回显和 Proposal 确认边界。
+- ERP/数据库边界：本轮本地后置绑定只接受 MoldPilot 本地核算资料对象；未调用 ERP HTTP/MCP/数据库，未执行 `mb0d0e000017` 迁移；仓库活动 head 已为 `mb0d0e000017`，本机库仍为 `mb0d0e000016`，启动预检在缺少本地设变表时隐藏对应 Tool。未运行前端构建或浏览器验收；上述代码测试不代表正式库、真实供应商、真实角色或完整业务验收通过。
+
 本表保留 FR-001～118、AT-01～18、AD-01～13 原文。报价、中标、合同上传及项目大节点维护明确属于 Agent 开发；ERP 具体业务动作复用不代表整项需求已满足。
 
 状态 **未验收** 表示尚未登记足以证明整条需求通过的证据，不表示没有任何代码。只有相关代码、权限/异常路径测试和业务验收证据齐备才能标记通过。V3.6 的架构、界面、Harness 和部署等要求仍需独立核验，不能由本表代替。
+
+## 2026-09-23 中标到开工通知增量追溯
+
+- 已实现证据：`AdminStartNoticeDraft`、追加式草稿修订和合同匹配候选模型；`bid_notice.confirmed` 事件通过 `bid_to_start_notice` Skill/受信任 Tool 自动创建超级管理员草稿；超级管理员承接/委外/拒绝决定和依据版本化留痕；合同 OCR 完成后生成候选，正式关联仍需人工确认。既有正式 `StartNotice`、部门回执、项目决定和后置绑定作为后续门禁保留。
+- 显式 Skill/Tool 入口：人工确认 `BID_NOTICE` 后由 `bid_to_start_notice` Skill 调用受信任事件 Tool 创建草稿；项目部（当前由超级管理员兼任）通过 `query_admin_start_notices`、`prepare_admin_start_notice_update`、`prepare_admin_start_department_dispatch`、`prepare_admin_start_department_ack`、`prepare_admin_start_notice_decision` 完成分发、回执查看和最终决定；回执仅展示、不阻塞决定；合同通过匹配 Tool 生成候选，不以传统 ERP 业务 API 或页面代替。
+- 兼容边界：旧 `BusinessSubject(kind='internal_start')` 只进入新通知材料的 `compatibility_only` 只读引用，新后置绑定仍要求新 `ProjectStartDecision`。
+- 核算清单边界：已增加 ERP `production_cost_sheet_file/{id}/binding-reference` 只读适配，返回稳定档案 ID、版本、`file_hash` 外部指纹、模具号和可绑定状态；Agent 只保存绑定指纹，不复制 ERP 清单台账。真实 ERP 服务和权限联调仍为 `NOT_VERIFIED`。
+- 验证证据：自动文档入口、事件触发、管理员草稿/决定、Tool 契约和既有中标定向回归已加入隔离测试；正式迁移、真实 ERP 联调、页面验收和完整需求验收仍为 `NOT_VERIFIED`。
 
 生成源为 `scripts/build_requirements_traceability.py`，机器跟踪文件为 `requirements/coverage.json`。生成器保留已登记的实现/验证证据；范围数量校验仅用于防遗漏，不能证明功能完成。
 
@@ -11,6 +27,13 @@
 - `query_project_lifecycle_context` 只复用三个分段协调器的结构化结果，先返回启动、执行、收尾摘要和唯一当前分段；`query_project_kickoff_context` 把客户报价、承接、合同、正式开工和基线计划保持为五类独立事实；`query_project_execution_context` 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；`query_project_completion_context` 再按正常关闭或终止结算分支投影交付验收、客户财务、供应商结算、异常关闭、归档及最终关闭。四个协调器只组织现有业务工具，不新增 ERP 式菜单或复制 ERP 执行数据。
 - 总 Skill 首轮只开放全生命周期协调器，随后只展开一个分段协调器；三个分段 Skill 首轮也只开放各自协调器，阶段查询是可选依赖。阶段能力未分配时返回 `UNAVAILABLE`；只有已读取业务事实或明确清单依据时才返回 `NOT_APPLICABLE`，后序事实不能覆盖前序缺口。
 - `tests/test_project_lifecycle_overview.py` 覆盖分层注册、启动转执行、暂停路由、资料矛盾、权限隔离和候选不合并；`tests/test_project_execution_lifecycle.py` 覆盖执行分支和权限边界；`tests/test_project_completion_lifecycle.py` 覆盖正常关闭、终止结算、不适用依据、财务不推断、权限隔离及候选不合并。各阶段原有测试继续验证各自证据和权限边界；这不等同于全部 FR 的真实 ERP 联调或业务验收完成。
+
+## 2026-09-19 销售合同 PDF/OCR 增量追溯
+
+- 关联需求：FR-003～005、FR-013～014、FR-017、FR-023～025，以及合同权限、审批、审计和历史不可覆盖要求。
+- 实现证据：聊天 PDF 批次创建受控 Agent Run；Harness 按可信 MIME 激活唯一 `sales_contract_intake` Skill 并加载完整指令；8 个 Tool 经 proposal 编排五类人工确认、异步 OCR、失败重试、字段/项目/模具/关系复核和合同登记。Worker 对文本页直接提取编号文字块，对图片/混合页调用本地 PaddleOCR GPU，按页面哈希和管线版本不可变缓存后只把文字交给 Qwen3；字段机器值、标准化值、来源块、文件页码和人工值分层保存。业务主管与财务负责人顺序两级 BPM；合同原件统一使用不可变 `ContractAttachment` 并随项目合同权限撤权。合同专用页面和直接 intake API 已删除。
+- 自动化证据：`services/paddleocr/test_app.py`、`tests/test_paddleocr_client.py`、`test_agent_api.py`、`test_model_harness.py`、`test_document_intake_tools.py`、`test_contract_intake_schema.py`、`test_contract_ocr.py`、`test_contract_intake_review.py`、`test_contract_intake_proposal.py`、`test_contract_tools.py`、`test_finance_context_tools.py`、`test_files.py`、`test_bpm_project_roles.py`、`test_domain_pack.py`、`test_split_migrations.py`。
+- 验收状态：代码与隔离 PostgreSQL 自动化验证完成，本机 RTX 3050 的 PaddleOCR GPU 服务和现有 Qwen3 纯文本接口已完成合成样本联调；另有 3 份匿名真实图片 PDF 完成 GPU OCR → Qwen3 纯文本分类，大画幅输入也保持在服务安全像素内，但它们均不是销售合同。真实销售合同字段提取、文本/混合/旋转/多页真实样本、正式数据库变更、正式业务角色/流程和前端人工验收仍为 `NOT_VERIFIED`，不得据此将对应全量需求标为已正式验收。
 
 ## 业务对象与匹配
 

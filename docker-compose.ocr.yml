@@ -1,0 +1,62 @@
+name: moldpilot-ocr
+
+x-paddleocr-common: &paddleocr-common
+  restart: unless-stopped
+  init: true
+  shm_size: "1gb"
+  ports:
+    - "127.0.0.1:18081:8080"
+  volumes:
+    - paddleocr-models:/root/.paddlex
+  environment:
+    PADDLE_OCR_TOKEN: "${AGENT_OCR_SERVICE_TOKEN:?AGENT_OCR_SERVICE_TOKEN is required}"
+    PADDLE_PDX_MODEL_SOURCE: "BOS"
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 180s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  paddleocr-gpu:
+    <<: *paddleocr-common
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: services/paddleocr/Dockerfile
+      args:
+        PADDLE_BASE_IMAGE: "m.daocloud.io/docker.io/nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04"
+        PADDLE_PACKAGE: "paddlepaddle-gpu"
+        PADDLE_INDEX_URL: "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        PYPI_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+    image: moldpilot-paddleocr:3.7.0-gpu
+    environment:
+      PADDLE_OCR_TOKEN: "${AGENT_OCR_SERVICE_TOKEN:?AGENT_OCR_SERVICE_TOKEN is required}"
+      PADDLE_OCR_DEVICE: "gpu:0"
+      PADDLE_PDX_MODEL_SOURCE: "BOS"
+    gpus: all
+
+  paddleocr-cpu:
+    <<: *paddleocr-common
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: services/paddleocr/Dockerfile
+      args:
+        PADDLE_BASE_IMAGE: "m.daocloud.io/docker.io/library/ubuntu:22.04"
+        PADDLE_PACKAGE: "paddlepaddle"
+        PADDLE_INDEX_URL: "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+        PYPI_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+    image: moldpilot-paddleocr:3.7.0-cpu
+    environment:
+      PADDLE_OCR_TOKEN: "${AGENT_OCR_SERVICE_TOKEN:?AGENT_OCR_SERVICE_TOKEN is required}"
+      PADDLE_OCR_DEVICE: "cpu"
+      PADDLE_PDX_MODEL_SOURCE: "BOS"
+
+volumes:
+  paddleocr-models:

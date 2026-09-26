@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mold/skill/bid_to_start_notice/v1",
+  "skill_id": "bid_to_start_notice",
+  "version": "1.0.0",
+  "entrypoint": "bid_notice.confirmed",
+  "input_schema": "mold/document-classification/v1",
+  "required_tools": ["query_confirmed_bid_notices", "prepare_bid_notice_match"],
+  "optional_tools": [
+    "query_admin_start_notices",
+    "prepare_admin_start_notice_update",
+    "prepare_admin_start_department_dispatch",
+    "prepare_admin_start_department_ack",
+    "prepare_admin_start_notice_decision",
+    "prepare_bid_project_match",
+    "prepare_bid_intake_confirmation",
+    "prepare_start_notice",
+    "prepare_department_ack",
+    "prepare_project_start_decision",
+    "prepare_post_start_binding",
+    "prepare_contract_match_confirmation"
+  ],
+  "activation_triggers": ["bid_notice.confirmed", "contract.ocr.ready"],
+  "requested_permissions": [
+    "file.upload",
+    "quote_acceptance.read",
+    "quote_acceptance.create",
+    "project.read",
+    "internal_start.read",
+    "internal_start.create",
+    "internal_start.execute",
+    "project.dossier.read",
+    "sales_contract.read"
+  ],
+  "max_steps": 10,
+  "human_confirmation": [
+    "bid_notice_match",
+    "bid_project_match",
+    "bid_intake_confirmation",
+    "start_notice",
+    "department_ack",
+    "admin_start_department_dispatch",
+    "admin_start_department_ack",
+    "admin_start_notice_decision",
+    "project_start_decision",
+    "post_start_binding",
+    "contract_match_confirmation"
+  ],
+  "completion": {
+    "creates": [
+      "admin_start_notice_draft:ADMIN_PENDING_INPUT",
+      "admin_start_notice_revision",
+      "admin_start_department_ack:SENT",
+      "start_contract_match_candidate:PROPOSED"
+    ],
+    "forbids": ["automatic_project_match", "automatic_acceptance", "automatic_department_handoff", "automatic_formal_contract_binding"]
+  }
+}
