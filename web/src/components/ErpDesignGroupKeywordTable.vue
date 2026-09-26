@@ -1,0 +1,52 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { shanghai } from '../api'
+import { erpDesignParameterCell, erpDesignReadOnlyTableNeedsDisclosure } from '../erpDesignPreview'
+import { erpDesignGroupKeywordColumns, type ErpDesignGroupKeywords } from '../erpDesignGroupKeywords'
+import ErpReadOnlyDetailCard from './ErpReadOnlyDetailCard.vue'
+
+const props = defineProps<{ result: ErpDesignGroupKeywords }>()
+const emit = defineEmits<{ 'page-change': [page: number] }>()
+const summary = computed(() => `共 ${props.result.total} 条 · 第 ${props.result.pageNum} 页，已返回 ${props.result.rows.length} 条${props.result.hasNext ? ' · 还有下一页' : ''}`)
+const sourceNote = computed(() => `ERP 分组关键词${props.result.asOf ? ` · 查询于 ${shanghai(props.result.asOf)}` : ''}`)
+const pageCount = computed(() => Math.max(1, Math.ceil(props.result.total / Math.max(1, props.result.pageSize))))
+
+function requestPage(page: number) {
+  if (page < 1 || page > pageCount.value || page === props.result.pageNum) return
+  emit('page-change', page)
+}
+</script>
+
+<template>
+  <ErpReadOnlyDetailCard
+    title="ERP 分组关键词"
+    ready-title="ERP 分组关键词表已就绪"
+    :context="result.keywordText ? `筛选：${result.keywordText}` : ''"
+    :summary="summary"
+    :source-note="sourceNote"
+    table-label="ERP 分组关键词表"
+    empty-text="ERP 未找到匹配的分组关键词。"
+    view-label="查看关键词表"
+    :rows="result.rows"
+    :columns="erpDesignGroupKeywordColumns"
+    :cell="erpDesignParameterCell"
+    :defer="erpDesignReadOnlyTableNeedsDisclosure(result.rows.length)"
+  >
+    <template #footer>
+      <nav v-if="pageCount > 1" class="erp-group-keyword-pagination" aria-label="ERP 分组关键词分页">
+        <span>第 {{result.pageNum}} / {{pageCount}} 页</span>
+        <div>
+          <button type="button" :disabled="result.pageNum <= 1" @click="requestPage(result.pageNum - 1)">上一页</button>
+          <button type="button" :disabled="!result.hasNext && result.pageNum >= pageCount" @click="requestPage(result.pageNum + 1)">下一页</button>
+        </div>
+      </nav>
+    </template>
+  </ErpReadOnlyDetailCard>
+</template>
+
+<style scoped>
+.erp-group-keyword-pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:10px 2px 0;color:var(--muted);font-size:12px}
+.erp-group-keyword-pagination div{display:flex;gap:6px}
+.erp-group-keyword-pagination button{height:29px;padding:0 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);font-size:12px}
+.erp-group-keyword-pagination button:disabled{cursor:not-allowed;opacity:.45}
+</style>

@@ -62,7 +62,7 @@ def parse(action,body):
     except (ValidationError,KeyError):raise DomainError('INVALID_TOOL_INPUT','联络操作参数不完整或不符合要求')
 
 
-def preview(db,user,action,cid,tid,data):
+def preview(db,user,action,cid,tid,data,run=None):
     """Validate without writing; display the exact scope and recipients to the human."""
     if action=='create':
         case=m.ContactCase(project_id=data.project_id,category=data.category)
@@ -92,7 +92,7 @@ def preview(db,user,action,cid,tid,data):
                        '参与人员':data.participants,'内容':data.content})
     elif action=='attach':
         from domain_packs.mold.ports.files import attach_preview
-        result.update(attach_preview(db,user,case,data))
+        result.update(attach_preview(db,user,case,data,run))
     elif action=='task':
         if case.created_by!=user.id:raise DomainError('FORBIDDEN','由发起人组织协作事项',403)
         if case.mode!='ONLINE':raise DomainError('HISTORY_NO_DISPATCH','历史补录不能派发线上任务',409)
@@ -147,7 +147,7 @@ def execute_tool(db,user,key,arguments,run=None):
     # Never accept a model-generated idempotency token or identity.
     if 'request_key' in args:raise DomainError('INVALID_TOOL_INPUT','操作标识由系统生成')
     data=parse(action,{**args,'request_key':str(uuid4())})
-    display=preview(db,user,action,cid,tid,data)
+    display=preview(db,user,action,cid,tid,data,run)
     from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_policy
     proposal={'kind':'contact','action':action,'case_id':cid,'task_id':tid,'input':data.model_dump(mode='json'),
               'display':display,'confirmation_policy':proposal_confirmation_policy(run,requires_approval=action=='resolution')}
@@ -159,7 +159,7 @@ def source(db,user,step_id):
     from domain_packs.mold.tool_gateway import available_tools
     step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
     if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
-    if run.status not in {'RUNNING','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')

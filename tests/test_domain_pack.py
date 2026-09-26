@@ -262,7 +262,7 @@ def test_domain_pack_uses_validated_host_port_contract():
         "access", "grants_for", "fingerprint", "predicate", "require", "select_fields",
         "content_hash", "proposal_confirmation_policy", "settings", "model_settings",
         "get_db", "now", "record", "current_user", "conversation_files",
-        "uploaded_file", "file_metadata",
+        "uploaded_file", "reference_run_file", "reference_run_files", "file_metadata",
     ):
         assert callable(getattr(ports, name))
     from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput

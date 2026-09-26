@@ -1,11 +1,14 @@
 from functools import lru_cache
+import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 from types import SimpleNamespace
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +20,19 @@ def _compatible(name: str, default, **constraints):
         validation_alias=AliasChoices(f"AGENT_{upper}", f"MOLD_{upper}"),
         **constraints,
     )
+
+
+def _default_worker_scope() -> str:
+    """Return a stable, installation-local queue scope.
+
+    The hostname separates machines connected to one database.  The code root
+    digest also separates two checkouts (and therefore potentially two runtime
+    versions) on the same machine.  Deployments can override this with
+    AGENT_WORKER_SCOPE when API and worker processes use different paths.
+    """
+    code_root = str(Path(__file__).resolve().parents[2]).casefold()
+    root_digest = hashlib.sha256(code_root.encode("utf-8")).hexdigest()[:12]
+    return f"{socket.gethostname()}:{root_digest}"
 
 
 class Settings(BaseSettings):
@@ -48,7 +64,7 @@ class Settings(BaseSettings):
     llm_proxy_url: str | None = _compatible("llm_proxy_url", None)
     llm_tls_max_version: Literal["auto", "1.2"] = _compatible("llm_tls_max_version", "auto")
     llm_tls_key_exchange: Literal["auto", "x25519"] = _compatible("llm_tls_key_exchange", "auto")
-    llm_connect_timeout: float = _compatible("llm_connect_timeout", 10, gt=0, le=20)
+    llm_connect_timeout: float = _compatible("llm_connect_timeout", 20, gt=0, le=20)
     llm_read_timeout: float = _compatible("llm_read_timeout", 60, gt=0, le=75)
     llm_model: str = _compatible("llm_model", "")
     llm_max_turns: int = _compatible("llm_max_turns", 12)
@@ -80,6 +96,7 @@ class Settings(BaseSettings):
         "document_model_read_timeout", 75, gt=0, le=180
     )
     worker_secret: str = _compatible("worker_secret", "")
+    worker_scope: str = _compatible("worker_scope", _default_worker_scope(), min_length=1, max_length=160)
     api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8000")
     file_backend: Literal['local','s3'] = _compatible("file_backend", "local")
     file_local_root: str = _compatible("file_local_root", ".local/files")
@@ -90,6 +107,39 @@ class Settings(BaseSettings):
     file_s3_region: str = _compatible("file_s3_region", "us-east-1")
     file_s3_access_key: str = _compatible("file_s3_access_key", "")
     file_s3_secret_key: str = _compatible("file_s3_secret_key", "")
+
+    @model_validator(mode="after")
+    def validate_file_storage(self):
+        """Fail fast when file storage is unsafe or incomplete for the environment."""
+        environment = self.environment.strip().lower()
+        development_like = environment in {"development", "dev", "test", "testing"}
+
+        if not development_like and self.file_backend != "s3":
+            raise ValueError(
+                "生产、预发布等非开发环境必须使用 AGENT_FILE_BACKEND=s3；"
+                "本地文件存储仅允许 development/test"
+            )
+
+        if self.file_backend == "s3":
+            missing = [
+                name for name, value in {
+                    "AGENT_FILE_S3_ENDPOINT": self.file_s3_endpoint,
+                    "AGENT_FILE_S3_BUCKET": self.file_s3_bucket,
+                    "AGENT_FILE_S3_ACCESS_KEY": self.file_s3_access_key,
+                    "AGENT_FILE_S3_SECRET_KEY": self.file_s3_secret_key,
+                }.items() if not str(value or "").strip()
+            ]
+            if missing:
+                raise ValueError("S3 文件存储配置不完整，缺少：" + ", ".join(missing))
+            endpoint = urlsplit(self.file_s3_endpoint.strip())
+            if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+                raise ValueError("AGENT_FILE_S3_ENDPOINT 必须是带主机名的 http(s) 地址")
+            if endpoint.username or endpoint.password:
+                raise ValueError("AGENT_FILE_S3_ENDPOINT 不应在 URL 中携带账号或密码")
+            if not development_like and endpoint.scheme != "https":
+                raise ValueError("生产、预发布等非开发环境的 S3 存储必须使用 HTTPS")
+
+        return self
 
     @property
     def active_model(self):

@@ -224,6 +224,7 @@ def test_erp_design_skills_are_grouped_with_design_tools():
         "erp_design_modify_mold_upload",
         "erp_design_price_calculation",
         "erp_design_tolerance_evaluation",
+        "erp_design_upload_parameter_review",
         "erp_design_drawing_preview",
         "erp_design_drawing_auto_correction",
         "erp_design_workspace_review",
@@ -279,6 +280,8 @@ def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
         "erp_design_preview_drawing": ("预览 ERP 设计上传图纸", "query"),
         "erp_design_auto_correct_rows": ("按图纸自动修正清单参数", "operation"),
         "erp_design_evaluate_tolerances": ("判断 ERP 设计钢料公差", "query"),
+        "erp_design_get_technical_requirements": ("读取 ERP 固定钢料技术要求", "query"),
+        "erp_design_query_upload_parameters": ("查询 ERP 设计上传材料参数", "query"),
     }
     for key, (name, capability_type) in expected_tools.items():
         item = capability_descriptor("TOOL", key, TOOLS[key])
@@ -290,14 +293,44 @@ def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
     preview = SKILLS["erp_design_drawing_preview"]
     correction = SKILLS["erp_design_drawing_auto_correction"]
     tolerance = SKILLS["erp_design_tolerance_evaluation"]
+    technical_requirements = SKILLS["erp_design_technical_requirements_review"]
+    parameters = SKILLS["erp_design_upload_parameter_review"]
+    keywords = SKILLS["erp_design_group_keyword_review"]
     assert "erp_design_reprice_rows" in price["tools"]
     assert "算价格" in price["activation_queries"]
     assert "erp_design_preview_drawing" in preview["tools"]
     assert "看图纸" in preview["activation_queries"]
+    assert {"料单的图纸", "清单的图纸", "长宽厚与图纸", "尺寸与图纸"} <= set(preview["activation_queries"])
+    assert preview["auto_activation_queries"]
+    assert preview["suppress_tool_search_on_auto_activation"] is True
+    assert preview["requires_tool_evidence"] is True
+    assert preview["host_auto_invoke_empty_arguments"] is True
     assert "erp_design_auto_correct_rows" in correction["tools"]
     assert {"自动修正", "修正数量", "修正长宽厚"} <= set(correction["activation_queries"])
     assert tolerance["tools"] == ["erp_design_evaluate_tolerances"]
-    assert {"判断公差", "公差档位", "对角公差"} <= set(tolerance["activation_queries"])
+    assert {"公差", "判断公差", "公差档位", "对角公差"} <= set(tolerance["activation_queries"])
+    assert {"判断公差", "公差档位"} <= set(tolerance["auto_activation_queries"])
+    assert {"料单的公差", "清单的公差", "上传结果的公差"} <= set(
+        tolerance["auto_activation_queries"]
+    )
+    assert tolerance["priority_patterns"]
+    assert tolerance["suppress_tool_search_on_auto_activation"] is True
+    assert tolerance["requires_tool_evidence"] is True
+    assert technical_requirements["tools"] == ["erp_design_get_technical_requirements"]
+    assert {"技术要求", "公差表", "公差明细", "公差是多少"} <= set(
+        technical_requirements["activation_queries"]
+    )
+    assert technical_requirements["host_auto_invoke_empty_arguments"] is True
+    assert parameters["tools"] == ["erp_design_query_upload_parameters"]
+    assert {"采购数量", "长宽厚", "圆料", "圆环料", "直径", "长是多少"} <= set(parameters["activation_queries"])
+    assert parameters["suppress_tool_search_on_auto_activation"] is True
+    assert parameters["requires_tool_evidence"] is True
+    assert {"分组关键词", "关键词列表", "全部关键词"} <= set(keywords["activation_queries"])
+    assert {"分组关键词", "关键词列表", "全部关键词"} <= set(keywords["auto_activation_queries"])
+    assert keywords["suppress_tool_search_on_auto_activation"] is True
+    assert keywords["requires_tool_evidence"] is True
+    assert keywords["host_auto_invoke_empty_arguments"] is True
+    assert {"关键词列表", "全部关键词"} <= set(keywords["host_auto_invoke_queries"])
 
 
 def test_erp_design_workspace_has_material_list_aliases_and_mold_priority():

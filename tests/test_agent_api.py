@@ -8,6 +8,7 @@ from app.config import settings
 from app.db import now
 from app.models import Grant, Run, RunFile, Step, User
 from app.agent_resume import queue_after_proposal_decision
+from agent_core.run_status import SCOPED_QUEUED
 from conftest import sign_in
 
 
@@ -610,3 +611,51 @@ def test_followup_context_keeps_only_own_requests_in_same_conversation(data):
         assert recent_requests(db,user,current)==['本人请求2','本人请求3','本人请求4','本人请求5']
         db.add(Run(conversation_id=conv.id,user_id=user.id,security_version=user.security_version,prompt='x'*6001,created_at=now()-timedelta(seconds=1)))
         db.flush();assert recent_requests(db,user,current)==[]
+
+def test_confirmed_proposal_resume_preserves_prior_evidence_ids(monkeypatch):
+    run = Run(
+        id='resume-evidence-run', conversation_id='conversation', user_id='user-1', security_version=1,
+        prompt='准备操作', status='SUCCEEDED',
+        checkpoint={'messages': [], 'completed_at': '2026-09-17T10:00:00+08:00',
+                    'evidence_ids': ['prior-evidence']},
+        result={'response_kind': 'AWAITING_APPROVAL', 'summary': '确认卡已准备，请确认。',
+                'evidence_ids': ['proposal-evidence'], 'suggestions': []},
+    )
+    step = Step(id='proposal-step-evidence', run_id=run.id, sequence=0, tool='prepare_demo',
+                request_hash='hash', result={})
+
+    class FakeDb:
+        def get(self, model, identity):
+            if model is Step and identity == step.id:
+                return step
+            if model is Run and identity == run.id:
+                return run
+            return None
+
+    monkeypatch.setattr('app.agent_resume.model_settings', lambda: SimpleNamespace(llm_enabled=True))
+    assert queue_after_proposal_decision(FakeDb(), SimpleNamespace(id='user-1'),
+                                         step.id, 'approved', {'status': 'SUBMITTED'}) is True
+    assert run.checkpoint['evidence_ids'] == ['prior-evidence', 'proposal-evidence']
+
+
+
+def test_new_run_is_only_claimed_by_its_creating_worker_scope(client, data, monkeypatch):
+    _, factory = data
+    monkeypatch.setattr(settings(), 'llm_enabled', True)
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-a')
+    sign_in(client, 'test_buyer')
+
+    created = client.post('/api/runs', json={'prompt': '解析本会话附件'}).json()
+    assert created['status'] == 'QUEUED'
+    with factory() as db:
+        stored = db.get(Run, created['id'])
+        assert stored.status == SCOPED_QUEUED
+        assert stored.checkpoint['worker_scope'] == 'desktop-a'
+
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-b')
+    assert client.post('/internal/runs/claim', headers=worker_headers()).json()['run'] is None
+
+    monkeypatch.setattr(settings(), 'worker_scope', 'desktop-a')
+    claimed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert claimed['id'] == created['id']
+    assert claimed['worker_scope'] == 'desktop-a'

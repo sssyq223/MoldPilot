@@ -5,7 +5,15 @@ description = "Agent-first mold project workflow workbench"
 readme = "README.md"
 authors = [{ name = "sssyq", email = "2372822523@qq.com" }]
 requires-python = ">=3.12,<3.13"
-dependencies = ["fastapi", "uvicorn[standard]", "sqlalchemy>=2,<3", "psycopg[binary]", "alembic", "pydantic-settings", "argon2-cffi", "redis", "httpx", "sqlglot", "SpiffWorkflow", "pyotp", "cryptography", "boto3"]
+dependencies = ["fastapi", "uvicorn[standard]", "sqlalchemy>=2,<3", "psycopg[binary]", "alembic", "pydantic-settings", "argon2-cffi", "redis", "httpx", "sqlglot", "SpiffWorkflow", "pyotp", "cryptography", "boto3", "openpyxl>=3.1,<4", "xlrd>=2,<3"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["agent_core*", "app*", "domain_packs*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["backend"]

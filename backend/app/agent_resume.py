@@ -1,9 +1,10 @@
 """Resume an Agent run after a trusted human decision on a prepared proposal."""
 import json
 
-from .config import model_settings
+from .config import model_settings, settings
 from .errors import DomainError
 from .models import Run, Step
+from agent_core.run_status import RUNNING_STATUSES, SCOPED_QUEUED
 
 
 # 文档工程联络链在“创建/关联原件”确认后还需生成下一张 Proposal；
@@ -18,7 +19,7 @@ def _final_snapshot(result):
     if not isinstance(result, dict):
         return None
     snapshot = {key: result.get(key) for key in (
-        "response_kind", "summary", "message", "suggestions", "error_code"
+        "response_kind", "summary", "message", "suggestions", "error_code", "evidence_ids"
     ) if result.get(key) is not None}
     return snapshot or None
 
@@ -45,7 +46,7 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
     # A proposal can become visible in the persisted trace while the harness is
     # still completing the same run. Do not invalidate that worker lease.
-    if run.status == "RUNNING":
+    if run.status in RUNNING_STATUSES:
         return False
 
     checkpoint = dict(run.checkpoint or {})
@@ -58,6 +59,11 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     prior = _final_snapshot(run.result)
     if prior:
         prior_finals.append(prior)
+    prior_evidence_ids = [item for item in (prior or {}).get("evidence_ids", [])
+                          if isinstance(item, str)]
+    existing_evidence_ids = [item for item in checkpoint.get("evidence_ids", [])
+                             if isinstance(item, str)]
+    resumed_evidence_ids = list(dict.fromkeys(existing_evidence_ids + prior_evidence_ids))
 
     continuation = decision == "approved" and step.tool in _CONTACT_DOCUMENT_CONTINUATIONS
     if decision == "approved":
@@ -84,6 +90,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
                 "这是已完成的可信人工确认及权威执行回执。请依据回执自然回应用户，"
                 "准确区分已执行、已提交审批和最终生效；当前不再等待批准，不得再次调用工具。"
             )
+        instruction += (
+            "最终 JSON 必须包含 response_kind=BUSINESS、summary、evidence_ids、suggestions，"
+            "并保留 proposal_decision。"
+        )
     else:
         fact = {
             "decision": "dismissed",
@@ -147,6 +157,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         "proposal_decisions": decisions,
         "proposal_resolution": fact,
         "prior_finals": prior_finals,
+        # The proposal step is already a trusted business fact. Preserve its
+        # evidence ids across the host-owned resume so the follow-up model can
+        # cite the same step instead of being rejected as an unknown fact.
+        "evidence_ids": resumed_evidence_ids,
         "pending": [],
         "pending_index": 0,
         "post_proposal_continuation": continuation,
@@ -162,6 +176,10 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     run.checkpoint = checkpoint
     run.result = None
     run.lease_until = None
-    # 已绑定模型的任务由 claim 校验自身配置，不受全局默认模型变化影响。
-    run.status = "QUEUED" if checkpoint.get('model_selection') or model_settings().llm_enabled else "WAITING_CONFIGURATION"
+    if checkpoint.get("model_selection") or model_settings().llm_enabled:
+        checkpoint["worker_scope"] = settings().worker_scope
+        run.checkpoint = checkpoint
+        run.status = SCOPED_QUEUED
+    else:
+        run.status = "WAITING_CONFIGURATION"
     return True

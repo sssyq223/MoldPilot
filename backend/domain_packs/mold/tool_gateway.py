@@ -111,6 +111,7 @@ TOOLS.update({
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
     'prepare_logistics_route':{'description':'准备登记仓库已确认的固定物流路线或模具项目实际路线；包含地点、承运商、车型、重量、运输方式、计价单位、税制、有效期与来源依据，本人确认后才写入。','permission':'warehouse.configure'},
     'prepare_logistics_quote':{'description':'准备由采购价格审批人确认的物流有效报价或项目本次结算价格；包含有效期、询比议价方式、比较摘要、报价依据和对账依据，本人确认后才登记生效。','permission':'purchase_price.approve'},
+    'prepare_customer_acceptance':{'description':'准备登记客户质量验收结果或整改复验；必须使用真实项目版本、签收/工程联络/责任依据和验收材料，本人确认后才写入；不自动扣款、改合同或关闭项目。','permission':'project_close.execute'},
     'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
     'prepare_supplier_material_handoff':{'description':'准备向供应商提供客户资料、设计图纸或技术标准的交接证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和交接依据，本人确认后才写入资料交接记录。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_material_verification':{'description':'准备登记供应商对一条已批准资料交接的收到、接受、待澄清或退回核验结果；必须使用查询返回的真实交接记录，本人确认后才追加核验事实。','permission':'full_outsource_contract.execute'},
@@ -261,7 +262,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                     'suppress_tool_search_on_auto_activation':True},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_baseline'],
-                   'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度']},
+                   'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度','交期','客户交期','承诺交期','交付期','预计交期']},
                'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_change','prepare_plan_department_confirmation'],
                    'activation_queries':['项目计划变更','计划变更','节点顺延','部门影响确认']},
@@ -273,7 +274,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context'],
                    'activation_queries':['装配齐套','装配工单','试模安排','试模报告','装配试模']},
                'delivery_logistics_review':{'name':'交付物流路线与价格协同','tools':['query_delivery_logistics_context'],
-                   'optional_tools':['prepare_logistics_route','prepare_logistics_quote'],
+                   'optional_tools':['prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'],
                    'activation_queries':['出库发货','物流路线','固定路线','实际路线','物流报价','物流询价','物流比价','物流议价','本次物流结算价格','本次结算价格','物流对账','客户签收','客户验收','发货物流']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context'],
                    'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_supplier_deduction_settlement'],
@@ -324,9 +325,10 @@ SKILLS.update({
         # status/result tools remain discoverable later by exact ToolSearch,
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
-        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入',
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
+
     },
     'erp_design_modify_mold_upload': {
         'name': 'ERP 修模改模清单上传流程（类型：改模）',
@@ -347,8 +349,58 @@ SKILLS.update({
         'name': 'ERP 新模钢料公差判断',
         'tools': ['erp_design_evaluate_tolerances'],
         'activation_tools': ['erp_design_evaluate_tolerances'],
-        'activation_queries': ['判断公差', '公差判断', '公差档位', '公差范围',
-                               '长度允许范围', '宽度允许范围', '厚度允许范围', '对角公差'],
+        'activation_queries': ['公差', '判断公差', '公差判断', '公差档位', '公差范围',
+                               '长度允许范围', '宽度允许范围', '厚度允许范围', '对角公差',
+                               '料单的公差', '清单的公差', '上传结果的公差', '解析结果的公差'],
+        'auto_activation_queries': ['判断公差', '公差判断', '公差档位', '公差范围',
+                                    '长度允许范围', '宽度允许范围', '厚度允许范围', '对角公差',
+                                    '料单的公差', '清单的公差', '上传结果的公差', '解析结果的公差'],
+        # A reference to an already parsed/uploaded list is stronger than a
+        # generic fixed-table phrase such as “公差是多少”.  These patterns let
+        # the Harness bind the latest owned upload session deterministically.
+        'priority_patterns': [r'(?:料单|清单|上传结果|解析结果).{0,8}(?:的)?公差'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        # The ERP adapter resolves the latest owned steel-upload session from
+        # the current conversation.  No opaque session id or preview rows need
+        # to be generated by the model for the normal follow-up query.
+        'host_auto_invoke_empty_arguments': True,
+    },
+    'erp_design_technical_requirements_review': {
+        'name': 'ERP 固定钢料技术要求',
+        'tools': ['erp_design_get_technical_requirements'],
+        'activation_tools': ['erp_design_get_technical_requirements'],
+        'activation_queries': ['技术要求', '钢料技术要求', '固定技术要求', '技术要求与公差表',
+                               '公差表', '公差明细', '公差是多少', '公差要求'],
+        'auto_activation_queries': ['技术要求', '钢料技术要求', '固定技术要求', '技术要求与公差表',
+                                    '公差表', '公差明细', '公差是多少', '公差要求'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+    },
+    'erp_design_upload_parameter_review': {
+        'name': 'ERP 设计上传材料参数查询',
+        'tools': ['erp_design_query_upload_parameters'],
+        'activation_tools': ['erp_design_query_upload_parameters'],
+        'activation_queries': ['料单参数', '清单参数', '料单字段', '材质', '规格', '采购数量', '请购数量', '材料参数', '材料尺寸', '尺寸参数', '规格参数',
+                               '长宽高', '长宽厚', '方料', '圆料', '圆环料', '外径', '内径', '直径',
+                               '长是多少', '宽是多少', '高是多少', '厚是多少', '多长', '多宽', '多高', '多厚',
+                               '材料的长', '材料的宽', '材料的高', '材料的厚'],
+        'auto_activation_queries': ['料单参数', '清单参数', '料单字段', '材质和图纸', '材质与图纸', '图纸和材质', '图纸与材质',
+                                    '规格和图纸', '规格与图纸', '图纸和规格', '图纸与规格', '数量和图纸', '数量与图纸', '图纸和数量', '图纸与数量',
+                                    '长宽厚与图纸', '长宽厚和图纸',
+                                    '图纸与长宽厚', '图纸和长宽厚', '长宽高与图纸', '长宽高和图纸', '图纸与长宽高', '图纸和长宽高',
+                                    '尺寸与图纸', '尺寸和图纸', '图纸与尺寸', '图纸和尺寸', '参数与图纸', '参数和图纸', '图纸与参数', '图纸和参数',
+                                    '料单的材质', '清单的材质', '料单的规格', '清单的规格',
+                                    '料单的料型', '清单的料型', '料单的数量', '清单的数量', '料单的长', '料单的宽',
+                                    '料单的厚', '料单的高', '料单的外径', '料单的内径', '料单的密度', '料单的价格',
+                                    '料单的金额', '料单的图纸', '采购数量', '材料参数', '材料尺寸', '长宽高', '长宽厚',
+                                    '多长', '多宽', '多厚', '多高', '外径', '内径', '直径', '密度', '单价', '价格', '金额', '热处理', '时效', '硬度', '加工工艺',
+                                    '方料', '圆料', '圆环料', '外径', '内径', '直径',
+                                    '长是多少', '宽是多少', '高是多少', '厚是多少', '多长', '多宽', '多高', '多厚',
+                                    '材料的长', '材料的宽', '材料的高', '材料的厚'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
     },
     'erp_design_price_calculation': {
         'name': 'ERP 新模钢料价格核算',
@@ -358,9 +410,20 @@ SKILLS.update({
     },
     'erp_design_drawing_preview': {
         'name': 'ERP 新模图纸预览',
-        'tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
-        'activation_tools': ['erp_design_get_upload_result', 'erp_design_preview_drawing'],
-        'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸'],
+        'tools': ['erp_design_preview_drawing'],
+        'activation_tools': ['erp_design_preview_drawing'],
+        'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                               '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
+                               '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸',
+                               '图纸与尺寸', '图纸和尺寸', '参数与图纸', '参数和图纸'],
+        'auto_activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                                    '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
+                                    '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        # Field selection and material filters are model arguments. An empty
+        # host call would discard both in combined or filtered queries.
     },
     'erp_design_drawing_auto_correction': {
         'name': 'ERP 新模图纸参数自动修正',
@@ -385,11 +448,26 @@ SKILLS.update({
         # authoritative before considering the local design-route context.
         'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
     },
+    'erp_design_upload_context_review': {
+        'name': 'ERP 解析清单与业务上下文核对',
+        'tools': ['erp_design_get_upload_result'],
+        'optional_tools': ['erp_design_query_orders', 'query_project_plan_context'],
+        'activation_tools': ['erp_design_get_upload_result'],
+        'activation_queries': [
+            '解析结果', '上传结果', '清单类型', '材料类型', '订单类型', '设计类型',
+            '交期', '客户交期', '承诺交期', '交付期', '交货期', '预计交期',
+            '当前解析', '刚才解析的清单', '这个清单的交期',
+        ],
+        'priority_patterns': [r'(?i)(?<![A-Z0-9])M\d{5,}-P\d+(?![A-Z0-9])'],
+    },
     'erp_design_drawing_version_review': {
         'name': 'ERP 图纸版本查询与对比',
         'tools': ['erp_design_query_drawing_versions'],
         'optional_tools': ['erp_design_get_record', 'erp_design_compare_drawing_versions'],
         'activation_queries': ['ERP图纸版本', '查询图纸版本', '查看图纸版本', '图纸版本对比'],
+        'auto_activation_queries': ['图纸版本'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
     },
     'erp_design_order_approval': {
         'name': 'ERP 设计订单 Agent 审批',
@@ -401,25 +479,54 @@ SKILLS.update({
     },
     'erp_design_order_adjustment': {
         'name': 'ERP 设计订单明细调整',
-        'tools': ['erp_design_query_orders', 'erp_design_get_record'],
+        'tools': ['erp_design_query_orders', 'erp_design_get_record', 'erp_design_query_idle_material'],
         'optional_tools': ['erp_design_update_order_item', 'erp_design_save_scrap_decision',
                            'erp_design_release_scrap_decision'],
-        'activation_queries': ['设计订单明细', '闲置料', '修改设计订单'],
+        'activation_queries': ['设计订单明细', '闲置料', '闲置料匹配', '闲置料库', '修改设计订单'],
+    },
+    'erp_design_density_review': {
+        'name': 'ERP 材质密度查询与维护',
+        'tools': ['erp_design_query_densities'],
+        'optional_tools': ['erp_design_manage_density'],
+        'activation_tools': ['erp_design_query_densities', 'erp_design_manage_density'],
+        'activation_queries': ['ERP材质密度', '材质密度', '设计密度'],
+        'auto_activation_queries': ['材质密度', '设计密度'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+    },
+    'erp_design_group_keyword_review': {
+        'name': 'ERP 分组关键词查询与维护',
+        'tools': ['erp_design_query_group_keywords'],
+        'optional_tools': ['erp_design_manage_group_keyword'],
+        'activation_tools': ['erp_design_query_group_keywords', 'erp_design_manage_group_keyword'],
+        # Listing the catalogue is a complete read-only intent.  Keep the
+        # common short forms here because follow-up replies such as
+        # “全部关键词” no longer repeat the word “分组”.
+        'activation_queries': ['分组关键词', '分组关键字', '关键词列表', '关键字列表', '全部关键词', '全部关键字'],
+        'auto_activation_queries': ['分组关键词', '分组关键字', '关键词列表', '关键字列表', '全部关键词', '全部关键字'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        # The adapter supplies defaults (all records, first page).  Let the
+        # host issue the authoritative empty-argument read instead of asking
+        # a model to invent an optional keyword value.
+        'host_auto_invoke_empty_arguments': True,
+        # Filtered requests must keep their keyword argument for the model;
+        # only explicit catalogue/list intents are safe to invoke empty.
+        'host_auto_invoke_queries': ['分组关键词列表', '分组关键字列表', '关键词列表', '关键字列表',
+                                     '全部关键词', '全部关键字', '所有关键词', '所有关键字'],
     },
     'erp_design_master_data_maintenance': {
         'name': 'ERP 设计基础资料维护',
         'tools': ['erp_design_query_master_data'],
-        'optional_tools': ['erp_design_get_record', 'erp_design_manage_density',
-                           'erp_design_manage_group_rule', 'erp_design_manage_group_keyword'],
+        'optional_tools': ['erp_design_get_record', 'erp_design_manage_group_rule'],
         # A normal lookup exposes one read-only aggregation.  Individual write
         # operations stay searchable only when the current user request itself
         # has formal action intent; the Harness ranks them by resource.
-        'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_density', 'erp_design_manage_group_rule',
-                             'erp_design_manage_group_keyword'],
-        'activation_queries': ['ERP设计基础资料', '设计基础资料', '材质密度', '分组规则', '分组关键词'],
+        'activation_tools': ['erp_design_query_master_data', 'erp_design_manage_group_rule'],
+        'activation_queries': ['ERP设计基础资料', '设计基础资料', '分组规则'],
         # These aliases identify this small read boundary without another
         # model round trip through ToolSearch.
-        'auto_activation_queries': ['材质密度', '设计分组规则', '设计分组关键词'],
+        'auto_activation_queries': ['设计分组规则'],
         'suppress_tool_search_on_auto_activation': True,
     },
     'erp_design_standard_hardware_maintenance': {
@@ -428,7 +535,7 @@ SKILLS.update({
         'optional_tools': ['erp_design_upload_standard_hardware',
                            'erp_design_rename_standard_hardware',
                            'erp_design_delete_standard_hardware'],
-        'activation_queries': ['厂内标准件图纸', '标准件目录', '标准件图纸维护'],
+        'activation_queries': ['厂内标准件', '厂内标准件图纸', '标准件目录', '标准件图纸维护'],
     },
     'erp_design_change_management': {
         'name': 'ERP 设计变更办理',
@@ -595,6 +702,7 @@ CAPABILITY_NAMES = {
     'query_delivery_logistics_context': '读取交付物流上下文',
     'prepare_logistics_route': '准备物流路线确认',
     'prepare_logistics_quote': '准备物流报价/结算价确认',
+    'prepare_customer_acceptance': '准备客户质量验收确认',
     'query_full_outsource_context': '读取整套委外上下文',
     'prepare_supplier_material_handoff': '准备供应商资料交接',
     'prepare_supplier_material_verification': '准备供应商资料核验',
@@ -689,6 +797,7 @@ CAPABILITY_DEPARTMENTS = {
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
     'prepare_logistics_route': 'warehouse', 'prepare_logistics_quote': 'purchase',
+    'prepare_customer_acceptance': 'warehouse',
     'delivery_logistics_review': 'warehouse', 'query_full_outsource_context': 'purchase',
     'prepare_supplier_material_handoff': 'purchase', 'prepare_supplier_material_verification': 'purchase',
     'prepare_supplier_progress_policy': 'purchase',
@@ -752,7 +861,8 @@ CAPABILITY_TYPES = {
     'design_route_context_review': 'review', 'prepare_design_order_approval': 'approval',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
     'delivery_logistics_review': 'review', 'prepare_logistics_route': 'operation',
-    'prepare_logistics_quote': 'approval', 'full_outsource_review': 'review',
+    'prepare_logistics_quote': 'approval', 'prepare_customer_acceptance': 'operation',
+    'full_outsource_review': 'review',
     'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_material_verification': 'operation',
     'prepare_supplier_progress_policy': 'operation',
     'prepare_supplier_progress_report': 'operation',
@@ -839,6 +949,45 @@ def available_tools(db, user):
     if ("erp_design_query_master_data" not in allowed
             and legacy_master_reads <= set(allowed)):
         allowed.append("erp_design_query_master_data")
+    # The dedicated keyword reader is a subset of the aggregate reader's
+    # existing authorization; it grants no keyword maintenance capability.
+    if ("erp_design_query_master_data" in allowed
+            and "erp_design_query_group_keywords" not in allowed):
+        allowed.append("erp_design_query_group_keywords")
+    # The parameter reader is a narrower read-only view of the already
+    # assigned upload capability.  Existing design users should not need a
+    # capability migration merely to inspect their own ERP upload result.
+    parameter_reader = "erp_design_query_upload_parameters"
+    if (parameter_reader not in allowed
+            and {"erp_design_parse_new_mold_upload", "erp_design_parse_modify_mold_upload"} & set(allowed)
+            and (user.super_admin or any(
+                grant.effect == "ALLOW"
+                for grant in grants_for(db, user, TOOLS[parameter_reader]["permission"])
+            ))):
+        allowed.append(parameter_reader)
+    # Idle-material matching is a read-only projection of the same design
+    # order/detail access already granted to existing order-adjustment users.
+    # Keep the ERP decision-write tools separate; this only makes the
+    # candidate table discoverable without a capability migration.
+    idle_material_reader = "erp_design_query_idle_material"
+    if (idle_material_reader not in allowed
+            and {"erp_design_query_orders", "erp_design_get_record"} <= set(allowed)
+            and (user.super_admin or any(
+                grant.effect == "ALLOW"
+                for grant in grants_for(db, user, TOOLS[idle_material_reader]["permission"])
+            ))):
+        allowed.append(idle_material_reader)
+    # The technical-requirements reader is a read-only projection of the ERP
+    # parse receipt already available to design-upload/tolerance users.
+    technical_requirements_reader = "erp_design_get_technical_requirements"
+    if (technical_requirements_reader not in allowed
+            and {"erp_design_evaluate_tolerances", "erp_design_parse_new_mold_upload",
+                 "erp_design_parse_modify_mold_upload"} & set(allowed)
+            and (user.super_admin or any(
+                grant.effect == "ALLOW"
+                for grant in grants_for(db, user, TOOLS[technical_requirements_reader]["permission"])
+            ))):
+        allowed.append(technical_requirements_reader)
     if not local_change_schema_available(db):
         allowed = [key for key in allowed if key not in LOCAL_CHANGE_TOOLS]
     return allowed
@@ -952,13 +1101,16 @@ def tool_schema(key):
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_assembly_trial_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote'}:
+    if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'}:
         if key == 'prepare_logistics_route':
             from domain_packs.mold.erp.procurement.delivery_logistics import logistics_route_schema
             parameters = logistics_route_schema()
         elif key == 'prepare_logistics_quote':
             from domain_packs.mold.erp.procurement.delivery_logistics import logistics_quote_schema
             parameters = logistics_quote_schema()
+        elif key == 'prepare_customer_acceptance':
+            from domain_packs.mold.erp.procurement.delivery_logistics import customer_acceptance_schema
+            parameters = customer_acceptance_schema()
         else:
             parameters = ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
@@ -1010,7 +1162,35 @@ def skill_context(db, user):
     allowed = set(available_tools(db, user))
     result = []
     for key, spec in SKILLS.items():
-        if assigned(db, user, "SKILL", key) and set(spec["tools"]) <= allowed:
+        enabled = assigned(db, user, "SKILL", key)
+        # Preserve existing design-master-data assignments while splitting the
+        # authoritative density and keyword readers into narrowly routed skills.
+        if (not enabled and key in {"erp_design_density_review", "erp_design_group_keyword_review"}):
+            enabled = assigned(db, user, "SKILL", "erp_design_master_data_maintenance")
+        # Existing design-upload assignees automatically receive the split
+        # read-only parameter reader.  It exposes no import or pricing action.
+        if (not enabled and key == "erp_design_upload_parameter_review"):
+            enabled = (
+                assigned(db, user, "SKILL", "erp_new_mold_design_upload")
+                or assigned(db, user, "SKILL", "erp_design_modify_mold_upload")
+            )
+        if (not enabled and key == "erp_design_technical_requirements_review"):
+            enabled = (
+                assigned(db, user, "SKILL", "erp_design_tolerance_evaluation")
+                or assigned(db, user, "SKILL", "erp_new_mold_design_upload")
+                or assigned(db, user, "SKILL", "erp_design_modify_mold_upload")
+            )
+        # Parsed upload results are a durable read-only follow-up object. Keep
+        # the reader available to existing upload/order readers without asking
+        # administrators to create a second assignment solely for follow-up
+        # questions such as “清单类型是什么” or “这个清单的交期”。
+        if (not enabled and key == "erp_design_upload_context_review"):
+            enabled = (
+                assigned(db, user, "SKILL", "erp_new_mold_design_upload")
+                or assigned(db, user, "SKILL", "erp_design_modify_mold_upload")
+                or assigned(db, user, "SKILL", "erp_design_workspace_review")
+            )
+        if enabled and set(spec["tools"]) <= allowed:
             route = skill_paths()[key]
             path = route["path"]
             content = path.read_text(encoding="utf-8")
@@ -1023,6 +1203,11 @@ def skill_context(db, user):
                            "suppress_tool_search_on_auto_activation": bool(
                                spec.get("suppress_tool_search_on_auto_activation", False)
                            ),
+                            "requires_tool_evidence": bool(spec.get("requires_tool_evidence", False)),
+                            "suppress_tool_search_on_auto_activation": bool(
+                                spec.get("suppress_tool_search_on_auto_activation", False)),
+                            "host_auto_invoke_empty_arguments": bool(
+                                spec.get("host_auto_invoke_empty_arguments", False)),
                            "priority_patterns": spec.get("priority_patterns", []),
                            "trusted_activation_tools": spec.get("trusted_activation_tools", []),
                            "activation_triggers": spec.get("activation_triggers", []),
@@ -1141,7 +1326,7 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
         from domain_packs.mold.tools.erp.procurement.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_logistics_route','prepare_logistics_quote'}:
+    if key in {'prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'}:
         from domain_packs.mold.erp.procurement.delivery_logistics import execute_delivery_logistics_tool
         return execute_delivery_logistics_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':

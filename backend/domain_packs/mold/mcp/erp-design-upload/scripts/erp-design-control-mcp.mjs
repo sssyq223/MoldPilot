@@ -85,6 +85,13 @@ const tools = [
     }, required: ["detailId", "detailVersion"] }
   },
   {
+    name: "query_erp_idle_material",
+    description: "Read ERP idle-material inventory candidates. ERP remains the owner of material matching and reservation rules.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      query: { type: "object", additionalProperties: { type: ["string", "number", "boolean"] } }
+    } }
+  },
+  {
     name: "manage_design_density",
     description: "Create, update, or delete one ERP design material-density record.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
@@ -538,6 +545,15 @@ async function callTool(name, args) {
     positiveInteger(args?.detailId, "detailId");
     if (typeof args?.detailVersion !== "string" || !args.detailVersion) throw new Error("detailVersion is required.");
     return requestErp({ method: "POST", route: `/design/order/item/${args.detailId}/scrap-release`, body: { detailVersion: args.detailVersion } });
+  }
+  if (name === "query_erp_idle_material") {
+    const query = args?.query;
+    if (!query || typeof query !== "object" || Array.isArray(query)) throw new Error("query must be an object.");
+    const entries = Object.entries(query);
+    if (entries.length > 30 || entries.some(([key, value]) => !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(key) || !["string", "number", "boolean"].includes(typeof value))) {
+      throw new Error("query contains an invalid idle-material filter.");
+    }
+    return requestErp({ method: "GET", route: "/material/scrap/list", searchParams: query });
   }
   if (name === "manage_design_density") return manageDesignDensity(args);
   if (name === "manage_design_group_rule") return manageDesignGroupRule(args);

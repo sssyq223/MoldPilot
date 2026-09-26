@@ -8,10 +8,11 @@ from typing import Mapping
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from dotenv import dotenv_values
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import MetaData, column, create_engine, inspect, select, table
 
-from .domain_pack import active_pack_name, migration_contract
+from .domain_pack import active_pack_name, component, migration_contract
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -158,3 +159,65 @@ def downgrade_all(revision: str = "base", repo_root: Path | None = None) -> None
 def check_all(repo_root: Path | None = None) -> None:
     for _, config in alembic_configs(repo_root):
         command.check(config)
+
+
+def verify_runtime_database(url: str, repo_root: Path | None = None) -> None:
+    """Check a shared runtime database without traversing its revision history.
+
+    The caller must explicitly select verification instead of migration. Keep
+    upgrade/check strict so a migration owner cannot silently skip revisions.
+    """
+    from . import models as core_models
+    from .schema_verification import verify_schema
+
+    metadata = MetaData()
+    pack_models = component("models")
+    models = list(vars(core_models).values()) + [
+        getattr(pack_models, name) for name in pack_models.EXPORTED_MODELS
+    ]
+    for model in models:
+        model_table = getattr(model, "__table__", None) if isinstance(model, type) else None
+        if model_table is not None and model_table.key not in metadata.tables:
+            model_table.to_metadata(metadata)
+
+    engine = create_engine(url)
+    try:
+        if engine.dialect.name != "postgresql":
+            raise RuntimeError("Shared database verification requires PostgreSQL")
+        with engine.connect().execution_options(isolation_level="REPEATABLE READ") as connection:
+            with connection.begin():
+                connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
+                installed = set(inspect(connection).get_table_names())
+                for stage, config in alembic_configs(repo_root):
+                    if stage.version_table not in installed:
+                        raise RuntimeError(f"Missing version table {stage.version_table}; sync migrations first")
+                    versions = set(connection.scalars(select(
+                        table(stage.version_table, column("version_num")).c.version_num
+                    )))
+                    scripts = ScriptDirectory.from_config(config)
+                    heads = set(scripts.get_heads())
+                    known = {revision.revision for revision in scripts.walk_revisions()}
+                    if not versions or (versions & known) - heads:
+                        raise RuntimeError(
+                            f"Migration stage {stage.name} is behind this checkout; sync migrations first"
+                        )
+                    print(f"[{stage.name}] database={','.join(sorted(versions))} "
+                          f"local={','.join(sorted(heads))}")
+                    if versions - known:
+                        print("[WARN] Shared database revision is absent from this checkout; "
+                              "checking ORM structure only. Migration history remains unchanged.")
+                verify_schema(connection, metadata)
+        print("[OK] Shared database ORM structure verified (read-only; no migrations applied).")
+    finally:
+        engine.dispose()
+
+
+def startup_database(mode: str, runtime_url: str) -> None:
+    """Separate the migration owner from clients sharing its database."""
+    if mode == "upgrade":
+        upgrade_all()
+    elif mode == "verify":
+        verify_runtime_database(runtime_url)
+    else:
+        raise RuntimeError("AGENT_STARTUP_MIGRATIONS must be upgrade or verify")

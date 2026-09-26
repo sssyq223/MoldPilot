@@ -66,6 +66,34 @@
 - 真实合同只读 GLM 验证：22 页、约 92.7 秒（含分类及首批一次重提取），合并后 44 个候选通过结构/来源校验；不代表字段准确完整，未写入业务库。现有失败合同未代重试或确认。
 - 本机四服务已独立重载并核验持续存活，业务连接仍为 `127.0.0.1:55432/agent_db`；API、前端 API 代理和 PaddleOCR 健康端点 200。未修改模型 Key/聊天模型文件、未执行前端构建/浏览器验证、未触碰远端服务。无聊天上传→类型确认→全文结果→通知的实际页面验收、字段完整性及正式登记/审批仍为 **NOT_VERIFIED**。
 
+## 持续开发：客户实际回款确认闭环（2026-09-20）
+
+- 新增 PostgreSQL 浏览器验收种子 `scripts/create_browser_smoke_fixture.py --scenario customer_receipt`：创建一个真实可见的有效销售合同、结构化首付款节点和待登记的客户到账信息，生成 `prepare_customer_receipt_confirmation` 确认卡，但在用户确认前不写入回款台账。
+- 确认后仍复用通用 `finance.execute` 意图和领域命令 `customer_receipt.confirm`，只新增一条不可变客户实际回款确认；不会执行银行收款、开票、利润计算或项目关闭。合同金额、付款节点和原始凭证不被覆盖。
+- 验证：PostgreSQL 种子实际生成 `customer_receipt` proposal；本人确认后返回 `CONFIRMED`，回款凭证号、金额 `12000.00 CNY` 与收款节点正确落库，确认前查询不到该回款记录。随后通过真实 Agent Worker 恢复同一 Run，状态从 `QUEUED_SCOPED` → `RUNNING_SCOPED` → `SUCCEEDED`，最终正文带 `proposal_decision=approved` 和原 proposal evidence。财务领域与 Agent API 定向回归 `35 passed`，脚本编译检查通过。
+- 该闭环已具备内置浏览器可验收入口，但真实客户银行回单、财务人员签字、ERP/财务系统联调和正式业务验收仍保持 `NOT_VERIFIED`；不把合成 PostgreSQL 数据宣称为真实财务验收。
+- 同步新增 `--scenario supplier_payment`：用有效整套委外合同、已审批付款申请和授权余额生成供应商实付确认卡。实测本人确认后付款申请授权余额由 `25000.00` 扣减到 `20000.00 CNY`，`PaymentConfirmation` 与 Agent 恢复正文均成功生成；不执行银行转账。
+- 同步新增 `--scenario supplier_deduction`：用有效整套委外合同、供应商和工程联络事项生成供应商责任扣款/结算依据确认卡。确认前只保存 proposal；本人确认后才登记 `SupplierDeductionSettlement`，并保留责任依据、工程联络单/任务、合同、来源引用和结算单号，不自动抵扣供应商付款或执行银行付款。实测 PostgreSQL 中扣款金额 `3000.00 CNY` 以 `SETTLED` 落库，随后通过真实 Agent Worker 恢复同一 Run：`QUEUED_SCOPED` → `SUCCEEDED`，最终正文含 `proposal_decision=approved`、权威回执和原 proposal evidence。该场景只是合成数据验收，不代表真实供应商对账或财务付款验收。
+- 再新增 `--scenario mold_transfer_receipt`：用有效项目、客户签收单号、签收人和原件依据生成“客户签收/移模时间”确认卡。本人确认后才写入 `CustomerDeliverySignature(move_type=MOLD_TRANSFER)`；不会写入客户质量验收，不会登记回款或结算，也不会关闭项目。原确认卡详情保留且按钮禁用；模型恢复正文仍需单独核对，不能代替权威回执。
+- 再新增交付域 `prepare_customer_acceptance` 和 `--scenario customer_acceptance`：用真实项目版本、客户签收依据、初次/复验结果、问题、责任供应商、整改期限、扣款金额、计划影响和验收原件准备确认卡；本人确认后才写入 `CustomerAcceptanceRecord`。未通过记录不会自动扣款、改合同、关闭项目；登记复验需要项目已有未通过事实，复验仍可再次未通过。合成场景已在 PostgreSQL、Agent Worker 和内置浏览器验证，原确认卡详情保留且按钮禁用；不代表真实客户验收或 ERP 对账已验收。
+
+## 持续开发：工程联络影响到项目计划变更审批闭环（2026-09-20）
+
+- 新增 PostgreSQL 浏览器验收种子 `scripts/create_browser_smoke_fixture.py --scenario plan_change`：从工程联络影响构造真实项目版本、原计划、顺延的制造节点、新增试模节点和受影响部门，调用 `prepare_project_plan_change` 生成操作建议；不会直接改写原计划。
+- 内置浏览器已验证对话框内完整确认卡：展示项目、原计划、项目版本、变更原因、变更节点、新增节点、审批流程、任务数和受影响部门。本人点击确认后只创建计划变更材料并提交 Agent BPM，审批生效前不改变计划或客户交期。
+- 修复 Harness/恢复边界的两个架构问题：可信人工批准回执现在满足恢复轮的正式动作完成条件；Host-owned resume 保留原 proposal step 的 `evidence_ids`，并只在可信批准回执路径将旧版 `message/status` 响应协议化为 `response_kind/summary/evidence_ids/suggestions`，普通模型输出仍严格失败关闭，不做自然语言兜底。
+- 同时修复多进程 worker scope 下的确认入口：领域 proposal source 现在接受 `RUNNING_SCOPED`，不会把 API/Worker 使用稳定 scope 时的有效操作建议误报为“任务已停止”。
+- 恢复指令明确要求模型输出完整最终协议并保留 `proposal_decision`；确认卡处理后不会再次要求确认，也不会丢失已处理确认卡和前序证据。
+- 验证：Harness 与 Agent API 定向回归 `147 passed`；内置浏览器使用 PostgreSQL 合成项目 `BROWSER-PLAN-CHANGE-005` 完成“准备建议 → 展开确认卡 → 本人确认 → 提交 BPM → Agent 唤醒并回复”闭环。页面显示 `SUBMITTED`、已处理确认卡和最终正文；数据库 Run 为 `SUCCEEDED`，结果含 `proposal_decision=approved`、权威回执与 proposal evidence。旧的 `BROWSER-PLAN-CHANGE-001`～`004` 失败记录保留作为回归证据，不冒充成功验收。
+
+## 持续开发：PI-Desktop 对齐的 Harness 语义证据保护（2026-09-19）
+
+- 对照 `D:\pi-desktop` 的 turn-boundary/checkpoint 语义修复通用 Harness：工具结果仍先作为完整 MCP/`ai_step` 回执落库，模型侧压缩只允许收缩审计明细，不再对领域工具声明的 `model_context`、确认 `proposal`、工具错误和权威回执执行深度/长度抽样。证据编号不能脱离语义事实继续驱动模型生成结论。
+- 保持用户可见执行链与模型上下文分离：确认卡和工具过程仍由持久化回执渲染；下一轮模型只接收工具的语义投影，不因通用压缩把日期、编号、状态或确认字段变成省略号。无法安全保留语义证据时继续由预算门禁终止请求，不生成自然语言兜底业务结论。
+- 新增 Harness 回归：深层合同/项目语义字段与确认提案经过压缩后逐字保留；没有语义投影的 data-only 回执不再被 shape/sample 替代；MCP 边界验证完整 `model_context` 未被运行时采样后再落库。`tests/test_model_harness.py` 117 项、`tests/test_mcp.py` 6 项通过。
+- 内置浏览器在重启同一套 API/Agent Worker 后复测 `SMOKE-CONTRACT-0919182654`：9 秒只调用“读取合同上下文”，正文准确显示合同号 `SMOKE-CONTRACT-0919182654-SC-0919182654`、签署日期 `2026-09-19`、交付日期 `2026-11-18`、付款方式、模具号和客户编号；展开执行链仍可看到工具记录和详情入口。PostgreSQL 最新 `ai_step` 回执包含 `model_context`，本次上下文无压缩、无省略号。
+- 这项修复针对 Harness 架构，不是针对单一模型输出写规则；8192 小窗口仍需继续按 PI-Desktop 的完整 turn-boundary checkpoint 机制验证，当前不把本地合成数据视为真实 ERP 业务验收。
+
 ## 持续开发：正式开工生效、部门交接与六段状态链（2026-09-19）
 
 - 正式开工审批生效后，项目由 `DRAFT` 转为 `ACTIVE`，并一次生成设计、采购、生产制造、装配、财务五类不可变 `InternalStartDispatch` 交接证据。接收人只取当前项目角色配置；角色无人时保存 `UNASSIGNED` 缺口，不按部门名称猜人，也不伪造已通知。
@@ -160,9 +188,9 @@
 - `prepare_contract_record` 现在必须接收本轮对话任务明确上传的 PDF、PNG/JPEG 或 DOCX 合同原件。文件必须属于当前用户、当前会话并由当前 Run 显式绑定，不能从历史会话、其他用户或模型猜测的文件 ID 取材料。
 - 用户确认建议后才创建合同业务材料。电子合同和纸质扫描件会形成不可变 `ContractAttachment` 第 1 版，记录上传人、上传时间、来源、原始文件 SHA-256 和独立文档标识；同一项目、同一合同类型的有效材料若已关联相同内容会以 `CONTRACT_FILE_DUPLICATE` 阻断，不会重复累计。
 - 合同附件元数据随合同明细冻结进 `ApprovalInstance.snapshot`，审批详情直接显示提交本轮锁定的原件、版本和当前标识。后续文件上传不能覆盖当前审批依据；文件下载权限跟随销售合同或整套委外合同读取授权，原上传者私有文件权限不会成为业务附件的旁路。
-- 数据库迁移新增 mold head `m20d0e000002`，由领域包自己的 migration stage 管理 `contract_attachment` 及文件/附件不可变触发器。旧混合迁移仓库改用冻结表所有权快照做兼容漂移检查，后续领域表不会反向污染 legacy 采纳链。
+- 数据库迁移由 mold head `m30d0e000003` 管理；`m20d0e000002` 创建 `contract_attachment` 及文件/附件不可变触发器，`m30d0e000003` 兼容曾部署过、现已退役的设计工作区迁移链，不删除其历史数据。旧混合迁移仓库改用冻结表所有权快照做兼容漂移检查，后续领域表不会反向污染 legacy 采纳链。
 - 当前实现不宣称 OCR、电子签署、合同替代/追加版本全流程已经完成。它完成的是“本轮上传 → 人工确认 → 不可变附件版本 → BPM 审批快照 → 按业务权限查看”的首版闭环；后续合同新版本、客户特定字段映射和真实主管/财务流程仍须按适配清单验收。
-- 验证：合同附件、权限、审批快照、领域包和拆分迁移定向回归 `42 passed`；完整后端回归 `574 passed`；Python 编译、前端 Vitest `9 passed`、mold/template 两套类型检查与生产构建通过。正式 PostgreSQL 已到 Core `a10c0e000008`、mold `m20d0e000002`，两条权威迁移链无漂移；内置浏览器验收记录使用可追溯的 `BROWSER-CONTRACT-001` 合成数据，不代表真实客户合同业务验收。
+- 验证：合同附件、权限、审批快照、领域包和拆分迁移定向回归 `42 passed`；完整后端回归 `574 passed`；Python 编译、前端 Vitest `9 passed`、mold/template 两套类型检查与生产构建通过。正式 PostgreSQL 的权威迁移链为 Core `a10c0e000008`、mold `m30d0e000003`；内置浏览器验收记录使用可追溯的 `BROWSER-CONTRACT-001` 合成数据，不代表真实客户合同业务验收。
 
 ## 架构治理：Core 与模具领域数据库迁移彻底分链（2026-09-18）
 

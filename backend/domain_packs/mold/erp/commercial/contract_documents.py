@@ -6,7 +6,7 @@ from sqlalchemy import select
 from domain_packs.mold import models as m
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.events import record
-from domain_packs.mold.ports.files import uploaded_file
+from domain_packs.mold.ports.files import reference_run_files
 
 
 CONTRACT_MEDIA_TYPES = {
@@ -40,15 +40,10 @@ def _card(link, blob, *, current=True):
 def validate_proposal_files(db, user, file_ids, run, project_id, contract_kind):
     if not run or run.user_id != user.id:
         raise DomainError("FILE_CONTEXT_INVALID", "合同附件必须来自当前本人会话任务", 403)
-    bound = set(db.scalars(select(m.RunFile.file_id).where(m.RunFile.run_id == run.id)))
-    missing = [file_id for file_id in file_ids if file_id not in bound]
-    if missing:
-        raise DomainError("FILE_CONTEXT_INVALID", "合同附件必须在本轮任务中明确发送", 403)
+    referenced={blob.id:blob for blob in reference_run_files(db,user,run,file_ids)}
     blobs = []
     for file_id in file_ids:
-        blob = uploaded_file(db, user, file_id)
-        if blob.conversation_id != run.conversation_id:
-            raise DomainError("FILE_CONTEXT_INVALID", "合同附件不属于当前会话", 403)
+        blob = referenced[file_id]
         if blob.media_type not in CONTRACT_MEDIA_TYPES:
             raise DomainError("CONTRACT_FILE_TYPE", "合同原件仅支持 PDF、图片或 DOCX", 409)
         duplicate = db.scalar(

@@ -36,6 +36,7 @@ class ContractReceiptEvidence(Base):
     """Actual arrival date recorded together with the frozen contract files."""
 
     __tablename__ = "contract_receipt_evidence"
+    material_version: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     contract_subject_id: Mapped[str] = mapped_column(
         ForeignKey("business_subject.id"), primary_key=True
     )
@@ -51,6 +52,7 @@ class ContractBusinessTerms(Base):
     """
 
     __tablename__ = "contract_business_terms"
+    material_version: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     contract_subject_id: Mapped[str] = mapped_column(
         ForeignKey("business_subject.id"), primary_key=True
     )
@@ -64,6 +66,7 @@ class ContractBusinessTerms(Base):
     mapping_evidence: Mapped[str] = mapped_column(Text)
     association_snapshot: Mapped[dict] = mapped_column(J)
     recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    attachment_selection: Mapped[dict | None] = mapped_column(J)
     __table_args__ = (
         CheckConstraint(
             "customer_reference_type IN "
@@ -91,9 +94,10 @@ class ContractSettlementAllocation(IdentityMixin, Base):
     currency: Mapped[str] = mapped_column(String(3))
     evidence: Mapped[str] = mapped_column(Text)
     recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (
         UniqueConstraint(
-            "target_contract_id", "record_type", "source_record_id",
+            "target_contract_id", "material_version", "record_type", "source_record_id",
             name="contract_settlement_allocation_unique_record",
         ),
         CheckConstraint("amount <> 0", name="contract_settlement_allocation_nonzero"),

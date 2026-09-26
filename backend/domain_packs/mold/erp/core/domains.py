@@ -61,7 +61,12 @@ def typed_detail(db,subject):
             db,m.QuotationFeedback,quotation_subject_id=subject.id)]
     elif kind in {'sales_contract','full_outsource_contract'}:
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
-        receipt=db.get(m.ContractReceiptEvidence,subject.id)
+        receipt=db.scalar(
+            select(m.ContractReceiptEvidence)
+            .where(m.ContractReceiptEvidence.contract_subject_id==subject.id)
+            .order_by(m.ContractReceiptEvidence.material_version.desc())
+            .limit(1)
+        )
         detail['received_date']=receipt.received_date.isoformat() if receipt else None
         from domain_packs.mold.erp.commercial import contract_terms
         detail['business_terms']=contract_terms.card(db,subject.id)

@@ -42,7 +42,7 @@ function detailValue(key:string,value:any){
  <div class="order-shade" @click.self="$emit('close')">
   <section class="order-dialog" role="dialog" aria-modal="true" aria-label="ERP 设计订单">
    <header>
-    <div><h2>ERP 设计订单</h2><p>{{rows.length}} 条记录 · 数据实时来自 D:\work2\management-system</p></div>
+    <div><h2>ERP 设计订单</h2></div>
     <button class="close" aria-label="关闭设计订单" @click="$emit('close')"><X :size="18"/></button>
    </header>
    <div class="filters">
@@ -61,7 +61,7 @@ function detailValue(key:string,value:any){
     </table>
     <p v-if="!visibleRows.length" class="empty">没有符合条件的设计订单。</p>
    </div>
-   <footer><span>当前显示 {{visibleRows.length}} / {{rows.length}} 条</span><span>以 ERP 当次回执为准</span></footer>
+   <footer><span>当前显示 {{visibleRows.length}} / {{rows.length}} 条</span></footer>
    <div v-if="selected" class="detail-layer" @click.self="selected=null">
     <aside class="detail-panel" role="dialog" aria-modal="true" aria-label="设计订单详情">
      <div class="detail-head"><div><strong>{{selected.requestNo||selected.orderNo||'设计订单详情'}}</strong><small>{{selected.moldNo||'模具号待确认'}} · {{selected.statusLabel||'状态待确认'}}</small></div><button class="close" aria-label="关闭订单详情" @click="selected=null"><X :size="16"/></button></div>

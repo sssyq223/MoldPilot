@@ -12,15 +12,17 @@ import subprocess
 import tempfile
 from base64 import b64decode
 from copy import deepcopy
+from datetime import date
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Literal
+from .upload_projection import DEFAULT_UPLOAD_FIELDS, UploadField, project_upload_rows
 from uuid import UUID, uuid4
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
 
 from domain_packs.mold import files, models as m
@@ -51,13 +53,61 @@ _MODIFY_MOLD_PURCHASE_REASON = Literal[
     "process_improvement",
     "other_abnormal",
 ]
+MODIFY_MOLD_PURCHASE_REASON_OPTIONS = (
+    {"value": "customer_change", "label": "客户设变"},
+    {"value": "design_abnormal", "label": "设计异常"},
+    {"value": "machining_abnormal", "label": "加工异常"},
+    {"value": "assembly_abnormal", "label": "组立异常"},
+    {"value": "trial_mold_abnormal", "label": "试模异常"},
+    {"value": "outsource_abnormal", "label": "外协异常"},
+    {"value": "process_improvement", "label": "制程改善"},
+    {"value": "other_abnormal", "label": "其他异常"},
+)
+
+
+def design_upload_form_options() -> dict:
+    """Return the ERP-owned order-form choices for the upload dialog."""
+    return {
+        "designOrderTypeOptions": [
+            {"value": "new_model", "label": "新模"},
+            {"value": "repair_other", "label": "改模"},
+        ],
+        "purchaseReasonOptions": [dict(item) for item in MODIFY_MOLD_PURCHASE_REASON_OPTIONS],
+    }
+
+
+def _validate_not_past_delivery_date(value: str) -> str:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("交期日期无效，请使用 YYYY-MM-DD 格式") from exc
+    if parsed < date.today():
+        raise ValueError("交期不能早于今天，请重新选择合理交期")
+    return value
+
+
 _DESIGN_FILE_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 _MOLD_REPAIR_FILENAME = re.compile(r"(?i)^M\d{6}-P")
+_MOLD_CODE = re.compile(r"(?i)(?<![A-Z0-9])M?(\d{6}-P\d+)(?![A-Z0-9])")
+_ERP_FIXED_STEEL_TECH_REQUIREMENTS = {
+    "requirements": [
+        "1.铣六面平面度0.2以内，铣六研二平面度0.1以内，垂直度0.15以内；",
+        "2.注明倒角的四周按注明数倒角，未注明数据的不可以倒角；",
+        "3.供货商的材料的材质，规格必须严格按上述要求，否则视对本厂造成损失的程度进行适当的扣款或索赔；",
+        "4.在模板厚度左侧必须打钢印，内容为：模具编号+模板代码+材质+规格，字体高度8mm；",
+        "5.单位：mm。",
+    ],
+    "tolerance_table": [
+        {"seq": 1, "spec": "500(含)以下", "length_tol": "+0.3~+0.6", "thick_tol": "+0.3~+0.5", "diag_tol": "0~0.5"},
+        {"seq": 2, "spec": "500-800(含)", "length_tol": "+0.3~+0.8", "thick_tol": "+0.6~+0.9", "diag_tol": "0~0.5"},
+        {"seq": 3, "spec": "800以上", "length_tol": "+0.3~+1.0", "thick_tol": "+0.7~+1.0", "diag_tol": "0~0.5"},
+    ],
+}
 
 
 TOOL_SPECS = {
     "erp_design_parse_new_mold_upload": {
-        "description": "通过 ERP MCP 上传并解析新模设计清单，由 ERP 自动识别钢料或五金并创建上传会话；图纸处理请随后查询状态。",
+        "description": "通过 ERP MCP 上传并解析当前唯一的 XLSX、XLS 或 CSV 设计清单；由 ERP 自动识别钢料或五金并创建上传会话。未指定新模/改模时，此工具仅作为 ERP 表单封装的解析入口，最终类型在 ERP 订单表单中选择；图纸处理请随后查询状态。",
         "permission": "design_route.create",
     },
     "erp_design_parse_modify_mold_upload": {
@@ -84,8 +134,16 @@ TOOL_SPECS = {
         "description": "读取本人 ERP 新模或改模钢料上传会话中的公差表，按 ERP 现有档位规则计算方料的长度、宽度、厚度允许范围和对角公差；只读，不在 Agent 中维护另一份公差表。",
         "permission": "design_route.read",
     },
+    "erp_design_get_technical_requirements": {
+        "description": "读取 ERP 设计上传功能的固定钢料技术要求和公差指标；无参数、只读，不查询设计订单、模具或上传会话。",
+        "permission": "design_route.read",
+    },
+    "erp_design_query_upload_parameters": {
+        "description": "查询本人当前对话 ERP 料单：用 fields 按本次要求选择尺寸、材质、数量、价格、工艺、图纸等任意组合，同一行合成一张表；identifiers 筛选零件。只读已有值，不核价、不导入。",
+        "permission": "design_route.read",
+    },
     "erp_design_preview_drawing": {
-        "description": "预览当前 ERP 新模或改模上传会话中已经匹配的正式图纸；复用 ERP 的 DWG/DXF 预览结果，不重复处理图纸。",
+        "description": "读取本人当前对话 ERP 上传会话中已匹配的图纸，返回可点击预览的独立图纸表格；可按编码或名称筛选，省略筛选时列出全部图纸。点击后复用 ERP 预览，不下载附件、不展示尺寸公差或订单价格。",
         "permission": "design_route.read",
     },
     "erp_design_auto_correct_rows": {
@@ -119,6 +177,7 @@ READ_TOOL_MAP = {
     "erp_design_query_bom_report": "query_erp_bom_report",
     "erp_design_query_changes": "query_erp_design_changes",
     "erp_design_query_standard_hardware": "query_erp_standard_hardware_drawings",
+    "erp_design_query_idle_material": "query_erp_idle_material",
     "erp_design_query_densities": "query_erp_design_densities",
     "erp_design_query_group_rules": "query_erp_design_group_rules",
     "erp_design_query_group_keywords": "query_erp_design_group_keywords",
@@ -131,18 +190,19 @@ READ_TOOL_MAP = {
 }
 TOOL_SPECS.update({
     "erp_design_query_orders": {"description": "查询 ERP 设计订单及其当前状态。", "permission": "design_route.read"},
-    "erp_design_query_drawing_versions": {"description": "查询 ERP 图纸版本主线和发布状态。", "permission": "design_route.read"},
+    "erp_design_query_drawing_versions": {"description": "查询指定图号、零件号或模具号的 ERP 图纸版本主线和发布状态；图纸目标不明确时必须先追问，不能无条件查询全部版本。", "permission": "design_route.read"},
     "erp_design_query_bom": {"description": "查询 ERP BOM 或物料清单明细。", "permission": "design_route.read"},
     "erp_design_query_bom_report": {"description": "查询 ERP BOM/物料清单汇总、物料、采购进度或待采购报表。", "permission": "design_route.read"},
     "erp_design_query_changes": {"description": "查询 ERP 设变申请及其流程状态。", "permission": "design_route.read"},
-    "erp_design_query_standard_hardware": {"description": "查询 ERP 厂内标准件图纸目录。", "permission": "design_route.read"},
+    "erp_design_query_standard_hardware": {"description": "查询 ERP 厂内标准件图纸目录，界面以独立图纸表格提供预览按钮；查询支持 keyword、pageNum、pageSize，预览使用 ERP 原有接口。", "permission": "design_route.read"},
+    "erp_design_query_idle_material": {"description": "查询 ERP 闲置料库或指定设计订单明细的 ERP 闲置料匹配候选；返回闲置料编号、材质、规格、长宽厚、可用量和匹配状态，后续保存/释放决策必须使用 ERP 返回的候选 ID 与明细版本。", "permission": "design_route.read"},
     "erp_design_query_master_data": {
         "description": "一次查询 ERP 设计基础资料：材质密度、设计分组规则和分组关键词；只读。",
         "permission": "design_route.read",
     },
     "erp_design_query_densities": {"description": "查询 ERP 设计材质密度配置。", "permission": "design_route.read"},
     "erp_design_query_group_rules": {"description": "查询 ERP 设计分组与采购拆分规则。", "permission": "design_route.read"},
-    "erp_design_query_group_keywords": {"description": "查询 ERP 设计分组关键词。", "permission": "design_route.read"},
+    "erp_design_query_group_keywords": {"description": "从 ERP design_group_keyword 表查询分组关键词，支持关键词筛选和分页；返回 ERP 原始记录供对话只读表格展示。", "permission": "design_route.read"},
     "erp_design_get_record": {"description": "读取一条 ERP 设计订单、图纸版本、BOM、设变或设计配置详情。", "permission": "design_route.read"},
     "erp_design_compare_drawing_versions": {"description": "对比 ERP 同一图纸的两个版本。", "permission": "design_route.read"},
     "erp_design_analyze_change": {"description": "读取 ERP 设变影响分析，不提交、评审、确认或执行设变。", "permission": "design_route.read"},
@@ -219,6 +279,8 @@ TOOL_NAMES = {
     "erp_design_validate_rows": "校验设计上传明细",
     "erp_design_reprice_rows": "核算 ERP 设计钢料价格",
     "erp_design_evaluate_tolerances": "判断 ERP 设计钢料公差",
+    "erp_design_get_technical_requirements": "读取 ERP 固定钢料技术要求",
+    "erp_design_query_upload_parameters": "查询 ERP 设计上传材料参数",
     "erp_design_preview_drawing": "预览 ERP 设计上传图纸",
     "erp_design_auto_correct_rows": "按图纸自动修正清单参数",
     "erp_design_get_approval_config": "读取新模设计审批配置",
@@ -231,6 +293,7 @@ TOOL_NAMES = {
     "erp_design_query_bom_report": "查询 ERP BOM 报表",
     "erp_design_query_changes": "查询 ERP 设计变更",
     "erp_design_query_standard_hardware": "查询 ERP 厂内标准件",
+    "erp_design_query_idle_material": "查询 ERP 闲置料匹配",
     "erp_design_query_master_data": "查询 ERP 设计基础资料",
     "erp_design_query_densities": "查询 ERP 材质密度",
     "erp_design_query_group_rules": "查询 ERP 设计分组规则",
@@ -278,7 +341,11 @@ class ParseInput(StrictModel):
         description="默认 auto，由 ERP 使用其现有清单解析规则识别钢料或五金；仅在人工明确指定时传 steel/hardware。",
     )
     file_id: UUID | None = Field(default=None, description="当前会话中的 XLSX、XLS 或 CSV 附件标识；未填写时自动使用唯一的设计清单附件。")
-    design_order_sub_type: str | None = Field(default=None, max_length=100)
+    design_order_sub_type: str | None = Field(
+        default=None,
+        max_length=100,
+        description="ERP 设计订单业务子类型，不是模具号或文件名；普通新模清单解析应省略。",
+    )
 
 
 class ModifyMoldParseInput(StrictModel):
@@ -290,7 +357,15 @@ class ModifyMoldParseInput(StrictModel):
 
 
 class SessionInput(StrictModel):
-    session_id: int = Field(ge=1)
+    session_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ERP 上传会话编号；当前会话追问时可省略，由宿主绑定最近一次本人解析会话。",
+    )
+
+
+class EmptyInput(StrictModel):
+    pass
 
 
 class StatusInput(SessionInput):
@@ -303,7 +378,12 @@ class RowsInput(SessionInput):
     mold_code: str | None = Field(default=None, max_length=120)
 
 
-class ToleranceInput(SessionInput):
+class ToleranceInput(StrictModel):
+    session_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ERP 钢料上传会话编号；同一对话紧接上传结果查询时可省略，由宿主绑定最近一次钢料会话。",
+    )
     preview_rows: list[dict] | None = Field(
         default=None,
         max_length=1000,
@@ -311,8 +391,35 @@ class ToleranceInput(SessionInput):
     )
 
 
-class PreviewDrawingInput(SessionInput):
-    drawing_id: int = Field(ge=1, description="当前上传会话明细返回的 drawing_resource_id。")
+class UploadParameterQueryInput(StrictModel):
+    session_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ERP 设计上传会话编号；同一对话追问上传结果时省略，由宿主绑定最近一次本人上传会话。",
+    )
+    identifiers: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+        description="用户明确点名的零件编码、名称、材质牌号或料型（方料/圆料/圆环料）；留空时返回当前上传结果全部明细。",
+    )
+
+
+class UploadFieldQueryInput(UploadParameterQueryInput):
+    fields: list[UploadField] | None = Field(
+        default=None, min_length=1, max_length=30,
+        description="按用户本次要求依次选择列，长宽厚用 length,width,height；图纸用 drawing。组合查询一次传齐全部字段；仅保留编码、名称和选中列。不要求的字段不传。单位可用 unit；厚度/高度统一 height。",
+    )
+
+
+class PreviewDrawingInput(UploadParameterQueryInput):
+    fields: list[UploadField] | None = Field(
+        default=None, min_length=1, max_length=30,
+        description="本次要展示的所有列；仅图纸用 [drawing]，同时要尺寸、材质、数量等时一起选择，返回一张表。",
+    )
+    drawing_id: int | None = Field(
+        default=None, ge=1,
+        description="可选的当前上传会话 drawing_resource_id；省略时按 identifiers 筛选，均省略则列出全部已匹配图纸。",
+    )
 
 
 class AutoCorrectRowsInput(RowsInput):
@@ -331,6 +438,11 @@ class ImportInput(RowsInput):
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = Field(default=False, description="仅在 ERP 返回重复上传提示且用户再次明确确认后设为 true。")
 
+    @field_validator("expected_date")
+    @classmethod
+    def expected_date_must_not_be_past(cls, value: str) -> str:
+        return _validate_not_past_delivery_date(value)
+
 
 class ModifyMoldImportInput(RowsInput):
     mold_code: str = Field(min_length=1, max_length=120, description="ERP 模具号；改模清单导入前必须核对。")
@@ -348,6 +460,11 @@ class ModifyMoldImportInput(RowsInput):
     remark: str | None = Field(default=None, max_length=1000)
     allow_duplicate: bool = Field(default=False, description="仅在 ERP 返回重复上传提示且用户再次明确确认后设为 true。")
 
+    @field_validator("expected_date")
+    @classmethod
+    def expected_date_must_not_be_past(cls, value: str) -> str:
+        return _validate_not_past_delivery_date(value)
+
 
 class QueryInput(StrictModel):
     query: dict = Field(default_factory=dict, max_length=30)
@@ -361,6 +478,115 @@ class QueryInput(StrictModel):
         if not mold_number:
             return value
         return {**value, "query": {"moldNo": mold_number}}
+
+
+class DrawingVersionQueryInput(StrictModel):
+    query: dict = Field(
+        default_factory=dict,
+        max_length=30,
+        description="必须提供明确的图号/零件号(partCode)或模具号(moldCode)；不能无条件查询全部图纸版本。",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_string_target(cls, value):
+        if not isinstance(value, dict) or not isinstance(value.get("query"), str):
+            return value
+        target = value["query"].strip()
+        if not target:
+            return value
+        field = "moldCode" if re.match(r"^M[0-9A-Za-z_-]+$", target, re.IGNORECASE) else "partCode"
+        return {**value, "query": {field: target}}
+
+    @model_validator(mode="after")
+    def require_drawing_target(self):
+        keys = {"moldCode", "mold_code", "partCode", "part_code"}
+        if not any(str(self.query.get(key) or "").strip() for key in keys):
+            raise ValueError("查询图纸版本必须明确图号、零件号或模具号；目标不明确时请先追问")
+        return self
+
+
+class IdleMaterialQueryInput(StrictModel):
+    request_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ERP 设计订单请求 ID；提供后由 ERP 返回订单明细及每条材料的闲置料匹配候选。",
+    )
+    detail_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="可选 ERP 设计订单明细 ID；仅在 request_id 返回明细后用于筛选。",
+    )
+    query: dict = Field(
+        default_factory=dict,
+        max_length=30,
+        description="不指定订单时直接查询 ERP 闲置料库的筛选条件，如 materialMark、materialKeyword、specification、materialCategory、status、pageNum、pageSize。",
+    )
+
+    @model_validator(mode="after")
+    def require_query_or_order(self):
+        if self.request_id is None and not self.query:
+            raise ValueError("查询闲置料必须提供设计订单 ID，或提供材质/规格等 ERP 闲置料库筛选条件")
+        return self
+
+
+class StandardHardwareQueryInput(QueryInput):
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_string_query(cls, value):
+        if isinstance(value, dict) and isinstance(value.get("query"), str):
+            return {**value, "query": {"keyword": value["query"].strip()}}
+        return value
+
+
+class GroupKeywordQueryInput(StrictModel):
+    keyword_text: str | None = Field(default=None, min_length=1, max_length=200,
+                                    description="按 ERP 关键词文本模糊查询；省略时查询全部。")
+    page_num: int = Field(default=1, ge=1, description="ERP 页码，从 1 开始。")
+    page_size: int = Field(default=10, ge=1, le=500, description="每页条数，默认 10 条，最多 500 条；分页由 ERP 执行。")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_query(cls, value):
+        if not isinstance(value, dict) or "query" not in value:
+            return value
+        normalized = dict(value)
+        query = normalized.pop("query")
+        if isinstance(query, str):
+            query = {"keywordText": query.strip()}
+        if not isinstance(query, dict):
+            raise ValueError("分组关键词筛选必须是文本或 ERP 查询参数")
+        fields = {"keywordText": "keyword_text", "pageNum": "page_num", "pageSize": "page_size"}
+        for key, item in query.items():
+            if key not in fields:
+                raise ValueError(f"分组关键词不支持筛选参数 {key}")
+            field = fields[key]
+            if field in normalized and normalized[field] != item:
+                raise ValueError(f"分组关键词筛选参数 {field} 重复且不一致")
+            normalized[field] = item
+        return normalized
+
+
+class DensityQueryInput(StrictModel):
+    material_mark: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="要查询的 ERP 材质牌号，例如 45#、CR12MOV。",
+    )
+    query: dict = Field(default_factory=dict, max_length=30)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_material_query(cls, value):
+        if not isinstance(value, dict) or not isinstance(value.get("query"), str):
+            return value
+        material_mark = value["query"].strip()
+        if not material_mark:
+            return value
+        normalized = {**value, "material_mark": material_mark}
+        normalized.pop("query", None)
+        return normalized
 
 
 class MasterDataQueryInput(StrictModel):
@@ -729,6 +955,8 @@ _INPUTS = {
     "erp_design_validate_rows": RowsInput,
     "erp_design_reprice_rows": RowsInput,
     "erp_design_evaluate_tolerances": ToleranceInput,
+    "erp_design_get_technical_requirements": EmptyInput,
+    "erp_design_query_upload_parameters": UploadFieldQueryInput,
     "erp_design_preview_drawing": PreviewDrawingInput,
     "erp_design_auto_correct_rows": AutoCorrectRowsInput,
     "erp_design_get_approval_config": SessionInput,
@@ -736,15 +964,16 @@ _INPUTS = {
     "erp_design_import_new_mold": ImportInput,
     "erp_design_import_modify_mold": ModifyMoldImportInput,
     "erp_design_query_orders": QueryInput,
-    "erp_design_query_drawing_versions": QueryInput,
+    "erp_design_query_drawing_versions": DrawingVersionQueryInput,
     "erp_design_query_bom": QueryInput,
     "erp_design_query_bom_report": BomReportInput,
     "erp_design_query_changes": QueryInput,
-    "erp_design_query_standard_hardware": QueryInput,
+    "erp_design_query_standard_hardware": StandardHardwareQueryInput,
+    "erp_design_query_idle_material": IdleMaterialQueryInput,
     "erp_design_query_master_data": MasterDataQueryInput,
-    "erp_design_query_densities": QueryInput,
+    "erp_design_query_densities": DensityQueryInput,
     "erp_design_query_group_rules": QueryInput,
-    "erp_design_query_group_keywords": QueryInput,
+    "erp_design_query_group_keywords": GroupKeywordQueryInput,
     "erp_design_get_record": RecordInput,
     "erp_design_compare_drawing_versions": DrawingCompareInput,
     "erp_design_analyze_change": QueryInput,
@@ -889,19 +1118,118 @@ def _owned_session(db, user, session_id: int):
         raise DomainError("ERP_UPLOAD_NOT_FOUND", "上传会话不存在，或不属于当前账号", 404)
 
 
+def _conversation_parse_steps(db, user, run):
+    if run is None or str(getattr(run, "user_id", "")) != str(user.id):
+        return []
+    return list(db.scalars(
+        select(m.Step)
+        .join(m.Run, m.Run.id == m.Step.run_id)
+        .where(
+            m.Run.user_id == user.id,
+            m.Run.conversation_id == run.conversation_id,
+            m.Run.created_at <= run.created_at,
+            m.Step.tool.in_({"erp_design_parse_new_mold_upload", "erp_design_parse_modify_mold_upload"}),
+        )
+        .order_by(m.Run.created_at.desc(), m.Step.sequence.desc())
+        .limit(20)
+    ))
+
+
+def _parse_step_data(step) -> dict:
+    result = step.result if isinstance(step.result, dict) else {}
+    return result.get("data") if isinstance(result.get("data"), dict) else result
+
+
+def _conversation_upload_receipt(db, user, run, session_id: int) -> dict | None:
+    for step in _conversation_parse_steps(db, user, run):
+        data = _parse_step_data(step)
+        candidate = _number(_first(data, "sessionId", "session_id"))
+        if candidate is not None and float(candidate).is_integer() and int(candidate) == session_id:
+            return data
+    return None
+
+
+def _latest_conversation_upload_session(db, user, run, *, sheet_type: str | None = None) -> int:
+    """Resolve an opaque ERP upload handle without copying ERP business data.
+
+    Follow-up turns should not make the model repeat or guess a session id.  The
+    host binds the read to a prior successful parse step from the same user and
+    conversation, then ``_owned_session`` revalidates ownership before ERP is
+    called.
+    """
+    if run is None or str(getattr(run, "user_id", "")) != str(user.id):
+        raise DomainError(
+            "ERP_UPLOAD_SESSION_REQUIRED",
+            "请先在当前会话解析设计清单，或明确提供本人上传会话编号",
+            409,
+        )
+    for step in _conversation_parse_steps(db, user, run):
+        data = _parse_step_data(step)
+        if sheet_type and str(_first(data, "sheetType", "sheet_type") or "") != sheet_type:
+            continue
+        session_id = _number(_first(data, "sessionId", "session_id"))
+        if session_id is not None and session_id >= 1 and float(session_id).is_integer():
+            resolved = int(session_id)
+            _owned_session(db, user, resolved)
+            return resolved
+    raise DomainError(
+        "ERP_UPLOAD_SESSION_REQUIRED",
+        "当前会话未找到已解析的设计清单，请先解析附件后再查询上传结果",
+        409,
+    )
+
+
+def _latest_conversation_steel_session(db, user, run) -> int:
+    try:
+        return _latest_conversation_upload_session(db, user, run, sheet_type="steel")
+    except DomainError as error:
+        if error.code != "ERP_UPLOAD_SESSION_REQUIRED":
+            raise
+        raise DomainError(
+            "ERP_TOLERANCE_SESSION_REQUIRED",
+            "当前会话未找到已解析的钢料清单，请先解析钢料附件后再查询公差",
+            409,
+        ) from None
+
+
+def _mold_codes(value: str) -> set[str]:
+    return {"M" + match.group(1).upper() for match in _MOLD_CODE.finditer(value or "")}
+
+
+def _historical_design_file_candidates(run, historical: list[dict]) -> list[dict]:
+    candidates = [item for item in historical
+                  if Path(str(item.get("filename") or "")).suffix.lower() in _DESIGN_FILE_EXTENSIONS]
+    if len(candidates) <= 1:
+        return candidates
+    requested_codes = _mold_codes(str(getattr(run, "prompt", "") or ""))
+    if not requested_codes:
+        return candidates
+    matched = [item for item in candidates
+               if requested_codes & _mold_codes(str(item.get("filename") or ""))]
+    return matched if matched else candidates
+
+
 def _temporary_design_file(db, user, run, requested_id: UUID | None):
     if not run or run.user_id != user.id:
         raise DomainError("FILE_CONTEXT_INVALID", "设计上传须从当前会话的附件发起", 403)
     allowed_ids = {str(value) for value in db.scalars(select(m.RunFile.file_id).where(m.RunFile.run_id == run.id))}
     if requested_id:
-        if str(requested_id) not in allowed_ids:
-            raise DomainError("FILE_CONTEXT_INVALID", "所选文件不属于当前会话", 403)
-        source = files.uploaded_file(db, user, str(requested_id))
+        source = files.reference_run_file(db, user, run, str(requested_id))
     else:
         candidates = [files.uploaded_file(db, user, file_id) for file_id in allowed_ids]
         candidates = [item for item in candidates if Path(item.filename).suffix.lower() in _DESIGN_FILE_EXTENSIONS]
+        if not candidates:
+            historical = _host.conversation_files(run.conversation_id, user, db)
+            historical_candidates = _historical_design_file_candidates(run, historical)
+            if len(historical_candidates)!=1:
+                names="、".join(str(item.get("filename") or item.get("id")) for item in historical_candidates[:5])
+                detail=("；候选："+names) if names else ""
+                raise DomainError("ERP_DESIGN_FILE_REQUIRED", "请明确选择一份 XLSX、XLS 或 CSV 设计清单"+detail, 409)
+            candidates=[files.reference_run_file(db,user,run,str(historical_candidates[0]["id"]))]
         if len(candidates) != 1:
-            raise DomainError("ERP_DESIGN_FILE_REQUIRED", "请在当前会话附加且仅附加一份 XLSX、XLS 或 CSV 设计清单，或明确指定 file_id", 409)
+            names="、".join(item.filename for item in candidates[:5])
+            detail=("；候选："+names) if names else ""
+            raise DomainError("ERP_DESIGN_FILE_REQUIRED", "请明确选择一份 XLSX、XLS 或 CSV 设计清单"+detail, 409)
         source = candidates[0]
     if Path(source.filename).suffix.lower() not in _DESIGN_FILE_EXTENSIONS:
         raise DomainError("ERP_DESIGN_FILE_TYPE", "ERP 设计清单上传仅支持 XLSX、XLS 或 CSV 文件")
@@ -916,17 +1244,18 @@ def _temporary_design_file(db, user, run, requested_id: UUID | None):
 def _temporary_files(db, user, run, file_ids: list[UUID], *, preserve_filename: bool = False):
     if not run or run.user_id != user.id:
         raise DomainError("FILE_CONTEXT_INVALID", "ERP 文件上传须从当前会话的附件发起", 403)
-    allowed_ids = {str(value) for value in db.scalars(select(m.RunFile.file_id).where(m.RunFile.run_id == run.id))}
     requested_ids = [str(value) for value in file_ids]
-    if len(set(requested_ids)) != len(requested_ids) or any(value not in allowed_ids for value in requested_ids):
-        raise DomainError("FILE_CONTEXT_INVALID", "所选 ERP 上传文件不属于当前会话", 403)
+    if len(requested_ids)!=len(set(requested_ids)):
+        raise DomainError("FILE_CONTEXT_INVALID", "附件引用不能重复", 409)
+    allowed_ids = {str(value) for value in db.scalars(select(m.RunFile.file_id).where(m.RunFile.run_id == run.id))}
+    sources = [files.uploaded_file(db,user,file_id) if file_id in allowed_ids
+               else files.reference_run_file(db,user,run,file_id) for file_id in requested_ids]
     if preserve_filename and len(requested_ids) != 1:
         raise DomainError("ERP_DESIGN_FILE_REQUIRED", "保留原文件名的 ERP 上传一次只能处理一个附件", 409)
     directory = Path(tempfile.mkdtemp(prefix="moldpilot-erp-file-"))
     paths = []
     try:
-        for index, file_id in enumerate(requested_ids, start=1):
-            source = files.uploaded_file(db, user, file_id)
+        for index, source in enumerate(sources, start=1):
             filename, _ = files.validate_file(source.filename, object_storage.read(source))
             path = directory / (filename if preserve_filename else f"{index}-{filename}")
             path.write_bytes(object_storage.read(source))
@@ -960,12 +1289,185 @@ def _store_erp_download(db, user, run, value: dict):
     return {"file": files.metadata(blob), "download_path": f"/api/files/{blob.id}/content"}
 
 
-def _result(value):
-    return {
-        "data": value, "source": "management-system ERP via erp-design-upload MCP",
+def _result(value, *, source="management-system ERP via erp-design-upload MCP", model_context=None):
+    result = {
+        "data": value, "source": source,
         "as_of": now().isoformat(),
         "limitations": ["设计、图纸处理和导入结果以 ERP 原始回执为准；MoldPilot 不保存 ERP 业务副本。"],
     }
+    if model_context is not None:
+        result["model_context"] = model_context
+        result["model_context_complete"] = True
+    return result
+
+
+def _erp_rows(value) -> list[dict]:
+    """Extract ERP list rows without changing the ERP response contract."""
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if not isinstance(value, dict):
+        return []
+    for key in ("rows", "records", "items", "details", "list", "data"):
+        candidate = value.get(key)
+        if isinstance(candidate, list):
+            return [row for row in candidate if isinstance(row, dict)]
+        if isinstance(candidate, dict):
+            rows = _erp_rows(candidate)
+            if rows:
+                return rows
+    return []
+
+
+def _erp_page_context(value, query: dict, *, table: str) -> dict:
+    rows = _erp_rows(value)
+    source = value if isinstance(value, dict) else {}
+    total = source.get("total")
+    if not isinstance(total, int):
+        total = source.get("totalCount") if isinstance(source.get("totalCount"), int) else len(rows)
+    page_num = source.get("pageNum") if isinstance(source.get("pageNum"), int) else int(query.get("pageNum", 1) or 1)
+    page_size = source.get("pageSize") if isinstance(source.get("pageSize"), int) else int(query.get("pageSize", max(len(rows), 1)) or max(len(rows), 1))
+    has_next = source.get("hasNext")
+    if has_next is None:
+        has_next = page_num * page_size < total
+    return {
+        "erp_table": table,
+        "query": query,
+        "total": max(total, len(rows)),
+        "returned_count": len(rows),
+        "page_num": page_num,
+        "page_size": page_size,
+        "has_next": bool(has_next),
+        "presentation": "ERP 原始记录已提供只读表格。简述匹配总数、本页条数即可；不要凭空补充未查询字段。",
+    }
+
+
+_PROCESSING_FIELDS = {
+    "material_mark": "材质",
+    "spec_raw": "规格",
+    "material_shape": "料型",
+    "length": "长",
+    "width": "宽",
+    "height": "厚/高",
+    "outer_diameter": "外径",
+    "inner_diameter": "内径",
+    "qty": "数量",
+    "purchase_quantity": "采购数量",
+    "unit_price": "单价",
+    "accounting_unit_price": "核算单价",
+    "material_amount": "核算金额",
+    "total_price": "总价",
+    "tolerance_tier": "公差档位",
+    "length_allowed_range": "长度允许范围",
+    "width_allowed_range": "宽度允许范围",
+    "thickness_allowed_range": "厚度允许范围",
+    "diagonal_tolerance": "对角公差",
+    "drawing_resource_id": "图纸",
+}
+
+
+def _processing_value(row: dict, field: str):
+    aliases = {
+        "material_mark": ("material_mark", "materialMark"),
+        "spec_raw": ("spec_raw", "specRaw", "specification"),
+        "material_shape": ("material_shape", "materialShape", "material_type", "materialType"),
+        "qty": ("qty", "quantity"),
+        "purchase_quantity": ("purchase_quantity", "purchaseQuantity"),
+        "unit_price": ("unit_price", "unitPrice"),
+        "accounting_unit_price": ("accounting_unit_price", "accountingUnitPrice"),
+        "material_amount": ("material_amount", "materialAmount", "accounting_amount", "accountingAmount"),
+        "total_price": ("total_price", "totalPrice", "total_amount", "totalAmount"),
+        "outer_diameter": ("outer_diameter", "outerDiameter"),
+        "inner_diameter": ("inner_diameter", "innerDiameter"),
+        "drawing_resource_id": ("drawing_resource_id", "drawingResourceId", "drawing_id", "drawingId"),
+    }.get(field, (field,))
+    for key in aliases:
+        if key in row:
+            return row.get(key)
+    return None
+
+
+def _processing_reason(row: dict, field: str, fallback: str) -> str:
+    message_aliases = {
+        "material_shape": ("drawing_material_shape_correction_message", "drawingMaterialShapeCorrectionMessage"),
+        "length": ("drawing_dimension_correction_message", "drawingDimensionCorrectionMessage"),
+        "width": ("drawing_dimension_correction_message", "drawingDimensionCorrectionMessage"),
+        "height": ("drawing_dimension_correction_message", "drawingDimensionCorrectionMessage"),
+        "qty": ("drawing_quantity_correction_message", "drawingQuantityCorrectionMessage"),
+    }
+    for key in message_aliases.get(field, ()):
+        if row.get(key):
+            return str(row[key])
+    for key in ("reason", "message", "remark", "calculation_process", "calculationProcess"):
+        if row.get(key):
+            return str(row[key])
+    return fallback
+
+
+def _processing_diff(before_rows: list[dict], after_rows: list[dict], *, reason: str) -> list[dict]:
+    after_by_row = {
+        int(_number(_first(row, "rowIndex", "row_index"))): row
+        for row in after_rows
+        if _number(_first(row, "rowIndex", "row_index")) is not None
+    }
+    result: list[dict] = []
+    for index, before in enumerate(before_rows, 1):
+        row_no = int(_number(_first(before, "rowIndex", "row_index")) or index)
+        after = after_by_row.get(row_no) or (after_rows[index - 1] if index <= len(after_rows) else before)
+        for field, label in _PROCESSING_FIELDS.items():
+            previous = _processing_value(before, field)
+            current = _processing_value(after, field)
+            if previous == current:
+                continue
+            result.append({
+                "rowIndex": row_no,
+                "item_code_full": _first(after, "item_code_full", "itemCodeFull") or _first(before, "item_code_full", "itemCodeFull"),
+                "item_name": _first(after, "item_name", "itemName") or _first(before, "item_name", "itemName"),
+                "field": label,
+                "before": previous,
+                "after": current,
+                "reason": _processing_reason(after, field, reason),
+            })
+    return result
+
+
+def _with_processing_table(value, before_rows: list[dict], after_rows: list[dict], *, reason: str):
+    payload = dict(value) if isinstance(value, dict) else {"erpResult": value}
+    diff = _processing_diff(before_rows, after_rows, reason=reason)
+    payload["displayMode"] = payload.get("displayMode") or "design_processing_diff"
+    payload["renderAsTable"] = True
+    payload["processingDiff"] = diff
+    payload["processingDiffColumns"] = [
+        {"key": "field", "label": "处理字段"},
+        {"key": "before", "label": "处理前"},
+        {"key": "after", "label": "处理后"},
+        {"key": "reason", "label": "原因"},
+    ]
+    return payload
+
+
+def _upload_parse_model_context(value: dict):
+    """Keep the ERP parse receipt durable while exposing its outcome to the model.
+
+    The upload dialog reads the full rows from the saved tool receipt. The agent
+    only needs the session handle and parse status at this stage; row inspection
+    is a separate, explicit ERP read after the user asks to continue.
+    """
+    fields = (
+        "sessionId", "fileName", "moldCode", "sheetType", "canImport",
+        "totalQuantity", "duplicateUpload", "moldCodeMatched",
+        "drawingProcessing", "drawingProcessingStatus", "drawingProcessingMessage",
+    )
+    result = {key: value[key] for key in fields if key in value}
+    result.update(design_upload_form_options())
+    rows = value.get("previewRows")
+    result["previewRowCount"] = len(rows) if isinstance(rows, list) else 0
+    for key in ("errors", "warnings"):
+        items = value.get(key)
+        if isinstance(items, list):
+            result[key] = [str(item)[:500] for item in items[:10]]
+            result[key + "Count"] = len(items)
+    result["rowDetail"] = "完整明细保存在本轮 ERP 工具回执中；需核对明细时另行读取上传会话。"
+    return result
 
 
 def _drawing_rows(value) -> list[dict]:
@@ -1027,6 +1529,74 @@ def _material_shape(row: dict, sheet_type: str) -> str:
     if _first(row, "outer_diameter", "outerDiameter") is not None:
         return "圆环料" if _first(row, "inner_diameter", "innerDiameter") is not None else "圆料"
     return str(value or "")
+
+
+def _display_number(value):
+    number = _number(value)
+    if number is None:
+        return None
+    return int(number) if float(number).is_integer() else number
+
+
+def _upload_parameter_row(row: dict, sheet_type: str, fallback_index: int) -> dict:
+    """Project an ERP upload row to read-only design parameters.
+
+    Keep price, weight, density, calculation and import fields out of this
+    evidence shape.  The values below are copied from the ERP upload result;
+    this boundary does not derive dimensions or purchase prices.
+    """
+    purchase_quantity = _first(
+        row,
+        "_scrap_purchase_quantity_after_deduction",
+        "purchase_quantity_after_deduction",
+        "purchaseQuantityAfterDeduction",
+        "purchase_quantity",
+        "purchaseQuantity",
+        "qty",
+        "quantity",
+    )
+    return {
+        "rowIndex": _display_number(_first(row, "rowIndex", "row_index")) or fallback_index,
+        "item_code_full": str(_first(
+            row, "item_code_full", "itemCodeFull", "item_code", "itemCode", "code",
+        ) or ""),
+        "item_name": str(_first(row, "item_name", "itemName", "name") or ""),
+        "material_mark": str(_first(
+            row, "attached_order_material_mark", "attachedOrderMaterialMark", "material_mark", "materialMark",
+        ) or ""),
+        "spec_raw": str(_first(row, "spec_raw", "specRaw", "specification", "spec") or ""),
+        "material_shape": _material_shape(row, sheet_type),
+        "purchase_quantity": _display_number(purchase_quantity),
+        "unit": str(_first(row, "unit") or ""),
+        "length": _display_number(_first(row, "length")),
+        "width": _display_number(_first(row, "width")),
+        "height": _display_number(_first(row, "height", "thickness")),
+        "outer_diameter": _display_number(_first(row, "outer_diameter", "outerDiameter")),
+        "inner_diameter": _display_number(_first(row, "inner_diameter", "innerDiameter")),
+        "processing_technology": str(_first(row, "processing_technology", "processingTechnology") or ""),
+        "remark": str(_first(row, "remark") or ""),
+    }
+
+
+def _parameter_identifier_tokens(identifiers: list[str]) -> list[str]:
+    tokens: list[str] = []
+    for identifier in identifiers:
+        for part in re.split(r"[,，、;；\n]+", str(identifier or "")):
+            normalized = re.sub(r"\s+", "", part).casefold()
+            if normalized and normalized not in tokens:
+                tokens.append(normalized)
+    return tokens
+
+
+def _matches_parameter_identifiers(row: dict, identifiers: list[str]) -> bool:
+    if not identifiers:
+        return True
+    candidates = [
+        row.get("item_code_full"), row.get("item_name"), row.get("material_mark"),
+        row.get("spec_raw"), row.get("material_shape"), row.get("rowIndex"),
+    ]
+    haystacks = [re.sub(r"\s+", "", str(value or "")).casefold() for value in candidates]
+    return any(token in candidate for token in identifiers for candidate in haystacks if candidate)
 
 
 def _tolerance_rules(value: dict) -> list[dict]:
@@ -1096,6 +1666,42 @@ def _evaluate_steel_tolerances(rows: list[dict], rules: list[dict]) -> tuple[lis
         ]:
             _set_pair(row, snake, camel, result[snake])
     return evaluated, evaluated_count
+
+
+def _tolerance_display_row(row: dict, fallback_index: int) -> dict:
+    """Return only the ERP fields needed by the read-only tolerance view.
+
+    The upload result also contains pricing, weight, drawing URLs and internal
+    matching diagnostics.  Sending that unrelated payload back through the
+    model makes a final summary slower and less reliable, while the complete
+    upload result remains authoritative and retrievable from ERP by session.
+    """
+    values = {
+        "rowIndex": _display_number(_first(row, "rowIndex", "row_index")) or fallback_index,
+        "item_code_full": str(_first(row, "item_code_full", "itemCodeFull", "item_code", "itemCode") or ""),
+        "item_name": str(_first(row, "item_name", "itemName") or ""),
+        "material_mark": str(_first(row, "material_mark", "materialMark") or ""),
+        "spec_raw": str(_first(row, "spec_raw", "specRaw", "specification") or ""),
+        "material_shape": _material_shape(row, "steel"),
+        "length": _display_number(_first(row, "length")),
+        "width": _display_number(_first(row, "width")),
+        "height": _display_number(_first(row, "height", "thickness")),
+        "outer_diameter": _display_number(_first(row, "outer_diameter", "outerDiameter")),
+        "inner_diameter": _display_number(_first(row, "inner_diameter", "innerDiameter")),
+        "processing_technology": str(_first(row, "processing_technology", "processingTechnology") or ""),
+        "remark": str(_first(row, "remark") or ""),
+    }
+    for snake, camel in [
+        ("tolerance_tier", "toleranceTier"),
+        ("length_allowed_range", "lengthAllowedRange"),
+        ("width_allowed_range", "widthAllowedRange"),
+        ("thickness_allowed_range", "thicknessAllowedRange"),
+        ("diagonal_tolerance", "diagonalTolerance"),
+    ]:
+        value = str(_first(row, snake, camel) or "-")
+        values[snake] = value
+        values[camel] = value
+    return values
 
 
 def _expected_dimensions(row: dict) -> dict | None:
@@ -1499,22 +2105,60 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
         data = _INPUTS[key].model_validate(arguments or {})
     except ValidationError as error:
         raise DomainError("INVALID_TOOL_INPUT", "ERP 设计工具参数无效：" + error.errors()[0]["msg"]) from None
-    if key == "erp_design_preview_drawing":
+    if key == "erp_design_evaluate_tolerances" and data.session_id is None:
+        data.session_id = _latest_conversation_steel_session(db, user, run)
+    if key in {"erp_design_query_upload_parameters", "erp_design_preview_drawing"} and data.session_id is None:
+        data.session_id = _latest_conversation_upload_session(db, user, run)
+    if key == "erp_design_get_technical_requirements":
+        value = {
+            "displayMode": "design_technical_requirements",
+            "techRequirements": deepcopy(_ERP_FIXED_STEEL_TECH_REQUIREMENTS),
+        }
+        return _result(
+            value,
+            source="management-system ERP fixed design-upload technical requirements",
+        )
+    if key == "erp_design_preview_drawing" and data.fields is None:
         _owned_session(db, user, data.session_id)
         upload = call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": True})
-        row = _drawing_row(upload, data.drawing_id)
-        if row is None:
+        if not _drawing_rows(upload) or (data.drawing_id is not None and _drawing_row(upload, data.drawing_id) is None):
             upload = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
-            row = _drawing_row(upload, data.drawing_id)
-        if row is None:
+        if not isinstance(upload, dict):
+            _failure("ERP 上传会话未返回有效结果")
+        if data.drawing_id is not None and _drawing_row(upload, data.drawing_id) is None:
             raise DomainError("ERP_DRAWING_NOT_IN_SESSION", "该图纸不属于当前上传会话", 404)
-        preview_url = row.get("drawing_preview_url") or row.get("drawingPreviewUrl")
-        downloaded = call_design_control_mcp("download_erp_design_file", {
-            "artifact": "drawing_preview", "drawingId": data.drawing_id, "previewUrl": preview_url,
+        source = upload.get("data") if isinstance(upload.get("data"), dict) else upload
+        metadata = _conversation_upload_receipt(db, user, run, data.session_id) or {}
+        sheet_type = str(_first(source, "sheetType", "sheet_type") or _first(metadata, "sheetType", "sheet_type") or "steel")
+        identifiers = _parameter_identifier_tokens(data.identifiers)
+        drawing_rows = []
+        for index, row in enumerate(_drawing_rows(source), 1):
+            drawing_id = _number(_first(row, "drawing_resource_id", "drawingResourceId", "drawing_id", "drawingId"))
+            if drawing_id is None or drawing_id < 1 or not float(drawing_id).is_integer():
+                continue
+            if data.drawing_id is not None and drawing_id != data.drawing_id:
+                continue
+            identity = _upload_parameter_row(row, sheet_type, index)
+            if not _matches_parameter_identifiers(identity, identifiers):
+                continue
+            drawing_rows.append({
+                "rowIndex": identity["rowIndex"],
+                "item_code_full": identity["item_code_full"],
+                "item_name": identity["item_name"],
+                "drawing_resource_id": int(drawing_id),
+                "drawing_file_name": str(_first(row, "drawing_file_name", "drawingFileName") or ""),
+            })
+        value = {
+            "displayMode": "design_drawings",
+            "sessionId": data.session_id,
+            "moldCode": str(_first(source, "moldCode", "mold_code") or _first(metadata, "moldCode", "mold_code") or ""),
+            "previewRows": drawing_rows,
+            "matchedCount": len(drawing_rows),
+        }
+        return _result(value, model_context={
+            **value,
+            "presentation": "图纸明细已由界面提供表格入口，点击表格中的预览按钮只查看图纸。无需生成下载链接或重复列出参数。",
         })
-        value = _store_erp_download(db, user, run, downloaded)
-        db.commit()
-        return _result(value)
     if key == "erp_design_query_master_data":
         reads = {
             "densities": "query_erp_design_densities",
@@ -1528,7 +2172,14 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             resource: call_mcp(reads[resource], {"query": query})
             for resource in data.include
         }
-        return _result(value)
+        contexts = {
+            resource: _erp_page_context(value[resource], query, table=f"design_{resource}")
+            for resource in data.include
+        }
+        return _result(value, model_context={
+            "tables": contexts,
+            "presentation": "基础资料按材质密度、分组规则、分组关键词分别返回 ERP 原始只读表格；用户问多个类别时在同一结果中分别展示。",
+        })
     if key in READ_TOOL_MAP:
         if key == "erp_design_query_bom_report":
             arguments = {"report": data.report, "query": data.query}
@@ -1549,6 +2200,77 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             for alias in ("moldNo", "mold_no", "moldCode", "mold_code"):
                 query.pop(alias, None)
             arguments = {"query": query}
+        elif key == "erp_design_query_densities":
+            query = dict(data.query)
+            if data.material_mark:
+                query["materialMark"] = data.material_mark
+            arguments = {"query": query}
+        elif key == "erp_design_query_group_keywords":
+            query = {"pageNum": data.page_num, "pageSize": data.page_size}
+            if data.keyword_text:
+                query["keywordText"] = data.keyword_text
+            value = call_mcp(READ_TOOL_MAP[key], {"query": query})
+            if (not isinstance(value, dict) or not isinstance(value.get("rows"), list)
+                    or not all(isinstance(row, dict) for row in value["rows"])
+                    or type(value.get("total")) is not int or value["total"] < 0
+                    or value.get("success") is False or value.get("code") not in (None, 200)):
+                _failure("ERP 分组关键词查询未返回有效的分页记录")
+            return _result(value, model_context={
+                "erp_table": "design_group_keyword",
+                "query": query,
+                "total": value["total"],
+                "returned_count": len(value["rows"]),
+                "page_num": value.get("pageNum", data.page_num),
+                "page_size": value.get("pageSize", data.page_size),
+                "has_next": value.get("hasNext"),
+                "presentation": "ERP 原始关键词记录已提供只读表格。简述匹配总数、本页条数即可；不要重复生成表格或补充未查询的字段。",
+            })
+        elif key == "erp_design_query_idle_material":
+            if data.request_id is not None:
+                value = call_mcp("get_erp_design_record", {"resource": "design_order", "id": data.request_id})
+                detail_rows = _erp_rows(value)
+                if data.detail_id is not None:
+                    detail_rows = [
+                        row for row in detail_rows
+                        if int(_number(_first(row, "id", "detailId")) or 0) == data.detail_id
+                    ]
+                candidates = []
+                for detail in detail_rows:
+                    raw_candidates = detail.get("scrap_match_candidates") or detail.get("scrapMatchCandidates") or []
+                    for candidate in raw_candidates:
+                        if isinstance(candidate, dict):
+                            candidate_row = {
+                                "detail_id": _first(detail, "id", "detailId"),
+                                "detail_version": _first(detail, "detail_version", "detailVersion"),
+                                "item_code_full": _first(detail, "material_no", "materialNo", "item_code_full", "itemCodeFull"),
+                                "item_name": _first(detail, "material_name", "materialName", "item_name", "itemName"),
+                                "required_quantity": _first(detail, "quantity", "qty"),
+                                **candidate,
+                            }
+                            # Keep the ERP candidate as the source of truth;
+                            # these aliases only expose the same ERP decision
+                            # quantities in the table's stable column names.
+                            candidate_row.setdefault("matched_quantity", _first(candidate, "suggestedQuantity", "suggested_quantity"))
+                            candidate_row.setdefault("remaining_quantity", _first(detail, "_scrap_purchase_quantity_after_deduction", "purchaseQuantityAfterDeduction"))
+                            candidate_row.setdefault("used_quantity", _first(detail, "_scrap_reserved_quantity", "reservedQuantity"))
+                            candidate_row.setdefault("decision_status", _first(detail, "_scrap_decision_status", "scrapDecisionStatus"))
+                            candidates.append(candidate_row)
+                value = {
+                    "rows": candidates,
+                    "total": len(candidates),
+                    "pageNum": 1,
+                    "pageSize": len(candidates),
+                    "hasNext": False,
+                    "requestId": data.request_id,
+                }
+                query = {"requestId": data.request_id, **({"detailId": data.detail_id} if data.detail_id else {})}
+            else:
+                query = dict(data.query)
+                value = call_design_control_mcp("query_erp_idle_material", {"query": query})
+            return _result(value, model_context={
+                **_erp_page_context(value, query, table="scrap_inventory_match"),
+                "instruction": "候选来自 ERP；保存或释放时必须使用表中返回的闲置料 ID、detail_id 和 detail_version，不得自行推算或编造。",
+            })
         elif key == "erp_design_get_record":
             arguments = {"resource": data.resource, "id": data.id}
         elif key == "erp_design_compare_drawing_versions":
@@ -1561,7 +2283,11 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             arguments = {"groupToken": data.group_token, "orderId": data.order_id}
         else:
             arguments = {"query": data.query}
-        return _result(call_mcp(READ_TOOL_MAP[key], arguments))
+        value = call_mcp(READ_TOOL_MAP[key], arguments)
+        context = None
+        if key in {"erp_design_query_densities", "erp_design_query_group_rules", "erp_design_query_drawing_versions", "erp_design_query_standard_hardware"}:
+            context = _erp_page_context(value, data.query, table=key.removeprefix("erp_design_query_"))
+        return _result(value, model_context=context)
     if key in CONTROL_TOOL_MAP:
         if key == "erp_design_rematch_no_drawing":
             _owned_session(db, user, data.session_id)
@@ -1572,11 +2298,11 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
         if key in {"erp_design_upload_standard_hardware", "erp_design_upload_mold_repair_drawing", "erp_design_import_bom"}:
             file_id = data.file_ids[0] if key == "erp_design_upload_standard_hardware" else data.file_id
             if key == "erp_design_import_bom":
-                source = files.uploaded_file(db, user, str(file_id))
+                source = files.reference_run_file(db, user, run, str(file_id))
                 if Path(source.filename).suffix.lower() != ".xlsx":
                     raise DomainError("ERP_DESIGN_FILE_TYPE", "ERP BOM 导入仅支持 XLSX 文件")
             if key == "erp_design_upload_mold_repair_drawing":
-                source = files.uploaded_file(db, user, str(file_id))
+                source = files.reference_run_file(db, user, run, str(file_id))
                 if Path(source.filename).suffix.lower() != ".dxf":
                     raise DomainError("ERP_DESIGN_FILE_TYPE", "修模改模图纸上传仅支持 DXF 文件")
                 original_name = re.split(r"[\\/]", str(source.filename))[-1]
@@ -1634,6 +2360,8 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             value = call_design_control_mcp(control_tool, control_arguments)
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+        if isinstance(value, dict):
+            value = {**value, **design_upload_form_options()}
         session_id = value.get("sessionId") if isinstance(value, dict) else None
         if not isinstance(session_id, int) or session_id < 1:
             _failure("ERP 未返回有效上传会话编号")
@@ -1646,44 +2374,121 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             "design_order_type": design_order_type,
         })
         db.commit()
-        return _result(value)
+        parse_context = _upload_parse_model_context(value)
+        # The ERP parser returns the detected material-list type; the business
+        # order type is owned by the selected upload route and is therefore
+        # added here as a separate fact rather than inferred from the file.
+        parse_context["designOrderType"] = design_order_type
+        return _result(value, model_context=parse_context)
+    if key in {
+        "erp_design_get_drawing_status",
+        "erp_design_get_upload_result",
+        "erp_design_get_approval_config",
+        "erp_design_get_modify_mold_approval_config",
+    } and data.session_id is None:
+        data.session_id = _latest_conversation_upload_session(db, user, run)
     _owned_session(db, user, data.session_id)
     if key == "erp_design_get_drawing_status":
         value = call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result})
     elif key == "erp_design_get_upload_result":
         value = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
+    elif key in {"erp_design_query_upload_parameters", "erp_design_preview_drawing"}:
+        source = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
+        if not isinstance(source, dict):
+            _failure("ERP 上传会话未返回有效结果")
+        receipt = _conversation_upload_receipt(db, user, run, data.session_id) or {}
+        metadata = source.get("data") if isinstance(source.get("data"), dict) else source
+        sheet_type = str(_first(metadata, "sheetType", "sheet_type")
+                         or _first(receipt, "sheetType", "sheet_type") or "steel")
+        identifiers = _parameter_identifier_tokens(data.identifiers)
+        matched_rows = []
+        for index, raw in enumerate(_drawing_rows(source), 1):
+            identity = _upload_parameter_row(raw, sheet_type, index)
+            if not _matches_parameter_identifiers(identity, identifiers):
+                continue
+            drawing_id = getattr(data, "drawing_id", None)
+            if drawing_id is not None and _number(_first(raw, "drawing_resource_id", "drawingResourceId", "drawing_id", "drawingId")) != drawing_id:
+                continue
+            matched_rows.append({**raw, **identity})
+        selected_fields = list(dict.fromkeys(data.fields or DEFAULT_UPLOAD_FIELDS))
+        # Every parameter question is a table projection. A single requested
+        # field produces its own table; multiple fields are merged by ERP
+        # rowIndex without joining display names.
+        columns, projected = project_upload_rows(matched_rows, selected_fields)
+        value = {
+            "sessionId": data.session_id, "sheetType": sheet_type,
+            "moldCode": str(_first(metadata, "moldCode", "mold_code") or _first(receipt, "moldCode", "mold_code") or ""),
+            "fileName": str(_first(metadata, "fileName", "file_name") or _first(receipt, "fileName", "file_name") or ""),
+            "displayMode": "design_parameters", "renderAsTable": True,
+            "selectedFields": selected_fields, "columns": columns,
+            "matchedCount": len(projected), "previewRows": projected,
+            "filters": data.identifiers,
+        }
+        return _result(value, model_context={
+            "sessionId": data.session_id, "moldCode": value["moldCode"],
+            "matchedCount": len(projected), "selectedFields": selected_fields,
+            "columns": [column["label"] for column in columns],
+            "presentation": "已按查询字段合成一张只读表，界面展示所有行及图纸入口。只需简短说明行数，不重复写表或补充未查询数据。空值表示 ERP 未提供；无图纸编号不证明图纸不存在。",
+        })
     elif key == "erp_design_evaluate_tolerances":
         source = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
         if not isinstance(source, dict):
             _failure("ERP 上传会话未返回有效结果")
+        receipt = _conversation_upload_receipt(db, user, run, data.session_id)
         sheet_type = str(_first(source, "sheetType", "sheet_type") or "")
         if sheet_type and sheet_type != "steel":
             raise DomainError("ERP_TOLERANCE_STEEL_ONLY", "公差判断仅适用于 ERP 设计上传的钢料清单", 422)
         rules = _tolerance_rules(source)
+        if not rules:
+            # The ERP status/result endpoint currently omits technical
+            # requirements after parsing, while the authoritative parse
+            # receipt contains the same session's tolerance table. Rejoin the
+            # two ERP responses by their opaque session id; do not maintain or
+            # calculate from a second Agent-side rule catalogue.
+            receipt_requirements = (_first(receipt, "techRequirements", "tech_requirements")
+                                    if isinstance(receipt, dict) else None)
+            if isinstance(receipt_requirements, dict):
+                source = dict(source)
+                source["techRequirements"] = deepcopy(receipt_requirements)
+                for field in ("moldCode", "fileName", "submitDate", "designerName"):
+                    if not source.get(field) and receipt.get(field):
+                        source[field] = receipt[field]
+                rules = _tolerance_rules(source)
         if not rules:
             raise DomainError("ERP_TOLERANCE_RULES_MISSING", "ERP 上传结果未返回钢料公差表", 409)
         rows = data.preview_rows if data.preview_rows is not None else _drawing_rows(source)
         if not rows:
             raise DomainError("ERP_TOLERANCE_ROWS_MISSING", "ERP 上传结果未返回可判断的钢料明细", 409)
         evaluated_rows, evaluated_count = _evaluate_steel_tolerances(rows, rules)
-        value = dict(source)
-        value.update({
+        display_rows = [
+            _tolerance_display_row(row, index)
+            for index, row in enumerate(evaluated_rows, 1)
+        ]
+        value = {
             "sessionId": data.session_id,
             "sheetType": "steel",
-            "previewRows": evaluated_rows,
+            "moldCode": str(_first(source, "moldCode", "mold_code")
+                            or (_first(receipt, "moldCode", "mold_code") if isinstance(receipt, dict) else "") or ""),
+            "fileName": str(_first(source, "fileName", "file_name")
+                            or (_first(receipt, "fileName", "file_name") if isinstance(receipt, dict) else "") or ""),
+            "displayMode": "design_tolerances",
+            "previewRows": display_rows,
             "toleranceEvaluation": {
                 "evaluatedCount": evaluated_count,
-                "rowCount": len(evaluated_rows),
+                "rowCount": len(display_rows),
                 "ruleCount": len(rules),
                 "source": "ERP techRequirements.tolerance_table",
             },
-        })
+            "processingDiff": _processing_diff(rows, evaluated_rows, reason="ERP 公差档位判断"),
+        }
     elif key == "erp_design_validate_rows":
         value = call_mcp("validate_new_mold_design_rows", {"sessionId": data.session_id, "sheetType": data.sheet_type,
             "moldCode": data.mold_code, "previewRows": data.preview_rows, "pricingAlreadyEnriched": True})
+        value = _with_processing_table(value, data.preview_rows, _erp_rows(value) or data.preview_rows, reason="ERP 明细校验结果")
     elif key == "erp_design_reprice_rows":
         value = call_mcp("reprice_new_mold_design_rows", {"sheetType": data.sheet_type,
             "moldCode": data.mold_code, "previewRows": data.preview_rows})
+        value = _with_processing_table(value, data.preview_rows, _erp_rows(value) or data.preview_rows, reason="ERP 价格与参数重新核算")
     elif key == "erp_design_auto_correct_rows":
         corrected_rows, corrected_count, corrected_fields = _auto_correct_rows(
             data.preview_rows, data.sheet_type, data.row_numbers,
@@ -1698,6 +2503,7 @@ def execute_tool(db, user, key: str, arguments: dict, run=None):
             value.setdefault("previewRows", corrected_rows)
         else:
             value = {"previewRows": corrected_rows, "pricingAlreadyEnriched": True}
+        value = _with_processing_table(value, data.preview_rows, corrected_rows, reason="ERP 图纸识别结果自动修正")
         value.update({
             "sessionId": data.session_id, "sheetType": data.sheet_type,
             "correctedCount": corrected_count, "correctedFields": corrected_fields,

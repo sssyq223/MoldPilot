@@ -1,5 +1,90 @@
 export type ErpDesignRow = Record<string, any>
 
+export type ErpDesignDueDateCommand = {
+  kind: 'set' | 'date_only' | 'invalid' | 'none'
+  date?: string
+  message?: string
+}
+
+const CHINESE_DIGITS: Record<string, number> = {
+  '零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+  '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+}
+
+function chineseInteger(value: string): number | null {
+  const text = String(value || '').trim()
+  if (/^\d+$/.test(text)) return Number(text)
+  if (!text || [...text].some(char => CHINESE_DIGITS[char] == null)) return null
+  if (text === '十') return 10
+  if (text.startsWith('十')) return 10 + (CHINESE_DIGITS[text.slice(1)] ?? 0)
+  if (text.includes('十')) {
+    const [tens, ones] = text.split('十')
+    return (CHINESE_DIGITS[tens] ?? 0) * 10 + (ones ? CHINESE_DIGITS[ones] ?? 0 : 0)
+  }
+  return CHINESE_DIGITS[text] ?? null
+}
+
+function localDateString(value: Date): string {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+}
+
+function parseAbsoluteDate(value: string, today: Date): string | null {
+  const text = String(value || '').trim()
+  const full = text.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})(?:日|号)?$/)
+  const short = text.match(/^(\d{1,2})月(\d{1,2})(?:日|号)?$/)
+  const year = full ? Number(full[1]) : today.getFullYear()
+  const month = full ? Number(full[2]) : short ? Number(short[1]) : NaN
+  const day = full ? Number(full[3]) : short ? Number(short[2]) : NaN
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
+  const candidate = new Date(year, month - 1, day)
+  if (candidate.getFullYear() !== year || candidate.getMonth() !== month - 1 || candidate.getDate() !== day) return null
+  return localDateString(candidate)
+}
+
+function extractDueDate(value: string, today: Date): string | null {
+  const text = String(value || '').trim()
+  const relativeDays: Array<[RegExp, number]> = [
+    [/大后天/, 3], [/后天/, 2], [/明天/, 1], [/今天/, 0],
+  ]
+  for (const [pattern, days] of relativeDays) {
+    if (pattern.test(text)) {
+      const candidate = new Date(today)
+      candidate.setDate(candidate.getDate() + days)
+      return localDateString(candidate)
+    }
+  }
+  const relative = text.match(/(\d+|[零一二两三四五六七八九十]+)\s*(?:天|日)\s*(?:后|之后|以后)/)
+  if (relative) {
+    const days = chineseInteger(relative[1])
+    if (days == null || days < 0) return null
+    const candidate = new Date(today)
+    candidate.setDate(candidate.getDate() + days)
+    return localDateString(candidate)
+  }
+  const absolute = text.match(/\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?/)
+  return absolute ? parseAbsoluteDate(absolute[0], today) : null
+}
+
+/** Parse only explicit due-date changes; a bare date is deliberately not a change. */
+export function parseErpDesignDueDateCommand(input: string, now = new Date()): ErpDesignDueDateCommand {
+  const text = String(input || '').trim()
+  if (!text) return { kind: 'none' }
+  const dateOnly = /^(?:\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?)$/.test(text)
+  const date = extractDueDate(text, now)
+  if (dateOnly) {
+    if (!date) return { kind: 'invalid', message: '日期格式或日期本身无效。' }
+    return { kind: 'date_only', date }
+  }
+  const mentionsDueDate = /交期|交货期|交付日期/.test(text)
+  const asksToChange = /改|调整|变更|设为|设置|定为/.test(text)
+  const explicit = mentionsDueDate && asksToChange
+  if (!explicit) return { kind: 'none' }
+  if (!date) return { kind: 'invalid', message: '请提供有效的完整日期，或使用“几天后”的表达。' }
+  const today = localDateString(now)
+  if (date < today) return { kind: 'invalid', date, message: `交期不能早于今天（${today}）。` }
+  return { kind: 'set', date }
+}
+
 // Keep these choices in step with the ERP upload page. Heat treatment remains
 // editable in the browser (the ERP page allows a newly typed value), whereas
 // post-treatment is a constrained pricing choice.
@@ -51,12 +136,16 @@ export type ErpDesignPreviewSession = {
   expectedDate: string
   remark: string
   designOrderType: string
+  purchaseReason: string
+  designOrderTypeOptions: Array<{ value: string; label: string }>
+  purchaseReasonOptions: Array<{ value: string; label: string }>
   designerName: string
   submitDate: string
   requestNo: string
   canImport: boolean
   additionalProcessingFeeRules: Record<string, any>[]
   techRequirements: Record<string, any> | null
+  toleranceEvaluation: Record<string, any> | null
 }
 
 export type ErpDesignImportReceipt = {
@@ -64,6 +153,41 @@ export type ErpDesignImportReceipt = {
   requestNo: string
   message: string
   importedAt: string
+}
+
+export type ErpDesignParameterResult = {
+  sessionId: number
+  sheetType: string
+  moldCode: string
+  fileName: string
+  rowCount: number
+  matchedCount: number
+  tableThreshold: number
+  columns?: ErpDesignColumn[]
+  selectedFields?: string[]
+  renderAsTable: boolean
+  previewRows: ErpDesignRow[]
+}
+
+export type ErpDesignDrawingResult = {
+  source: 'upload' | 'standard_hardware'
+  sessionId?: number
+  moldCode: string
+  totalCount: number
+  previewRows: ErpDesignRow[]
+}
+
+export type ErpDesignTechnicalRequirementRow = {
+  seq: number
+  spec: string
+  lengthTolerance: string
+  thicknessTolerance: string
+  diagonalTolerance: string
+}
+
+export type ErpDesignTechnicalRequirements = {
+  requirements: string[]
+  toleranceRows: ErpDesignTechnicalRequirementRow[]
 }
 
 export type ErpDesignColumn = {
@@ -76,14 +200,27 @@ export type ErpDesignColumn = {
 }
 
 const ERP_DESIGN_UPLOAD_PAGE = 'http://127.0.0.1:18080/design/upload/index'
-const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING'])
-const TERMINAL_RUN_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
+const ERP_DESIGN_TOLERANCE_TOOL = 'erp_design_evaluate_tolerances'
+const ERP_DESIGN_PARAMETER_TOOL = 'erp_design_query_upload_parameters'
+const ERP_DESIGN_DRAWING_TOOL = 'erp_design_preview_drawing'
+const ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL = 'erp_design_get_technical_requirements'
+export const ERP_READONLY_INLINE_ROW_LIMIT = 8
+
+export function erpDesignReadOnlyTableNeedsDisclosure(
+  rowCount: number,
+  threshold = ERP_READONLY_INLINE_ROW_LIMIT,
+): boolean {
+  const count = Number.isFinite(Number(rowCount)) ? Math.max(0, Number(rowCount)) : 0
+  const limit = Number.isFinite(Number(threshold)) ? Math.max(0, Number(threshold)) : ERP_READONLY_INLINE_ROW_LIMIT
+  return count > limit
+}
+
 const DESIGN_UPLOAD_TOOLS = new Set([
   'erp_design_parse_new_mold_upload',
+  'erp_design_parse_modify_mold_upload',
   'erp_design_get_drawing_status',
   'erp_design_get_upload_result',
   'erp_design_validate_rows',
-  'erp_design_evaluate_tolerances',
 ])
 
 const commonColumns: ErpDesignColumn[] = [
@@ -145,6 +282,46 @@ const steelColumns: ErpDesignColumn[] = [
   { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
 ]
 
+const toleranceColumns: ErpDesignColumn[] = [
+  commonColumns[0],
+  commonColumns[1],
+  { key: 'material', label: '材质', fields: ['material_mark', 'materialMark'], width: 105 },
+  commonColumns[2],
+  { key: 'technology', label: '加工工艺', fields: ['processing_technology', 'processingTechnology'], width: 140 },
+  { key: 'toleranceTier', label: '公差档位', fields: ['tolerance_tier', 'toleranceTier'], width: 125 },
+  { key: 'lengthRange', label: '长度允许范围', fields: ['length_allowed_range', 'lengthAllowedRange'], width: 145 },
+  { key: 'widthRange', label: '宽度允许范围', fields: ['width_allowed_range', 'widthAllowedRange'], width: 145 },
+  { key: 'thicknessRange', label: '厚度允许范围', fields: ['thickness_allowed_range', 'thicknessAllowedRange'], width: 145 },
+  { key: 'diagonalTolerance', label: '对角公差', fields: ['diagonal_tolerance', 'diagonalTolerance'], width: 115 },
+  { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
+]
+
+const parameterColumns: ErpDesignColumn[] = [
+  { key: 'code', label: '编码', fields: ['item_code_full', 'itemCodeFull'], width: 150 },
+  { key: 'name', label: '名称', fields: ['item_name', 'itemName'], width: 130 },
+  { key: 'material', label: '材质', fields: ['material_mark', 'materialMark'], width: 100 },
+  { key: 'spec', label: '规格', fields: ['spec_raw', 'specRaw'], width: 175 },
+  { key: 'shape', label: '料型', fields: ['material_shape', 'materialShape'], width: 90 },
+  { key: 'purchaseQty', label: '采购数量', fields: ['purchase_quantity', 'purchaseQuantity'], width: 105 },
+  { key: 'length', label: '长(L)', fields: ['length'], width: 95, decimals: 4 },
+  { key: 'width', label: '宽(W)', fields: ['width'], width: 95, decimals: 4 },
+  { key: 'height', label: '厚(T)', fields: ['height', 'thickness'], width: 95, decimals: 4 },
+  { key: 'outer', label: '外径(Φ)', fields: ['outer_diameter', 'outerDiameter'], width: 100, decimals: 4 },
+  { key: 'inner', label: '内径(Φ)', fields: ['inner_diameter', 'innerDiameter'], width: 100, decimals: 4 },
+  { key: 'matchStatus', label: '图纸匹配状态', fields: ['match_status', 'matchStatus', 'drawing_match_status', 'drawingMatchStatus', 'drawing_status', 'drawingStatus'], width: 130 },
+  { key: 'technology', label: '加工工艺', fields: ['processing_technology', 'processingTechnology'], width: 130 },
+  { key: 'remark', label: '备注', fields: ['remark'], width: 150 },
+]
+
+const processingColumns: ErpDesignColumn[] = [
+  { key: 'field', label: '处理字段', fields: ['field'], width: 150 },
+  { key: 'before', label: '处理前', fields: ['before'], width: 220 },
+  { key: 'after', label: '处理后', fields: ['after'], width: 220 },
+  { key: 'reason', label: '原因', fields: ['reason'], width: 360 },
+]
+
+export const erpDesignProcessingColumns = processingColumns
+
 function record(value: unknown): Record<string, any> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, any>
@@ -155,6 +332,11 @@ function payload(value: unknown): Record<string, any> | null {
   const source = record(value)
   const nested = record(source?.data)
   return nested && (nested.sessionId != null || nested.session_id != null) ? nested : source
+}
+
+function nestedPayload(value: unknown): Record<string, any> | null {
+  const source = record(value)
+  return record(source?.data) ?? source
 }
 
 function rows(source: Record<string, any> | null): ErpDesignRow[] {
@@ -188,6 +370,8 @@ export function normalizeErpDesignPreview(
   if (!Number.isInteger(sessionId) || sessionId < 1) return null
   const previewRows = rows(source)
   const resolvedRows = previewRows.length || !fallback ? previewRows : fallback.previewRows
+  const designOrderTypeOptions = source?.designOrderTypeOptions ?? source?.design_order_type_options
+  const purchaseReasonOptions = source?.purchaseReasonOptions ?? source?.purchase_reason_options
   return {
     sessionId,
     sheetType: String(source?.sheetType ?? source?.sheet_type ?? fallback?.sheetType ?? 'steel'),
@@ -204,6 +388,13 @@ export function normalizeErpDesignPreview(
     expectedDate: String(source?.expectedDate ?? source?.expected_date ?? fallback?.expectedDate ?? ''),
     remark: String(source?.remark ?? fallback?.remark ?? ''),
     designOrderType: String(source?.designOrderType ?? source?.design_order_type ?? fallback?.designOrderType ?? 'new_model'),
+    purchaseReason: String(source?.purchaseReason ?? source?.purchase_reason ?? fallback?.purchaseReason ?? ''),
+    designOrderTypeOptions: Array.isArray(designOrderTypeOptions)
+      ? designOrderTypeOptions
+      : (Array.isArray(fallback?.designOrderTypeOptions) ? fallback.designOrderTypeOptions : []),
+    purchaseReasonOptions: Array.isArray(purchaseReasonOptions)
+      ? purchaseReasonOptions
+      : (Array.isArray(fallback?.purchaseReasonOptions) ? fallback.purchaseReasonOptions : []),
     designerName: String(source?.designerName ?? source?.designer_name ?? source?.designerAccount ?? source?.designer_account ?? fallback?.designerName ?? ''),
     submitDate: String(source?.submitDate ?? source?.submit_date ?? fallback?.submitDate ?? ''),
     requestNo: String(source?.requestNo ?? source?.request_no ?? fallback?.requestNo ?? ''),
@@ -214,6 +405,8 @@ export function normalizeErpDesignPreview(
         ? source.additional_processing_fee_rules
         : (fallback?.additionalProcessingFeeRules ?? [])),
     techRequirements: record(source?.techRequirements ?? source?.tech_requirements) ?? fallback?.techRequirements ?? null,
+    toleranceEvaluation: record(source?.toleranceEvaluation ?? source?.tolerance_evaluation)
+      ?? fallback?.toleranceEvaluation ?? null,
   }
 }
 
@@ -223,21 +416,255 @@ export function erpDesignSessionFromTool(item: any): ErpDesignPreviewSession | n
 }
 
 export function erpDesignSessionFromRun(run: any): ErpDesignPreviewSession | null {
+  if (String(run?.status || '') !== 'SUCCEEDED') return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
+  // Status/result follow-ups are shared by both ERP upload flows and may not
+  // repeat the business type. Keep the original parser receipt as the
+  // fallback so a repair_other session is not relabeled as new_model.
+  const parserReceipt = trace
+    .map((item: any) => erpDesignSessionFromTool(item))
+    .find((session: ErpDesignPreviewSession | null, index: number) => {
+      const name = String(trace[index]?.tool || '')
+      return name === 'erp_design_parse_new_mold_upload'
+        || name === 'erp_design_parse_modify_mold_upload'
+    })
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const session = erpDesignSessionFromTool(trace[index])
-    if (session) return session
+    if (session) {
+      return parserReceipt && parserReceipt.sessionId === session.sessionId
+        ? normalizeErpDesignPreview(trace[index]?.data, parserReceipt)
+        : session
+    }
+  }
+  return parserReceipt || null
+}
+
+export function erpDesignToleranceFromTool(item: any): ErpDesignPreviewSession | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_TOLERANCE_TOOL) return null
+  return normalizeErpDesignPreview(item?.data)
+}
+
+export function erpDesignToleranceFromRun(run: any): ErpDesignPreviewSession | null {
+  // ERP tool evidence remains valid when only the later model-summary turn
+  // fails. Keep cancelled/running tasks hidden, but do not discard a completed
+  // read receipt merely because the provider timed out during final wording.
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const tolerance = erpDesignToleranceFromTool(trace[index])
+    if (tolerance) return tolerance
   }
   return null
 }
 
-export function shouldOpenErpDesignPreview(previousRun: any, currentRun: any): boolean {
-  return Boolean(
-    previousRun
-    && ACTIVE_RUN_STATUSES.has(String(previousRun.status || ''))
-    && TERMINAL_RUN_STATUSES.has(String(currentRun?.status || ''))
-    && erpDesignSessionFromRun(currentRun),
-  )
+export function normalizeErpDesignTechnicalRequirements(
+  value: unknown,
+): ErpDesignTechnicalRequirements | null {
+  const source = nestedPayload(value)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_technical_requirements') return null
+  const technical = record(source?.techRequirements ?? source?.tech_requirements)
+  const requirements = Array.isArray(technical?.requirements)
+    ? technical.requirements
+      .flatMap(item => String(item ?? '').split(/\r?\n|(?=\d+\s*[.、．](?!\d))/g))
+      .map(item => item.trim().replace(/^\d+\s*[.、．]\s*/, ''))
+      .filter(Boolean)
+    : []
+  const sourceRows = Array.isArray(technical?.tolerance_table)
+    ? technical.tolerance_table
+    : (Array.isArray(technical?.toleranceTable) ? technical.toleranceTable : [])
+  const toleranceRows = sourceRows
+    .filter(row => record(row))
+    .map((row, index) => {
+      const item = record(row)!
+      return {
+        seq: Number(item.seq ?? index + 1) || index + 1,
+        spec: String(item.spec ?? ''),
+        lengthTolerance: String(item.length_tol ?? item.lengthTolerance ?? ''),
+        thicknessTolerance: String(item.thick_tol ?? item.thicknessTolerance ?? ''),
+        diagonalTolerance: String(item.diag_tol ?? item.diagonalTolerance ?? ''),
+      }
+    })
+  if (!requirements.length && !toleranceRows.length) return null
+  return { requirements, toleranceRows }
+}
+
+export function erpDesignTechnicalRequirementsFromTool(
+  item: any,
+): ErpDesignTechnicalRequirements | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL) return null
+  return normalizeErpDesignTechnicalRequirements(item?.data)
+}
+
+export function erpDesignTechnicalRequirementsFromRun(
+  run: any,
+): ErpDesignTechnicalRequirements | null {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const result = erpDesignTechnicalRequirementsFromTool(trace[index])
+    if (result) return result
+  }
+  return null
+}
+
+export function normalizeErpDesignParameterResult(value: unknown): ErpDesignParameterResult | null {
+  const source = payload(value)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_parameters') return null
+  const sessionId = Number(source?.sessionId ?? source?.session_id ?? 0)
+  if (!Number.isInteger(sessionId) || sessionId < 1) return null
+  const previewRows = rows(source)
+  const tableThreshold = Number(source?.tableThreshold ?? source?.table_threshold ?? 8) || 8
+  return {
+    sessionId,
+    sheetType: String(source?.sheetType ?? source?.sheet_type ?? 'steel'),
+    moldCode: String(source?.moldCode ?? source?.mold_code ?? ''),
+    fileName: String(source?.fileName ?? source?.file_name ?? ''),
+    rowCount: previewRows.length,
+    matchedCount: Number(source?.matchedCount ?? source?.matched_count ?? previewRows.length) || 0,
+    tableThreshold,
+    columns: Array.isArray(source?.columns) ? source.columns.filter((c: any) =>
+      typeof c?.key === 'string' && typeof c?.label === 'string' && Array.isArray(c?.fields)
+    ) : undefined,
+    selectedFields: Array.isArray(source?.selectedFields) ? source.selectedFields : undefined,
+    renderAsTable: Boolean(source?.renderAsTable ?? source?.render_as_table ?? previewRows.length > tableThreshold),
+    previewRows,
+  }
+}
+
+export function erpDesignParametersFromTool(item: any): ErpDesignParameterResult | null {
+  if (String(item?.tool || '') !== ERP_DESIGN_PARAMETER_TOOL) return null
+  return normalizeErpDesignParameterResult(item?.data)
+}
+
+export function erpDesignParametersFromRun(run: any): ErpDesignParameterResult | null {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const result = erpDesignParametersFromTool(trace[index])
+    if (result) return result
+  }
+  return null
+}
+
+// Combine selected projections only within one authoritative upload session.
+// Row positions come from ERP; names/codes may repeat and are not join keys.
+export function erpDesignParameterTablesFromRun(run: any): ErpDesignParameterResult[] {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  const sessions = new Map<number, ErpDesignParameterResult>()
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const result = erpDesignParametersFromTool(item)
+    if (!result) continue
+    const current = sessions.get(result.sessionId)
+    if (!current || !current.columns || !result.columns) {
+      sessions.set(result.sessionId, { ...result, previewRows: result.previewRows.map(row => ({ ...row })),
+        columns: result.columns ? [...result.columns] : undefined })
+      continue
+    }
+    for (const column of result.columns) {
+      if (!current.columns.some(c => c.key === column.key)) current.columns.push(column)
+    }
+    current.selectedFields = [...new Set([...(current.selectedFields ?? []), ...(result.selectedFields ?? [])])]
+    for (const row of result.previewRows) {
+      const index = row.rowIndex == null ? -1 : current.previewRows.findIndex(r => r.rowIndex === row.rowIndex)
+      if (index < 0) current.previewRows.push({ ...row })
+      else current.previewRows[index] = { ...current.previewRows[index], ...row }
+    }
+    current.rowCount = current.matchedCount = current.previewRows.length
+  }
+  // 公差判断与参数查询针对同一个上传会话时，合并到同一张表；单独询问
+  // 公差时仍由 ErpDesignToleranceTable 独立展示。
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const tolerance = erpDesignToleranceFromTool(item)
+    if (!tolerance) continue
+    const current = sessions.get(tolerance.sessionId)
+    if (!current) continue
+    for (const column of toleranceColumns) {
+      if (!current.columns?.some(c => c.key === column.key)) current.columns?.push(column)
+    }
+    for (const row of tolerance.previewRows) {
+      const index = row.rowIndex == null ? -1 : current.previewRows.findIndex(r => r.rowIndex === row.rowIndex)
+      if (index < 0) current.previewRows.push({ ...row })
+      else current.previewRows[index] = { ...current.previewRows[index], ...row }
+    }
+    current.rowCount = current.matchedCount = current.previewRows.length
+  }
+  return [...sessions.values()]
+}
+
+export function erpDesignToleranceMergedIntoParameter(run: any): boolean {
+  const tolerance = erpDesignToleranceFromRun(run)
+  if (!tolerance) return false
+  return erpDesignParameterTablesFromRun(run).some(result => result.sessionId === tolerance.sessionId)
+}
+
+export function erpDesignDrawingId(row: ErpDesignRow): number {
+  const id = Number(row.drawing_resource_id ?? row.drawingResourceId ?? row.drawing_id ?? row.drawingId ?? 0)
+  return Number.isInteger(id) && id > 0 ? id : 0
+}
+
+export function erpDesignDrawingsFromTool(item: any): ErpDesignDrawingResult | null {
+  if (String(item?.tool || '') === 'erp_design_query_standard_hardware') {
+    const source = nestedPayload(item?.data)
+    if (!Array.isArray(source?.rows)) return null
+    const previewRows = source.rows.filter((row: unknown) => record(row))
+    return {
+      source: 'standard_hardware',
+      moldCode: '',
+      totalCount: Number(source.total ?? previewRows.length),
+      previewRows,
+    }
+  }
+  if (String(item?.tool || '') !== ERP_DESIGN_DRAWING_TOOL) return null
+  const source = payload(item?.data)
+  if (String(source?.displayMode ?? source?.display_mode ?? '') !== 'design_drawings') return null
+  const sessionId = Number(source?.sessionId ?? source?.session_id ?? 0)
+  if (!Number.isInteger(sessionId) || sessionId < 1) return null
+  return {
+    source: 'upload',
+    sessionId,
+    moldCode: String(source?.moldCode ?? source?.mold_code ?? ''),
+    totalCount: rows(source).length,
+    previewRows: rows(source).filter(row => record(row) && erpDesignDrawingId(row)),
+  }
+}
+
+export function erpDesignDrawingsFromRun(run: any): ErpDesignDrawingResult[] {
+  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  const sessions = new Map<string, ErpDesignDrawingResult>()
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    const result = erpDesignDrawingsFromTool(item)
+    if (!result) continue
+    const key = `${result.source}:${result.sessionId ?? ''}`
+    const current = sessions.get(key)
+    if (!current) {
+      sessions.set(key, result)
+      continue
+    }
+    for (const row of result.previewRows) {
+      const rowKey = (value: ErpDesignRow) => result.source === 'standard_hardware'
+        ? value.relativePath
+        : erpDesignDrawingId(value)
+      const index = current.previewRows.findIndex(existing => rowKey(existing) === rowKey(row))
+      if (index < 0) current.previewRows.push(row)
+      else current.previewRows[index] = row
+    }
+    current.totalCount = Math.max(current.totalCount, result.totalCount, current.previewRows.length)
+  }
+  return [...sessions.values()]
+}
+
+export function erpDesignDrawingColumns(source: ErpDesignDrawingResult['source'] = 'upload'): ErpDesignColumn[] {
+  if (source === 'standard_hardware') return [
+    { key: 'code', label: '标准件编号', fields: ['standardCode'], width: 190 },
+    { key: 'file', label: '图纸文件', fields: ['fileName'], width: 300 },
+    { key: 'preview', label: '预览', fields: [], width: 110 },
+  ]
+  return [
+    { key: 'code', label: '编码', fields: ['item_code_full', 'itemCodeFull'], width: 190 },
+    { key: 'name', label: '名称', fields: ['item_name', 'itemName'], width: 145 },
+    { key: 'file', label: '图纸文件', fields: ['drawing_file_name', 'drawingFileName'], width: 230 },
+    { key: 'preview', label: '预览', fields: [], width: 110 },
+  ]
 }
 
 export function erpDesignPreviewUrl(session: ErpDesignPreviewSession): string {
@@ -252,8 +679,21 @@ export function erpDesignSheetLabel(sheetType: string): string {
   return sheetType === 'hardware' ? '五金清单' : '钢料清单'
 }
 
+export function erpDesignUploadStatusLabel(sheetType: string, imported = false): string {
+  const sheetLabel = erpDesignSheetLabel(sheetType)
+  return imported ? `${sheetLabel}已成功导入` : `${sheetLabel}上传已就绪`
+}
+
 export function erpDesignColumns(sheetType: string): ErpDesignColumn[] {
   return sheetType === 'hardware' ? hardwareColumns : steelColumns
+}
+
+export function erpDesignToleranceColumns(): ErpDesignColumn[] {
+  return toleranceColumns
+}
+
+export function erpDesignParameterColumns(): ErpDesignColumn[] {
+  return parameterColumns
 }
 
 function firstPresent(row: ErpDesignRow, fields: string[]): unknown {
@@ -360,4 +800,18 @@ export function erpDesignCell(
     return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
   }
   return String(value) || '-'
+}
+
+export function erpDesignToleranceCell(row: ErpDesignRow, column: ErpDesignColumn): string {
+  const value = firstPresent(row, column.fields)
+  if (value === null) return '-'
+  if (typeof value === 'number') {
+    if (column.decimals != null) return value.toFixed(column.decimals)
+    return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
+  }
+  return String(value) || '-'
+}
+
+export function erpDesignParameterCell(row: ErpDesignRow, column: ErpDesignColumn): string {
+  return erpDesignToleranceCell(row, column)
 }

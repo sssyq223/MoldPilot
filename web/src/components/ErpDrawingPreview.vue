@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DxfViewer as DxfViewerInstance } from 'dxf-viewer'
-import type { ErpDesignRow } from '../erpDesignPreview'
+import { erpDesignDrawingId, type ErpDesignDrawingResult, type ErpDesignRow } from '../erpDesignPreview'
 
-const props = defineProps<{
-  sessionId: number
+const props = withDefaults(defineProps<{
+  source?: ErpDesignDrawingResult['source']
+  sessionId?: number
   row: ErpDesignRow
-}>()
+}>(), { source: 'upload' })
 
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [] }>()
 
 const container = ref<HTMLElement | null>(null)
+const closeButton = ref<HTMLButtonElement | null>(null)
 const loading = ref(false)
 const error = ref('')
 const progress = ref('')
@@ -19,17 +21,12 @@ const displayKind = ref<'dxf' | 'image' | 'pdf'>('dxf')
 let viewer: DxfViewerInstance | null = null
 let requestId = 0
 
-const drawingId = computed(() => Number(
-  props.row.drawing_resource_id
-  ?? props.row.drawingResourceId
-  ?? props.row.drawing_id
-  ?? props.row.drawingId
-  ?? 0,
-))
+const drawingId = computed(() => erpDesignDrawingId(props.row))
 
 const drawingName = computed(() => String(
   props.row.drawing_file_name
   ?? props.row.drawingFileName
+  ?? props.row.fileName
   ?? props.row.item_code_full
   ?? props.row.itemCodeFull
   ?? '图纸预览',
@@ -39,7 +36,8 @@ function cleanup() {
   requestId += 1
   try { viewer?.Destroy() } catch {}
   viewer = null
-  if (objectUrl.value) URL.revokeObjectURL(objectUrl.value)
+  // PDF 预览使用 ERP 接口直链，只有本地 Blob URL 才需要释放。
+  if (objectUrl.value.startsWith('blob:')) URL.revokeObjectURL(objectUrl.value)
   objectUrl.value = ''
 }
 
@@ -81,9 +79,15 @@ async function loadDrawing() {
   error.value = ''
   progress.value = '正在读取 ERP 图纸…'
   try {
-    if (!drawingId.value) throw new Error('该行没有可预览的图纸编号')
+    const standardHardware = props.source === 'standard_hardware'
+    if (standardHardware ? !props.row.relativePath : !drawingId.value || !props.sessionId) {
+      throw new Error('该行没有可预览的 ERP 图纸引用')
+    }
+    const previewEndpoint = standardHardware
+      ? `/api/erp-design-uploads/standard-hardware/preview?relative_path=${encodeURIComponent(props.row.relativePath)}`
+      : `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`
     const response = await fetch(
-      `/api/erp-design-uploads/${props.sessionId}/drawings/${drawingId.value}/preview`,
+      previewEndpoint,
       { credentials: 'same-origin' },
     )
     if (!response.ok) {
@@ -113,7 +117,9 @@ async function loadDrawing() {
     }
     if (mediaType.includes('pdf')) {
       displayKind.value = 'pdf'
-      objectUrl.value = URL.createObjectURL(blob)
+      // ERP 对 PDF 使用浏览器原生预览。直链可保留原生工具栏、缩放及页面拖动，
+      // 也避免把 ERP 返回的 PDF 固化成不支持范围请求的 Blob URL。
+      objectUrl.value = previewEndpoint
       return
     }
     const buffer = await blob.arrayBuffer()
@@ -150,8 +156,21 @@ async function loadDrawing() {
   }
 }
 
-watch(() => [props.sessionId, drawingId.value], () => void loadDrawing(), { immediate: true })
-onBeforeUnmount(cleanup)
+watch(() => [props.source, props.sessionId, drawingId.value, props.row.relativePath], () => void loadDrawing(), { immediate: true })
+function onEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  emit('close')
+}
+onMounted(() => {
+  closeButton.value?.focus()
+  window.addEventListener('keydown', onEscape, true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onEscape, true)
+  cleanup()
+})
 </script>
 
 <template>
@@ -161,7 +180,7 @@ onBeforeUnmount(cleanup)
         <div><strong>图纸预览</strong><span>{{drawingName}}</span></div>
         <div>
           <button v-if="displayKind==='dxf'&&!loading&&!error" type="button" @click="fitView">适合窗口</button>
-          <button type="button" aria-label="关闭图纸预览" @click="$emit('close')">×</button>
+          <button ref="closeButton" type="button" aria-label="关闭图纸预览" @click="$emit('close')">×</button>
         </div>
       </header>
       <div class="erp-drawing-preview-body">

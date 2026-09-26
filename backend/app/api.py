@@ -21,6 +21,7 @@ from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
+from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, public_run_status
 
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
@@ -125,8 +126,9 @@ def run_trace(run, steps, decisions=None):
                 if call_id in tool_result_call_ids:
                     continue
                 name = (call.get("function") or {}).get("name") or "业务工具"
-                trace.append({"type": "tool_pending" if run.status in {"QUEUED", "RUNNING"} else "tool_interrupted",
-                              "tool": name, "call_id": call_id, "run_status": run.status})
+                trace.append({"type": "tool_pending" if run.status in ACTIVE_STATUSES else "tool_interrupted",
+                              "tool": name, "call_id": call_id,
+                              "run_status": public_run_status(run.status)})
         elif role == "tool":
             try:
                 payload = json.loads(msg.get("content") or "{}")
@@ -156,7 +158,7 @@ def run_trace(run, steps, decisions=None):
             else:
                 trace.append({"type": "tool", "tool": "业务工具", "data": [], "as_of": payload.get("as_of")})
     streaming = (run.checkpoint or {}).get("streaming_model_message")
-    if run.status in {"QUEUED", "RUNNING"} and isinstance(streaming, dict):
+    if run.status in ACTIVE_STATUSES and isinstance(streaming, dict):
         text = (streaming.get("content") or "").strip()
         if text:
             # This snapshot becomes the next persisted assistant message.  Its
@@ -191,7 +193,7 @@ def run_trace(run, steps, decisions=None):
 
 
 def run_duration_seconds(run, steps):
-    if run.status in {"QUEUED", "RUNNING"}:
+    if run.status in ACTIVE_STATUSES:
         return max(0, int((now() - aware(run.created_at)).total_seconds()))
     checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
     completed_at = checkpoint.get("completed_at")
@@ -232,7 +234,7 @@ def conversation_runs_payload(db, user, conversation_id: str):
         result.append({
             "id": r.id,
             "prompt": r.prompt,
-            "status": r.status,
+            "status": public_run_status(r.status),
             "created_at": r.created_at,
             "agent_permission_mode": checkpoint.get("agent_permission_mode", "ask"),
             "duration_seconds": run_duration_seconds(r, steps) if visible else 0,
@@ -246,7 +248,7 @@ def conversation_runs_payload(db, user, conversation_id: str):
                 "model_elapsed_ms": checkpoint.get("model_elapsed_ms", 0),
                 "context_usage": checkpoint.get("context_usage"),
                 "elapsed_seconds": max(0, int((now() - aware(r.created_at)).total_seconds()))
-                    if r.status in {"QUEUED", "RUNNING"} else None,
+                    if r.status in ACTIVE_STATUSES else None,
                 "tools": [{"id": step.id, "name": step.tool} for step in steps],
             } if visible else None,
         })
@@ -1088,11 +1090,13 @@ def confirm(intent_id: str, data: s.ConfirmationInput, user=Depends(current_user
                 resumed_run = candidate
     db.commit()
     if resumed_run:
-        publish_run_update(resumed_run.conversation_id, resumed_run.id, resumed_run.status)
+        publish_run_update(resumed_run.conversation_id, resumed_run.id,
+                           public_run_status(resumed_run.status))
     if result.get('run_id') and (not resumed_run or str(resumed_run.id) != str(result['run_id'])):
         created_run = db.get(m.Run, result['run_id'])
         if created_run:
-            publish_run_update(created_run.conversation_id, created_run.id, created_run.status)
+            publish_run_update(created_run.conversation_id, created_run.id,
+                               public_run_status(created_run.status))
     return result
 
 
@@ -1157,7 +1161,7 @@ def conversations(
         for run in conversation_runs:
             steps = list(db.scalars(select(m.Step).where(m.Step.run_id == run.id).order_by(m.Step.sequence)))
             decisions = proposal_decisions(db, user.id, run, steps)
-            if run.status not in {"QUEUED", "RUNNING"} and any(isinstance(step.result, dict) and step.result.get("proposal") and step.id not in decisions for step in steps):
+            if run.status not in ACTIVE_STATUSES and any(isinstance(step.result, dict) and step.result.get("proposal") and step.id not in decisions for step in steps):
                 waiting = True
                 break
         result.append({"id": c.id, "title": c.title, "pinned": c.pinned, "archived": c.archived,
@@ -1211,22 +1215,22 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
     selection = select_model(user, data.model_profile_id, data.reasoning_effort,
                              default_enabled=model_config.llm_enabled)
     permission_mode = data.agent_permission_mode
+    worker_scope = settings().worker_scope
     run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=prompt,
-                status="QUEUED" if selection else "WAITING_CONFIGURATION",
-                checkpoint={"agent_permission_mode": permission_mode, "run_trigger": data.trigger,
-                            'model_selection': selection})
+                status=SCOPED_QUEUED if selection else "WAITING_CONFIGURATION",
+                checkpoint={"agent_permission_mode": permission_mode, "worker_scope": worker_scope,
+                            "run_trigger": data.trigger, "model_selection": selection})
     db.add(run); db.flush()
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
     record(db, user, "agent.run.created", run.id, {
-        "agent_permission_mode": permission_mode,
-        "run_trigger": data.trigger,
-        'model_selection': selection,
+        "agent_permission_mode": permission_mode, "run_trigger": data.trigger,
+        "model_selection": selection,
     }); db.commit()
-    publish_run_update(run.conversation_id, run.id, run.status)
-    return {"id": run.id, "conversation_id": conversation.id, "status": run.status,
-            "agent_permission_mode": permission_mode, "trigger": data.trigger,
-            'model_selection': selection}
+    publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
+    return {"id": run.id, "conversation_id": conversation.id,
+            "status": public_run_status(run.status), "agent_permission_mode": permission_mode,
+            "trigger": data.trigger, "model_selection": selection}
 
 
 @app.get("/api/conversations/{conversation_id}/runs")

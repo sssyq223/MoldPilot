@@ -36,7 +36,8 @@ class SupplierMaterialHandoffProposalInput(StrictModel):
     project_version: int = Field(ge=1)
     supplier_id: str = Field(min_length=1, max_length=36)
     contract_subject_id: str | None = Field(default=None, max_length=36)
-    file_id: str | None = Field(default=None, max_length=36)
+    file_id: str | None = Field(default=None, max_length=36,
+        description='本轮明确附加或当前会话历史中被用户明确引用的交接文件 ID')
     document_title: str = Field(min_length=1, max_length=200)
     document_type: Literal["CUSTOMER_MATERIAL","DESIGN_DRAWING","TECHNICAL_SPEC","QUALITY_STANDARD","OTHER"] = "CUSTOMER_MATERIAL"
     approval_status: Literal["DRAFT","APPROVED","REVOKED"] = "APPROVED"
@@ -53,7 +54,8 @@ class SupplierMaterialVerificationProposalInput(StrictModel):
     supplier_id: str = Field(min_length=1, max_length=36)
     contract_subject_id: str = Field(min_length=1, max_length=36)
     handoff_id: str = Field(min_length=1, max_length=36)
-    response_file_id: str | None = Field(default=None, max_length=36)
+    response_file_id: str | None = Field(default=None, max_length=36,
+        description='本轮明确附加或当前会话历史中被用户明确引用的供应商回复文件 ID')
     response_date: date
     result: Literal["RECEIVED","ACCEPTED","NEEDS_CLARIFICATION","REJECTED"]
     supplier_contact: str = Field(min_length=1, max_length=150)
@@ -365,7 +367,7 @@ def create_supplier_progress_report(db, user, data: SupplierProgressReportPropos
     return row
 
 
-def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput):
+def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProposalInput, run=None):
     project = db.get(m.Project, data.project_id)
     if not project:
         raise DomainError("NOT_FOUND", "项目不存在", 404)
@@ -390,8 +392,9 @@ def preview_supplier_material_handoff(db, user, data: SupplierMaterialHandoffPro
         if data.approval_status == "APPROVED" and contract.status not in {"EFFECTIVE", "CLOSED"}:
             raise DomainError("CONTRACT_NOT_EFFECTIVE", "正式获准资料交接必须关联已生效或已关闭整套委外合同", 409)
     if data.file_id:
-        from domain_packs.mold.ports.files import uploaded_file
-        uploaded_file(db, user, data.file_id)
+        from domain_packs.mold.ports.files import reference_run_file, uploaded_file
+        (reference_run_file(db, user, run, data.file_id) if run
+         else uploaded_file(db, user, data.file_id))
     if data.source_ref and db.scalar(select(m.SupplierMaterialHandoff.id).where(
         m.SupplierMaterialHandoff.project_id == project.id,
         m.SupplierMaterialHandoff.supplier_id == supplier.id,
@@ -434,7 +437,7 @@ def create_supplier_material_handoff(db, user, data: SupplierMaterialHandoffProp
     return row
 
 
-def preview_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput):
+def preview_supplier_material_verification(db, user, data: SupplierMaterialVerificationProposalInput, run=None):
     project = db.get(m.Project, data.project_id)
     if not project:
         raise DomainError("NOT_FOUND", "项目不存在", 404)
@@ -464,8 +467,9 @@ def preview_supplier_material_verification(db, user, data: SupplierMaterialVerif
     if data.response_date < handoff.provided_date:
         raise DomainError("INVALID_TOOL_INPUT", "供应商回复日期不能早于资料交接日期")
     if data.response_file_id:
-        from domain_packs.mold.ports.files import uploaded_file
-        uploaded_file(db, user, data.response_file_id)
+        from domain_packs.mold.ports.files import reference_run_file, uploaded_file
+        (reference_run_file(db, user, run, data.response_file_id) if run
+         else uploaded_file(db, user, data.response_file_id))
     if db.scalar(select(m.SupplierMaterialVerification.id).where(
         m.SupplierMaterialVerification.handoff_id == handoff.id,
         m.SupplierMaterialVerification.source_ref == data.source_ref,
@@ -523,13 +527,13 @@ def create_supplier_material_verification(db, user, data: SupplierMaterialVerifi
 def execute_full_outsource_tool(db, user, key, arguments, run=None):
     if key == "prepare_supplier_material_handoff":
         data = parse_supplier_material_handoff(arguments)
-        _, _, _, display = preview_supplier_material_handoff(db, user, data)
+        _, _, _, display = preview_supplier_material_handoff(db, user, data, run)
         kind = "supplier_material_handoff"
         action = "confirm_supplier_material_handoff"
         limitation = "仅准备供应商资料交接证据登记建议；本人确认后才写入，不创建供应商门户、不代表供应商已核验。"
     elif key == "prepare_supplier_material_verification":
         data = parse_supplier_material_verification(arguments)
-        _, _, _, _, display = preview_supplier_material_verification(db, user, data)
+        _, _, _, _, display = preview_supplier_material_verification(db, user, data, run)
         kind = "supplier_material_verification"
         action = "confirm_supplier_material_verification"
         limitation = "仅准备供应商对一条已批准资料交接的核验结果；本人确认后才追加记录，已收到不等于已接受，不覆盖原交接事实。"
@@ -1594,7 +1598,7 @@ def source(db, user, step_id):
     run = db.get(m.Run, step.run_id) if step else None
     if not run or run.user_id != user.id:
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
-    if run.status not in {"RUNNING", "SUCCEEDED"}:
+    if run.status not in {"RUNNING", "RUNNING_SCOPED", "SUCCEEDED"}:
         raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)

@@ -20,6 +20,13 @@ echo   MoldPilot Local Development Launcher
 echo ========================================
 echo.
 
+echo [CLEANUP] Stopping existing MoldPilot services...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\stop_project_services.ps1" -Root "%ROOT:~0,-1%"
+if errorlevel 1 (
+    echo [ERROR] Existing MoldPilot services could not be stopped safely.
+    goto :failed
+)
+
 if not exist "%ROOT%.env" (
     echo [ERROR] Missing .env.
     echo Copy .env.example to .env and configure database, Redis, worker and model settings.

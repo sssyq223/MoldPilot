@@ -11,6 +11,7 @@ from .security import current_user
 from .agent_resume import queue_after_proposal_decision
 from .run_events import publish_run_update
 from agent_core.domain_pack import component
+from agent_core.run_status import public_run_status
 
 
 router = APIRouter(prefix="/api/proposals", tags=["agent-proposals"])
@@ -59,5 +60,5 @@ def dismiss_proposal(step_id: str, user=Depends(current_user), db=Depends(get_db
     resumed = queue_after_proposal_decision(db, user, step_id, "dismissed")
     db.commit()
     if resumed:
-        publish_run_update(run.conversation_id, run.id, run.status)
+        publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
     return {"status": "dismissed"}
