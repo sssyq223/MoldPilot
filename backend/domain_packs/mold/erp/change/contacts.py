@@ -17,6 +17,7 @@ from domain_packs.mold.ports.errors import DomainError
 router=APIRouter(prefix='/api/contacts')
 CATEGORY_NAMES={'hardware':'五金','raw_material':'原材','outsource':'委外','auxiliary':'辅材',
                 'office_supply':'办公用品','trial_material':'试模料'}
+FORM_SNAPSHOT_VERSION='engineering-change-contact-v1'
 
 
 class CreateInput(StrictModel):
@@ -304,6 +305,34 @@ def progress_summary(db,c):
                            '线下记录、处理反馈或方案审批通过都不单独等同于整改完成、复验合格或联络单关闭。']}
 
 
+def latest_form_snapshot(db,c):
+    row=db.scalar(select(m.ContactRecord).where(
+        m.ContactRecord.case_id==c.id,
+        m.ContactRecord.kind=='FORM_TASKS_CREATED',
+    ).order_by(m.ContactRecord.created_at.desc(),m.ContactRecord.id.desc()).limit(1))
+    detail=row.detail if row and isinstance(row.detail,dict) else {}
+    snapshot=detail.get('form_snapshot')
+    return snapshot if isinstance(snapshot,dict) else None
+
+
+def form_snapshot(case,form,rows,digest,responsible_group):
+    values=form.model_dump(mode='json')
+    values['form_version']=FORM_SNAPSHOT_VERSION
+    values['case_id']=case.id
+    values['case_revision']=case.revision
+    values['proposal_hash']=digest
+    values['responsible_department']={
+        'id':responsible_group.id,
+        'name':responsible_group.name,
+    }
+    values['related_units']=[{
+        **unit.model_dump(mode='json'),
+        'department_name':group.name,
+        'assignee_name':person.display_name,
+    } for group,person,unit in rows]
+    return values
+
+
 def serialize(db,c,details=False,user=None):
     creator=db.get(m.User,c.created_by)
     result={'id':c.id,'project_id':c.project_id,'category':c.category,'title':c.title,
@@ -319,6 +348,7 @@ def serialize(db,c,details=False,user=None):
         if user:result.update(context(db,user,c))
         from domain_packs.mold.ports.files import case_attachments
         result['attachments']=case_attachments(db,c)
+        result['engineering_contact_form']=latest_form_snapshot(db,c)
         result['can_coordinate']=bool(user and user.id==c.created_by and c.mode=='ONLINE' and not c.closed_at and permitted(db,user,'coordinate',c))
         result['can_record']=bool(user and not c.closed_at and permitted(db,user,'record',c))
         result['tasks']=[]
@@ -419,6 +449,43 @@ def add_note(cid:str,data:NoteInput,user=Depends(current_user),db=Depends(get_db
     if c.mode=='HISTORY' and data.source!='OFFLINE':raise DomainError('HISTORY_SOURCE','历史补录应明确线下来源')
     return append(db,user,c,data,'NOTE',digest,{'source':data.source,'participants':data.participants,
         'content':data.content,'is_approval':False},data.occurred_at)
+
+
+def add_form_tasks(cid:str,data:FormTaskBatchInput,user=Depends(current_user),db=Depends(get_db)):
+    if data.form is None:
+        raise DomainError('FORM_INCOMPLETE','请先补齐工程变更申请联络单表单',409)
+    c=load(db,user,cid,True);require(db,user,'coordinate',c)
+    if user.id!=c.created_by:raise DomainError('FORBIDDEN','由发起人组织协作事项',403)
+    if c.mode!='ONLINE':raise DomainError('HISTORY_NO_DISPATCH','历史补录不能派发线上任务',409)
+    digest,done=replay(db,user,c,data,'FORM_TASKS_CREATED')
+    if done:return serialize(db,c,True,user)
+    form=data.form
+    responsible_group=department(db,form.responsible_department_id)
+    rows=[]
+    for unit in form.related_units:
+        group=department(db,unit.department_id)
+        person=db.get(m.User,unit.assignee_id)
+        if not assignee_eligible(db,person,group,c):
+            raise DomainError('ASSIGNEE_UNAVAILABLE','存在无权或已停用的处理人',403)
+        rows.append((group,person,unit))
+    snapshot=form_snapshot(c,form,rows,digest,responsible_group)
+    tasks=[]
+    recipients=[]
+    for group,person,unit in rows:
+        task=m.ContactTask(
+            case_id=c.id,department_id=group.id,created_by=user.id,assignee_id=person.id,
+            status='ASSIGNED',title=unit.work_content,response=None,verified_plan_id=None,
+            affected_type='OTHER',affected_ref=f'engineering-contact-form:{c.id}',
+            impact_description=unit.remark or form.change_description,planned_action='CONTINUE',
+            delivery_impact_days=(unit.completion_date-form.application_date).days,
+            estimated_amount=unit.amount,currency=unit.currency,
+            source_system='MANUAL',source_ref='ENGINEERING_CONTACT_FORM',source_as_of=now(),
+        )
+        db.add(task);tasks.append(task)
+        if person.id not in recipients:recipients.append(person.id)
+    db.flush()
+    return append(db,user,c,data,'FORM_TASKS_CREATED',digest,
+        {'form_snapshot':snapshot,'task_ids':[task.id for task in tasks]},recipients=recipients)
 
 
 def add_task(cid:str,data:TaskInput,user=Depends(current_user),db=Depends(get_db)):
