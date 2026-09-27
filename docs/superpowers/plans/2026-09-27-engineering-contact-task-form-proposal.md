@@ -119,7 +119,7 @@ def test_form_task_input_requires_categories_units_and_valid_completion_type(...
     ...
 ```
 
-测试必须覆盖：空变更类别、空相关单位、错误完成类型、未来申请日期、金额无币种、工时为负数、相关单位没有作业内容、相关单位没有完成日期。
+测试必须覆盖：自动触发时 `form=None` 可以生成空表单 Proposal；最终确认时 `form=None` 被拒绝；空变更类别、空相关单位、错误完成类型、未来申请日期、金额无币种、工时为负数、相关单位没有作业内容、相关单位没有完成日期。
 
 - [ ] **步骤 2：运行测试确认当前失败**
 
@@ -171,7 +171,8 @@ class EngineeringContactFormInput(StrictModel):
 
 
 class FormTaskBatchInput(Mutation):
-    form: EngineeringContactFormInput
+    # 自动触发阶段允许为空；弹窗重新准备时必须提供完整表单。
+    form: EngineeringContactFormInput | None = None
 ```
 
 增加字段非空、申请日期不晚于当前日期、完成日期不早于申请日期、单位日期不晚于总完成日期、类别去重和金额/币种一致性校验。`assignee_id` 首版设为必填，符合“供人选择具体责任人”的要求；没有合格人员时由候选接口阻断提交。
@@ -246,6 +247,8 @@ FORM_SNAPSHOT_VERSION = "engineering-change-contact-v1"
 
 
 def add_form_tasks(cid: str, data: FormTaskBatchInput, user, db):
+    if data.form is None:
+        raise DomainError("FORM_INCOMPLETE", "请先补齐工程变更申请联络单表单", 409)
     case = load(db, user, cid, True)
     require(db, user, "coordinate", case)
     if case.mode != "ONLINE":
@@ -382,6 +385,12 @@ class FormIntentInput(StrictModel):
     input: c.FormTaskBatchInput
 
 
+def require_complete_form(data: c.FormTaskBatchInput):
+    if data.form is None:
+        raise DomainError("FORM_INCOMPLETE", "请先在工程变更申请联络单弹窗中补齐字段", 409)
+    return data.form
+
+
 SPECS.update({
     "form_tasks": (c.FormTaskBatchInput, "coordinate", "建立工程变更联络办理事项"),
 })
@@ -390,10 +399,11 @@ SPECS.update({
 扩展 `schema()`、`parse()`、`preview()` 和 `execute_tool()`：
 
 - `form_tasks` 只允许当前 Case 发起人办理；
+- `form=None` 只允许自动触发表单草稿，preview 返回 `form_status="NEEDS_HUMAN_SELECTION"`；
 - preview 展示图片字段的中文标签、相关单位明细、责任人、完成日期、工时、金额、计价和“本人确认后才创建事项”；
+- `form=None` 不得进入 HumanIntent 确认执行；
 - 返回 Proposal 的 `kind="contact"`、`action="form_tasks"`；
-- 未完整填写时返回 `form_status="NEEDS_HUMAN_SELECTION"`，仍生成表单 Proposal，不执行写入；
-- 完整输入由 `FormTaskBatchInput` 再次严格校验。
+- 完整输入由 `require_complete_form()` 和 `FormTaskBatchInput` 再次严格校验。
 
 - [ ] **步骤 4：加入候选接口**
 
