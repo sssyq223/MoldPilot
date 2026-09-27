@@ -15,6 +15,15 @@ MOLD_BATCH_CODE = re.compile(r"(?i)^M\d{5,}-P\d+$")
 MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
 PROJECT_NO = re.compile(r"(?i)(?<![A-Z0-9])(E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])")
 ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
+PART_NO = re.compile(r"(?i)(?:零件\s*)([A-Z]{1,8}-?\d{1,4}[A-Z]?)")
+QUOTE_AMOUNT = re.compile(r"(?:我方报价|填报价|报价|总价格|总价)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
+MAX_AMOUNT = re.compile(r"(?:上限区间|接单上限|上限)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
+ROW_INDEX = re.compile(r"第\s*(\d+)\s*行")
+BUYER_QUOTE_SPEECH = (
+    "填我方报价", "填写我方报价", "填报价", "填写报价", "填价格",
+    "帮我填报价", "帮我填价格",
+    "准备填写我方报价", "准备填写报价",
+)
 ROW_LIMIT = 200
 STATIONS = {
     "buyer_quote": "待采购填报价",
@@ -342,7 +351,7 @@ def _promote_batch_code(mold: str, batch: str) -> tuple[str, str]:
     return mold, batch
 
 
-PART_CODE = re.compile(r"(?i)\b([A-Z]{1,4}-?\d{1,4}[A-Z0-9]*)\b")
+PART_CODE = re.compile(r"(?i)\b([A-Z]{1,8}\d{0,4}-\d{1,4}[A-Z]{0,3}|[A-Z]{2,8}-\d{1,4}[A-Z]{0,3})\b")
 
 
 def normalize_part_token(value: Any) -> str:
@@ -548,6 +557,122 @@ def parse_question(question: str) -> dict[str, str]:
         "order_no": order.group(1).upper() if order else "",
         "outsource_type": outsource_type,
     }
+
+
+def is_spoken_buyer_quote(question: str) -> bool:
+    text = question or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要填", "不填报价", "不填价格")):
+        return False
+    return any(token in text for token in BUYER_QUOTE_SPEECH)
+
+
+def buyer_quote_identity_locked(arguments: dict[str, Any]) -> bool:
+    """Fill-quote form only after mold is locked, plus order or batch+part."""
+    mold = str(arguments.get("mold") or "").strip()
+    order_no = str(arguments.get("order_no") or "").strip()
+    batch = str(arguments.get("batch") or "").strip()
+    part = str(arguments.get("part") or "").strip()
+    if not mold:
+        return False
+    if order_no:
+        return True
+    return bool(batch and part)
+
+
+def part_code_from_item(item: dict[str, Any]) -> str:
+    for row in item.get("parts") or []:
+        if not isinstance(row, dict):
+            continue
+        token = normalize_part_token(row.get("partNo") or row.get("part_no"))
+        if token:
+            return token
+    return normalize_part_token(item.get("partDetails") or "")
+
+
+def spoken_part_token(question: str) -> str:
+    text = question or ""
+    match = PART_NO.search(text)
+    token = normalize_part_token(match.group(1)) if match else ""
+    if token:
+        return token
+    found = []
+    for match in PART_CODE.finditer(text):
+        code = normalize_part_token(match.group(1))
+        if not code or re.fullmatch(r"M\d{5,}(?:-P\d+)?", code) or re.fullmatch(r"P\d+", code):
+            continue
+        if code not in found:
+            found.append(code)
+    return found[0] if len(found) == 1 else ""
+
+
+def apply_spoken_board_row(arguments: dict[str, Any], question: str) -> dict[str, Any]:
+    """Lock 第N行 to the same enquiry the follow-up board would show."""
+    row_match = ROW_INDEX.search(question or "")
+    if not row_match:
+        return arguments
+    row_no = int(row_match.group(1))
+    tokens = _batch_tokens(arguments.get("batch"))
+    query_batch = tokens[0] if tokens and MOLD_BATCH_CODE.match(tokens[0]) else ""
+    parsed = {
+        "station": "buyer_quote",
+        "mold_family": "" if query_batch else str(arguments.get("mold") or ""),
+        "mold_batch": query_batch,
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return arguments
+    if not items or row_no < 1 or row_no > len(items):
+        return arguments
+    item = items[row_no - 1]
+    part = part_code_from_item(item)
+    if part:
+        arguments["part"] = part
+    family, batch = item_identity(item)
+    if family:
+        arguments["mold"] = family
+    if batch:
+        arguments["batch"] = batch
+    order_no = str(item.get("orderNo") or "").strip()
+    if order_no:
+        arguments["order_no"] = order_no
+    return arguments
+
+
+def parse_spoken_buyer_quote(question: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse fill-quote speech into prepare_erp_outsource_buyer_quote arguments."""
+    if not is_spoken_buyer_quote(question):
+        return None
+    quote = QUOTE_AMOUNT.search(question or "")
+    ceiling = MAX_AMOUNT.search(question or "")
+    if quote is None or ceiling is None:
+        return None
+    identity_source = f"{question or ''}\n{context_text or ''}"
+    parsed = parse_question(identity_source)
+    order = ORDER_NO.search(identity_source)
+    arguments: dict[str, Any] = {
+        "our_quote_amount": float(quote.group(1)),
+        "auto_accept_max_amount": float(ceiling.group(1)),
+    }
+    if order:
+        arguments["order_no"] = order.group(1).upper()
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    part = spoken_part_token(question)
+    if part:
+        arguments["part"] = part
+    row_match = ROW_INDEX.search(question or "")
+    if row_match and (arguments.get("mold") or arguments.get("batch")):
+        arguments["board_row"] = int(row_match.group(1))
+        arguments = apply_spoken_board_row(arguments, question)
+    if not buyer_quote_identity_locked(arguments):
+        return None
+    return arguments
 
 
 def classify(row: dict[str, Any]) -> str | None:
@@ -805,6 +930,35 @@ def _scan_items(mold: str | None = None) -> list[dict[str, Any]]:
     elif re.fullmatch(r"M\d{5,}", text):
         parsed["mold_family"] = text
     return query_items(parsed)
+
+
+def find_item_by_board_row(
+    row_no: int,
+    *,
+    mold: str | None = None,
+    batch: str | None = None,
+) -> dict[str, Any] | None:
+    """Pick 第N行 from the same buyer_quote board the user just saw."""
+    mold, batch = _promote_batch_code(str(mold or "").strip().upper(), str(batch or "").strip().upper())
+    tokens = _batch_tokens(batch)
+    query_batch = tokens[0] if tokens and MOLD_BATCH_CODE.match(tokens[0]) else ""
+    parsed = {
+        "station": "buyer_quote",
+        "mold_family": "" if query_batch else mold,
+        "mold_batch": query_batch,
+        "project_no": "",
+        "outsource_type": "",
+    }
+    if not parsed["mold_family"] and not parsed["mold_batch"]:
+        return None
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return None
+    if row_no < 1 or row_no > len(items):
+        return None
+    item = items[row_no - 1]
+    return item if item.get("inquiryId") else None
 
 
 def find_item(inquiry_id: int, *, mold: str | None = None) -> dict[str, Any] | None:

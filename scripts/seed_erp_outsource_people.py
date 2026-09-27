@@ -6,7 +6,7 @@ People mapping (requested):
 - gm: 李辉
 - warehouse: 薛海峰
 - quality: 赵殿烨
-- processor: ERP supplier SUP000001
+- processor: ERP supplier SUP000001 (demo), SUP000496 (PU-03), SUP000237 (ZKR accept todo)
 
 Password is intentionally short when --password is provided; API user-create
 still requires 12+ characters, but these accounts are written directly.
@@ -81,6 +81,20 @@ PEOPLE = (
         "display_name": "SUP000001加工商",
         "supplier_code": "SUP000001",
         "supplier_name": "ERP加工商 SUP000001",
+    },
+    {
+        "role_key": "erp_outsource_processor",
+        "username": "SUP000496",
+        "display_name": "SUP000496加工商",
+        "supplier_code": "SUP000496",
+        "supplier_name": "ERP加工商 SUP000496",
+    },
+    {
+        "role_key": "erp_outsource_processor",
+        "username": "SUP000237",
+        "display_name": "SUP000237加工商",
+        "supplier_code": "SUP000237",
+        "supplier_name": "ERP加工商 SUP000237",
     },
 )
 

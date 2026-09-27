@@ -112,3 +112,54 @@ def test_warehouse_item_labels_part_vs_operation():
         "outsourceType": "operation",
         "processName": "真空热处理",
     })
+
+
+def test_warehouse_query_accepts_order_and_part_filters(monkeypatch):
+    parsed = erp_outsource_warehouse_tools.parse(erp_outsource_warehouse_tools.TODO_TOOL, {
+        "orderNo": "EO-260924-A5SS",
+        "mold": "M260063",
+        "batch": "M260063-P4",
+        "partNo": "PU-03",
+        "question": "确认备料",
+    })
+    assert parsed.order_no == "EO-260924-A5SS"
+    assert parsed.batch == "M260063-P4"
+    assert parsed.part == "PU-03"
+
+    captured = {}
+
+    def fake_query_items(**kwargs):
+        captured.update(kwargs)
+        return [{
+            **TASK,
+            "orderNo": "EO-260924-A5SS",
+            "moldNo": "M260063-P4",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+            "partNo": "PU-03",
+            "partName": "冲头",
+            "outsourceType": "operation",
+            "outsourceTypeLabel": "工序委外",
+            "actionLabel": "备料完成",
+        }]
+
+    monkeypatch.setattr(warehouse_todo, "query_items", fake_query_items)
+    result = erp_outsource_warehouse_tools.execute_query(None, Admin(), {
+        "order_no": "EO-260924-A5SS",
+        "mold": "M260063",
+        "batch": "M260063-P4",
+        "part": "PU-03",
+    })
+    assert captured["mold_batch"] == "M260063-P4"
+    assert result["data"]["items"][0]["partNo"] == "PU-03"
+
+
+def test_spoken_ship_arguments_lock_order_identity():
+    prompt = "订单 EO-260924-A5SS，模具 M260063 批次 M260063-P4，零件 PU-03 冲头，确认备料"
+    arguments = erp_outsource_warehouse_tools.spoken_ship_arguments(prompt)
+    assert arguments == {
+        "order_no": "EO-260924-A5SS",
+        "mold": "M260063",
+        "batch": "M260063-P4",
+    }
+    assert erp_outsource_warehouse_tools.spoken_ship_arguments("备料完成的有哪些") is None

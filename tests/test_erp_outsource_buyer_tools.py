@@ -80,6 +80,97 @@ def test_buyer_quote_prepare_returns_confirmation_card(monkeypatch):
     assert result["proposal"]["display"]["订单号"] == "尚未下单"
     assert result["proposal"]["display"]["模具号"] == "M260063"
     assert result["proposal"]["display"]["批次号"] == "M260063-P1"
+    assert result["proposal"]["display"]["报价表"][0]["项目"] == "核算价"
+    assert result["proposal"]["display"]["报价表"][1]["金额"] == 320
+
+
+def test_spoken_quote_requires_mold_and_order_or_batch_part(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {
+            "parts": [{"partNo": "PH-01"}],
+            "partDetails": "PH-01 上夹板",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "orderNo": "",
+        },
+    ])
+    locked = buyer_todo.parse_spoken_buyer_quote(
+        "模具 M260063 批次 M260063-P1 零件 PH-01 准备填写我方报价 300、上限 380，出确认卡",
+    )
+    assert locked["mold"] == "M260063"
+    assert locked["batch"] == "M260063-P1"
+    assert locked["part"] == "PH-01"
+    assert locked["our_quote_amount"] == 300
+    assert locked["auto_accept_max_amount"] == 380
+    follow_up = buyer_todo.parse_spoken_buyer_quote(
+        "就第1行零件 PH-01 这一张，准备填写我方报价 300、上限 380，出确认卡",
+        "ERP 委外待办 M260063 · M260063-P1 共 4 条",
+    )
+    assert follow_up["mold"] == "M260063"
+    assert follow_up["part"] == "PH-01"
+    assert buyer_todo.parse_spoken_buyer_quote(
+        "就第1行零件 PH-01 这一张，准备填写我方报价 300、上限 380，出确认卡",
+    ) is None
+    assert buyer_todo.parse_spoken_buyer_quote("待采购填报价有几个") is None
+
+
+def test_spoken_quote_locks_first_board_row_without_repeating_part(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {
+            "parts": [{"partNo": "PH-01"}],
+            "partDetails": "PH-01 上夹板",
+            "moldNo": "M260063-P1",
+            "orderNo": "",
+        },
+        {
+            "parts": [{"partNo": "PU-01"}],
+            "partDetails": "PU-01 成型冲头",
+            "moldNo": "M260063-P1",
+            "orderNo": "",
+        },
+    ])
+    locked = buyer_todo.parse_spoken_buyer_quote(
+        "就第1行这一张，准备填写我方报价 300、上限 380，出确认卡",
+        "ERP 委外待办 M260063 · M260063-P1 共 4 条",
+    )
+    assert locked["mold"] == "M260063"
+    assert locked["batch"] == "M260063-P1"
+    assert locked["part"] == "PH-01"
+
+
+def test_normalize_keeps_hyphenated_part_codes():
+    assert buyer_todo.normalize_part_token("B1-01 下托板") == "B1-01"
+    assert buyer_todo.spoken_part_token("待办第1行 B1-01 下托板") == "B1-01"
+    assert buyer_todo.spoken_part_token("模具 M260063-P1 零件 PH-01") == "PH-01"
+
+
+def test_spoken_quote_row_uses_full_board_batch(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "moldNo": "M260063-P1、M260063-P2",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1、M260063-P2",
+            "orderNo": "",
+        },
+        {
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "moldNo": "M260063-P1、M260063-P2、M260063-P3",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1、M260063-P2、M260063-P3",
+            "orderNo": "",
+        },
+    ])
+    locked = buyer_todo.parse_spoken_buyer_quote(
+        "模具 M260063 批次 M260063-P1，待办第1行 B1-01 下托板，准备填写我方报价 2100、上限 2600",
+    )
+    assert locked["part"] == "B1-01"
+    assert locked["batch"] == "M260063-P1、M260063-P2"
+    assert locked["board_row"] == 1
+    assert locked["our_quote_amount"] == 2100
 
 
 def test_operation_order_cannot_prepare_buyer_quote(monkeypatch):
@@ -154,6 +245,51 @@ def test_single_batch_does_not_match_combined_inquiry():
     assert buyer_todo.item_matches_identity(single, mold="M260063", batch="M260063-P1")
     assert not buyer_todo.item_matches_identity(combined, mold="M260063", batch="M260063-P1")
     assert buyer_todo.item_matches_identity(combined, batch="M260063-P1、M260063-P2")
+
+
+def test_board_row_locks_duplicate_part_quote(monkeypatch):
+    rows = [
+        {
+            "inquiryId": 41,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "outsourceType": "part",
+            "outsourceTypeLabel": "零件委外",
+            "orderNo": "",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "referenceTotal": 104576.58,
+        },
+        {
+            "inquiryId": 42,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "outsourceType": "part",
+            "outsourceTypeLabel": "零件委外",
+            "orderNo": "",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "referenceTotal": 103206.82,
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    monkeypatch.setattr(buyer_todo, "_scan_items", lambda mold=None: rows)
+    result = erp_outsource_buyer_tools.execute_tool(None, Admin(), erp_outsource_buyer_tools.QUOTE_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P1",
+        "part": "B1-01",
+        "board_row": 1,
+        "our_quote_amount": 2100,
+        "auto_accept_max_amount": 2600,
+    })
+    assert result["proposal"]["display"]["报价表"][0]["金额"] == 104576.58
+    assert result["proposal"]["input"]["board_row"] == 1
 
 
 def test_shared_batch_is_disambiguated_by_part(monkeypatch):

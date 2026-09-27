@@ -99,4 +99,126 @@ describe('ERP outsource result tables', () => {
       trace: [{ type: 'final', summary: '没有查到' }],
     })).toEqual([])
   })
+
+  it('fills confirmed buyer quote amounts onto the matching board row', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [
+        {
+          type: 'tool',
+          tool: 'query_erp_outsource_followup_board',
+          data: {
+            scope: 'M260063-P1',
+            items: [
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1', partDetails: 'PH-01 上夹板', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 358.74 },
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1', partDetails: 'PU-01 成型冲头', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 7451.29 },
+            ],
+          },
+        },
+        {
+          type: 'tool',
+          id: 'quote-1',
+          tool: 'prepare_erp_outsource_buyer_quote',
+          proposal_decision: 'approved',
+          proposal: {
+            display: {
+              模具号: 'M260063',
+              批次号: 'M260063-P1',
+              零件: 'PH-01 上夹板',
+              我方报价: 300,
+              直接接单上限: 380,
+            },
+          },
+        },
+      ],
+    })
+    expect(tables[0].rows[0].ourQuoteAmount).toBe(300)
+    expect(tables[0].rows[0].autoAcceptMaxAmount).toBe(380)
+    expect(tables[0].rows[1].ourQuoteAmount).toBeNull()
+  })
+
+  it('fills pending buyer quote amounts by accounting price when part code is hidden', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [
+        {
+          type: 'tool',
+          tool: 'query_erp_outsource_followup_board',
+          data: {
+            scope: 'M260063-P1',
+            items: [
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1', partDetails: '成型冲头 (S-Z-M-WZ-SS 19×1…)', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 7451.29 },
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1', partDetails: '下托板', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 104576.58 },
+            ],
+          },
+        },
+        {
+          type: 'tool',
+          id: 'quote-2',
+          tool: 'prepare_erp_outsource_buyer_quote',
+          proposal: {
+            display: {
+              模具号: 'M260063',
+              批次号: 'M260063-P1',
+              零件: 'PU-01 成型冲头',
+              我方报价: 400,
+              直接接单上限: 500,
+              报价表: [
+                { 项目: '核算价', 金额: 7451.29 },
+                { 项目: '我方报价', 金额: 400 },
+                { 项目: '直接接单上限', 金额: 500 },
+              ],
+            },
+          },
+        },
+      ],
+    })
+    expect(tables[0].rows[0].ourQuoteAmount).toBe(400)
+    expect(tables[0].rows[0].autoAcceptMaxAmount).toBe(500)
+    expect(String(tables[0].rows[0].partDetails)).toContain('PU-01')
+    expect(tables[0].rows[1].ourQuoteAmount).toBeNull()
+  })
+
+  it('fills only the board row whose accounting price matches the confirmation card', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [
+        {
+          type: 'tool',
+          tool: 'query_erp_outsource_followup_board',
+          data: {
+            scope: 'M260063-P1',
+            items: [
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1、M260063-P2', partDetails: 'B1-01 下托板', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 104576.58 },
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1', partDetails: 'B1-01 下托板', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 17995.66 },
+              { moldFamily: 'M260063', moldBatch: 'M260063-P1、M260063-P2', partDetails: 'B1-01 下托板', ourQuoteAmount: null, autoAcceptMaxAmount: null, referenceTotal: 103206.82 },
+            ],
+          },
+        },
+        {
+          type: 'tool',
+          tool: 'prepare_erp_outsource_buyer_quote',
+          proposal_decision: 'approved',
+          proposal: {
+            display: {
+              模具号: 'M260063',
+              批次号: 'M260063-P1',
+              零件: 'B1-01 下托板',
+              我方报价: 12000,
+              直接接单上限: 15000,
+              报价表: [
+                { 项目: '核算价', 金额: 17995.66 },
+                { 项目: '我方报价', 金额: 12000 },
+                { 项目: '直接接单上限', 金额: 15000 },
+              ],
+            },
+          },
+        },
+      ],
+    })
+    expect(tables[0].rows[0].ourQuoteAmount).toBeNull()
+    expect(tables[0].rows[1].ourQuoteAmount).toBe(12000)
+    expect(tables[0].rows[1].autoAcceptMaxAmount).toBe(15000)
+    expect(tables[0].rows[2].ourQuoteAmount).toBeNull()
+  })
 })

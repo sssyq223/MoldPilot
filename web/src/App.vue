@@ -26,7 +26,7 @@ import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 import {erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
 import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
-import {erpOutsourceResultTablesFromRun} from './erpOutsourceResultTables'
+import {erpOutsourceQuotePatchesFromRuns,erpOutsourceResultTablesFromRun} from './erpOutsourceResultTables'
 import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 import {runDurationSeconds as calculateRunDurationSeconds,shouldPollActiveRun} from './runTiming'
 const colorTheme=ref<ColorTheme>(storedTheme())
@@ -451,6 +451,8 @@ function runPendingProposals(run:any){
  if(['QUEUED','RUNNING'].includes(run.status))return []
  return runProcessTrace(run).filter((item:any)=>item.proposal&&item.id&&!item.proposal_decision&&!confirmedProposalSteps.value[item.id])
 }
+const outsourceQuotePatches=computed(()=>erpOutsourceQuotePatchesFromRuns(runs.value,confirmedProposalSteps.value))
+function outsourceTables(run:any){return erpOutsourceResultTablesFromRun(run,outsourceQuotePatches.value)}
 function runResolvedProposals(run:any){
  return runProcessTrace(run).filter((item:any)=>item.proposal&&item.id&&(item.proposal_decision||confirmedProposalSteps.value[item.id]))
 }
@@ -1042,7 +1044,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             <ErpDesignResultTable v-for="result in erpDesignProcessingTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignDrawingVersionTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignIdleMaterialTablesFromRun(run)" :key="result.key" :result="result"/>
-            <ErpDesignResultTable v-for="result in erpOutsourceResultTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in outsourceTables(run)" :key="result.key" :result="result"/>
             <div v-if="!erpDesignDrawingsFromRun(run).length&&erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
               <span>
                 <strong>{{erpDesignUploadLabel(erpDesignSessionFromRun(run))}}</strong>

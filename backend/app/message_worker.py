@@ -121,7 +121,6 @@ def main():
                 consume_batch(SessionLocal,redis,messages)
         except OperationalError:
             log.warning("Message worker retry: OperationalError")
-            SessionLocal.remove()
             engine.dispose()
             time.sleep(2)
         except Exception as exc:

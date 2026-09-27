@@ -231,7 +231,7 @@ def test_outsource_operation_phrases_are_formal_actions():
         "填我方报价",
         "PH-01这一笔订单帮我填价格：400，上限是600",
         "发询价", "填成交价", "重选加工商",
-        "我要报价", "我要接单", "帮我接单", "确认接单", "拒绝接单", "接这单",
+        "我要报价", "我要接单", "帮我接单", "确认接单", "拒绝接单", "接这单", "订单 EO-1 我接了",
         "确认发料", "确认备料", "确认原料发货", "确认收料", "确认来料",
         "发成品", "发半成品", "确认成品发货",
         "确认到货", "确认收货", "确认入库", "办入库",
@@ -377,6 +377,309 @@ def test_hallucinated_project_quote_name_is_rewritten_to_buyer_quote():
 
     assert gateway.names == ['prepare_erp_outsource_buyer_quote']
     assert result['response_kind'] == 'AWAITING_APPROVAL'
+
+
+def test_host_auto_invokes_buyer_quote_form_when_mold_and_batch_are_locked(monkeypatch):
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_buyer_quote',
+        'description': '准备填写我方报价与直接接单上限',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'mold': {'type': 'string'},
+                'batch': {'type': 'string'},
+                'part': {'type': 'string'},
+                'our_quote_amount': {'type': 'number'},
+                'auto_accept_max_amount': {'type': 'number'},
+            },
+            'required': ['our_quote_amount', 'auto_accept_max_amount'],
+        },
+    }}
+    awaiting = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请核对报价表后确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            return super().execute(seq, key, arguments)
+
+    gateway = RecordingGateway()
+    model = InspectingRepliesModel([awaiting])
+    monkeypatch.setattr(
+        "domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo.query_items",
+        lambda parsed: [{
+            "parts": [{"partNo": "PH-01"}],
+            "partDetails": "PH-01 上夹板",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "orderNo": "",
+        }],
+    )
+    result = run_loop(context(
+        prompt='就第1行零件 PH-01 这一张，准备填写我方报价 300、上限 380，出确认卡',
+        core_tool_names=[],
+        tools=[quote],
+        messages=[{'role': 'assistant', 'content': 'ERP 委外待办 M260063 · M260063-P1 共 4 条'}],
+        skills=[{
+            'key': 'outsource_buyer_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_followup_board'],
+            'optional_tools': ['prepare_erp_outsource_buyer_quote'],
+            'activation_tools': ['query_erp_outsource_followup_board'],
+            'auto_activation_queries': ['填我方报价'],
+        }],
+        tool_annotations={'prepare_erp_outsource_buyer_quote': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert gateway.calls
+    name, arguments = gateway.calls[0]
+    assert name == 'prepare_erp_outsource_buyer_quote'
+    assert arguments['mold'] == 'M260063'
+    assert arguments['batch'] == 'M260063-P1'
+    assert arguments['part'] == 'PH-01'
+    assert arguments['our_quote_amount'] == 300
+    assert arguments['auto_accept_max_amount'] == 380
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.physical_calls == 1
+
+
+def test_host_auto_invokes_processor_accept_when_order_is_locked():
+    accept = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_accept',
+        'description': '准备确认接单',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'order_no': {'type': 'string'},
+                'mold': {'type': 'string'},
+                'batch': {'type': 'string'},
+            },
+            'required': ['order_no'],
+        },
+    }}
+    awaiting = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请核对接单确认表后确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            return super().execute(seq, key, arguments)
+
+    gateway = RecordingGateway()
+    model = InspectingRepliesModel([awaiting])
+    result = run_loop(context(
+        prompt='订单 EO-260924-A5SS，模具 M260063 批次 M260063-P4，零件 PU-03 冲头，我接了',
+        core_tool_names=[],
+        tools=[accept],
+        skills=[{
+            'key': 'outsource_processor_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': ['prepare_erp_outsource_processor_accept'],
+            'activation_tools': ['query_erp_outsource_processor_board'],
+            'auto_activation_queries': ['确认接单', '我接了'],
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_accept': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert gateway.calls
+    name, arguments = gateway.calls[0]
+    assert name == 'prepare_erp_outsource_processor_accept'
+    assert arguments['order_no'] == 'EO-260924-A5SS'
+    assert arguments['mold'] == 'M260063'
+    assert arguments['batch'] == 'M260063-P4'
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.physical_calls == 1
+
+
+def test_host_spoken_accept_closes_without_board_or_model_when_proposal_ready():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询加工商委外待办',
+        'parameters': {'type': 'object', 'properties': {'question': {'type': 'string'}}},
+    }}
+    accept = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_accept',
+        'description': '准备确认接单',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'order_no': {'type': 'string'},
+                'mold': {'type': 'string'},
+                'batch': {'type': 'string'},
+            },
+            'required': ['order_no'],
+        },
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_processor_accept',
+                        'action': 'confirm_erp_outsource_processor_accept',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='订单 EO-260924-A5SS，模具 M260063 批次 M260063-P4，零件 PU-03 冲头，我接了',
+        core_tool_names=[],
+        tools=[board, accept],
+        skills=[{
+            'key': 'outsource_processor_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'activation_tools': ['query_erp_outsource_processor_board'],
+            'requires_tool_evidence': True,
+            'auto_activation_queries': ['待接单', '我接了'],
+        }, {
+            'key': 'outsource_processor_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': ['prepare_erp_outsource_processor_accept'],
+            'activation_tools': ['query_erp_outsource_processor_board'],
+            'auto_activation_queries': ['确认接单', '我接了'],
+        }],
+        tool_annotations={
+            'query_erp_outsource_processor_board': {'readOnlyHint': True},
+            'prepare_erp_outsource_processor_accept': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.physical_calls == 1
+    assert model.tool_names == []
+
+
+def test_host_spoken_warehouse_ship_closes_without_board_or_model():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_warehouse_tasks',
+        'description': '查询仓库委外待发料',
+        'parameters': {'type': 'object', 'properties': {'question': {'type': 'string'}}},
+    }}
+    ship = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_warehouse_ship',
+        'description': '准备确认仓库发料或备料',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'order_no': {'type': 'string'},
+                'mold': {'type': 'string'},
+                'batch': {'type': 'string'},
+            },
+            'required': ['order_no'],
+        },
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_warehouse_ship',
+                        'action': 'confirm_erp_outsource_warehouse_ship',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='订单 EO-260924-A5SS，模具 M260063 批次 M260063-P4，零件 PU-03 冲头，确认备料',
+        core_tool_names=[],
+        tools=[board, ship],
+        skills=[{
+            'key': 'outsource_warehouse_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_warehouse_tasks'],
+            'optional_tools': ['prepare_erp_outsource_warehouse_ship'],
+            'activation_tools': ['query_erp_outsource_warehouse_tasks'],
+            'requires_tool_evidence': True,
+            'auto_activation_queries': ['确认备料', '待发料'],
+        }],
+        tool_annotations={
+            'query_erp_outsource_warehouse_tasks': {'readOnlyHint': True},
+            'prepare_erp_outsource_warehouse_ship': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert result['evidence_ids'] == ['e1']
+    assert gateway.physical_calls == 1
+    assert model.tool_names == []
+
+
+def test_buyer_account_does_not_query_board_on_processor_accept_speech():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_followup_board',
+        'description': '查询委外采购待办',
+        'parameters': {'type': 'object', 'properties': {'question': {'type': 'string'}}},
+    }}
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_buyer_quote',
+        'description': '准备填写我方报价',
+        'parameters': {'type': 'object', 'properties': {}},
+    }}
+    clarification = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'CLARIFICATION',
+        'summary': '接单请用加工商账号登录后再说同一句话。',
+        'evidence_ids': [],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            return super().execute(seq, key, arguments)
+
+    gateway = RecordingGateway()
+    result = run_loop(context(
+        prompt='订单 EO-260924-A5SS，模具 M260063 批次 M260063-P4，零件 PU-03 冲头，我接了',
+        core_tool_names=[],
+        tools=[board, quote],
+        skills=[{
+            'key': 'outsource_followup_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_followup_board'],
+            'optional_tools': [],
+            'host_auto_invoke_empty_arguments': True,
+            'auto_activation_queries': ['委外待办'],
+        }],
+        tool_annotations={'prepare_erp_outsource_buyer_quote': {'readOnlyHint': False}},
+    ), InspectingRepliesModel([clarification]), gateway)
+
+    assert gateway.calls == []
+    assert result['response_kind'] == 'CLARIFICATION'
 
 
 def test_authorized_processor_and_approval_load_spoken_intents():

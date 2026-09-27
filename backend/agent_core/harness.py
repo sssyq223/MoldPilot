@@ -1394,6 +1394,28 @@ def _initial_messages(context, system_content):
 
 
 
+def _spoken_identity_context(context):
+    """Recent user/assistant text used only to complete mold/order/batch/part."""
+    parts = []
+    for turn in context.get("conversation_history") or []:
+        if not isinstance(turn, dict):
+            continue
+        user = turn.get("user") if isinstance(turn.get("user"), dict) else {}
+        assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
+        for value in (user.get("content"), assistant.get("content"), turn.get("content")):
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+    for message in context.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") not in {"user", "assistant"}:
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            parts.append(content)
+    return "\n".join(parts[-8:])
+
+
 def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=None,
              context_window=DEFAULT_CONTEXT_WINDOW, max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
     """Persist proposals before execution so recovery replays the same idempotent step."""
@@ -1643,6 +1665,21 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     and not formal_action_requested
                     and not authorized_route):
                 suppress_tool_search = True
+    spoken_context = _spoken_identity_context(context)
+    if callable(getattr(_policy, "spoken_write_ensure_tools", None)):
+        active_tool_names.update(_policy.spoken_write_ensure_tools(
+            context.get("prompt") or "", all_tools, spoken_context,
+        ))
+    role_mismatch = None
+    if callable(getattr(_policy, "spoken_write_missing_capability", None)):
+        role_mismatch = _policy.spoken_write_missing_capability(
+            context.get("prompt") or "", all_tools, spoken_context,
+        )
+    if role_mismatch:
+        active_tool_names.clear()
+        host_auto_invoke_candidates.clear()
+        required_evidence_tools.clear()
+        suppress_tool_search = True
     deferred_tools = {name: tool for name, tool in all_tools.items() if name not in active_tool_names}
     optional_prompt = "" if suppress_tool_search else _optional_tools_prompt(
         deferred_tools, tool_groups, context.get("prompt", ""), preferred_group_keys
@@ -1722,15 +1759,63 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         instruction for instruction in context.get('next_model_instructions', [])
         if isinstance(instruction, str) and instruction.strip()
     ]
+    if role_mismatch:
+        next_model_instructions.append(role_mismatch)
     activation_grace = bool(context.get('activation_grace', False))
 
+    # Spoken fill-quote / accept with locked identity injects prepare
+    # so the confirmation card is a real proposal, not a Markdown board table.
+    spoken_write = None
+    if (turn == 0
+            and not pending
+            and not evidence_ids
+            and not attempted_tools
+            and not executed_tool_signatures
+            and callable(getattr(_policy, "spoken_write_auto_invoke", None))):
+        spoken_write = _policy.spoken_write_auto_invoke(
+            context.get("prompt") or "",
+            active_tool_names,
+            _spoken_identity_context(context),
+        )
+    host_spoken_write_name = None
+    host_spoken_write_summary = None
+    host_spoken_write_proposal = False
+    if spoken_write:
+        name, arguments = spoken_write
+        tool = all_tools.get(name)
+        if name in active_tool_names and isinstance(arguments, dict) and tool:
+            call_id = "host_auto_" + hashlib.sha256(
+                (name + "\n" + json.dumps(arguments, ensure_ascii=False, sort_keys=True)).encode("utf-8")
+            ).hexdigest()[:20]
+            pending = [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+            }]
+            pending_index = 0
+            stage = "正在准备报价确认表，请核对模具号、订单号和金额。"
+            if name == "prepare_erp_outsource_processor_accept":
+                stage = "正在准备接单确认表，请核对订单号、模具号和批次号。"
+            elif name == "prepare_erp_outsource_warehouse_ship":
+                stage = "正在准备仓库发料/备料确认表，请核对订单号、模具号和批次号。"
+            host_spoken_write_name = name
+            host_spoken_write_summary = stage
+            # Identity is already locked in speech; the prepare tool looks up
+            # ERP itself. Do not force a board read that then fails the
+            # AWAITING_APPROVAL envelope after the confirmation card exists.
+            required_evidence_tools.clear()
+            messages.append({
+                "role": "assistant",
+                "content": stage,
+                "tool_calls": pending,
+            })
     # Some authoritative readers need no model-supplied arguments: their
     # domain adapter resolves the current conversation object server-side.
     # When an auto-activated skill explicitly declares that contract, execute
     # the single required read directly instead of asking a model to invent an
     # opaque session id or copy a large row payload.  The schema, read-only
     # boundary and fresh-run checks keep this generic mechanism fail-closed.
-    if (turn == 0
+    elif (turn == 0
             and not pending
             and not formal_action_requested
             and not evidence_ids
@@ -1997,6 +2082,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                 'status': 'success',
                                 'evidence_id': evidence_id,
                             }
+                            if (name == host_spoken_write_name
+                                    and isinstance(result.get("proposal"), dict)):
+                                host_spoken_write_proposal = True
                 executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
@@ -2009,6 +2097,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 activate_named_tools(station_write_names())
                 save()
             pending, pending_index = [], 0
+            if host_spoken_write_proposal:
+                result = {
+                    "response_kind": "AWAITING_APPROVAL",
+                    "summary": host_spoken_write_summary or "确认表已准备，请核对后确认。",
+                    "evidence_ids": list(evidence_ids),
+                    "suggestions": [],
+                }
+                streaming_model_message = None
+                save()
+                gateway.finish(result)
+                return result
             # A narrowly auto-activated authoritative reader has already
             # answered the user's read-only question. Close the tool stage
             # before asking for the final envelope so providers cannot repeat

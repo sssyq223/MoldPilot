@@ -24,7 +24,7 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。用户要发料或备料时用 `prepare_erp_outsource_warehouse_ship`。
+对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。用户要发料或备料时用 `prepare_erp_outsource_warehouse_ship`。用户说「确认备料 / 确认发料」且已给出订单号时，立刻 prepare，不要只 query 看板，不要再追问订单号是否准确。
 
 | 意图 | 工具 |
 | --- | --- |

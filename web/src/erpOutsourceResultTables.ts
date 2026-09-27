@@ -53,8 +53,8 @@ const boardColumns: ErpDesignColumn[] = [
   { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'moldNo', 'mold_no'], width: 140 },
   { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 240 },
   { key: 'referenceTotal', label: '核算价', fields: ['referenceTotal', 'reference_total'], width: 100, decimals: 2 },
-  { key: 'ourQuote', label: '我方报价', fields: ['ourQuoteAmount', 'our_quote_amount'], width: 100, decimals: 2 },
-  { key: 'ceiling', label: '接单上限', fields: ['autoAcceptMaxAmount', 'auto_accept_max_amount'], width: 100, decimals: 2 },
+  { key: 'ourQuote', label: '我方报价', fields: ['ourQuoteAmount', 'our_quote_amount', 'ourQuote'], width: 100, decimals: 2 },
+  { key: 'ceiling', label: '接单上限', fields: ['autoAcceptMaxAmount', 'auto_accept_max_amount', 'ceiling'], width: 100, decimals: 2 },
   { key: 'supplierQuotes', label: '加工商报价', fields: ['supplierQuotes', 'supplier_quotes'], width: 160 },
   { key: 'finalDeal', label: '成交价', fields: ['finalDealAmount', 'final_deal_amount'], width: 100, decimals: 2 },
   { key: 'pending', label: '待报价加工商', fields: ['pendingQuoteSuppliers', 'pending_quote_suppliers'], width: 160 },
@@ -70,6 +70,112 @@ function list(value: unknown): ErpDesignRow[] {
   return Array.isArray(value) ? value.filter(record) as ErpDesignRow[] : []
 }
 
+type BuyerQuotePatch = {
+  mold: string
+  batch: string
+  part: string
+  ourQuote: number | string
+  ceiling: number | string
+  referenceTotal: number | null
+}
+
+const PART_TOKEN = /(?<![A-Z0-9])([A-Z]{1,8}-\d{1,4}[A-Z]?)(?![A-Z0-9])/i
+
+function partToken(value: unknown): string {
+  const match = PART_TOKEN.exec(String(value || ''))
+  return match ? match[1].toUpperCase() : ''
+}
+
+function numericAmount(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'object' && value !== null && '金额' in value) return numericAmount((value as { 金额?: unknown }).金额)
+  const text = String(value ?? '').replace(/,/g, '').trim()
+  if (!text) return null
+  const parsed = Number(text)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function quoteAmount(value: unknown): number | string | null {
+  if (value == null || value === '') return null
+  const numeric = numericAmount(value)
+  if (numeric != null) return numeric
+  const text = String(value).trim()
+  return text || null
+}
+
+function rowPartText(row: ErpDesignRow): string {
+  const parts = Array.isArray(row.parts)
+    ? row.parts.map((item: any) => [item?.partNo, item?.part_no, item?.partName, item?.part_name].filter(Boolean).join(' ')).join(' ')
+    : ''
+  return `${row.partDetails || ''} ${row.parts || ''} ${parts}`
+}
+
+export function erpOutsourceQuotePatchesFromRuns(runs: any[], _confirmed: Record<string, boolean> = {}): BuyerQuotePatch[] {
+  const patches: BuyerQuotePatch[] = []
+  for (const run of Array.isArray(runs) ? runs : []) {
+    for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+      if (String(item?.tool || '') !== 'prepare_erp_outsource_buyer_quote') continue
+      if (item.proposal_decision === 'dismissed') continue
+      const display = record(item.proposal?.display)
+      if (!display) continue
+      const table = Array.isArray(display['报价表']) ? display['报价表'] : []
+      const quoteRow = table.find((row: any) => String(row?.项目 || '') === '我方报价')
+      const ceilingRow = table.find((row: any) => String(row?.项目 || '').includes('上限'))
+      const referenceRow = table.find((row: any) => String(row?.项目 || '') === '核算价')
+      const ourQuote = quoteAmount(display['我方报价']) ?? quoteAmount(quoteRow?.金额)
+      const ceiling = quoteAmount(display['直接接单上限']) ?? quoteAmount(ceilingRow?.金额)
+      if (ourQuote == null || ceiling == null) continue
+      patches.push({
+        mold: String(display['模具号'] || ''),
+        batch: String(display['批次号'] || ''),
+        part: partToken(display['零件']),
+        ourQuote,
+        ceiling,
+        referenceTotal: numericAmount(referenceRow?.金额) ?? numericAmount(display['核算价']),
+      })
+    }
+  }
+  return patches
+}
+
+function rowMatchesQuote(row: ErpDesignRow, patch: BuyerQuotePatch): boolean {
+  const mold = String(row.moldFamily || row.mold || '')
+  const batch = String(row.moldBatch || row.moldNo || row.batch || '')
+  const details = rowPartText(row)
+  if (patch.batch && batch && patch.batch !== batch && !String(batch).includes(patch.batch)) return false
+  if (patch.mold && mold && patch.mold !== mold && !String(mold).includes(patch.mold)) return false
+  const rowReference = numericAmount(row.referenceTotal ?? row.reference_total)
+  if (patch.referenceTotal != null) {
+    return rowReference != null && Math.abs(rowReference - patch.referenceTotal) < 0.009
+  }
+  if (!patch.part) return false
+  const escaped = patch.part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![A-Z0-9])${escaped}(?![A-Z0-9])`, 'i').test(details)
+}
+
+function applyQuotePatches(rows: ErpDesignRow[], patches: BuyerQuotePatch[]): ErpDesignRow[] {
+  if (!patches.length) return rows
+  const next = rows.map((row) => ({ ...row }))
+  for (const patch of patches) {
+    const hits = next.map((row, index) => ({ row, index })).filter(({ row }) => rowMatchesQuote(row, patch))
+    if (hits.length !== 1) continue
+    const { row, index } = hits[0]
+    const details = String(row.partDetails || row.parts || '')
+    const labeled = patch.part && !details.toUpperCase().includes(patch.part)
+      ? `${patch.part} ${details}`.trim()
+      : details
+    next[index] = {
+      ...row,
+      partDetails: labeled,
+      ourQuoteAmount: patch.ourQuote,
+      autoAcceptMaxAmount: patch.ceiling,
+      ourQuote: patch.ourQuote,
+      ceiling: patch.ceiling,
+    }
+  }
+  return next
+}
+
 const BOARD_TOOLS = new Set([
   'query_erp_outsource_followup_board',
   'query_erp_outsource_processor_board',
@@ -77,14 +183,15 @@ const BOARD_TOOLS = new Set([
 ])
 const PROGRESS_TOOLS = new Set(['query_erp_outsource_order_progress', 'query_outsource_timeline'])
 
-export function erpOutsourceResultTablesFromRun(run: any): ErpDesignResultTable[] {
+export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuotePatch[] = []): ErpDesignResultTable[] {
   const result: ErpDesignResultTable[] = []
+  const patches = quotePatches.length ? quotePatches : erpOutsourceQuotePatchesFromRuns([run])
   for (const item of toolItems(run)) {
     const tool = String(item.tool ?? '')
     const data = payload(item.data)
     if (String(data.status || '') === 'NEED_MOLD_CODE') continue
     if (BOARD_TOOLS.has(tool)) {
-      const rows = list(data.items)
+      const rows = applyQuotePatches(list(data.items), patches)
       if (!rows.length) continue
       const scope = String(data.scope || '')
       const next = table(

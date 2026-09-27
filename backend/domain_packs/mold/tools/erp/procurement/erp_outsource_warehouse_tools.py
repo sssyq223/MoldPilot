@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -19,8 +19,9 @@ from domain_packs.mold.tools.erp.procurement.outsource_identity import (
     identity_batch,
     identity_mold,
     identity_order_no,
+    identity_part,
 )
-from domain_packs.mold.tools.erp.procurement.outsource_queries import warehouse_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, warehouse_todo
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_warehouse_tasks"
@@ -37,11 +38,11 @@ SKILL_SPECS = {
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
             "仓库发料", "原料发货", "备料完成", "待备料", "待发料",
-            "发料待办", "备料待办",
+            "发料待办", "备料待办", "确认备料", "确认发料", "办发料", "办备料",
         ],
         "auto_activation_queries": [
             "仓库发料", "原料发货", "备料完成", "待备料", "待发料",
-            "发料待办", "备料待办",
+            "发料待办", "备料待办", "确认备料", "确认发料", "办发料", "办备料",
         ],
         "priority_patterns": ["仓库发料|原料发货|备料完成|待备料|待发料|发料待办|备料待办"],
         "requires_tool_evidence": True,
@@ -67,14 +68,46 @@ TOOL_NAMES = {
     SHIP_TOOL: "准备确认仓库发料或备料",
 }
 
+SHIP_SPEECH = ("确认备料", "确认发料", "确认原料发货", "办发料", "办备料")
 
-class WarehouseTodoInput(StrictModel):
+
+def spoken_ship_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse warehouse ship/prep speech into prepare_erp_outsource_warehouse_ship arguments."""
+    text = prompt or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "到哪一步", "不要发", "不要备")):
+        return None
+    if not any(token in text for token in SHIP_SPEECH):
+        return None
+    identity_source = f"{text}\n{context_text or ''}"
+    order = buyer_todo.ORDER_NO.search(identity_source)
+    if not order:
+        return None
+    arguments: dict[str, Any] = {"order_no": order.group(1).upper()}
+    parsed = buyer_todo.parse_question(identity_source)
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    return arguments
+
+
+class WarehouseTodoInput(CamelModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
     question: str | None = Field(default=None, max_length=500)
-    mold: str | None = Field(default=None, max_length=40)
+    mold: str | None = identity_mold(default=None, max_length=40)
+    order_no: str | None = identity_order_no(default=None, max_length=80)
+    batch: str | None = identity_batch(default=None, max_length=40)
+    part: str | None = identity_part(default=None, max_length=80)
 
-    @field_validator("question", "mold")
+    @field_validator("question", "mold", "order_no", "batch")
     @classmethod
     def strip_text(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("part", mode="before")
+    @classmethod
+    def strip_part(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
 
@@ -142,8 +175,36 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
     _require_read(db, user)
     data = parse(TODO_TOOL, arguments)
     question = data.question or str(getattr(run, "prompt", "") or "")
-    parsed = warehouse_todo.parse_question(" ".join(part for part in (question, data.mold) if part))
-    payload = warehouse_todo.run(parsed)
+    parsed = warehouse_todo.parse_question(
+        " ".join(part for part in (question, data.mold, data.order_no, data.batch, data.part) if part)
+    )
+    if data.batch and not parsed.get("mold_batch"):
+        parsed["mold_batch"] = data.batch
+        parsed["mold_family"] = ""
+    elif data.mold and not parsed.get("mold_family") and not parsed.get("mold_batch"):
+        parsed["mold_family"] = data.mold
+    items = warehouse_todo.query_items(
+        mold_family=parsed.get("mold_family") or "",
+        mold_batch=parsed.get("mold_batch") or "",
+    )
+    if data.order_no or data.part:
+        items = [
+            item for item in items
+            if buyer_todo.item_matches_identity(
+                item,
+                order_no=data.order_no or "",
+                mold=data.mold or parsed.get("mold_family") or "",
+                batch=data.batch or parsed.get("mold_batch") or "",
+            )
+        ]
+        if data.part:
+            token = str(data.part).strip().casefold()
+            items = [item for item in items if token in str(item.get("partNo") or "").strip().casefold()]
+    payload = warehouse_todo.present(
+        items,
+        mold_family=parsed.get("mold_family") or "",
+        mold_batch=parsed.get("mold_batch") or "",
+    )
     return {
         "data": payload,
         "source": "management-system ERP 仓库委外待发料只读查询",

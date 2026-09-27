@@ -78,6 +78,10 @@ TOOL_SPECS = {
     },
 }
 
+def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    return buyer_todo.parse_spoken_buyer_quote(prompt, context_text)
+
+
 TOOL_NAMES = {
     QUOTE_TOOL: "准备填写委外我方报价",
     SEND_TOOL: "准备发出委外询价",
@@ -87,9 +91,10 @@ TOOL_NAMES = {
 
 
 class _BuyerIdentity(CamelModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
     order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号。尚未下单时可省略。禁止内部数字 id。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
-    batch: str | None = identity_batch(default=None, max_length=80, description="批次号，例如 M260063-P1。尚未下单时必填。")
+    batch: str | None = identity_batch(default=None, max_length=200, description="批次号，例如 M260063-P1。多批次询价须用表里的完整批次号。尚未下单时必填。")
     part: str | None = identity_part(default=None, max_length=200, description="零件号，例如 PH-01。同一批次有多张询价时必填。")
 
     @field_validator("order_no", "mold", "batch")
@@ -127,6 +132,13 @@ class BuyerQuoteInput(_BuyerIdentity):
             "upper_limit", "upperLimit", "max_amount", "maxAmount",
         ),
         description="直接接单上限（用户说的上限或上限区间）。",
+    )
+    board_row: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        validation_alias=AliasChoices("board_row", "boardRow"),
+        description="用户说的待填价看板第N行。同一零件多张询价时按行锁定。",
     )
 
 
@@ -209,13 +221,22 @@ def _require_buyer(db, user) -> None:
 
 
 def _lookup(data, expected_station: str) -> dict[str, Any]:
-    item = buyer_todo.find_item_by_identity(
-        order_no=getattr(data, "order_no", None),
-        mold=getattr(data, "mold", None),
-        batch=getattr(data, "batch", None),
-        part=getattr(data, "part", None),
-        require_inquiry=True,
-    )
+    item = None
+    board_row = getattr(data, "board_row", None)
+    if board_row:
+        item = buyer_todo.find_item_by_board_row(
+            board_row,
+            mold=getattr(data, "mold", None),
+            batch=getattr(data, "batch", None),
+        )
+    if item is None:
+        item = buyer_todo.find_item_by_identity(
+            order_no=getattr(data, "order_no", None),
+            mold=getattr(data, "mold", None),
+            batch=getattr(data, "batch", None),
+            part=getattr(data, "part", None),
+            require_inquiry=True,
+        )
     if not item:
         raise DomainError("NOT_FOUND", "没有找到这张仍停在采购待办的委外询价单，请重新查询", 404)
     if item.get("outsourceType") == "operation" and expected_station in {"buyer_quote", "inquiry_send", "place_order"}:
@@ -247,11 +268,17 @@ def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
 def preview(key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
     item = _lookup(data, STATION_BY_TOOL[key])
     if key == QUOTE_TOOL:
+        reference = item.get("referenceTotal")
         extra = {
             "操作": "填写我方报价与直接接单上限",
+            "报价表": [
+                {"项目": "核算价", "金额": reference if reference is not None else "未返回"},
+                {"项目": "我方报价", "金额": data.our_quote_amount},
+                {"项目": "直接接单上限", "金额": data.auto_accept_max_amount},
+            ],
             "我方报价": data.our_quote_amount,
             "直接接单上限": data.auto_accept_max_amount,
-            "说明": "本人确认后写入 ERP。报价合计不超过上限时加工商报价可免审定标。",
+            "说明": "核对模具号、订单号（尚未下单则显示尚未下单）和报价表后本人确认，才会写入 ERP。报价合计不超过上限时加工商报价可免审定标。",
         }
     elif key == SEND_TOOL:
         _supplier_ids(item, data.suppliers)

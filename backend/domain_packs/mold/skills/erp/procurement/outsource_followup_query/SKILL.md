@@ -23,7 +23,7 @@
 | 有没有委外、几个订单、全部待办、某类分站 | `query_erp_outsource_followup_board`（只调这一个，无模具号也要查） |
 | 某一票到哪一步、时间线 | `query_erp_outsource_order_progress`（要模具号） |
 
-用户要填价、发询价、成交价时，看板查完立刻交给 `outsource_buyer_ops` 的 prepare，不要再调 `query_erp_outsource_order_progress`。禁止同时再调其它查询。已经查过且列表为空时，必须明确说「现在是 0 条」，不要说「没查到」或「无法确认」。没调用查询工具就不能报数量。
+用户要填价、发询价、成交价时，看板查完立刻交给 `outsource_buyer_ops` 的 prepare，不要再调 `query_erp_outsource_order_progress`。用户说「我接了 / 确认接单」时不要查采购待办看板，接单是加工商办理。禁止同时再调其它查询。已经查过且列表为空时，必须明确说「现在是 0 条」，不要说「没查到」或「无法确认」。没调用查询工具就不能报数量。
 
 ## 有证据后展示
 

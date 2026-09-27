@@ -39,15 +39,15 @@ SKILL_SPECS = {
         "activation_tools": ["query_erp_outsource_processor_board"],
         "activation_queries": [
             "提交报价", "我要报价", "加工商报价",
-            "我要接单", "确认接单",
+            "我要接单", "确认接单", "我接了", "这单我接了",
             "拒绝接单", "我要拒单",
         ],
         "auto_activation_queries": [
             "提交报价", "我要报价", "加工商报价",
-            "我要接单", "确认接单",
+            "我要接单", "确认接单", "我接了", "这单我接了",
             "拒绝接单", "我要拒单",
         ],
-        "priority_patterns": ["加工商报价|提交报价|我要报价|确认接单|我要接单|拒绝接单|我要拒单"],
+        "priority_patterns": ["加工商报价|提交报价|我要报价|确认接单|我要接单|我接了|拒绝接单|我要拒单"],
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
@@ -73,6 +73,29 @@ TOOL_NAMES = {
     ACCEPT_TOOL: "准备确认接单",
     REJECT_TOOL: "准备拒绝接单",
 }
+
+ACCEPT_SPEECH = ("我接了", "这单我接了", "确认接单", "我要接单", "接这单")
+
+
+def spoken_accept_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse accept speech into prepare_erp_outsource_processor_accept arguments."""
+    text = prompt or ""
+    if any(token in text for token in ("拒", "不接", "有几个", "有哪些", "有没有", "到哪一步", "不要接")):
+        return None
+    if not any(token in text for token in ACCEPT_SPEECH):
+        return None
+    identity_source = f"{text}\n{context_text or ''}"
+    order = buyer_todo.ORDER_NO.search(identity_source)
+    if not order:
+        return None
+    arguments: dict[str, Any] = {"order_no": order.group(1).upper()}
+    parsed = buyer_todo.parse_question(identity_source)
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    return arguments
 
 
 class ProcessorQuoteInput(StrictModel):

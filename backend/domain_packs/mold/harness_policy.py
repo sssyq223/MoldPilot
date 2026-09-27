@@ -10,10 +10,13 @@ ACTION_INTENT_TERMS = (
 # the station name of a read-only to-do board.
 OUTSOURCE_FORMAL_ACTION_TERMS = (
     # 采购员
-    "我要报价", "填我方报价", "填报价", "填价格", "帮我填报价", "帮我填价格",
+    "我要报价", "填我方报价", "填写我方报价", "填报价", "填写报价", "填价格",
+    "帮我填报价", "帮我填价格",
+    "准备填写我方报价", "出确认卡",
     "发询价", "填成交价", "重选加工商",
     # 加工商 报价 / 接单
-    "我要接单", "帮我接单", "确认接单", "接这单", "拒绝接单", "我要拒单", "拒这单",
+    "我要接单", "帮我接单", "确认接单", "接这单", "我接了", "这单我接了",
+    "拒绝接单", "我要拒单", "拒这单",
     # 仓管 供料
     "确认发料", "确认备料", "确认原料发货", "办发料", "办备料",
     # 加工商 收料 / 成品回厂
@@ -147,7 +150,7 @@ READ_ONLY_QUESTION_TERMS = (
 # Spoken write signals that are not in the formal-receipt whitelist.
 # Visibility of prepare_* tools uses these; the receipt invariant does not.
 WRITE_SIGNAL_TERMS = (
-    "填", "写", "改", "发", "选", "办", "提交", "准备", "登记", "录入",
+    "填", "写", "改", "发", "选", "办", "接了", "提交", "准备", "登记", "录入",
     "写成", "改成", "设为", "定为",
 )
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
@@ -300,3 +303,104 @@ SYSTEM_PROMPT = """你是模具工作台的智能体，通过已登记工具帮�
 每批工具调用前，必须在同一条带 tool_calls 的 assistant 消息 content 中写一句面向用户的简短阶段说明，说明当前要核对或办理什么；不要另发一条只有进度说明、没有工具调用的消息。这是可见的工作说明，不是内部思维链，不得输出隐藏推理过程。
 最后输出 JSON 对象，字段 response_kind 为 BUSINESS（业务结论）、AWAITING_APPROVAL（操作建议已准备、正在等待本人批准）、CONVERSATION（一般对话）或 CLARIFICATION（需要澄清），summary 为简短回复，evidence_ids 为本次实际取得的证据编号列表，suggestions 为建议字符串列表。工具返回 proposal 且尚无可信确认回执时必须使用 AWAITING_APPROVAL，并由你根据实际建议自然说明当前进展；不得声称已执行。一般对话与澄清不需要业务证据，但不能以此类型输出未经查询的业务状态。
 缺少工具或资料时明确说明；不得请求密钥或尝试运行代码。"""
+
+
+_ACCEPT_ROLE_MISMATCH = (
+    "用户本轮是加工商接单，且已给出订单号。当前账号没有接单工具。"
+    "禁止调用 query_erp_outsource_followup_board 或任何采购待办查询。"
+    "直接输出 CLARIFICATION：接单请用加工商账号登录后再说同一句话。"
+)
+_WAREHOUSE_ROLE_MISMATCH = (
+    "用户本轮是仓库发料或备料，且已给出订单号。当前账号没有仓库办理工具。"
+    "直接输出 CLARIFICATION：发料/备料请用仓管账号登录后再说同一句话。"
+)
+
+
+def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = ""):
+    """Activate the matching prepare tool when speech already locked identity."""
+    extra = set()
+    names = set(all_tool_names or ())
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            ACCEPT_TOOL,
+            spoken_accept_arguments,
+        )
+        if ACCEPT_TOOL in names and spoken_accept_arguments(prompt, context_text):
+            extra.add(ACCEPT_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools import (
+            SHIP_TOOL,
+            spoken_ship_arguments,
+        )
+        if SHIP_TOOL in names and spoken_ship_arguments(prompt, context_text):
+            extra.add(SHIP_TOOL)
+    except ImportError:
+        pass
+    return extra
+
+
+def spoken_write_missing_capability(prompt: str, all_tool_names, context_text: str = ""):
+    """Instruction when locked write speech cannot run on this account."""
+    names = set(all_tool_names or ())
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            ACCEPT_TOOL,
+            spoken_accept_arguments,
+        )
+        if spoken_accept_arguments(prompt, context_text) and ACCEPT_TOOL not in names:
+            return _ACCEPT_ROLE_MISMATCH
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools import (
+            SHIP_TOOL,
+            spoken_ship_arguments,
+        )
+        if spoken_ship_arguments(prompt, context_text) and SHIP_TOOL not in names:
+            return _WAREHOUSE_ROLE_MISMATCH
+    except ImportError:
+        pass
+    return None
+
+
+def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str = ""):
+    """Host-side prepare when identity is already locked in speech."""
+    names = set(active_tool_names or ())
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            QUOTE_TOOL,
+            spoken_quote_arguments,
+        )
+    except ImportError:
+        QUOTE_TOOL = ""
+        spoken_quote_arguments = None
+    if QUOTE_TOOL in names and spoken_quote_arguments:
+        arguments = spoken_quote_arguments(prompt, context_text)
+        if arguments:
+            return QUOTE_TOOL, arguments
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools import (
+            SHIP_TOOL,
+            spoken_ship_arguments,
+        )
+        if SHIP_TOOL in names:
+            arguments = spoken_ship_arguments(prompt, context_text)
+            if arguments:
+                return SHIP_TOOL, arguments
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            ACCEPT_TOOL,
+            spoken_accept_arguments,
+        )
+    except ImportError:
+        return None
+    if ACCEPT_TOOL not in names:
+        return None
+    arguments = spoken_accept_arguments(prompt, context_text)
+    if not arguments:
+        return None
+    return ACCEPT_TOOL, arguments

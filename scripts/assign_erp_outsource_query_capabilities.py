@@ -83,6 +83,26 @@ ROLE_CAPS = {
             *PROCESSOR_FULFILLMENT_TOOL_SPECS, *PROCESSOR_SHIP_TOOL_SPECS,
         ),
     },
+    "SUP000496": {
+        "skills": (
+            "outsource_processor_query", "outsource_processor_ops",
+            "outsource_processor_fulfillment", "outsource_processor_product_ship",
+        ),
+        "tools": (
+            *PROCESSOR_TOOL_KEYS, *PROCESSOR_TOOL_SPECS,
+            *PROCESSOR_FULFILLMENT_TOOL_SPECS, *PROCESSOR_SHIP_TOOL_SPECS,
+        ),
+    },
+    "SUP000237": {
+        "skills": (
+            "outsource_processor_query", "outsource_processor_ops",
+            "outsource_processor_fulfillment", "outsource_processor_product_ship",
+        ),
+        "tools": (
+            *PROCESSOR_TOOL_KEYS, *PROCESSOR_TOOL_SPECS,
+            *PROCESSOR_FULFILLMENT_TOOL_SPECS, *PROCESSOR_SHIP_TOOL_SPECS,
+        ),
+    },
     "xuehaifeng": {
         "skills": ("outsource_warehouse_ops", "outsource_warehouse_inbound"),
         "tools": (*WAREHOUSE_TOOL_SPECS, *WAREHOUSE_INBOUND_TOOL_SPECS),
