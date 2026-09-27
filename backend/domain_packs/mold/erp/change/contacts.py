@@ -60,6 +60,78 @@ class Mutation(StrictModel):
     revision:int=Field(ge=1)
 
 
+class ContactUnitInput(StrictModel):
+    department_id:str=Field(min_length=1,max_length=36)
+    assignee_id:str=Field(min_length=1,max_length=36)
+    completion_date:date
+    work_content:str=Field(min_length=1,max_length=4000)
+    hours:Decimal=Field(ge=0,max_digits=12,decimal_places=2)
+    amount:Decimal=Field(ge=0,max_digits=18,decimal_places=2)
+    currency:str=Field(pattern=r'^[A-Z]{3}$')
+    remark:str=Field(default='',max_length=1000)
+
+    @field_validator('work_content','remark')
+    @classmethod
+    def clean_text(cls,v):
+        return v.strip()
+
+
+class EngineeringContactFormInput(StrictModel):
+    customer_ref:str=Field(min_length=1,max_length=200)
+    customer_name:str=Field(min_length=1,max_length=200)
+    product_name:str=Field(min_length=1,max_length=200)
+    mold_number:str=Field(min_length=1,max_length=100)
+    product_ref:str=Field(min_length=1,max_length=200)
+    responsible_department_id:str=Field(min_length=1,max_length=36)
+    application_date:date
+    completion_date:date
+    completion_type:Literal['NORMAL','URGENT','CRITICAL']
+    change_categories:list[Literal[
+        'CUSTOMER_CHANGE','DESIGN_ISSUE','ASSEMBLY_ISSUE','MACHINING_ISSUE',
+        'OUTSOURCE_DEFECT','COST_REDUCTION','PROCESS_IMPROVEMENT','OTHER',
+    ]]=Field(min_length=1,max_length=8)
+    change_description:str=Field(min_length=1,max_length=10000)
+    countermeasure:str=Field(min_length=1,max_length=10000)
+    related_units:list[ContactUnitInput]=Field(min_length=1,max_length=30)
+    pricing_note:str=Field(default='',max_length=2000)
+    total_amount:Decimal=Field(ge=0,max_digits=18,decimal_places=2)
+    currency:str=Field(pattern=r'^[A-Z]{3}$')
+
+    @field_validator('customer_ref','customer_name','product_name','mold_number','product_ref',
+                     'change_description','countermeasure')
+    @classmethod
+    def nonblank(cls,v):
+        value=v.strip()
+        if not value:
+            raise ValueError('内容不能为空')
+        return value
+
+    @field_validator('pricing_note')
+    @classmethod
+    def clean_pricing_note(cls,v):
+        return v.strip()
+
+    @model_validator(mode='after')
+    def validate_form(self):
+        if self.application_date>now().date():
+            raise ValueError('申请日期不能晚于当前日期')
+        if self.completion_date<self.application_date:
+            raise ValueError('完成日期不能早于申请日期')
+        if len(set(self.change_categories))!=len(self.change_categories):
+            raise ValueError('变更类别不能重复')
+        if any(unit.completion_date<self.application_date for unit in self.related_units):
+            raise ValueError('相关单位完成时间不能早于申请日期')
+        if any(unit.completion_date>self.completion_date for unit in self.related_units):
+            raise ValueError('相关单位完成时间不能晚于总完成日期')
+        return self
+
+
+class FormTaskBatchInput(Mutation):
+    case_id:str=Field(min_length=1,max_length=36)
+    # 自动触发阶段允许为空；弹窗重新准备时必须提供完整表单。
+    form:EngineeringContactFormInput|None=None
+
+
 class NoteInput(Mutation):
     source:Literal['OWN','OFFLINE']
     occurred_at:AwareDatetime
