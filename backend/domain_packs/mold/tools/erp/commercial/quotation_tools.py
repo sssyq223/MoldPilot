@@ -80,6 +80,19 @@ class QuotationProposalInput(StrictModel):
         return self
 
 
+class QuotationFormInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    file_ids: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("file_ids")
+    @classmethod
+    def unique_files(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("报价资料文件不能重复")
+        return value
+
+
 class QuotationFeedbackProposalInput(StrictModel):
     project_id: str = Field(min_length=1, max_length=36)
     project_version: int = Field(ge=1)
@@ -148,6 +161,10 @@ def quotation_feedback_schema():
     return QuotationFeedbackProposalInput.model_json_schema()
 
 
+def quotation_form_schema():
+    return QuotationFormInput.model_json_schema()
+
+
 def parse_quotation(arguments):
     try:
         return QuotationProposalInput.model_validate(arguments or {})
@@ -160,6 +177,13 @@ def parse_feedback(arguments):
         return QuotationFeedbackProposalInput.model_validate(arguments or {})
     except ValidationError as error:
         raise DomainError("INVALID_TOOL_INPUT", "客户反馈参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+
+
+def parse_quotation_form(arguments):
+    try:
+        return QuotationFormInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "报价表单参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
 
 
 def _project(db, user, project_id, project_version):
@@ -265,7 +289,32 @@ def preview_feedback(db, user, data):
     return project, quote, display
 
 
+def preview_quotation_form(db, user, data, run):
+    project = _project(db, user, data.project_id, data.project_version)
+    blobs = validate_files(db, user, data.file_ids, run, project.id, "UPLOAD", "quotation-form")
+    existing, truncated = quotation_rows(db, user, project.id)
+    return {
+        "form_status": "NEEDS_HUMAN_SELECTION",
+        "project": {"id": project.id, "code": project.code, "name": project.name},
+        "files": [{"id": blob.id, "filename": blob.filename, "sha256": blob.sha256} for blob in blobs],
+        "existing_quotations": existing,
+        "existing_quotations_truncated": truncated,
+        "next_step": "补齐报价编号、版本、成本/工艺/工期、价格、交期、收款条件后再准备正式报价版本。",
+    }
+
+
 def execute_quotation_tool(db, user, key, arguments, run=None):
+    if key == "prepare_quotation_form":
+        data = parse_quotation_form(arguments)
+        display = preview_quotation_form(db, user, data, run)
+        proposal = {
+            "kind": "quotation_form", "action": "quotation_form", "requires_approval": False,
+            "input": data.model_dump(mode="json"), "display": display,
+            "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False),
+        }
+        return {"data": [], "source": "agent_proposal", "as_of": now().isoformat(),
+                "proposal": proposal,
+                "limitations": ["仅预填客户报价工作表，必须由本人补齐并确认正式报价字段；不会创建报价版本。"]}
     if key == "prepare_quotation_version":
         data = parse_quotation(arguments)
         _, _, display = preview_quotation(db, user, data, run)
