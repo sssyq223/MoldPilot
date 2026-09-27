@@ -6,6 +6,7 @@ from app import models as m
 from app.authorization import PERMISSIONS
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tools.erp.commercial.quote_evaluation_tools import quotation_version_comparison
 
 
 def factory():
@@ -78,6 +79,23 @@ def sales_contract(db, project, created_by, number="SC-EVAL-001"):
         )
     )
     return subject
+
+
+def test_quotation_version_comparison_is_read_only_and_field_limited():
+    result = quotation_version_comparison([
+        {
+            "id": "v1", "version": 1, "quoted_amount": "100000.00",
+            "promised_delivery_date": "2026-12-01", "payment_terms": "30%",
+        },
+        {
+            "id": "v2", "version": 2, "previous_id": "v1",
+            "quoted_amount": "108000.00", "promised_delivery_date": "2026-12-15",
+            "payment_terms": "40%",
+        },
+    ])
+    assert result["current_version"]["version"] == 2
+    assert result["comparison"]["quoted_amount"] == {"before": "100000.00", "after": "108000.00"}
+    assert result["comparison"]["promised_delivery_date"] == {"before": "2026-12-01", "after": "2026-12-15"}
 
 
 def test_quote_evaluation_schema_and_gap_analysis():
