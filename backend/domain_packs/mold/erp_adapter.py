@@ -11,7 +11,7 @@ from agent_core.errors import DomainError
 CATEGORIES={'hardware':'hardware','hardware_standard':'hardware','wj':'hardware','五金':'hardware',
             'steel':'raw_material','steel_plate':'raw_material','steelplate':'raw_material','钢料':'raw_material',
             'outsource':'outsource','outsourcing':'outsource','entrust':'outsource','委外':'outsource','外协':'outsource'}
-READ_FIELDS=['groupId','groupNo','requestId','requestNo','moldNo','materialCategory','supplierName','groupStatus',
+READ_FIELDS=['groupId','groupNo','requestId','requestNo','projectNo','project_no','projectId','project_id','moldNo','materialCategory','supplierName','groupStatus','version','versionNo',
              'decisionStatusLabel','totalQuantity','totalAmount','deliveryDate','canCreateOrder','orderCreateBlockReason',
              'orderId','orderNo','details','candidates','abnormalFlag','abnormalReason','frozenFlag','supplierId',
              'pricingMode','finalConfirmedPrice','pricingRemark']
@@ -154,6 +154,97 @@ class ERPClient:
     def info(self):return self.request('GET','getInfo')
     def groups(self,mold_no=None):return self.request('GET','purchase/decision/list',params={'moldNo':mold_no} if mold_no else {})['data']
     def group(self,group_id):return self.request('GET',f'purchase/decision/{int(group_id)}')['data']
+    def purchase_decision_groups(self, mold_no=None, project_no=None, material_category=None):
+        """Read bounded ERP purchase-decision groups for procurement skills.
+
+        The adapter keeps the endpoint and filters code-registered.  Callers
+        never provide an arbitrary URL or a raw query string.
+        """
+        params = {
+            key: value for key, value in {
+                'moldNo': mold_no,
+                'projectNo': project_no,
+                'materialCategory': material_category,
+                'pageNum': 1,
+                'pageSize': 200,
+            }.items() if value not in (None, '')
+        }
+        payload = self.request('GET', 'purchase/decision/list', params=params)
+        rows = payload.get('data') or payload.get('rows') or payload
+        if isinstance(rows, dict):
+            rows = rows.get('rows') or rows.get('records') or rows.get('items') or []
+        if not isinstance(rows, list):
+            raise DomainError('ERP_PROTOCOL_ERROR', 'ERP 采购决策列表响应格式不合法', 502)
+        cards = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            card = review_material(row)
+            native_id = row.get('groupId') or row.get('id') or row.get('groupNo')
+            card.update({
+                'source_system': 'ERP',
+                'source_endpoint': 'purchase/decision/list',
+                'source_ref': f'purchase/decision/list:{native_id}',
+                'source_as_of': host_ports().now().isoformat(),
+            })
+            cards.append(card)
+        return cards[:200]
+
+    def quote_approval_preview(self, group_id):
+        """Read the ERP quote-approval preview for one purchase group."""
+        return normalized(self.request(
+            'GET', f'purchase/decision/{int(group_id)}/quote-approval-preview'
+        ).get('data') or {})
+
+    def submit_hardware_quote(self, group_id, payload):
+        """Submit a confirmed hardware quote to the ERP business API."""
+        return normalized(self.request(
+            'POST', f'purchase/decision/{int(group_id)}/hardware-quote', json=payload
+        ).get('data') or {})
+
+    def confirm_purchase_decision(self, group_id, payload=None):
+        """Confirm a purchase decision after MoldPilot human confirmation."""
+        return normalized(self.request(
+            'POST', f'purchase/decision/{int(group_id)}/confirm', json=payload or {}
+        ).get('data') or {})
+
+    def create_purchase_order(self, group_id):
+        """Create the ERP purchase order for an already confirmed group."""
+        return normalized(self.create_order(group_id) or {})
+    def preview_split_mode(self, payload):
+        """Preview steel split/no-split feasibility without committing a group."""
+        return normalized(self.request(
+            'POST', 'purchase/workbench/split/mode-preview', json=payload
+        ).get('data') or {})
+
+    def confirm_split_workbench(self, payload):
+        """Confirm the ERP split workbench route after human confirmation."""
+        return normalized(self.request(
+            'POST', 'purchase/workbench/split/confirm', json=payload
+        ).get('data') or {})
+
+    def supplier_delivery_modifiable_list(self, params=None):
+        payload = self.request(
+            'GET', 'purchase/supplier-delivery/modifiable-list',
+            params={**(params or {}), 'pageNum': 1, 'pageSize': 200},
+        )
+        return normalized(payload.get('rows') or payload.get('data') or [])
+
+    def supplier_delivery_detail(self, delivery_id):
+        return normalized(self.request(
+            'GET', f'purchase/supplier-delivery/{int(delivery_id)}'
+        ).get('data') or {})
+
+    def supplier_delivery_modify_preview(self, delivery_id):
+        return normalized(self.request(
+            'GET', f'purchase/supplier-delivery/{int(delivery_id)}/modify-preview'
+        ).get('data') or {})
+
+    def create_supplier_delivery_modify_request(self, delivery_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/supplier-delivery/{int(delivery_id)}/modify-request',
+            json=payload,
+        ).get('data') or {})
     def accounting_checklist_reference(self, file_id):
         return self.request('GET', f'production/preplanOrder/cost-sheet/directory/{int(file_id)}/binding-reference')['data']
     def create_order(self,group_id):return self.request('POST',f'purchase/decision/{int(group_id)}/create-order')['data']

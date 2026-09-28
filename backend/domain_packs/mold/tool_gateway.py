@@ -180,6 +180,51 @@ TOOLS.update({
     'prepare_model_default': {'description': '准备管理员切换本机默认模型；必须携带目录 revision，本人确认后才写入。', 'permission': 'model_config.write'},
 })
 
+# Procurement migration tools. They are registered here rather than loaded
+# dynamically so the normal capability, permission and confirmation filters
+# remain the single source of truth.
+TOOLS.update({
+    'query_raw_material_purchase_context': {
+        'description': '查询 ERP 原材/钢料采购分组、订单、供应商发货、入库、库存和质检上下文；只读，不在 Agent 侧建单。',
+        'permission': 'purchase.read',
+    },
+    'query_hardware_purchase_context': {
+        'description': '查询 ERP 五金采购分组、报价审批预览、订单和履约上下文；只读，不调用 ERP 旧审批流。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_procurement_context': {
+        'description': '查询 ERP 供应商订单、接单/拒单、发货、入库、库存和质检事实；只读，不伪造供应商状态。',
+        'permission': 'order.read',
+    },
+    'query_purchase_decision_context': {
+        'description': '查询 ERP 采购决策分组及报价审批材料；只读，结果带 ERP 来源和核对时间。',
+        'permission': 'purchase.read',
+    },
+    'prepare_raw_material_split': {
+        'description': '准备原材/钢料拆单或整单不拆的 ERP 操作提案；必须人工确认，确认后才调用 ERP 拆单接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_decision': {
+        'description': '准备 ERP 采购决策确认或空组关闭提案；人工确认后才调用 ERP 决策接口。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_hardware_quote': {
+        'description': '准备五金报价提交材料；只生成 Agent 确认卡，批准后调用 ERP 报价提交接口。',
+        'permission': 'purchase_price.submit',
+    },
+    'prepare_raw_material_order': {
+        'description': '准备生成原材采购订单的确认卡；批准后调用 ERP 正式下单接口。',
+        'permission': 'order.issue',
+    },
+    'prepare_hardware_order': {
+        'description': '准备生成五金采购订单的确认卡；批准后调用 ERP 正式下单接口。',
+        'permission': 'order.issue',
+    },
+    'prepare_supplier_delivery_change': {
+        'description': '准备供应商交期/数量变更申请；批准后调用 ERP 受控变更接口。',
+        'permission': 'shipment.confirm',
+    },
+})
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
@@ -696,6 +741,36 @@ SKILLS.update({
     },
 })
 
+SKILLS.update({
+    'steel_purchase': {
+        'name': '原材/钢料 ERP 采购链',
+        'tools': ['query_raw_material_purchase_context'],
+        'optional_tools': ['query_purchase_decision_context', 'prepare_raw_material_split',
+                           'prepare_purchase_decision', 'prepare_raw_material_order'],
+        'activation_queries': ['原材采购', '钢料采购', '钢料拆单', '整单不拆', '原材下单'],
+    },
+    'hardware_purchase': {
+        'name': '五金 ERP 采购链',
+        'tools': ['query_hardware_purchase_context'],
+        'optional_tools': ['prepare_hardware_quote', 'prepare_hardware_order',
+                           'query_purchase_decision_context'],
+        'activation_queries': ['五金采购', '五金询价', '五金报价', '五金定标', '五金下单'],
+    },
+    'supplier_collaboration': {
+        'name': '供应商 ERP 履约协同',
+        'tools': ['query_supplier_procurement_context'],
+        'optional_tools': ['prepare_supplier_delivery_change', 'query_purchase_decision_context'],
+        'activation_queries': ['供应商接单', '供应商拒单', '供应商发货', '供应商交期', '供应商履约', '供应商异常'],
+    },
+    'purchase_decision_governance': {
+        'name': '采购决策与价格受控执行',
+        'tools': ['query_purchase_decision_context'],
+        'optional_tools': ['prepare_purchase_decision', 'prepare_hardware_quote',
+                           'prepare_raw_material_order', 'prepare_hardware_order'],
+        'activation_queries': ['采购决策', '采购定标', '采购价格审批', '生成采购订单'],
+    },
+})
+
 DEPARTMENT_NAMES = {
     'project': '项目管理', 'purchase': '采购部门', 'design': '设计部门', 'engineering': '工程部门',
     'finance': '财务部门', 'warehouse': '仓储部门', 'assembly': '装配部门', 'trial': '试模部门',
@@ -833,6 +908,16 @@ CAPABILITY_NAMES = {
     'prepare_model_provider_save': '准备保存本地模型供应商',
     'prepare_model_save': '准备保存本地模型目录',
     'prepare_model_default': '准备切换本地默认模型',
+    'query_raw_material_purchase_context': '查询原材/钢料采购上下文',
+    'query_hardware_purchase_context': '查询五金采购上下文',
+    'query_supplier_procurement_context': '查询供应商履约上下文',
+    'query_purchase_decision_context': '查询 ERP 采购决策上下文',
+    'prepare_raw_material_split': '准备原材拆单路径',
+    'prepare_purchase_decision': '准备采购决策确认',
+    'prepare_hardware_quote': '准备五金报价审批提交',
+    'prepare_raw_material_order': '准备原材采购下单',
+    'prepare_hardware_order': '准备五金采购下单',
+    'prepare_supplier_delivery_change': '准备供应商交期变更',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -892,6 +977,13 @@ CAPABILITY_DEPARTMENTS = {
     'procurement_price_context_review': 'purchase', 'query_purchase_requests': 'purchase',
     'purchase_request_review': 'purchase', 'query_purchase_orders': 'purchase', 'analyze_delivery_risk': 'purchase',
     'delivery_risk_analysis': 'purchase', 'business_status_review': 'purchase',
+    'query_raw_material_purchase_context': 'purchase', 'query_hardware_purchase_context': 'purchase',
+    'query_supplier_procurement_context': 'purchase', 'query_purchase_decision_context': 'purchase',
+    'prepare_raw_material_split': 'purchase', 'prepare_purchase_decision': 'purchase',
+    'prepare_hardware_quote': 'purchase', 'prepare_raw_material_order': 'purchase',
+    'prepare_hardware_order': 'purchase', 'prepare_supplier_delivery_change': 'purchase',
+    'steel_purchase': 'purchase', 'hardware_purchase': 'purchase',
+    'supplier_collaboration': 'purchase', 'purchase_decision_governance': 'purchase',
     'query_project_control_context': 'project', 'prepare_project_pause': 'project',
     'prepare_project_resume': 'project', 'project_pause_resume': 'project',
     'query_project_closure_context': 'project', 'prepare_project_closure_checklist': 'project',
@@ -955,6 +1047,11 @@ CAPABILITY_TYPES = {
     'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_material_verification': 'operation',
     'prepare_supplier_progress_policy': 'operation',
     'prepare_supplier_progress_report': 'operation',
+    'prepare_raw_material_split': 'operation', 'prepare_purchase_decision': 'approval',
+    'prepare_hardware_quote': 'approval', 'prepare_raw_material_order': 'approval',
+    'prepare_hardware_order': 'approval', 'prepare_supplier_delivery_change': 'operation',
+    'steel_purchase': 'review', 'hardware_purchase': 'review',
+    'supplier_collaboration': 'review', 'purchase_decision_governance': 'review',
     'change_intake_review': 'review', 'procurement_price_context_review': 'review',
     'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
     'business_status_review': 'review', 'project_dossier_review': 'review',
@@ -1269,6 +1366,18 @@ def tool_schema(key):
     if key=='query_procurement_price_context':
         from domain_packs.mold.tools.erp.procurement.procurement_tools import ProcurementPriceContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProcurementPriceContextInput.model_json_schema()}}
+    if key in {
+        'query_raw_material_purchase_context', 'query_hardware_purchase_context',
+        'query_supplier_procurement_context', 'query_purchase_decision_context',
+    }:
+        from domain_packs.mold.tools.erp.procurement.migration_tools import procurement_context_schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':procurement_context_schema()}}
+    if key in {
+        'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
+        'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+    }:
+        from domain_packs.mold.tools.erp.procurement.migration_tools import proposal_schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':proposal_schema(key)}}
     if key=='analyze_delivery_risk':
         from domain_packs.mold.erp.procurement.procurement import DeliveryRiskInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':DeliveryRiskInput.model_json_schema()}}
@@ -1596,6 +1705,14 @@ def execute(db, user, key, arguments, run=None):
         try:data=ProcurementPriceContextInput.model_validate(arguments or {})
         except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','采购价格与订单上下文参数无效：'+error.errors()[0]['msg']) from None
         return query(db,user,data,set(available_tools(db,user)))
+    if key in {
+        'query_raw_material_purchase_context', 'query_hardware_purchase_context',
+        'query_supplier_procurement_context', 'query_purchase_decision_context',
+        'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
+        'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+    }:
+        from domain_packs.mold.tools.erp.procurement.migration_tools import execute_tool
+        return execute_tool(db, user, key, arguments, run=run)
     if key=='analyze_delivery_risk':
         from pydantic import ValidationError
         from domain_packs.mold.erp.procurement.procurement import DeliveryRiskInput,analyze_delivery_risk

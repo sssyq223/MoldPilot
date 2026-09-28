@@ -313,6 +313,52 @@ def test_procurement_execution_context_reads_project_scoped_erp_facts(monkeypatc
     ]
 
 
+def test_procurement_migration_adapter_uses_registered_decision_and_delivery_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path, request.read().decode() if request.content else ''))
+        path = request.url.path
+        if path.endswith('/purchase/decision/list'):
+            return httpx.Response(200, json={'code': 200, 'data': [{'groupId': 7, 'groupNo': 'G-7', 'projectNo': 'P-1', 'moldNo': 'M-1', 'materialCategory': 'hardware'}]})
+        if path.endswith('/purchase/decision/7'):
+            return httpx.Response(200, json={'code': 200, 'data': {'groupId': 7, 'projectNo': 'P-1', 'moldNo': 'M-1', 'groupStatus': 'READY', 'version': 2}})
+        if path.endswith('/quote-approval-preview'):
+            return httpx.Response(200, json={'code': 200, 'data': {'groupId': 7, 'items': []}})
+        if path.endswith('/hardware-quote'):
+            return httpx.Response(200, json={'code': 200, 'data': {'accepted': True}})
+        if path.endswith('/confirm'):
+            return httpx.Response(200, json={'code': 200, 'data': {'confirmed': True}})
+        if path.endswith('/create-order'):
+            return httpx.Response(200, json={'code': 200, 'data': {'orderNo': 'PO-7'}})
+        if path.endswith('/supplier-delivery/9/modify-request'):
+            return httpx.Response(200, json={'code': 200, 'data': {'requestId': 99}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_decision_groups(project_no='P-1')[0]['groupNo'] == 'G-7'
+        assert client.group(7)['groupStatus'] == 'READY'
+        assert client.quote_approval_preview(7)['groupId'] == 7
+        assert client.submit_hardware_quote(7, {'supplierId': 1})['accepted'] is True
+        assert client.confirm_purchase_decision(7, {'decision': 'CONFIRM'})['confirmed'] is True
+        assert client.create_purchase_order(7)['orderNo'] == 'PO-7'
+        assert client.create_supplier_delivery_modify_request(9, {'reason': '延期'})['requestId'] == 99
+    finally:
+        client.close()
+
+    assert [path for _, path, _ in calls] == [
+        '/purchase/decision/list', '/purchase/decision/7',
+        '/purchase/decision/7/quote-approval-preview',
+        '/purchase/decision/7/hardware-quote', '/purchase/decision/7/confirm',
+        '/purchase/decision/7/create-order', '/purchase/supplier-delivery/9/modify-request',
+    ]
+
+
 def test_plan_progress_rejects_success_payload_without_data_instead_of_raising_keyerror(monkeypatch):
     monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
         erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
