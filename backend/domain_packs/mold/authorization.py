@@ -14,6 +14,9 @@ PERMISSIONS = {
     "purchase.create": ["project_id", "material_id", "quantity", "due_date", "remark"],
     "purchase.submit": ["*"],
     "purchase.approve": ["*"],
+    "mail.read": ["*"],
+    "mail.manage": ["*"],
+    "mail.review": ["*"],
     **DOMAIN_PERMISSIONS,
     **{
         f"contact.{action}": ["*"]

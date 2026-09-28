@@ -8,7 +8,9 @@ def test_mail_tools_are_registered_with_local_skill():
     assert "query_mail_monitor_status" in tool_gateway.TOOLS
     assert tool_gateway.tool_schema("query_mail_monitor_status")["function"]["name"] == "query_mail_monitor_status"
     skill = tool_gateway.SKILLS["mail_monitoring"]
-    assert skill["tools"] == ["query_mail_monitor_status", "query_mail_processing_history"]
+    assert skill["tools"] == ["query_mail_monitor_status"]
+    assert "query_mail_processing_history" in skill["optional_tools"]
+    assert skill["host_auto_invoke_empty_arguments"] is True
     assert tool_gateway.skill_paths()["mail_monitoring"]["domain"] == "mail"
 
 

@@ -240,13 +240,15 @@ TOOLS.update({
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS['mail_monitoring'] = {
     'name': '邮件监听与解析',
-    'tools': ['query_mail_monitor_status', 'query_mail_processing_history'],
-    'optional_tools': ['query_mail_message_detail', 'query_mail_document', 'prepare_mail_monitor_config', 'prepare_mail_monitor_rescan', 'prepare_mail_review'],
+    'tools': ['query_mail_monitor_status'],
+    'optional_tools': ['query_mail_processing_history', 'query_mail_message_detail', 'query_mail_document', 'prepare_mail_monitor_config', 'prepare_mail_monitor_rescan', 'prepare_mail_review'],
     'activation_tools': ['query_mail_monitor_status', 'query_mail_processing_history'],
     'activation_queries': ['邮件监听', '邮箱监听', '邮件解析', '邮件处理记录', 'IMAP', '邮件附件'],
     'auto_activation_queries': ['邮件监听状态', '邮件处理记录', '最近邮件解析'],
     'requires_tool_evidence': True,
     'suppress_tool_search_on_auto_activation': True,
+    'host_auto_invoke_empty_arguments': True,
+    'host_auto_invoke_queries': ['邮件监听状态', '当前是否配置企业邮箱', '邮件处理记录', '最近邮件解析'],
 }
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
