@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agent_core.model_base import Base, IdentityMixin, J
@@ -104,6 +104,7 @@ class MailMessage(IdentityMixin, Base):
     detail_json: Mapped[dict] = mapped_column(J, default=dict)
     __table_args__ = (
         CheckConstraint("outcome IN ('RECEIVED','IMPORTED','DUPLICATE','IGNORED_SENDER','IGNORED_NO_DOCUMENT','IGNORED_NO_KEYWORD','FAILED','QUARANTINED','PARTIAL_FAILURE')"),
+        UniqueConstraint("account_id", "uid_validity", "uid", name="uq_mail_message_uid"),
     )
 
 
