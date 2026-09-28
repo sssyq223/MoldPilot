@@ -101,6 +101,40 @@ def _mode_label(value):
     return {"INTERNAL": "内部加工", "FULL_OUTSOURCE": "整套委外"}.get(value, value)
 
 
+_QUOTATION_COMPARISON_FIELDS = {
+    "quoted_amount": "quoted_amount",
+    "promised_delivery_date": "promised_delivery_date",
+    "payment_terms": "payment_terms",
+    "preliminary_execution_mode": "preliminary_execution_mode",
+    "cost_amount": "cost_amount",
+    "duration_days": "duration_days",
+    "supplier_quote_amount": "supplier_quote_amount",
+    "supplier_delivery_date": "supplier_delivery_date",
+}
+
+
+def quotation_version_comparison(records: list[dict]):
+    """返回报价版本当前值与上一版的只读差异，不修改任何历史记录。"""
+    versions = [row for row in records if row.get("version") is not None]
+    if not versions:
+        return {"current_version": None, "comparison": {}}
+    versions.sort(key=lambda row: (int(row.get("version") or 0), row.get("id") or ""))
+    current = versions[-1]
+    previous = next((row for row in versions if row.get("id") == current.get("previous_id")), None)
+    if previous is None and len(versions) > 1:
+        previous = versions[-2]
+    if previous is None:
+        return {"current_version": current, "comparison": {}}
+    return {
+        "current_version": current,
+        "comparison": {
+            field: {"before": previous.get(field), "after": current.get(field)}
+            for field in _QUOTATION_COMPARISON_FIELDS
+            if previous.get(field) != current.get(field)
+        },
+    }
+
+
 def _contract_summary(row: dict):
     detail = row.get("detail") or {}
     return {
@@ -133,6 +167,7 @@ def _plan_summary(rows: list[dict]):
 
 def _analysis(project, profile: dict | None, quotation_records: list[dict], quote_records: list[dict], contracts: list[dict], outsource_contracts: list[dict], plan_tasks: list[dict]):
     effective_quotations = [row for row in quotation_records if row.get("quotation_status") == "EFFECTIVE"]
+    quotation_comparison = quotation_version_comparison(effective_quotations or quotation_records)
     open_quotations = [row for row in quotation_records if row.get("quotation_status") in {
         "DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"
     }]
@@ -184,7 +219,9 @@ def _analysis(project, profile: dict | None, quotation_records: list[dict], quot
                 else "NOT_RECORDED"
             ),
         },
-        "current_effective_quotation": effective_quotations[0] if len(effective_quotations) == 1 else None,
+        "current_effective_quotation": quotation_comparison["current_version"] if len(effective_quotations) >= 1 else None,
+        "current_version": quotation_comparison["current_version"],
+        "comparison": quotation_comparison["comparison"],
         "open_quotation_versions": open_quotations,
         "latest_effective_acceptance": latest_accept,
         "latest_effective_rejection": latest_reject,

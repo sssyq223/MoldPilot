@@ -1,5 +1,12 @@
 # 开发覆盖情况
 
+## 工程变更申请联络单批量办理事项（2026-09-27，代码验证状态）
+
+- 附件关联确认后的 ONLINE 工程联络单现在续办 `prepare_contact_form_tasks`，初始 Proposal 只展示空表单状态；工作台会自动打开 `EngineeringContactTaskDialog`，人工选择责任部门、责任人、完成日期、完成类型、变更类别和工艺评估后，经 `/form-intent` 重新生成最终 Proposal。
+- 批量确认仍通过 `contact.execute` 与 HumanIntent；全部部门/人员权限校验完成后才一次性创建 `ASSIGNED` 状态的 `ContactTask`，并将完整表单、当前附件版本、表单版本和 Proposal 哈希保存到 `ContactRecord` 快照。HISTORY 仅允许补录线下事实。
+- 普通 `prepare_contact_task` 仍保留给普通会话追加事项；联络详情新增工程变更申请联络单快照只读展示。未执行数据库迁移、未运行前端构建、未完成真实工作台上传闭环。
+- 本轮定向后端验证：表单 Proposal 相关 `6 passed`，Skill 续办 `2 passed`；运行环境使用项目声明的 PostgreSQL/Redis 依赖。前端只完成源码和文本契约核对，未进行浏览器或构建验证。
+
 ## 本地能力与第 11 章增量（2026-09-24，代码验证状态）
 
 - 工程联络单上传识别链路已支持 PDF/PNG/JPG 及可编辑 DOCX：DOCX 保留原件后由本机 Word COM 转成临时 PDF，再复用文字层/PaddleOCR、页块坐标和 AuditEvent；转换源/派生 PDF SHA256 与转换器写入完成事件，不新增迁移。表格型联络单仍需真实 Word 样本完成字段/复选框识别验收；真实工作台上传闭环尚未完成。

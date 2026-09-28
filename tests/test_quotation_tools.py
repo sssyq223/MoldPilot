@@ -137,6 +137,26 @@ def prepare_and_confirm(db, actor, run, args, sequence=0):
     return evidence, receipt
 
 
+def test_quotation_form_seed_is_registered_and_does_not_write_a_quote():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db)
+            project_row = project(db, "QUOTE-FORM-001")
+            run, blob = run_with_file(db, admin, project_row.code)
+            schema = tool_schema("prepare_quotation_form")["function"]["parameters"]
+            assert {"project_id", "project_version", "file_ids"} <= set(schema["properties"])
+            evidence = execute(db, admin, "prepare_quotation_form", {
+                "project_id": project_row.id,
+                "project_version": project_row.row_version,
+                "file_ids": [blob.id],
+            }, run=run)
+            assert evidence["proposal"]["display"]["form_status"] == "NEEDS_HUMAN_SELECTION"
+            assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind == "quotation")) is None
+    finally:
+        engine.dispose()
+
+
 def test_quotation_version_feedback_and_acceptance_chain_is_versioned_and_auditable():
     engine, Session = factory()
     try:

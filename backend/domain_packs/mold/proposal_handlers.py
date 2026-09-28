@@ -34,7 +34,7 @@ HANDLERS = (
     })),
     ProposalHandler("document_workflow.execute", "domain_packs.mold.erp.commercial.document_workflow", frozenset()),
     ProposalHandler("contact.execute", "domain_packs.mold.tools.erp.change.contact_tools", frozenset({
-        "prepare_contact_create", "prepare_contact_note", "prepare_contact_task",
+        "prepare_contact_create", "prepare_contact_note", "prepare_contact_task", "prepare_contact_form_tasks",
         "prepare_contact_assign", "prepare_contact_respond", "prepare_contact_attach",
         "prepare_contact_review", "prepare_contact_close", "prepare_contact_cancel_task",
         "prepare_contact_set_reviewer", "prepare_contact_resolution",
@@ -54,7 +54,7 @@ HANDLERS = (
     ProposalHandler("internal_start.execute", "domain_packs.mold.tools.erp.project.start_tools", frozenset({"prepare_internal_start"})),
     ProposalHandler("quote_acceptance.execute", "domain_packs.mold.tools.erp.commercial.quote_tools", frozenset({"prepare_quote_acceptance_decision"})),
     ProposalHandler("quotation.execute", "domain_packs.mold.tools.erp.commercial.quotation_tools", frozenset({
-        "prepare_quotation_version", "prepare_quotation_feedback",
+        "prepare_quotation_form", "prepare_quotation_version", "prepare_quotation_feedback",
     })),
     ProposalHandler("bid_intake.execute", "domain_packs.mold.tools.erp.commercial.bid_intake_tools", frozenset({
         "prepare_bid_intake_draft",

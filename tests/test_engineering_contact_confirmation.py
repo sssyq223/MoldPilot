@@ -55,7 +55,9 @@ def test_classification_confirmation_run_is_skill_only(contact_document_context,
     run = document_workflow._trigger_engineering_contact_skill(
         ctx.db, ctx.owner, intake, item, 'operation-2')
     assert run.checkpoint['run_trigger'] == 'DOCUMENT_CLASSIFICATION_CONFIRMED'
-    assert ctx.db.scalar(select(func.count()).select_from(m.ContactCase)) == 0
+    assert ctx.db.scalar(select(func.count()).select_from(m.ContactCase).where(
+        m.ContactCase.project_id == ctx.project.id
+    )) == 0
 
 
 def test_same_operation_replay_is_idempotent(contact_document_context):

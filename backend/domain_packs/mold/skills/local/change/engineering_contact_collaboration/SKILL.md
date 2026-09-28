@@ -6,13 +6,15 @@
 
 步骤：
 1. 由工程联络单文档接收 Skill 激活时，先调用 `query_document_intake` 读取本次文件、分类快照和来源证据；普通对话先调用 `query_contact_cases` 或 `query_contact_context`，确认本地联络单、事项和当前版本。
-2. 文档识别字段和本地项目候选明确后，新增联络单只调用 `prepare_contact_create` 生成 Proposal；需要补充、分派、反馈、方案、复验或关闭时，只调用已有本地 `prepare_contact_*` Tool 生成 Proposal。
+2. 文档识别字段和本地项目候选明确后，新增联络单只调用 `prepare_contact_create` 生成 Proposal；附件关联确认后的 `ONLINE` 联络单使用 `prepare_contact_form_tasks` 生成批量表单 Proposal，普通会话追加事项才使用 `prepare_contact_task`；需要补充、分派、反馈、方案、复验或关闭时，只调用已有本地 `prepare_contact_*` Tool 生成 Proposal。
 3. 方案必须冻结受影响对象、动作、附件和版本；变更后重新准备方案。
 4. 执行反馈、独立复验和人工关闭分别确认；处理人不得复验自己的结果。
 5. 关闭前检查最新有效方案下所有事项均已反馈并独立复验合格。
 
 边界：
 - 反馈不是审批，方案批准不等于执行完成，RESPONDED 不等于 CLOSED。
+- `prepare_contact_form_tasks` 只准备 Proposal；完成类型、变更类别、责任单位、具体责任人和工艺评估必须由本人在弹窗中选择或填写并确认，确认前不创建任何 `ContactTask`。
+- HISTORY 联络单只补录线下过程，不创建线上责任事项；ONLINE 批量事项必须在全部部门、人员和表单字段校验通过后一次性创建。
 - 影响合同、金额、交期、计划、图纸、物料或任务时只记录本地待处理事项，不伪造已完成回执。
 - 不接受 ERP ID、外部 Token、任意外部 URL，不调用 ERP HTTP、MCP、数据库或文件目录。
 - 工程联络 Skill 只编排本地对象和本地协作 Tool，不修改远程 ERP 文件。
