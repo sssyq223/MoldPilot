@@ -180,6 +180,18 @@ TOOLS.update({
     'prepare_model_default': {'description': '准备管理员切换本机默认模型；必须携带目录 revision，本人确认后才写入。', 'permission': 'model_config.write'},
 })
 
+# Mail monitoring tools are registered in the same catalogue as the other
+# MoldPilot local tools so permission and capability discovery stay unified.
+TOOLS.update({
+    'query_mail_monitor_status': {'description': '查询邮件监听账户、游标、最近轮询状态和错误；只读，不建立 IMAP 连接。', 'permission': 'mail.read'},
+    'query_mail_processing_history': {'description': '查询邮件处理台账、解析结果和失败/隔离状态；只读，不自动重试。', 'permission': 'mail.read'},
+    'query_mail_message_detail': {'description': '查询一封邮件的处理详情、分类依据和已解析文档元数据；不回显原始邮件正文。', 'permission': 'mail.read'},
+    'query_mail_document': {'description': '查询邮件文档元数据、哈希、业务分类和 FileObject 引用；只读。', 'permission': 'mail.read'},
+    'prepare_mail_monitor_config': {'description': '准备邮件监听配置确认卡；密码只通过 secret_ref 管理，确认前不会连接邮箱。', 'permission': 'mail.manage'},
+    'prepare_mail_monitor_rescan': {'description': '准备指定邮件或账户的受控重扫确认卡；不会绕过幂等、大小上限和人工确认。', 'permission': 'mail.manage'},
+    'prepare_mail_review': {'description': '准备邮件解析结果的人工接受、拒绝或重试确认卡；不会静默导入业务事实。', 'permission': 'mail.review'},
+})
+
 # Procurement migration tools. They are registered here rather than loaded
 # dynamically so the normal capability, permission and confirmation filters
 # remain the single source of truth.
@@ -226,6 +238,16 @@ TOOLS.update({
     },
 })
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
+SKILLS['mail_monitoring'] = {
+    'name': '邮件监听与解析',
+    'tools': ['query_mail_monitor_status', 'query_mail_processing_history'],
+    'optional_tools': ['query_mail_message_detail', 'query_mail_document', 'prepare_mail_monitor_config', 'prepare_mail_monitor_rescan', 'prepare_mail_review'],
+    'activation_tools': ['query_mail_monitor_status', 'query_mail_processing_history'],
+    'activation_queries': ['邮件监听', '邮箱监听', '邮件解析', '邮件处理记录', 'IMAP', '邮件附件'],
+    'auto_activation_queries': ['邮件监听状态', '邮件处理记录', '最近邮件解析'],
+    'requires_tool_evidence': True,
+    'suppress_tool_search_on_auto_activation': True,
+}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
                'business_object_matching':{'name':'业务对象候选匹配','tools':['query_business_object_candidates']},
                'project_lifecycle_orchestration':{'name':'项目全生命周期协调','tools':['query_project_lifecycle_context'],
@@ -1189,6 +1211,12 @@ def tool_schema(key):
             'name': key, 'description': TOOLS[key]['description'],
             'parameters': schema(key),
         }}
+    if key in {'query_mail_monitor_status', 'query_mail_processing_history', 'query_mail_message_detail',
+               'query_mail_document', 'prepare_mail_monitor_config', 'prepare_mail_monitor_rescan', 'prepare_mail_review'}:
+        from domain_packs.mold.tools.local.mail_tools import schema
+        return {'type': 'function', 'function': {
+            'name': key, 'description': TOOLS[key]['description'], 'parameters': schema(key),
+        }}
     if key in {'query_model_configuration', 'query_model_provider_directory', 'prepare_model_provider_save',
                'prepare_model_save', 'prepare_model_default'}:
         from domain_packs.mold.tools.local.model_configuration_tools import schema
@@ -1471,6 +1499,7 @@ def skill_paths():
         ("erp", "delivery"): ["交付", "物流", "发货", "签收", "客户验收"],
         ("erp", "finance"): ["财务", "回款", "付款", "发票", "结算", "扣款"],
         ("local", "change"): ["设变", "工程变更", "工程联络", "联络单", "承接", "复验", "关闭"],
+        ("local", "mail"): ["邮件", "邮箱", "IMAP", "监听", "邮件解析", "附件识别", "邮件处理记录"],
     }
     paths = {}
     for path in root.rglob("SKILL.md"):
@@ -1499,6 +1528,10 @@ def execute(db, user, key, arguments, run=None):
     if key in {'query_local_change_context', 'prepare_local_change_intake',
                'prepare_local_change_association', 'prepare_local_change_acceptance'}:
         from domain_packs.mold.tools.local.change_intake_tools import execute_tool
+        return execute_tool(db, user, key, arguments, run=run)
+    if key in {'query_mail_monitor_status', 'query_mail_processing_history', 'query_mail_message_detail',
+               'query_mail_document', 'prepare_mail_monitor_config', 'prepare_mail_monitor_rescan', 'prepare_mail_review'}:
+        from domain_packs.mold.tools.local.mail_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)
     if key in {'query_model_configuration', 'query_model_provider_directory', 'prepare_model_provider_save',
                'prepare_model_save', 'prepare_model_default'}:
