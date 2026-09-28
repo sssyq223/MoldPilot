@@ -41,7 +41,13 @@ MIGRATED_TOOLS = {
     "query_supplier_price_access_policy", "prepare_supplier_price_access_decision",
     "prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision",
     "prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision",
+    "query_purchase_order_context", "query_purchase_delivery_instruction_context",
+    "query_supplier_qualification_context", "query_supplier_price_catalog_context",
+    "query_supplier_price_approval_context",
+    "query_supplier_delivery_available_context", "query_supplier_pending_tasks_context",
+    "query_supplier_order_reject_reasons",
     "prepare_purchase_hardware_award_final_approve",
+    "prepare_supplier_price_approval_decision",
 }
 
 
@@ -55,7 +61,7 @@ def test_procurement_migration_tools_are_registered_with_typed_schemas():
 
 
 def test_procurement_migration_closure_keeps_target_count_explicit():
-    assert len(MIGRATED_TOOLS) == 42
+    assert len(MIGRATED_TOOLS) == 51
     assert "query_supplier_price_access_policy" in MIGRATED_TOOLS
     assert "prepare_purchase_hardware_award_final_approve" in MIGRATED_TOOLS
 
@@ -83,6 +89,7 @@ def test_procurement_migration_skills_have_skill_documents_and_confirmation_hand
         "prepare_supplier_price_access_decision",
         "prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision",
         "prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision",
+        "prepare_supplier_price_approval_decision",
     } <= handled
 
 
@@ -212,3 +219,16 @@ def test_phase4_hardware_award_final_approval_requires_explicit_price_source():
         }],
     })
     assert result["proposal"]["input"]["lines"][0]["source_type"] == "current_quote"
+
+
+def test_supplier_price_approval_prepare_requires_lines_for_approval_and_is_typed():
+    result = migration_tools.execute_tool(None, None, "prepare_supplier_price_approval_decision", {
+        "todo_id": 19, "decision": "approve", "approval_comment": "按最新报价审批",
+        "lines": [{
+            "approval_id": 901, "approved_unit_price": "12.50", "order_supplier_id": 77,
+            "order_supplier_name": "示例供应商", "order_unit_price": "12.50",
+            "order_delivery_date": "2026-10-20T00:00:00",
+        }],
+    })
+    assert result["proposal"]["tool"] == "prepare_supplier_price_approval_decision"
+    assert result["proposal"]["input"]["lines"][0]["approval_id"] == 901

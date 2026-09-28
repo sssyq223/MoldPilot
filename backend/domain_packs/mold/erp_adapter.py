@@ -281,6 +281,73 @@ class ERPClient:
         payload = self.request('GET', f'purchase/request/{int(request_id)}')
         return normalized(payload.get('data') or {})
 
+    def purchase_order_list(self, params=None):
+        payload = self.request('GET', 'purchase/order/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            PROCUREMENT_ORDER_FIELDS, 'purchase/order/list',
+        )[:200]
+
+    def purchase_order_detail(self, order_id):
+        payload = self.request('GET', f'purchase/order/{int(order_id)}')
+        return normalized(payload.get('data') or {})
+
+    def purchase_delivery_instruction(self, order_id):
+        payload = self.request('GET', f'purchase/order/{int(order_id)}/delivery-instruction')
+        return normalized(payload.get('data') or {})
+
+    def supplier_master_list(self, params=None):
+        payload = self.request('GET', 'master/supplier/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_master_detail(self, supplier_id):
+        payload = self.request('GET', f'master/supplier/{int(supplier_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_price_catalog(self, price_type=None, params=None):
+        query = {**(params or {}), 'pageNum': 1, 'pageSize': 200}
+        routes = {'hardware': 'master/hardware-price/list', 'steel': 'master/steel-price/list'}
+        if price_type in routes:
+            payload = self.request('GET', routes[price_type], params=query)
+            return normalized(payload.get('rows') or payload.get('data') or payload)
+        result = {}
+        for kind, route in routes.items():
+            payload = self.request('GET', route, params=query)
+            result[kind] = normalized(payload.get('rows') or payload.get('data') or payload)
+        return result
+
+    def supplier_price_approval_list(self, params=None):
+        payload = self.request('GET', 'purchase/price-approval/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_price_approval_todo_detail(self, todo_id):
+        payload = self.request('GET', f'purchase/price-approval/todo/{int(todo_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_delivery_available(self, params=None):
+        payload = self.request('GET', 'supplier/delivery/available-details', params=params or {})
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_order_reject_reasons(self):
+        payload = self.request('GET', 'supplier/purchase-order/options/reject-reasons')
+        return normalized(payload.get('data') or payload.get('rows') or payload)
+
+    def approve_supplier_price_todo(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/price-approval/todo/{int(todo_id)}/approve', json=payload,
+        ).get('data') or {})
+
+    def reject_supplier_price_todo(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/price-approval/todo/{int(todo_id)}/reject', json=payload,
+        ).get('data') or {})
+
     def purchase_workbench_split_list(self, params=None):
         payload = self.request('GET', 'purchase/workbench/split/list', params={
             **(params or {}), 'pageNum': 1, 'pageSize': 200,

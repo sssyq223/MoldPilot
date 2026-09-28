@@ -264,6 +264,38 @@ TOOLS.update({
         'description': '查询 ERP 当前用户访问供应商价格敏感数据的策略；只读。',
         'permission': 'purchase.read',
     },
+    'query_purchase_order_context': {
+        'description': '查询 ERP 采购订单详情、状态和版本；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_delivery_instruction_context': {
+        'description': '查询 ERP 采购订单发货地址和放行状态；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_qualification_context': {
+        'description': '查询 ERP 供应商资格列表或详情；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_price_catalog_context': {
+        'description': '查询 ERP 供应商原材/五金价格目录；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_price_approval_context': {
+        'description': '查询 ERP 供应商价格审批列表或待办详情；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_delivery_available_context': {
+        'description': '查询 ERP 供应商已接单且尚未发完的可发货明细；只读。',
+        'permission': 'order.read',
+    },
+    'query_supplier_pending_tasks_context': {
+        'description': '汇总当前 ERP 供应商待报价、待接单和待发货任务；只读。',
+        'permission': 'order.read',
+    },
+    'query_supplier_order_reject_reasons': {
+        'description': '查询 ERP 当前启用的供应商整单拒单原因编码；只读。',
+        'permission': 'order.read',
+    },
     'prepare_purchase_claim': {
         'description': '准备认领 ERP 已审批采购申请的确认卡；确认后调用原生认领接口。',
         'permission': 'purchase.submit',
@@ -350,6 +382,10 @@ TOOLS.update({
     },
     'prepare_purchase_hardware_award_review_decision': {
         'description': '准备五金定标待办的退回或驳回提案。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_supplier_price_approval_decision': {
+        'description': '准备供应商价格审批待办的逐行批准或驳回提案；确认后调用 ERP 审批接口。',
         'permission': 'purchase.approve',
     },
 })
@@ -916,7 +952,11 @@ SKILLS.update({
         'tools': ['query_purchase_adjustment_context', 'query_purchase_repurchase_context',
                   'query_purchase_supplier_ranking_context', 'query_purchase_order_quantity_change_context',
                   'query_purchase_hardware_award_context', 'query_purchase_price_compare_context',
-                  'query_purchase_repurchase_system_price', 'query_supplier_price_access_policy'],
+                  'query_purchase_repurchase_system_price', 'query_supplier_price_access_policy',
+                  'query_purchase_order_context', 'query_purchase_delivery_instruction_context',
+                  'query_supplier_qualification_context', 'query_supplier_price_catalog_context',
+                  'query_supplier_price_approval_context', 'query_supplier_delivery_available_context',
+                  'query_supplier_pending_tasks_context', 'query_supplier_order_reject_reasons'],
         'optional_tools': ['prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
                            'prepare_purchase_temporary_group_save', 'prepare_purchase_temporary_group_delete',
                            'prepare_purchase_repurchase_submit', 'prepare_purchase_supplier_rank_adjustment',
@@ -924,7 +964,8 @@ SKILLS.update({
                            'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
                            'prepare_purchase_price_compare_approval', 'prepare_supplier_price_access_decision',
                            'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
-                           'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision'],
+                           'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+                           'prepare_supplier_price_approval_decision'],
         'activation_queries': ['采购调整', '采购拆组调整', '临时拆组', '采购拆组提案', '无人接单重采', '重采审批'],
     },
 })
@@ -1086,6 +1127,14 @@ CAPABILITY_NAMES = {
     'query_purchase_price_compare_context': '查询采购报价比较',
     'query_purchase_repurchase_system_price': '查询重采系统价',
     'query_supplier_price_access_policy': '查询供应商价格访问策略',
+    'query_purchase_order_context': '查询采购订单详情',
+    'query_purchase_delivery_instruction_context': '查询采购订单发货地址',
+    'query_supplier_qualification_context': '查询供应商资格',
+    'query_supplier_price_catalog_context': '查询供应商价格目录',
+    'query_supplier_price_approval_context': '查询供应商价格审批',
+    'query_supplier_delivery_available_context': '查询供应商可发货明细',
+    'query_supplier_pending_tasks_context': '查询供应商待办汇总',
+    'query_supplier_order_reject_reasons': '查询供应商拒单原因',
     'prepare_purchase_claim': '准备认领采购申请',
     'prepare_hardware_inquiry': '准备发送五金询价',
     'prepare_supplier_order_decision': '准备供应商订单决定',
@@ -1108,6 +1157,7 @@ CAPABILITY_NAMES = {
     'prepare_supplier_quantity_change_decision': '准备供应商数量变更处理',
     'prepare_purchase_repurchase_todo_decision': '准备重采待办审批',
     'prepare_purchase_hardware_award_review_decision': '准备五金定标退回或驳回',
+    'prepare_supplier_price_approval_decision': '准备供应商价格审批',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -1181,6 +1231,14 @@ CAPABILITY_DEPARTMENTS = {
     'query_purchase_price_compare_context': 'purchase',
     'query_purchase_repurchase_system_price': 'purchase',
     'query_supplier_price_access_policy': 'purchase',
+    'query_purchase_order_context': 'purchase',
+    'query_purchase_delivery_instruction_context': 'purchase',
+    'query_supplier_qualification_context': 'purchase',
+    'query_supplier_price_catalog_context': 'purchase',
+    'query_supplier_price_approval_context': 'purchase',
+    'query_supplier_delivery_available_context': 'purchase',
+    'query_supplier_pending_tasks_context': 'purchase',
+    'query_supplier_order_reject_reasons': 'purchase',
     'prepare_purchase_claim': 'purchase', 'prepare_hardware_inquiry': 'purchase',
     'prepare_supplier_order_decision': 'purchase', 'prepare_supplier_quote_submit': 'purchase',
     'prepare_supplier_delivery_create': 'purchase', 'prepare_supplier_exception': 'purchase',
@@ -1198,6 +1256,7 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_supplier_quantity_change_decision': 'purchase',
     'prepare_purchase_repurchase_todo_decision': 'purchase',
     'prepare_purchase_hardware_award_review_decision': 'purchase',
+    'prepare_supplier_price_approval_decision': 'purchase',
     'steel_purchase': 'purchase', 'hardware_purchase': 'purchase',
     'supplier_collaboration': 'purchase', 'purchase_decision_governance': 'purchase',
     'purchase_workbench': 'purchase', 'supplier_portal': 'purchase',
@@ -1284,6 +1343,7 @@ CAPABILITY_TYPES = {
     'prepare_supplier_quantity_change_decision': 'operation',
     'prepare_purchase_repurchase_todo_decision': 'approval',
     'prepare_purchase_hardware_award_review_decision': 'approval',
+    'prepare_supplier_price_approval_decision': 'approval',
     'steel_purchase': 'review', 'hardware_purchase': 'review',
     'supplier_collaboration': 'review', 'purchase_decision_governance': 'review',
     'purchase_workbench': 'review', 'supplier_portal': 'review', 'purchase_adjustment': 'review',
@@ -1637,6 +1697,30 @@ def tool_schema(key):
     if key == 'query_supplier_price_access_policy':
         from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceAccessPolicyInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceAccessPolicyInput.model_json_schema()}}
+    if key == 'query_purchase_order_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseOrderContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseOrderContextInput.model_json_schema()}}
+    if key == 'query_purchase_delivery_instruction_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseDeliveryInstructionContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseDeliveryInstructionContextInput.model_json_schema()}}
+    if key == 'query_supplier_qualification_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierQualificationListInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierQualificationListInput.model_json_schema()}}
+    if key == 'query_supplier_price_catalog_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceCatalogContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceCatalogContextInput.model_json_schema()}}
+    if key == 'query_supplier_price_approval_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceApprovalContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceApprovalContextInput.model_json_schema()}}
+    if key == 'query_supplier_delivery_available_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierDeliveryAvailableContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierDeliveryAvailableContextInput.model_json_schema()}}
+    if key == 'query_supplier_pending_tasks_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPendingTasksContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPendingTasksContextInput.model_json_schema()}}
+    if key == 'query_supplier_order_reject_reasons':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierOrderRejectReasonContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierOrderRejectReasonContextInput.model_json_schema()}}
     if key in {
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
@@ -1651,6 +1735,7 @@ def tool_schema(key):
         'prepare_supplier_price_access_decision',
         'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
         'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+        'prepare_supplier_price_approval_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import proposal_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':proposal_schema(key)}}
@@ -1989,6 +2074,10 @@ def execute(db, user, key, arguments, run=None):
         'query_purchase_order_quantity_change_context', 'query_purchase_hardware_award_context',
         'query_purchase_price_compare_context', 'query_purchase_repurchase_system_price',
         'query_supplier_price_access_policy',
+        'query_purchase_order_context', 'query_purchase_delivery_instruction_context',
+        'query_supplier_qualification_context', 'query_supplier_price_catalog_context',
+        'query_supplier_price_approval_context', 'query_supplier_delivery_available_context',
+        'query_supplier_pending_tasks_context', 'query_supplier_order_reject_reasons',
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
         'prepare_purchase_claim', 'prepare_hardware_inquiry', 'prepare_supplier_order_decision',
@@ -2002,6 +2091,7 @@ def execute(db, user, key, arguments, run=None):
         'prepare_supplier_price_access_decision',
         'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
         'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+        'prepare_supplier_price_approval_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)

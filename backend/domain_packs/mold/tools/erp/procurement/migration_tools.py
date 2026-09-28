@@ -8,7 +8,7 @@ proposal handler below is the only path that can call an ERP write endpoint.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -473,6 +473,72 @@ class PurchaseHardwareAwardReviewDecisionProposalInput(StrictModel):
     comment: str = Field(default="", max_length=500)
 
 
+class PurchaseOrderContextInput(StrictModel):
+    order_id: int = Field(ge=1)
+
+
+class PurchaseDeliveryInstructionContextInput(StrictModel):
+    order_id: int = Field(ge=1)
+
+
+class SupplierQualificationListInput(StrictModel):
+    supplier_id: int | None = Field(default=None, ge=1)
+    status: Literal["active", "disabled"] | None = None
+    keyword: str | None = Field(default=None, max_length=100)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class SupplierPriceCatalogContextInput(StrictModel):
+    price_type: Literal["hardware", "steel"] | None = None
+    supplier_id: int | None = Field(default=None, ge=1)
+    keyword: str | None = Field(default=None, max_length=100)
+    current_only: bool = True
+
+
+class SupplierPriceApprovalContextInput(StrictModel):
+    todo_id: int | None = Field(default=None, ge=1)
+    status: str | None = Field(default=None, max_length=40)
+
+
+class SupplierDeliveryAvailableContextInput(StrictModel):
+    order_id: int | None = Field(default=None, ge=1)
+    material_category: Literal["steel_plate", "hardware_standard"] | None = None
+    keyword: str | None = Field(default=None, max_length=100)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class SupplierPendingTasksContextInput(StrictModel):
+    limit_per_type: int = Field(default=20, ge=1, le=100)
+
+
+class SupplierOrderRejectReasonContextInput(StrictModel):
+    pass
+
+
+class SupplierPriceApprovalLineDecisionInput(StrictModel):
+    approval_id: int = Field(ge=1)
+    approved_unit_price: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    order_supplier_id: int = Field(ge=1)
+    order_supplier_name: str | None = Field(default=None, max_length=200)
+    order_unit_price: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    order_delivery_date: datetime | None = None
+
+
+class SupplierPriceApprovalDecisionProposalInput(StrictModel):
+    todo_id: int = Field(ge=1)
+    decision: Literal["approve", "reject"]
+    approval_comment: str = Field(default="", max_length=500)
+    lines: list[SupplierPriceApprovalLineDecisionInput] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_lines(self):
+        if self.decision == "approve" and not self.lines:
+            raise ValueError("审批价格必须提供逐行定标结果")
+        return self
+
+
 INPUTS = {
     "prepare_raw_material_split": RawMaterialSplitProposalInput,
     "prepare_purchase_decision": PurchaseDecisionProposalInput,
@@ -502,6 +568,7 @@ INPUTS = {
     "prepare_supplier_quantity_change_decision": SupplierQuantityChangeDecisionProposalInput,
     "prepare_purchase_repurchase_todo_decision": PurchaseRepurchaseTodoDecisionProposalInput,
     "prepare_purchase_hardware_award_review_decision": PurchaseHardwareAwardReviewDecisionProposalInput,
+    "prepare_supplier_price_approval_decision": SupplierPriceApprovalDecisionProposalInput,
 }
 
 PROPOSAL_TOOLS = frozenset(INPUTS)
@@ -1057,6 +1124,118 @@ def query_supplier_price_access_policy(db, user, data, allowed_tools=None):
         client.close()
 
 
+def _erp_read_result(db, user, reader, limitations):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        value = reader(client)
+        values = value if isinstance(value, list) else [value]
+        return {"resolution": "RESOLVED", "data": values, "source": "erp",
+                "as_of": now().isoformat(), "limitations": limitations}
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
+def query_purchase_order_context(db, user, data, allowed_tools=None):
+    return _erp_read_result(
+        db, user, lambda client: client.purchase_order_detail(data.order_id),
+        ["采购订单明细、状态和版本来自 ERP；本工具只读。"],
+    )
+
+
+def query_purchase_delivery_instruction_context(db, user, data, allowed_tools=None):
+    return _erp_read_result(
+        db, user, lambda client: client.purchase_delivery_instruction(data.order_id),
+        ["采购订单发货地址和放行状态来自 ERP；本工具只读。"],
+    )
+
+
+def query_supplier_qualification_context(db, user, data, allowed_tools=None):
+    if data.supplier_id is None:
+        params = {key: value for key, value in {
+            "status": data.status, "keyword": data.keyword,
+            "pageNum": data.offset // data.limit + 1, "pageSize": data.limit,
+        }.items() if value not in (None, "")}
+        return _erp_read_result(
+            db, user, lambda client: client.supplier_master_list(params),
+            ["供应商资格列表来自 ERP 主数据；本工具只读，不本地维护资格状态。"],
+        )
+    return _erp_read_result(
+        db, user, lambda client: client.supplier_master_detail(data.supplier_id),
+        ["供应商资格详情来自 ERP 主数据；本工具只读。"],
+    )
+
+
+def query_supplier_price_catalog_context(db, user, data, allowed_tools=None):
+    params = {key: value for key, value in {
+        "materialName": data.keyword,
+    }.items() if value not in (None, "")}
+    limitations = ["供应商原材/五金价格目录来自 ERP；本工具只读，不本地缓存有效价。"]
+    if data.supplier_id:
+        limitations.append("当前 ERP 价格目录查询 VO 不接受 supplier_id 过滤，已保留为调用方核对条件。")
+    if not data.current_only:
+        limitations.append("当前 ERP 价格目录按服务端有效状态返回，未请求历史价格。")
+    return _erp_read_result(
+        db, user, lambda client: client.supplier_price_catalog(data.price_type, params),
+        limitations,
+    )
+
+
+def query_supplier_price_approval_context(db, user, data, allowed_tools=None):
+    if data.todo_id:
+        return _erp_read_result(
+            db, user, lambda client: client.supplier_price_approval_todo_detail(data.todo_id),
+            ["价格审批待办详情来自 ERP；本工具只读。"],
+        )
+    params = {"status": data.status} if data.status else {}
+    return _erp_read_result(
+        db, user, lambda client: client.supplier_price_approval_list(params),
+        ["价格审批列表和状态来自 ERP；本工具只读。"],
+    )
+
+
+def query_supplier_delivery_available_context(db, user, data, allowed_tools=None):
+    params = {key: value for key, value in {
+        "orderId": data.order_id, "q": data.keyword, "limit": data.limit,
+    }.items() if value not in (None, "")}
+    limitations = ["供应商可发货明细和剩余数量来自 ERP；本工具只读。"]
+    if data.material_category:
+        limitations.append("ERP 可发货接口不提供材料分类筛选，material_category 仅作为调用方筛选提示。")
+    if data.offset:
+        limitations.append("ERP 可发货接口按 limit 返回，不提供 offset；本工具未伪造分页。")
+    return _erp_read_result(
+        db, user, lambda client: client.supplier_delivery_available(params), limitations,
+    )
+
+
+def query_supplier_pending_tasks_context(db, user, data, allowed_tools=None):
+    def read(client):
+        context = client.supplier_portal_context()
+        limit = data.limit_per_type
+        return {
+            "quote_tasks": context.get("quote_tasks", [])[:limit],
+            "purchase_orders": context.get("purchase_orders", [])[:limit],
+            "deliveries": context.get("deliveries", [])[:limit],
+        }
+    return _erp_read_result(
+        db, user, read,
+        ["待办汇总只组合 ERP 供应商门户的真实列表，不在 MoldPilot 生成或推断待办。"],
+    )
+
+
+def query_supplier_order_reject_reasons(db, user, data, allowed_tools=None):
+    return _erp_read_result(
+        db, user, lambda client: client.supplier_order_reject_reasons(),
+        ["供应商整单拒单原因字典来自 ERP；本工具只读。"],
+    )
+
+
 def _group_snapshot(db, user, group_id):
     client, _identity = _client_for_user(db, user)
     try:
@@ -1096,6 +1275,7 @@ def _proposal_display(key, data, snapshot):
         "prepare_supplier_quantity_change_decision": "处理供应商订单数量变更",
         "prepare_purchase_repurchase_todo_decision": "审批无人接单重采待办",
         "prepare_purchase_hardware_award_review_decision": "处理五金定标退回或驳回",
+        "prepare_supplier_price_approval_decision": "审批供应商价格申请",
     }
     return {
         "操作": names[key],
@@ -1167,6 +1347,54 @@ def execute_tool(db, user, key, arguments, run=None):
         except ValidationError as error:
             raise DomainError("INVALID_TOOL_INPUT", "供应商价格访问策略参数无效：" + error.errors()[0]["msg"]) from None
         return query_supplier_price_access_policy(db, user, data)
+    if key == "query_purchase_order_context":
+        try:
+            data = PurchaseOrderContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购订单查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_order_context(db, user, data)
+    if key == "query_purchase_delivery_instruction_context":
+        try:
+            data = PurchaseDeliveryInstructionContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购发货地址查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_delivery_instruction_context(db, user, data)
+    if key == "query_supplier_qualification_context":
+        try:
+            data = SupplierQualificationListInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商资格查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_qualification_context(db, user, data)
+    if key == "query_supplier_price_catalog_context":
+        try:
+            data = SupplierPriceCatalogContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商价格目录查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_price_catalog_context(db, user, data)
+    if key == "query_supplier_price_approval_context":
+        try:
+            data = SupplierPriceApprovalContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商价格审批查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_price_approval_context(db, user, data)
+    if key == "query_supplier_delivery_available_context":
+        try:
+            data = SupplierDeliveryAvailableContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商可发货查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_delivery_available_context(db, user, data)
+    if key == "query_supplier_pending_tasks_context":
+        try:
+            data = SupplierPendingTasksContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商待办查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_pending_tasks_context(db, user, data)
+    if key == "query_supplier_order_reject_reasons":
+        try:
+            data = SupplierOrderRejectReasonContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商拒单原因查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_order_reject_reasons(db, user, data)
     if key.startswith("query_"):
         try:
             data = ProcurementContextInput.model_validate(arguments or {})
@@ -1226,6 +1454,8 @@ def execute_tool(db, user, key, arguments, run=None):
     elif key in {"prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision"}:
         snapshot = {"native_id": getattr(data, "request_id", None) or data.proposal_id, "tool": key}
     elif key in {"prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision"}:
+        snapshot = {"native_id": data.todo_id, "tool": key}
+    elif key == "prepare_supplier_price_approval_decision":
         snapshot = {"native_id": data.todo_id, "tool": key}
     else:
         snapshot = _group_snapshot(db, user, getattr(data, "group_id", 0))
@@ -1303,6 +1533,8 @@ def _fresh_group_check(db, user, proposal):
                 current = client.manual_dispatch_todo_detail(int(data["todo_id"]))
             elif tool == "prepare_purchase_hardware_award_review_decision" and data.get("todo_id"):
                 current = client.hardware_award_todo_detail(int(data["todo_id"]))
+            elif tool == "prepare_supplier_price_approval_decision" and data.get("todo_id"):
+                current = client.supplier_price_approval_todo_detail(int(data["todo_id"]))
             else:
                 return None
         finally:
@@ -1682,6 +1914,26 @@ def confirm(db, user, payload):
         elif tool == "prepare_purchase_hardware_award_review_decision":
             result = client.hardware_award_review_decision(
                 int(data["todo_id"]), data["decision"], {"comment": data.get("comment", "")},
+            )
+        elif tool == "prepare_supplier_price_approval_decision":
+            payload = {
+                "approvalComment": data.get("approval_comment", ""),
+                "lines": [
+                    {key: value for key, value in {
+                        "approvalId": line["approval_id"],
+                        "approvedUnitPrice": line["approved_unit_price"],
+                        "orderSupplierId": line["order_supplier_id"],
+                        "orderSupplierName": line.get("order_supplier_name"),
+                        "orderUnitPrice": line["order_unit_price"],
+                        "orderDeliveryDate": line.get("order_delivery_date"),
+                    }.items() if value not in (None, "")}
+                    for line in data.get("lines", [])
+                ],
+            }
+            result = (
+                client.approve_supplier_price_todo(int(data["todo_id"]), payload)
+                if data["decision"] == "approve"
+                else client.reject_supplier_price_todo(int(data["todo_id"]), payload)
             )
         else:
             raise DomainError("TOOL_UNKNOWN", "采购正式动作未实现", 403)

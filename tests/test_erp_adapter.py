@@ -676,3 +676,65 @@ def test_plan_progress_uses_project_id_endpoint_and_accepts_erp_rows_envelopes(m
         ('/system/projectNode/project/22', {}),
         ('/system/productionSchedule/list', {'projectNo': 'P-001'}),
     ]
+
+
+def test_phase5_adapter_uses_order_supplier_master_and_price_approval_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path.endswith('/purchase/order/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 1, 'orderNo': 'PO-1'}]})
+        if path.endswith('/purchase/order/1'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 1, 'status': 'PUBLISHED'}})
+        if path.endswith('/purchase/order/1/delivery-instruction'):
+            return httpx.Response(200, json={'code': 200, 'data': {'orderId': 1, 'released': True}})
+        if path.endswith('/master/supplier/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 7, 'name': '供应商'}]})
+        if path.endswith('/master/supplier/7'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 7, 'status': 'active'}})
+        if path.endswith('/master/hardware-price/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 9, 'price': '12.50'}]})
+        if path.endswith('/purchase/price-approval/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 10, 'status': 'PENDING'}]})
+        if path.endswith('/purchase/price-approval/todo/10'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 10, 'version': 2}})
+        if path.endswith('/supplier/delivery/available-details'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 11, 'remainingQty': 3}]})
+        if path.endswith('/supplier/purchase-order/options/reject-reasons'):
+            return httpx.Response(200, json={'code': 200, 'data': [{'code': 'PRICE', 'label': '价格'}]})
+        if path.endswith('/purchase/price-approval/todo/10/approve'):
+            return httpx.Response(200, json={'code': 200, 'data': {'approved': True}})
+        if path.endswith('/purchase/price-approval/todo/10/reject'):
+            return httpx.Response(200, json={'code': 200, 'data': {'rejected': True}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_order_list()[0]['orderNo'] == 'PO-1'
+        assert client.purchase_order_detail(1)['status'] == 'PUBLISHED'
+        assert client.purchase_delivery_instruction(1)['released'] is True
+        assert client.supplier_master_list()[0]['name'] == '供应商'
+        assert client.supplier_master_detail(7)['status'] == 'active'
+        assert client.supplier_price_catalog('hardware')[0]['price'] == '12.50'
+        assert client.supplier_price_approval_list()[0]['status'] == 'PENDING'
+        assert client.supplier_price_approval_todo_detail(10)['version'] == 2
+        assert client.supplier_delivery_available()[0]['remainingQty'] == 3
+        assert client.supplier_order_reject_reasons()[0]['code'] == 'PRICE'
+        assert client.approve_supplier_price_todo(10, {'lines': []})['approved'] is True
+        assert client.reject_supplier_price_todo(10, {'approvalComment': '退回'})['rejected'] is True
+    finally:
+        client.close()
+
+    assert [path for _, path in calls] == [
+        '/purchase/order/list', '/purchase/order/1', '/purchase/order/1/delivery-instruction',
+        '/master/supplier/list', '/master/supplier/7', '/master/hardware-price/list',
+        '/purchase/price-approval/list', '/purchase/price-approval/todo/10',
+        '/supplier/delivery/available-details', '/supplier/purchase-order/options/reject-reasons',
+        '/purchase/price-approval/todo/10/approve', '/purchase/price-approval/todo/10/reject',
+    ]
