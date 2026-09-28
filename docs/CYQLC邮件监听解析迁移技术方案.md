@@ -36,7 +36,7 @@ flowchart LR
 
 明确不迁移：
 
-- 不复制 cyqlc 的 SQLite/PostgreSQL 表、FastAPI 路由和前端系统配置页面。
+- 不复制 cyqlc 的 SQLite/PostgreSQL 表、FastAPI 路由和前端实现代码；在 MoldPilot 设置页重建同等配置能力，并复用 MoldPilot 的鉴权、审计和后台 worker。
 - 不把 cyqlc 的 WEEKLY_KIT、NEW_PRODUCT、EXPORT_DAILY、PLAN_13W 直接解释成 MoldPilot 的项目、合同、采购或 ERP 事实。
 - 不复用 cyqlc 的 imports.preview_upload 直接写入 MoldPilot 领域表。
 - 不把邮件监听作为模型每次调用时临时启动的线程；轮询由独立后台 worker 执行。
@@ -88,6 +88,31 @@ MoldPilot/backend/domain_packs/mold/
 ~~~
 
 应用层独立入口为 `backend/app/mail_worker.py`。它从 `secret_ref` 解析受控密码，缺少密码时只记录 `CONFIG_ERROR`，不会尝试连接邮箱。
+
+## 6.1 企业邮箱配置入口与操作流程
+
+管理员登录 MoldPilot 后，打开右上角账号菜单 → **设置** → **企业邮箱**。此页面对应 cyqlc 的“系统配置 / 网易企业邮箱监听”，但配置保存到 MoldPilot 的 `mail_monitor_account`，不会改写 cyqlc 的数据库。
+
+页面提供以下配置：
+
+- 账户名称、邮箱账号、IMAP 服务器、端口、SSL/TLS 或 STARTTLS、邮箱文件夹。
+- 密钥引用（例如 `env://MOLDPILOT_MAIL_PASSWORD`）。数据库只保存引用名；邮箱客户端授权码由 API 和 `mail_worker` 启动环境注入。
+- 允许发件人/域名、业务关键词、轮询间隔和回溯天数。
+
+保存配置不会自动启动监听。管理员可按顺序执行“测试连接” → “启动监听”；需要重新读取历史窗口时使用“重新回溯”，需要查看台账时使用“查看处理记录”。启动后由独立 `mail_worker` 按轮询间隔采集，前端状态展示最近轮询时间、游标和错误信息。
+
+对应的 MoldPilot 管理接口为：
+
+| 操作 | 接口 |
+|---|---|
+| 读取配置 | `GET /api/mail-monitor/config` |
+| 保存配置 | `PUT /api/mail-monitor/config` |
+| 测试连接 | `POST /api/mail-monitor/config/{id}/test` |
+| 启动/停止 | `POST /api/mail-monitor/config/{id}/start` / `stop` |
+| 重新回溯 | `POST /api/mail-monitor/config/{id}/rescan` |
+| 处理记录 | `GET /api/mail-monitor/config/{id}/messages` |
+
+`mail.read` 允许查看配置状态和处理记录，`mail.manage` 允许保存配置及控制监听；所有配置和控制动作写入 MoldPilot 审计日志。
 
 需要在 tool_gateway.py 的 skill_paths() 路由表增加：
 

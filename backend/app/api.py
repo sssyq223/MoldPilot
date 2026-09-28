@@ -22,6 +22,7 @@ from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
 from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, public_run_status
+from domain_packs.mold import models as mold_models
 
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
@@ -411,6 +412,220 @@ def delete_model_profile_api(profile_id: str, user=Depends(current_user)):
         raise DomainError("MODEL_PROFILE_NOT_FOUND", "模型配置不存在", 404)
     except ValueError as exc:
         raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
+
+
+def _mail_account_view(db, row):
+    cursor = db.scalar(select(mold_models.MailMonitorCursor).where(
+        mold_models.MailMonitorCursor.account_id == row.id
+    ))
+    from .mail_worker import resolve_secret
+    return {
+        "id": row.id,
+        "name": row.name,
+        "host": row.host,
+        "port": row.port,
+        "username": row.username,
+        "folder": row.folder,
+        "transport": row.transport,
+        "secret_ref": row.secret_ref,
+        "secret_configured": bool(resolve_secret(row.secret_ref)),
+        "allowed_senders": list(row.allowed_senders or []),
+        "keywords": dict(row.keywords or {}),
+        "poll_interval_seconds": row.poll_interval_seconds,
+        "lookback_days": row.lookback_days,
+        "enabled": bool(row.enabled),
+        "status": row.status,
+        "last_error": row.last_error or "",
+        "cursor": {
+            "uid_validity": cursor.uid_validity,
+            "last_uid": cursor.last_uid,
+            "last_polled_at": cursor.last_polled_at.isoformat() if cursor and cursor.last_polled_at else None,
+        } if cursor else None,
+    }
+
+
+def _normalize_mail_config(data: s.MailMonitorConfigInput) -> dict:
+    allowed_senders = list(dict.fromkeys(
+        str(item).strip().lower() for item in data.allowed_senders if str(item).strip()
+    ))
+    if any("@" not in item and "." not in item for item in allowed_senders):
+        raise DomainError("MAIL_CONFIG_INVALID", "允许发件人必须填写完整邮箱或域名", 400)
+    keywords: dict[str, list[str]] = {}
+    for raw_key, raw_values in data.keywords.items():
+        key = str(raw_key).strip()
+        values = list(dict.fromkeys(str(item).strip() for item in (raw_values or []) if str(item).strip()))
+        if not key or len(key) > 80 or len(values) > 50 or any(len(item) > 100 for item in values):
+            raise DomainError("MAIL_CONFIG_INVALID", "邮件关键词配置无效", 400)
+        keywords[key] = values
+    return {
+        "name": data.name.strip(), "host": data.host.strip(), "port": data.port,
+        "username": data.username.strip(), "folder": data.folder.strip() or "INBOX",
+        "transport": data.transport.lower(), "secret_ref": data.secret_ref.strip(),
+        "allowed_senders": allowed_senders, "keywords": keywords,
+        "poll_interval_seconds": data.poll_interval_seconds, "lookback_days": data.lookback_days,
+    }
+
+
+@app.get("/api/mail-monitor/config")
+def mail_monitor_config(user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "mail.read")
+    rows = db.scalars(select(mold_models.MailMonitorAccount).order_by(mold_models.MailMonitorAccount.name)).all()
+    return {"accounts": [_mail_account_view(db, row) for row in rows], "defaults": {
+        "host": "imap.qiye.163.com", "port": 993, "folder": "INBOX", "transport": "ssl",
+        "poll_interval_seconds": 60, "lookback_days": 7,
+        "keywords": {"weekly": ["齐套", "周齐套"], "plan": ["计划", "新品"]},
+    }}
+
+
+@app.put("/api/mail-monitor/config")
+def save_mail_monitor_config(data: s.MailMonitorConfigInput, user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "mail.manage")
+    values = _normalize_mail_config(data)
+    row = db.get(mold_models.MailMonitorAccount, data.id) if data.id else None
+    if data.id and not row:
+        raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
+    duplicate = db.scalar(select(mold_models.MailMonitorAccount).where(
+        mold_models.MailMonitorAccount.name == values["name"],
+        mold_models.MailMonitorAccount.id != (row.id if row else ""),
+    ))
+    if duplicate:
+        raise DomainError("MAIL_ACCOUNT_EXISTS", "邮件监听账户名称已存在", 409)
+    if row is None:
+        row = mold_models.MailMonitorAccount(**values, enabled=False, status="DISABLED", last_error="")
+        db.add(row)
+    else:
+        for key, value in values.items():
+            setattr(row, key, value)
+        # A configuration edit never silently starts or stops the worker.
+        if not row.enabled:
+            row.status = "DISABLED"
+    db.flush()
+    record(db, user, "mail.monitor.config.updated", row.id, {
+        "account_name": row.name, "secret_ref": bool(row.secret_ref), "enabled": bool(row.enabled)
+    })
+    db.commit()
+    return _mail_account_view(db, row)
+
+
+def _mail_manage(db, user, account_id: str):
+    auth.require(db, user, "mail.manage")
+    row = db.get(mold_models.MailMonitorAccount, account_id)
+    if not row:
+        raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
+    return row
+
+
+@app.post("/api/mail-monitor/config/{account_id}/start")
+def start_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    from .mail_worker import resolve_secret
+    if not resolve_secret(row.secret_ref):
+        row.status = "CONFIG_ERROR"
+        row.last_error = "secret_ref 未解析到密码；请先在运行环境注入邮箱客户端授权码"
+        db.commit()
+        raise DomainError("MAIL_SECRET_MISSING", "邮箱授权码尚未配置，监听未启动", 400)
+    row.enabled = True
+    row.status = "STARTING"
+    row.last_error = ""
+    record(db, user, "mail.monitor.started", row.id, {"account_name": row.name})
+    db.commit()
+    return _mail_account_view(db, row)
+
+
+@app.post("/api/mail-monitor/config/{account_id}/stop")
+def stop_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    row.enabled = False
+    row.status = "DISABLED"
+    record(db, user, "mail.monitor.stopped", row.id, {"account_name": row.name})
+    db.commit()
+    return _mail_account_view(db, row)
+
+
+@app.post("/api/mail-monitor/config/{account_id}/poll")
+def poll_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    from .mail_worker import resolve_secret, run_once
+    if not resolve_secret(row.secret_ref):
+        raise DomainError("MAIL_SECRET_MISSING", "邮箱授权码尚未配置，无法检查连接", 400)
+    run_once(owner=f"api-mail-poll-{user.id}")
+    db.expire_all()
+    return _mail_account_view(db, db.get(mold_models.MailMonitorAccount, row.id))
+
+
+@app.post("/api/mail-monitor/config/{account_id}/test")
+def test_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    from .mail_worker import resolve_secret
+    password = resolve_secret(row.secret_ref)
+    if not password:
+        raise DomainError("MAIL_SECRET_MISSING", "邮箱授权码尚未配置，无法测试连接", 400)
+    from domain_packs.mold.mail.monitor import MailMonitorConfig, MailMonitor
+    config = MailMonitorConfig(
+        account_id=row.id, account_name=row.name, host=row.host, port=row.port,
+        username=row.username, password=password, folder=row.folder, transport=row.transport,
+        allowed_senders=tuple(row.allowed_senders or ()),
+        keywords={key: tuple(value) for key, value in (row.keywords or {}).items()},
+    )
+    client = None
+    try:
+        client = MailMonitor._default_client(config)
+        status, _ = client.select(row.folder, readonly=True)
+        if str(status).upper() != "OK":
+            raise RuntimeError("IMAP 文件夹选择失败")
+        row.status = "HEALTHY"
+        row.last_error = ""
+        result = {"ok": True, "message": "邮箱连接测试成功"}
+    except Exception as exc:
+        row.status = "ERROR"
+        row.last_error = str(exc)[:1000]
+        result = {"ok": False, "message": "邮箱连接测试失败", "error": row.last_error}
+    finally:
+        if client is not None:
+            try:
+                client.logout()
+            except Exception:
+                pass
+    record(db, user, "mail.monitor.tested", row.id, {"account_name": row.name, "ok": result["ok"]})
+    db.commit()
+    if not result["ok"]:
+        raise DomainError("MAIL_CONNECTION_FAILED", result["error"], 502)
+    return {**result, "account": _mail_account_view(db, row)}
+
+
+@app.post("/api/mail-monitor/config/{account_id}/rescan")
+def rescan_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    cursor = db.scalar(select(mold_models.MailMonitorCursor).where(
+        mold_models.MailMonitorCursor.account_id == row.id
+    ))
+    if cursor:
+        cursor.uid_validity = ""
+        cursor.last_uid = 0
+        cursor.last_polled_at = None
+    else:
+        db.add(mold_models.MailMonitorCursor(account_id=row.id, uid_validity="", last_uid=0))
+    row.status = "STARTING" if row.enabled else "DISABLED"
+    row.last_error = ""
+    record(db, user, "mail.monitor.rescan", row.id, {"account_name": row.name})
+    db.commit()
+    return _mail_account_view(db, row)
+
+
+@app.get("/api/mail-monitor/config/{account_id}/messages")
+def mail_monitor_messages(account_id: str, limit: int = Query(50, ge=1, le=100),
+                          user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "mail.read")
+    if not db.get(mold_models.MailMonitorAccount, account_id):
+        raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
+    rows = db.scalars(select(mold_models.MailMessage).where(
+        mold_models.MailMessage.account_id == account_id
+    ).order_by(mold_models.MailMessage.created_at.desc()).limit(limit)).all()
+    return {"items": [{"id": row.id, "uid": row.uid, "subject": row.subject,
+                       "sender": row.sender, "outcome": row.outcome,
+                       "received_at": row.received_at.isoformat() if row.received_at else None,
+                       "error_message": row.error_message or "", "detail": row.detail_json or {}}
+                     for row in rows]}
 
 
 @app.get("/api/users")

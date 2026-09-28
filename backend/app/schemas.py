@@ -218,3 +218,19 @@ class ModelConfigInput(StrictModel):
 
 class ModelProfileInput(ModelConfigInput):
     name: str = Field(min_length=1, max_length=80)
+
+
+class MailMonitorConfigInput(StrictModel):
+    """Administrator-managed IMAP metadata; the password stays out of the DB."""
+    id: str | None = Field(default=None, min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=120)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=993, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=255)
+    folder: str = Field(default="INBOX", min_length=1, max_length=255)
+    transport: Literal["ssl", "starttls"] = "ssl"
+    secret_ref: str = Field(min_length=1, max_length=255)
+    allowed_senders: list[str] = Field(default_factory=list, max_length=100)
+    keywords: dict[str, list[str]] = Field(default_factory=dict)
+    poll_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    lookback_days: int = Field(default=7, ge=0, le=90)

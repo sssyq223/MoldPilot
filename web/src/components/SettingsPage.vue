@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
-import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2,MessageSquare,RotateCcw} from 'lucide-vue-next'
+import {ArrowLeft,Settings,Wrench,Users,GitBranch,ScrollText,Search,Layers,Sun,Moon,Archive,BrainCircuit,ShieldCheck,ShieldOff,Trash2,MessageSquare,RotateCcw,Mail} from 'lucide-vue-next'
 import type {ColorTheme} from '../theme'
 import {api,post,shanghai} from '../api'
 import {capabilityMeta,capabilityName,capabilityNames,groupedCapabilities,permissionName,auditName,capabilityExample as domainCapabilityExample} from '@domain-pack/uiText'
@@ -8,6 +8,7 @@ import {capabilityUi} from '@domain-pack/uiPolicy'
 import AdminPanel from './AdminPanel.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 import ModelProviderSettings from './ModelProviderSettings.vue'
+import MailMonitorSettings from './MailMonitorSettings.vue'
 const props=defineProps<{me:any;permissions:string[];capabilities:any;modelName:string;colorTheme:ColorTheme;initialPage?:string}>()
 const emit=defineEmits<{close:[];error:[message:string];themeChange:[theme:ColorTheme];openConversation:[conversation:any];modelUpdated:[model:string]}>()
 const page=ref(props.initialPage||'account'),search=ref(''),audit=ref<any[]>([]),auditLoading=ref(false),auditPage=ref(1),auditTotal=ref(0)
@@ -140,6 +141,7 @@ watch(proxyPrincipal,value=>{if(proxyAgent.value===value)proxyAgent.value=proxyA
 const navigation=computed(()=>[
  {key:'account',name:'账号信息',icon:Settings,allow:true},
  {key:'model',name:'模型配置',icon:BrainCircuit,allow:props.me.super_admin},
+ {key:'mail',name:'企业邮箱',icon:Mail,allow:props.me.super_admin||props.permissions.includes('mail.manage')},
  {key:'agent-approvals',name:'审批授权',icon:ShieldCheck,allow:true},
  {key:'archived',name:'已归档的聊天',icon:Archive,allow:true},
  {key:'capabilities',name:'工具与技能',icon:Wrench,allow:true},
@@ -307,6 +309,9 @@ async function clearAvatar(){
    </template>
    <template v-else-if="page==='model'&&me.super_admin">
     <ModelProviderSettings @updated="emit('modelUpdated',$event)"/>
+   </template>
+   <template v-else-if="page==='mail'&&(me.super_admin||permissions.includes('mail.manage'))">
+    <MailMonitorSettings @error="emit('error',$event)"/>
    </template>
    <template v-else-if="page==='agent-approvals'">
     <div class="agent-approval-head"><div><h2>审批授权</h2><p class="muted">分别维护本人授予 Agent 的自动审批，以及管理员配置的人工审批代理。</p></div><span>{{delegations.filter(d=>d.active).length+(permissions.includes('user.manage')?proxyDelegations.filter(d=>d.active).length:0)}} 个有效授权</span></div>
