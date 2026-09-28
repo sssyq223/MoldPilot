@@ -336,6 +336,22 @@ TOOLS.update({
         'description': '准备供应商价格敏感访问申请的批准或驳回提案；确认后调用 ERP 审批接口。',
         'permission': 'purchase.approve',
     },
+    'prepare_supplier_delivery_modify_decision': {
+        'description': '准备供应商发货修改申请的确认或驳回提案。',
+        'permission': 'shipment.confirm',
+    },
+    'prepare_supplier_quantity_change_decision': {
+        'description': '准备供应商订单数量变更的接受或拒绝提案。',
+        'permission': 'order.confirm',
+    },
+    'prepare_purchase_repurchase_todo_decision': {
+        'description': '准备无人接单重采采购待办的审批或退回提案。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_purchase_hardware_award_review_decision': {
+        'description': '准备五金定标待办的退回或驳回提案。',
+        'permission': 'purchase.approve',
+    },
 })
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
@@ -906,7 +922,9 @@ SKILLS.update({
                            'prepare_purchase_repurchase_submit', 'prepare_purchase_supplier_rank_adjustment',
                            'prepare_purchase_order_quantity_change', 'prepare_purchase_hardware_award_submit',
                            'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
-                           'prepare_purchase_price_compare_approval', 'prepare_supplier_price_access_decision'],
+                           'prepare_purchase_price_compare_approval', 'prepare_supplier_price_access_decision',
+                           'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+                           'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision'],
         'activation_queries': ['采购调整', '采购拆组调整', '临时拆组', '采购拆组提案', '无人接单重采', '重采审批'],
     },
 })
@@ -1086,6 +1104,10 @@ CAPABILITY_NAMES = {
     'prepare_purchase_hardware_award_final_approve': '准备审批五金定标结果',
     'prepare_purchase_price_compare_approval': '准备采购报价议价审批',
     'prepare_supplier_price_access_decision': '准备供应商价格访问审批',
+    'prepare_supplier_delivery_modify_decision': '准备供应商发货修改处理',
+    'prepare_supplier_quantity_change_decision': '准备供应商数量变更处理',
+    'prepare_purchase_repurchase_todo_decision': '准备重采待办审批',
+    'prepare_purchase_hardware_award_review_decision': '准备五金定标退回或驳回',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -1172,6 +1194,10 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_purchase_hardware_award_final_approve': 'purchase',
     'prepare_purchase_price_compare_approval': 'purchase',
     'prepare_supplier_price_access_decision': 'purchase',
+    'prepare_supplier_delivery_modify_decision': 'purchase',
+    'prepare_supplier_quantity_change_decision': 'purchase',
+    'prepare_purchase_repurchase_todo_decision': 'purchase',
+    'prepare_purchase_hardware_award_review_decision': 'purchase',
     'steel_purchase': 'purchase', 'hardware_purchase': 'purchase',
     'supplier_collaboration': 'purchase', 'purchase_decision_governance': 'purchase',
     'purchase_workbench': 'purchase', 'supplier_portal': 'purchase',
@@ -1254,6 +1280,10 @@ CAPABILITY_TYPES = {
     'prepare_purchase_hardware_award_final_approve': 'approval',
     'prepare_purchase_price_compare_approval': 'approval',
     'prepare_supplier_price_access_decision': 'approval',
+    'prepare_supplier_delivery_modify_decision': 'operation',
+    'prepare_supplier_quantity_change_decision': 'operation',
+    'prepare_purchase_repurchase_todo_decision': 'approval',
+    'prepare_purchase_hardware_award_review_decision': 'approval',
     'steel_purchase': 'review', 'hardware_purchase': 'review',
     'supplier_collaboration': 'review', 'purchase_decision_governance': 'review',
     'purchase_workbench': 'review', 'supplier_portal': 'review', 'purchase_adjustment': 'review',
@@ -1619,6 +1649,8 @@ def tool_schema(key):
         'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
         'prepare_purchase_price_compare_approval',
         'prepare_supplier_price_access_decision',
+        'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+        'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import proposal_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':proposal_schema(key)}}
@@ -1968,6 +2000,8 @@ def execute(db, user, key, arguments, run=None):
         'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
         'prepare_purchase_price_compare_approval',
         'prepare_supplier_price_access_decision',
+        'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+        'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)

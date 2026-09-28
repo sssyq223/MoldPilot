@@ -28,5 +28,8 @@ description: 采购拆组调整与临时调整提案。
 - `query_purchase_repurchase_system_price`：按重采批次、明细和供应商读取当前 ERP 系统价。
 - `query_supplier_price_access_policy`：读取当前用户访问供应商价格敏感数据的 ERP 策略。
 - `prepare_supplier_price_access_decision`：准备供应商价格敏感访问申请的批准或驳回提案。
+- `prepare_supplier_delivery_modify_decision`、`prepare_supplier_quantity_change_decision`：处理供应商发货修改和订单数量变更确认。
+- `prepare_purchase_repurchase_todo_decision`：审批或退回无人接单重采待办。
+- `prepare_purchase_hardware_award_review_decision`：处理五金定标待办退回或驳回。
 
 数量必须完整分配且不重复，原采购组保持 ERP 记录；预览结果不等于正式提交结果。任何版本冲突、权限不足或 ERP 回执不明都停止本轮操作并要求重新查询。

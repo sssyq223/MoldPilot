@@ -449,6 +449,30 @@ class SupplierPriceAccessDecisionProposalInput(StrictModel):
     comment: str = Field(default="", max_length=500)
 
 
+class SupplierDeliveryModifyDecisionProposalInput(StrictModel):
+    request_id: int = Field(ge=1)
+    decision: Literal["confirm", "reject"]
+    reason: str = Field(default="", max_length=500)
+
+
+class SupplierQuantityChangeDecisionProposalInput(StrictModel):
+    proposal_id: int = Field(ge=1)
+    decision: Literal["accept", "reject"]
+    reason: str = Field(default="", max_length=500)
+
+
+class PurchaseRepurchaseTodoDecisionProposalInput(StrictModel):
+    todo_id: int = Field(ge=1)
+    decision: Literal["approve", "return"]
+    comment: str = Field(default="", max_length=500)
+
+
+class PurchaseHardwareAwardReviewDecisionProposalInput(StrictModel):
+    todo_id: int = Field(ge=1)
+    decision: Literal["return", "reject"]
+    comment: str = Field(default="", max_length=500)
+
+
 INPUTS = {
     "prepare_raw_material_split": RawMaterialSplitProposalInput,
     "prepare_purchase_decision": PurchaseDecisionProposalInput,
@@ -474,6 +498,10 @@ INPUTS = {
     "prepare_purchase_hardware_award_final_approve": PurchaseHardwareAwardFinalApproveProposalInput,
     "prepare_purchase_price_compare_approval": PurchasePriceCompareApprovalProposalInput,
     "prepare_supplier_price_access_decision": SupplierPriceAccessDecisionProposalInput,
+    "prepare_supplier_delivery_modify_decision": SupplierDeliveryModifyDecisionProposalInput,
+    "prepare_supplier_quantity_change_decision": SupplierQuantityChangeDecisionProposalInput,
+    "prepare_purchase_repurchase_todo_decision": PurchaseRepurchaseTodoDecisionProposalInput,
+    "prepare_purchase_hardware_award_review_decision": PurchaseHardwareAwardReviewDecisionProposalInput,
 }
 
 PROPOSAL_TOOLS = frozenset(INPUTS)
@@ -1064,6 +1092,10 @@ def _proposal_display(key, data, snapshot):
         "prepare_purchase_hardware_award_final_approve": "审批五金定标结果",
         "prepare_purchase_price_compare_approval": "提交采购报价议价审批",
         "prepare_supplier_price_access_decision": "审批供应商价格访问申请",
+        "prepare_supplier_delivery_modify_decision": "处理供应商发货修改申请",
+        "prepare_supplier_quantity_change_decision": "处理供应商订单数量变更",
+        "prepare_purchase_repurchase_todo_decision": "审批无人接单重采待办",
+        "prepare_purchase_hardware_award_review_decision": "处理五金定标退回或驳回",
     }
     return {
         "操作": names[key],
@@ -1191,6 +1223,10 @@ def execute_tool(db, user, key, arguments, run=None):
         snapshot = {"native_id": data.lines[0].price_id, "tool": key}
     elif key == "prepare_supplier_price_access_decision":
         snapshot = {"native_id": data.request_id, "tool": key}
+    elif key in {"prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision"}:
+        snapshot = {"native_id": getattr(data, "request_id", None) or data.proposal_id, "tool": key}
+    elif key in {"prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision"}:
+        snapshot = {"native_id": data.todo_id, "tool": key}
     else:
         snapshot = _group_snapshot(db, user, getattr(data, "group_id", 0))
     proposal = {
@@ -1263,6 +1299,10 @@ def _fresh_group_check(db, user, proposal):
                 current = client.hardware_award_todo_detail(int(data["todo_id"]))
             elif tool == "prepare_supplier_price_access_decision" and data.get("request_id"):
                 current = client.supplier_price_access_request(int(data["request_id"]))
+            elif tool == "prepare_purchase_repurchase_todo_decision" and data.get("todo_id"):
+                current = client.manual_dispatch_todo_detail(int(data["todo_id"]))
+            elif tool == "prepare_purchase_hardware_award_review_decision" and data.get("todo_id"):
+                current = client.hardware_award_todo_detail(int(data["todo_id"]))
             else:
                 return None
         finally:
@@ -1625,6 +1665,23 @@ def confirm(db, user, payload):
             result = client.decide_supplier_price_access_request(
                 int(data["request_id"]),
                 {"action": data["action"], "comment": data.get("comment", "")},
+            )
+        elif tool == "prepare_supplier_delivery_modify_decision":
+            result = client.decide_supplier_delivery_modify_request(
+                int(data["request_id"]), data["decision"], {"reason": data.get("reason", "")},
+            )
+        elif tool == "prepare_supplier_quantity_change_decision":
+            result = client.decide_order_quantity_change({
+                "proposalId": data["proposal_id"], "decision": data["decision"],
+                "reason": data.get("reason", ""), "idempotencyKey": str(operation.id),
+            })
+        elif tool == "prepare_purchase_repurchase_todo_decision":
+            result = client.manual_dispatch_todo_decision(
+                int(data["todo_id"]), data["decision"], {"comment": data.get("comment", "")},
+            )
+        elif tool == "prepare_purchase_hardware_award_review_decision":
+            result = client.hardware_award_review_decision(
+                int(data["todo_id"]), data["decision"], {"comment": data.get("comment", "")},
             )
         else:
             raise DomainError("TOOL_UNKNOWN", "采购正式动作未实现", 403)

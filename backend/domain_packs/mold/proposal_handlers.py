@@ -110,6 +110,8 @@ HANDLERS = (
         "prepare_purchase_hardware_award_draft", "prepare_purchase_hardware_award_final_approve",
         "prepare_purchase_price_compare_approval",
         "prepare_supplier_price_access_decision",
+        "prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision",
+        "prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision",
     })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
         "prepare_finance_correction", "prepare_supplier_payment_condition", "prepare_supplier_payment_request",

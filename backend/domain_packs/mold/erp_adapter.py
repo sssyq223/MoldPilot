@@ -477,6 +477,29 @@ class ERPClient:
             json=payload,
         ).get('data') or {})
 
+    def decide_supplier_delivery_modify_request(self, request_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'supplier/delivery/modify-request/{int(request_id)}/{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def hardware_award_review_decision(self, todo_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/general-{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def manual_dispatch_todo_decision(self, todo_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/manual-dispatch/todos/{int(todo_id)}/{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def manual_dispatch_todo_detail(self, todo_id):
+        return normalized(self.request(
+            'GET', f'purchase/manual-dispatch/todos/{int(todo_id)}'
+        ).get('data') or {})
+
     def claim_purchase_request(self, request_id, payload=None):
         return normalized(self.request(
             'POST', f'purchase/workbench/requests/{int(request_id)}/claim',

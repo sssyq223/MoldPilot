@@ -39,6 +39,8 @@ MIGRATED_TOOLS = {
     "query_purchase_price_compare_context", "query_purchase_repurchase_system_price",
     "prepare_purchase_price_compare_approval",
     "query_supplier_price_access_policy", "prepare_supplier_price_access_decision",
+    "prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision",
+    "prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision",
     "prepare_purchase_hardware_award_final_approve",
 }
 
@@ -50,6 +52,12 @@ def test_procurement_migration_tools_are_registered_with_typed_schemas():
         assert schema["name"] == key
         assert schema["parameters"]["type"] == "object"
         assert schema["parameters"].get("additionalProperties") is False
+
+
+def test_procurement_migration_closure_keeps_target_count_explicit():
+    assert len(MIGRATED_TOOLS) == 42
+    assert "query_supplier_price_access_policy" in MIGRATED_TOOLS
+    assert "prepare_purchase_hardware_award_final_approve" in MIGRATED_TOOLS
 
 
 def test_procurement_migration_skills_have_skill_documents_and_confirmation_handlers():
@@ -73,6 +81,8 @@ def test_procurement_migration_skills_have_skill_documents_and_confirmation_hand
         "prepare_purchase_hardware_award_draft", "prepare_purchase_hardware_award_final_approve",
         "prepare_purchase_price_compare_approval",
         "prepare_supplier_price_access_decision",
+        "prepare_supplier_delivery_modify_decision", "prepare_supplier_quantity_change_decision",
+        "prepare_purchase_repurchase_todo_decision", "prepare_purchase_hardware_award_review_decision",
     } <= handled
 
 
