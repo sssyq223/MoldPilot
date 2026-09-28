@@ -236,6 +236,170 @@ TOOLS.update({
         'description': '准备供应商交期/数量变更申请；批准后调用 ERP 受控变更接口。',
         'permission': 'shipment.confirm',
     },
+    'query_purchase_workbench_context': {
+        'description': '查询 ERP 采购申请认领、采购办理摘要和拆单工作台；只读，不自动认领或修改拆组。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_portal_context': {
+        'description': '查询当前 ERP 供应商身份下的报价任务、采购订单和发货记录；只读，不模拟供应商状态。',
+        'permission': 'order.read',
+    },
+    'query_purchase_adjustment_context': {
+        'description': '查询 ERP 采购拆组调整上下文、版本、快照和历史；只读，不修改原采购组。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_repurchase_context': {
+        'description': '查询 ERP 候选耗尽后的无人接单重采批次、逐件明细和启用供应商；只读，不本地计算审批金额。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_supplier_ranking_context': {
+        'description': '查询 ERP 采购组候选供应商顺位和快照；只读，不暴露或修改本地候选台账。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_order_quantity_change_context': {
+        'description': '查询 ERP 采购订单数量变更影响和供应商确认约束；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_hardware_award_context': {
+        'description': '查询 ERP 五金定标批次、报价来源和当前版本；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_price_compare_context': {
+        'description': '查询 ERP 采购报价比较行和价格来源；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_repurchase_system_price': {
+        'description': '按重采批次、明细和供应商查询 ERP 当前系统价；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_price_access_policy': {
+        'description': '查询 ERP 当前用户访问供应商价格敏感数据的策略；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_order_context': {
+        'description': '查询 ERP 采购订单详情、状态和版本；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_purchase_delivery_instruction_context': {
+        'description': '查询 ERP 采购订单发货地址和放行状态；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_qualification_context': {
+        'description': '查询 ERP 供应商资格列表或详情；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_price_catalog_context': {
+        'description': '查询 ERP 供应商原材/五金价格目录；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_price_approval_context': {
+        'description': '查询 ERP 供应商价格审批列表或待办详情；只读。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_delivery_available_context': {
+        'description': '查询 ERP 供应商已接单且尚未发完的可发货明细；只读。',
+        'permission': 'order.read',
+    },
+    'query_supplier_pending_tasks_context': {
+        'description': '汇总当前 ERP 供应商待报价、待接单和待发货任务；只读。',
+        'permission': 'order.read',
+    },
+    'query_supplier_order_reject_reasons': {
+        'description': '查询 ERP 当前启用的供应商整单拒单原因编码；只读。',
+        'permission': 'order.read',
+    },
+    'prepare_purchase_claim': {
+        'description': '准备认领 ERP 已审批采购申请的确认卡；确认后调用原生认领接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_hardware_inquiry': {
+        'description': '准备向 ERP 候选供应商发送五金询价的确认卡；确认后调用原生询价接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_supplier_order_decision': {
+        'description': '准备供应商订单接单、拒单或部分接单确认卡；确认后调用供应商门户接口。',
+        'permission': 'order.confirm',
+    },
+    'prepare_supplier_quote_submit': {
+        'description': '准备供应商逐行含税报价提交确认卡；确认后调用供应商报价接口。',
+        'permission': 'purchase_price.submit',
+    },
+    'prepare_supplier_delivery_create': {
+        'description': '准备供应商分批发货单确认卡；确认后调用供应商发货接口。',
+        'permission': 'shipment.create',
+    },
+    'prepare_supplier_exception': {
+        'description': '准备供应商交付延期、短缺或质量异常反馈确认卡；确认后调用 ERP 异常接口。',
+        'permission': 'shipment.confirm',
+    },
+    'prepare_purchase_split_adjustment': {
+        'description': '准备按 ERP 原采购组版本和快照预览拆组调整；确认后调用 ERP 服务端预览，不直接改写原采购组。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_split_adjustment_submit': {
+        'description': '准备提交已有 ERP 拆组调整提案；确认后按调整版本调用 ERP 提交接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_temporary_group_save': {
+        'description': '准备保存 ERP 采购临时分组草稿；确认后按申请责任和收货点调用原生维护接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_temporary_group_delete': {
+        'description': '准备删除 ERP 尚未转正式调整的临时分组草稿；确认后调用原生删除接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_repurchase_submit': {
+        'description': '准备逐零件指定供应商和含税单价并提交无人接单重采两级审批；确认后保存草稿并提交 ERP。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_purchase_supplier_rank_adjustment': {
+        'description': '准备按 ERP 候选快照调整供应商顺位；确认后调用 ERP 预览和提案接口，不直接改候选表。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_order_quantity_change': {
+        'description': '准备采购订单单行或批量数量变更提案；确认后进入 ERP 供应商确认流程。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_hardware_award_submit': {
+        'description': '准备五金定标提交审批提案；确认后调用 ERP 定标审批接口。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_purchase_hardware_award_draft': {
+        'description': '准备从 ERP 采购组创建五金定标草稿；确认后创建定标批次。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_hardware_award_final_approve': {
+        'description': '准备五金定标最终审批提案；确认时先做 ERP 终审预览，再提交最终审批。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_purchase_price_compare_approval': {
+        'description': '准备采购报价比较议价审批提案；确认后提交 ERP 价格审批。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_supplier_price_access_decision': {
+        'description': '准备供应商价格敏感访问申请的批准或驳回提案；确认后调用 ERP 审批接口。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_supplier_delivery_modify_decision': {
+        'description': '准备供应商发货修改申请的确认或驳回提案。',
+        'permission': 'shipment.confirm',
+    },
+    'prepare_supplier_quantity_change_decision': {
+        'description': '准备供应商订单数量变更的接受或拒绝提案。',
+        'permission': 'order.confirm',
+    },
+    'prepare_purchase_repurchase_todo_decision': {
+        'description': '准备无人接单重采采购待办的审批或退回提案。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_purchase_hardware_award_review_decision': {
+        'description': '准备五金定标待办的退回或驳回提案。',
+        'permission': 'purchase.approve',
+    },
+    'prepare_supplier_price_approval_decision': {
+        'description': '准备供应商价格审批待办的逐行批准或驳回提案；确认后调用 ERP 审批接口。',
+        'permission': 'purchase.approve',
+    },
 })
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS['mail_monitoring'] = {
@@ -793,6 +957,41 @@ SKILLS.update({
                            'prepare_raw_material_order', 'prepare_hardware_order'],
         'activation_queries': ['采购决策', '采购定标', '采购价格审批', '生成采购订单'],
     },
+    'purchase_workbench': {
+        'name': '采购工作台认领与拆单',
+        'tools': ['query_purchase_workbench_context'],
+        'optional_tools': ['prepare_purchase_claim', 'prepare_raw_material_split',
+                           'prepare_hardware_inquiry'],
+        'activation_queries': ['采购认领', '采购申请办理', '采购工作台', '采购拆单', '发送询价'],
+    },
+    'supplier_portal': {
+        'name': '供应商门户履约办理',
+        'tools': ['query_supplier_portal_context'],
+        'optional_tools': ['prepare_supplier_order_decision', 'prepare_supplier_quote_submit',
+                           'prepare_supplier_delivery_create', 'prepare_supplier_exception'],
+        'activation_queries': ['供应商报价任务', '供应商接单', '供应商拒单', '供应商发货', '供应商交付异常'],
+    },
+    'purchase_adjustment': {
+        'name': '采购拆组调整',
+        'tools': ['query_purchase_adjustment_context', 'query_purchase_repurchase_context',
+                  'query_purchase_supplier_ranking_context', 'query_purchase_order_quantity_change_context',
+                  'query_purchase_hardware_award_context', 'query_purchase_price_compare_context',
+                  'query_purchase_repurchase_system_price', 'query_supplier_price_access_policy',
+                  'query_purchase_order_context', 'query_purchase_delivery_instruction_context',
+                  'query_supplier_qualification_context', 'query_supplier_price_catalog_context',
+                  'query_supplier_price_approval_context', 'query_supplier_delivery_available_context',
+                  'query_supplier_pending_tasks_context', 'query_supplier_order_reject_reasons'],
+        'optional_tools': ['prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
+                           'prepare_purchase_temporary_group_save', 'prepare_purchase_temporary_group_delete',
+                           'prepare_purchase_repurchase_submit', 'prepare_purchase_supplier_rank_adjustment',
+                           'prepare_purchase_order_quantity_change', 'prepare_purchase_hardware_award_submit',
+                           'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
+                           'prepare_purchase_price_compare_approval', 'prepare_supplier_price_access_decision',
+                           'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+                           'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+                           'prepare_supplier_price_approval_decision'],
+        'activation_queries': ['采购调整', '采购拆组调整', '临时拆组', '采购拆组提案', '无人接单重采', '重采审批'],
+    },
 })
 
 DEPARTMENT_NAMES = {
@@ -942,6 +1141,47 @@ CAPABILITY_NAMES = {
     'prepare_raw_material_order': '准备原材采购下单',
     'prepare_hardware_order': '准备五金采购下单',
     'prepare_supplier_delivery_change': '准备供应商交期变更',
+    'query_purchase_workbench_context': '查询采购工作台上下文',
+    'query_supplier_portal_context': '查询供应商门户上下文',
+    'query_purchase_adjustment_context': '查询采购拆组调整上下文',
+    'query_purchase_repurchase_context': '查询无人接单重采上下文',
+    'query_purchase_supplier_ranking_context': '查询采购供应商候选顺位',
+    'query_purchase_order_quantity_change_context': '查询采购订单数量变更影响',
+    'query_purchase_hardware_award_context': '查询五金定标上下文',
+    'query_purchase_price_compare_context': '查询采购报价比较',
+    'query_purchase_repurchase_system_price': '查询重采系统价',
+    'query_supplier_price_access_policy': '查询供应商价格访问策略',
+    'query_purchase_order_context': '查询采购订单详情',
+    'query_purchase_delivery_instruction_context': '查询采购订单发货地址',
+    'query_supplier_qualification_context': '查询供应商资格',
+    'query_supplier_price_catalog_context': '查询供应商价格目录',
+    'query_supplier_price_approval_context': '查询供应商价格审批',
+    'query_supplier_delivery_available_context': '查询供应商可发货明细',
+    'query_supplier_pending_tasks_context': '查询供应商待办汇总',
+    'query_supplier_order_reject_reasons': '查询供应商拒单原因',
+    'prepare_purchase_claim': '准备认领采购申请',
+    'prepare_hardware_inquiry': '准备发送五金询价',
+    'prepare_supplier_order_decision': '准备供应商订单决定',
+    'prepare_supplier_quote_submit': '准备提交供应商报价',
+    'prepare_supplier_delivery_create': '准备创建供应商发货单',
+    'prepare_supplier_exception': '准备供应商交付异常反馈',
+    'prepare_purchase_split_adjustment': '准备采购拆组调整预览',
+    'prepare_purchase_split_adjustment_submit': '准备提交采购拆组调整',
+    'prepare_purchase_temporary_group_save': '准备保存采购临时分组',
+    'prepare_purchase_temporary_group_delete': '准备删除采购临时分组',
+    'prepare_purchase_repurchase_submit': '准备提交无人接单重采审批',
+    'prepare_purchase_supplier_rank_adjustment': '准备调整供应商候选顺位',
+    'prepare_purchase_order_quantity_change': '准备提交采购订单数量变更',
+    'prepare_purchase_hardware_award_submit': '准备提交五金定标审批',
+    'prepare_purchase_hardware_award_draft': '准备创建五金定标草稿',
+    'prepare_purchase_hardware_award_final_approve': '准备审批五金定标结果',
+    'prepare_purchase_price_compare_approval': '准备采购报价议价审批',
+    'prepare_supplier_price_access_decision': '准备供应商价格访问审批',
+    'prepare_supplier_delivery_modify_decision': '准备供应商发货修改处理',
+    'prepare_supplier_quantity_change_decision': '准备供应商数量变更处理',
+    'prepare_purchase_repurchase_todo_decision': '准备重采待办审批',
+    'prepare_purchase_hardware_award_review_decision': '准备五金定标退回或驳回',
+    'prepare_supplier_price_approval_decision': '准备供应商价格审批',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -1006,8 +1246,44 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_raw_material_split': 'purchase', 'prepare_purchase_decision': 'purchase',
     'prepare_hardware_quote': 'purchase', 'prepare_raw_material_order': 'purchase',
     'prepare_hardware_order': 'purchase', 'prepare_supplier_delivery_change': 'purchase',
+    'query_purchase_workbench_context': 'purchase', 'query_supplier_portal_context': 'purchase',
+    'query_purchase_adjustment_context': 'purchase',
+    'query_purchase_repurchase_context': 'purchase',
+    'query_purchase_supplier_ranking_context': 'purchase',
+    'query_purchase_order_quantity_change_context': 'purchase',
+    'query_purchase_hardware_award_context': 'purchase',
+    'query_purchase_price_compare_context': 'purchase',
+    'query_purchase_repurchase_system_price': 'purchase',
+    'query_supplier_price_access_policy': 'purchase',
+    'query_purchase_order_context': 'purchase',
+    'query_purchase_delivery_instruction_context': 'purchase',
+    'query_supplier_qualification_context': 'purchase',
+    'query_supplier_price_catalog_context': 'purchase',
+    'query_supplier_price_approval_context': 'purchase',
+    'query_supplier_delivery_available_context': 'purchase',
+    'query_supplier_pending_tasks_context': 'purchase',
+    'query_supplier_order_reject_reasons': 'purchase',
+    'prepare_purchase_claim': 'purchase', 'prepare_hardware_inquiry': 'purchase',
+    'prepare_supplier_order_decision': 'purchase', 'prepare_supplier_quote_submit': 'purchase',
+    'prepare_supplier_delivery_create': 'purchase', 'prepare_supplier_exception': 'purchase',
+    'prepare_purchase_split_adjustment': 'purchase', 'prepare_purchase_split_adjustment_submit': 'purchase',
+    'prepare_purchase_temporary_group_save': 'purchase', 'prepare_purchase_temporary_group_delete': 'purchase',
+    'prepare_purchase_repurchase_submit': 'purchase',
+    'prepare_purchase_supplier_rank_adjustment': 'purchase',
+    'prepare_purchase_order_quantity_change': 'purchase',
+    'prepare_purchase_hardware_award_submit': 'purchase',
+    'prepare_purchase_hardware_award_draft': 'purchase',
+    'prepare_purchase_hardware_award_final_approve': 'purchase',
+    'prepare_purchase_price_compare_approval': 'purchase',
+    'prepare_supplier_price_access_decision': 'purchase',
+    'prepare_supplier_delivery_modify_decision': 'purchase',
+    'prepare_supplier_quantity_change_decision': 'purchase',
+    'prepare_purchase_repurchase_todo_decision': 'purchase',
+    'prepare_purchase_hardware_award_review_decision': 'purchase',
+    'prepare_supplier_price_approval_decision': 'purchase',
     'steel_purchase': 'purchase', 'hardware_purchase': 'purchase',
     'supplier_collaboration': 'purchase', 'purchase_decision_governance': 'purchase',
+    'purchase_workbench': 'purchase', 'supplier_portal': 'purchase',
     'query_project_control_context': 'project', 'prepare_project_pause': 'project',
     'prepare_project_resume': 'project', 'project_pause_resume': 'project',
     'query_project_closure_context': 'project', 'prepare_project_closure_checklist': 'project',
@@ -1074,8 +1350,27 @@ CAPABILITY_TYPES = {
     'prepare_raw_material_split': 'operation', 'prepare_purchase_decision': 'approval',
     'prepare_hardware_quote': 'approval', 'prepare_raw_material_order': 'approval',
     'prepare_hardware_order': 'approval', 'prepare_supplier_delivery_change': 'operation',
+    'prepare_purchase_claim': 'operation', 'prepare_hardware_inquiry': 'operation',
+    'prepare_supplier_order_decision': 'operation', 'prepare_supplier_quote_submit': 'operation',
+    'prepare_supplier_delivery_create': 'operation', 'prepare_supplier_exception': 'operation',
+    'prepare_purchase_split_adjustment': 'operation', 'prepare_purchase_split_adjustment_submit': 'operation',
+    'prepare_purchase_temporary_group_save': 'operation', 'prepare_purchase_temporary_group_delete': 'operation',
+    'prepare_purchase_repurchase_submit': 'approval',
+    'prepare_purchase_supplier_rank_adjustment': 'approval',
+    'prepare_purchase_order_quantity_change': 'operation',
+    'prepare_purchase_hardware_award_submit': 'approval',
+    'prepare_purchase_hardware_award_draft': 'operation',
+    'prepare_purchase_hardware_award_final_approve': 'approval',
+    'prepare_purchase_price_compare_approval': 'approval',
+    'prepare_supplier_price_access_decision': 'approval',
+    'prepare_supplier_delivery_modify_decision': 'operation',
+    'prepare_supplier_quantity_change_decision': 'operation',
+    'prepare_purchase_repurchase_todo_decision': 'approval',
+    'prepare_purchase_hardware_award_review_decision': 'approval',
+    'prepare_supplier_price_approval_decision': 'approval',
     'steel_purchase': 'review', 'hardware_purchase': 'review',
     'supplier_collaboration': 'review', 'purchase_decision_governance': 'review',
+    'purchase_workbench': 'review', 'supplier_portal': 'review', 'purchase_adjustment': 'review',
     'change_intake_review': 'review', 'procurement_price_context_review': 'review',
     'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
     'business_status_review': 'review', 'project_dossier_review': 'review',
@@ -1402,9 +1697,75 @@ def tool_schema(key):
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import procurement_context_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':procurement_context_schema()}}
+    if key == 'query_purchase_workbench_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseWorkbenchContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseWorkbenchContextInput.model_json_schema()}}
+    if key == 'query_supplier_portal_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPortalContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPortalContextInput.model_json_schema()}}
+    if key == 'query_purchase_adjustment_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseAdjustmentContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseAdjustmentContextInput.model_json_schema()}}
+    if key == 'query_purchase_repurchase_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseRepurchaseContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseRepurchaseContextInput.model_json_schema()}}
+    if key == 'query_purchase_supplier_ranking_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseSupplierRankingContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseSupplierRankingContextInput.model_json_schema()}}
+    if key == 'query_purchase_order_quantity_change_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseOrderQuantityChangeContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseOrderQuantityChangeContextInput.model_json_schema()}}
+    if key == 'query_purchase_hardware_award_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseHardwareAwardContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseHardwareAwardContextInput.model_json_schema()}}
+    if key == 'query_purchase_price_compare_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchasePriceCompareContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchasePriceCompareContextInput.model_json_schema()}}
+    if key == 'query_purchase_repurchase_system_price':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseRepurchaseSystemPriceContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseRepurchaseSystemPriceContextInput.model_json_schema()}}
+    if key == 'query_supplier_price_access_policy':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceAccessPolicyInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceAccessPolicyInput.model_json_schema()}}
+    if key == 'query_purchase_order_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseOrderContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseOrderContextInput.model_json_schema()}}
+    if key == 'query_purchase_delivery_instruction_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseDeliveryInstructionContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseDeliveryInstructionContextInput.model_json_schema()}}
+    if key == 'query_supplier_qualification_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierQualificationListInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierQualificationListInput.model_json_schema()}}
+    if key == 'query_supplier_price_catalog_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceCatalogContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceCatalogContextInput.model_json_schema()}}
+    if key == 'query_supplier_price_approval_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPriceApprovalContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPriceApprovalContextInput.model_json_schema()}}
+    if key == 'query_supplier_delivery_available_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierDeliveryAvailableContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierDeliveryAvailableContextInput.model_json_schema()}}
+    if key == 'query_supplier_pending_tasks_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPendingTasksContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPendingTasksContextInput.model_json_schema()}}
+    if key == 'query_supplier_order_reject_reasons':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierOrderRejectReasonContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierOrderRejectReasonContextInput.model_json_schema()}}
     if key in {
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+        'prepare_purchase_claim', 'prepare_hardware_inquiry', 'prepare_supplier_order_decision',
+        'prepare_supplier_quote_submit', 'prepare_supplier_delivery_create', 'prepare_supplier_exception',
+        'prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
+        'prepare_purchase_temporary_group_save', 'prepare_purchase_temporary_group_delete',
+        'prepare_purchase_repurchase_submit', 'prepare_purchase_supplier_rank_adjustment',
+        'prepare_purchase_order_quantity_change', 'prepare_purchase_hardware_award_submit',
+        'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
+        'prepare_purchase_price_compare_approval',
+        'prepare_supplier_price_access_decision',
+        'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+        'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+        'prepare_supplier_price_approval_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import proposal_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':proposal_schema(key)}}
@@ -1743,8 +2104,29 @@ def execute(db, user, key, arguments, run=None):
     if key in {
         'query_raw_material_purchase_context', 'query_hardware_purchase_context',
         'query_supplier_procurement_context', 'query_purchase_decision_context',
+        'query_purchase_workbench_context', 'query_supplier_portal_context', 'query_purchase_adjustment_context',
+        'query_purchase_repurchase_context', 'query_purchase_supplier_ranking_context',
+        'query_purchase_order_quantity_change_context', 'query_purchase_hardware_award_context',
+        'query_purchase_price_compare_context', 'query_purchase_repurchase_system_price',
+        'query_supplier_price_access_policy',
+        'query_purchase_order_context', 'query_purchase_delivery_instruction_context',
+        'query_supplier_qualification_context', 'query_supplier_price_catalog_context',
+        'query_supplier_price_approval_context', 'query_supplier_delivery_available_context',
+        'query_supplier_pending_tasks_context', 'query_supplier_order_reject_reasons',
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+        'prepare_purchase_claim', 'prepare_hardware_inquiry', 'prepare_supplier_order_decision',
+        'prepare_supplier_quote_submit', 'prepare_supplier_delivery_create', 'prepare_supplier_exception',
+        'prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
+        'prepare_purchase_temporary_group_save', 'prepare_purchase_temporary_group_delete',
+        'prepare_purchase_repurchase_submit', 'prepare_purchase_supplier_rank_adjustment',
+        'prepare_purchase_order_quantity_change', 'prepare_purchase_hardware_award_submit',
+        'prepare_purchase_hardware_award_draft', 'prepare_purchase_hardware_award_final_approve',
+        'prepare_purchase_price_compare_approval',
+        'prepare_supplier_price_access_decision',
+        'prepare_supplier_delivery_modify_decision', 'prepare_supplier_quantity_change_decision',
+        'prepare_purchase_repurchase_todo_decision', 'prepare_purchase_hardware_award_review_decision',
+        'prepare_supplier_price_approval_decision',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)

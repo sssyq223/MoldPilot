@@ -77,6 +77,27 @@ PROCUREMENT_DELIVERY_FIELDS=['id','delivery_no','deliveryNo','purchase_order_id'
                              'arrivalConfirmedQty','received_qty','receivedQty','pending_arrival_qty',
                              'pendingArrivalQty','pending_inbound_qty','pendingInboundQty','status',
                              'delivery_date','deliveryDate','arrival_date','arrivalDate','remark','created_at','createdAt']
+PROCUREMENT_REQUEST_FIELDS=['id','request_id','requestId','request_no','requestNo','project_no','projectNo',
+                            'mold_no','moldNo','material_category','materialCategory','status','statusLabel',
+                            'process_status','processStatus','owner_id','ownerId','owner_name','ownerName',
+                            'claim_version','version','versionNo','detail_count','total_quantity','totalAmount',
+                            'created_at','createdAt','updated_at','updatedAt']
+SUPPLIER_QUOTE_TASK_FIELDS=['id','task_id','taskId','task_no','taskNo','order_id','orderId','project_no','projectNo',
+                            'mold_no','moldNo','supplier_id','supplierId','supplier_name','supplierName','status',
+                            'statusLabel','deadline','quote_deadline','quoteDeadline','version','versionNo',
+                            'lines','created_at','createdAt','updated_at','updatedAt']
+SUPPLIER_PORTAL_ORDER_FIELDS=['id','order_id','orderId','order_no','orderNo','project_no','projectNo','mold_no','moldNo',
+                              'supplier_id','supplierId','supplier_name','supplierName','status','statusLabel',
+                              'decision_status','decisionStatus','promised_delivery_date','promisedDeliveryDate',
+                              'version','versionNo','details','created_at','createdAt','updated_at','updatedAt']
+SUPPLIER_PORTAL_DELIVERY_FIELDS=['id','delivery_id','deliveryId','delivery_no','deliveryNo','order_id','orderId',
+                                 'order_no','orderNo','project_no','projectNo','mold_no','moldNo','status','statusLabel',
+                                 'delivery_date','deliveryDate','quantity','total_quantity','totalQuantity','details',
+                                 'created_at','createdAt','updated_at','updatedAt']
+PROCUREMENT_SPLIT_ADJUSTMENT_FIELDS=['id','adjustment_id','adjustmentId','adjustment_no','adjustmentNo',
+                                     'request_id','requestId','split_group_id','splitGroupId','status','statusLabel',
+                                     'version','versionNo','reason_type','reasonType','reason','groups','details',
+                                     'snapshot_hash','snapshotHash','created_at','createdAt','updated_at','updatedAt']
 PROCUREMENT_INBOUND_FIELDS=['id','inbound_no','inboundNo','order_id','orderId','order_no','orderNo',
                             'mold_no','moldNo','part_no','partNo','partner_id','partnerId','partner_name',
                             'partnerName','inbound_type','status','inbound_date','inboundDate','warehouse',
@@ -245,6 +266,396 @@ class ERPClient:
             'POST', f'purchase/supplier-delivery/{int(delivery_id)}/modify-request',
             json=payload,
         ).get('data') or {})
+
+    def purchase_request_list(self, params=None):
+        payload = self.request('GET', 'purchase/request/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            PROCUREMENT_REQUEST_FIELDS,
+            'purchase/request/list',
+        )[:200]
+
+    def purchase_request_detail(self, request_id):
+        payload = self.request('GET', f'purchase/request/{int(request_id)}')
+        return normalized(payload.get('data') or {})
+
+    def purchase_order_list(self, params=None):
+        payload = self.request('GET', 'purchase/order/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            PROCUREMENT_ORDER_FIELDS, 'purchase/order/list',
+        )[:200]
+
+    def purchase_order_detail(self, order_id):
+        payload = self.request('GET', f'purchase/order/{int(order_id)}')
+        return normalized(payload.get('data') or {})
+
+    def purchase_delivery_instruction(self, order_id):
+        payload = self.request('GET', f'purchase/order/{int(order_id)}/delivery-instruction')
+        return normalized(payload.get('data') or {})
+
+    def supplier_master_list(self, params=None):
+        payload = self.request('GET', 'master/supplier/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_master_detail(self, supplier_id):
+        payload = self.request('GET', f'master/supplier/{int(supplier_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_price_catalog(self, price_type=None, params=None):
+        query = {**(params or {}), 'pageNum': 1, 'pageSize': 200}
+        routes = {'hardware': 'master/hardware-price/list', 'steel': 'master/steel-price/list'}
+        if price_type in routes:
+            payload = self.request('GET', routes[price_type], params=query)
+            return normalized(payload.get('rows') or payload.get('data') or payload)
+        result = {}
+        for kind, route in routes.items():
+            payload = self.request('GET', route, params=query)
+            result[kind] = normalized(payload.get('rows') or payload.get('data') or payload)
+        return result
+
+    def supplier_price_approval_list(self, params=None):
+        payload = self.request('GET', 'purchase/price-approval/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_price_approval_todo_detail(self, todo_id):
+        payload = self.request('GET', f'purchase/price-approval/todo/{int(todo_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_delivery_available(self, params=None):
+        payload = self.request('GET', 'supplier/delivery/available-details', params=params or {})
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def supplier_order_reject_reasons(self):
+        payload = self.request('GET', 'supplier/purchase-order/options/reject-reasons')
+        return normalized(payload.get('data') or payload.get('rows') or payload)
+
+    def approve_supplier_price_todo(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/price-approval/todo/{int(todo_id)}/approve', json=payload,
+        ).get('data') or {})
+
+    def reject_supplier_price_todo(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/price-approval/todo/{int(todo_id)}/reject', json=payload,
+        ).get('data') or {})
+
+    def purchase_workbench_split_list(self, params=None):
+        payload = self.request('GET', 'purchase/workbench/split/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            PROCUREMENT_REQUEST_FIELDS,
+            'purchase/workbench/split/list',
+        )[:200]
+
+    def purchase_workbench_split_detail(self, request_id):
+        payload = self.request('GET', f'purchase/workbench/split/{int(request_id)}')
+        return normalized(payload.get('data') or {})
+
+    def purchase_split_adjustment_context(self, request_id):
+        payload = self.request(
+            'GET', f'purchase/workbench/split-adjustments/context/{int(request_id)}'
+        )
+        return normalized(payload.get('data') or {})
+
+    def purchase_split_adjustment_history(self, params=None):
+        payload = self.request('GET', 'purchase/workbench/split-adjustments', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            PROCUREMENT_SPLIT_ADJUSTMENT_FIELDS,
+            'purchase/workbench/split-adjustments',
+        )[:200]
+
+    def purchase_split_adjustment_detail(self, adjustment_id):
+        payload = self.request(
+            'GET', f'purchase/workbench/split-adjustments/{int(adjustment_id)}'
+        )
+        return normalized(payload.get('data') or {})
+
+    def preview_purchase_split_adjustment(self, payload):
+        return normalized(self.request(
+            'POST', 'purchase/workbench/split-adjustments/preview', json=payload,
+        ).get('data') or {})
+
+    def submit_purchase_split_adjustment(self, adjustment_id, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/workbench/split-adjustments/{int(adjustment_id)}/submit',
+            json=payload or {},
+        ).get('data') or {})
+
+    def save_purchase_temporary_group(self, request_id, payload):
+        return normalized(self.request(
+            'PUT', f'purchase/workbench/split-adjustments/context/{int(request_id)}/temporary-groups',
+            json=payload,
+        ).get('data') or {})
+
+    def delete_purchase_temporary_group(self, request_id, client_group_key):
+        return normalized(self.request(
+            'DELETE',
+            f'purchase/workbench/split-adjustments/context/{int(request_id)}/temporary-groups/{client_group_key}',
+        ).get('data') or {})
+
+    def manual_dispatch_by_order(self, order_id):
+        payload = self.request('GET', f'purchase/manual-dispatch/by-order/{int(order_id)}')
+        return normalized(payload.get('data') or {})
+
+    def manual_dispatch_detail(self, batch_id):
+        payload = self.request('GET', f'purchase/manual-dispatch/{int(batch_id)}')
+        return normalized(payload.get('data') or {})
+
+    def manual_dispatch_suppliers(self):
+        payload = self.request('GET', 'purchase/manual-dispatch/suppliers')
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            ['id','supplierId','supplier_id','name','supplierName','supplier_name','status','enabled'],
+            'purchase/manual-dispatch/suppliers',
+        )[:500]
+
+    def save_manual_dispatch_draft(self, batch_id, payload):
+        return normalized(self.request(
+            'PUT', f'purchase/manual-dispatch/{int(batch_id)}/draft', json=payload,
+        ).get('data') or {})
+
+    def submit_manual_dispatch(self, batch_id, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/manual-dispatch/{int(batch_id)}/submit', json=payload or {},
+        ).get('data') or {})
+
+    def purchase_supplier_ranking(self, group_id):
+        payload = self.request(
+            'GET', f'api/agent/procurement/split-groups/{int(group_id)}/supplier-ranking'
+        )
+        return normalized(payload.get('data') or {})
+
+    def preview_supplier_rank_adjustment(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/supplier-rank-adjustment/preview',
+            json=payload,
+        ).get('data') or {})
+
+    def create_supplier_rank_adjustment_proposal(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/supplier-rank-adjustment/proposals',
+            json=payload,
+        ).get('data') or {})
+
+    def purchase_order_quantity_change_impact(self, order_id):
+        return normalized(self.request(
+            'GET', f'api/agent/procurement/orders/{int(order_id)}/quantity-change-impact'
+        ).get('data') or {})
+
+    def create_order_quantity_change_proposal(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/order-quantity-change-proposals',
+            json=payload,
+        ).get('data') or {})
+
+    def decide_order_quantity_change(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/order-quantity-change-decisions',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_create_draft(self, source_group_id):
+        return normalized(self.request(
+            'POST', 'purchase/hardware-award/draft',
+            json={'sourceGroupId': int(source_group_id)},
+        ).get('data') or {})
+
+    def hardware_award_detail(self, batch_id):
+        return normalized(self.request(
+            'GET', f'purchase/hardware-award/{int(batch_id)}'
+        ).get('data') or {})
+
+    def hardware_award_refresh_quotes(self, batch_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/{int(batch_id)}/refresh-quotes',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_submit(self, batch_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/{int(batch_id)}/submit',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_general_todos(self, params=None):
+        payload = self.request('GET', 'purchase/hardware-award/todos/general', params=params or {})
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def hardware_award_todo_detail(self, todo_id):
+        return normalized(self.request(
+            'GET', f'purchase/hardware-award/todos/{int(todo_id)}'
+        ).get('data') or {})
+
+    def hardware_award_final_preview(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/final-preview',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_final_approve(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/final-approve',
+            json=payload,
+        ).get('data') or {})
+
+    def purchase_price_compare_list(self):
+        payload = self.request('GET', 'purchase/price-compare/list')
+        return normalized(payload.get('data') or payload.get('rows') or [])
+
+    def submit_purchase_price_compare_negotiated_approval(self, payload):
+        return normalized(self.request(
+            'POST', 'purchase/price-compare/negotiated-approval', json=payload,
+        ).get('data') or {})
+
+    def manual_dispatch_system_price(self, batch_id, line_id, supplier_id):
+        payload = self.request(
+            'GET', f'purchase/manual-dispatch/{int(batch_id)}/lines/{int(line_id)}/system-price',
+            params={'supplierId': int(supplier_id)},
+        )
+        return normalized(payload.get('data') or {})
+
+    def supplier_price_access_policy(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/price-access/policy', json=payload,
+        ).get('data') or {})
+
+    def supplier_price_access_request(self, request_id):
+        return normalized(self.request(
+            'GET', f'api/agent/procurement/price-access/requests/{int(request_id)}'
+        ).get('data') or {})
+
+    def decide_supplier_price_access_request(self, request_id, payload):
+        return normalized(self.request(
+            'POST', f'api/agent/procurement/price-access/requests/{int(request_id)}/decision',
+            json=payload,
+        ).get('data') or {})
+
+    def decide_supplier_delivery_modify_request(self, request_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'supplier/delivery/modify-request/{int(request_id)}/{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def hardware_award_review_decision(self, todo_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/general-{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def manual_dispatch_todo_decision(self, todo_id, action, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/manual-dispatch/todos/{int(todo_id)}/{action}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def manual_dispatch_todo_detail(self, todo_id):
+        return normalized(self.request(
+            'GET', f'purchase/manual-dispatch/todos/{int(todo_id)}'
+        ).get('data') or {})
+
+    def claim_purchase_request(self, request_id, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/workbench/requests/{int(request_id)}/claim',
+            json=payload or {},
+        ).get('data') or {})
+
+    def send_group_inquiry(self, group_id, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/decision/{int(group_id)}/inquiry',
+            json=payload or {},
+        ).get('data') or {})
+
+    def supplier_quote_task_list(self, params=None):
+        payload = self.request('GET', 'supplier/quote-task/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            SUPPLIER_QUOTE_TASK_FIELDS,
+            'supplier/quote-task/list',
+        )[:200]
+
+    def supplier_quote_task_detail(self, task_id):
+        payload = self.request('GET', f'supplier/quote-task/{int(task_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_purchase_order_list(self, params=None):
+        payload = self.request('GET', 'supplier/purchase-order/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            SUPPLIER_PORTAL_ORDER_FIELDS,
+            'supplier/purchase-order/list',
+        )[:200]
+
+    def supplier_purchase_order_detail(self, order_id):
+        payload = self.request('GET', f'supplier/purchase-order/{int(order_id)}')
+        return normalized(payload.get('data') or {})
+
+    def supplier_delivery_list(self, params=None):
+        payload = self.request('GET', 'supplier/delivery/list', params={
+            **(params or {}), 'pageNum': 1, 'pageSize': 200,
+        })
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            SUPPLIER_PORTAL_DELIVERY_FIELDS,
+            'supplier/delivery/list',
+        )[:200]
+
+    def supplier_portal_context(self, params=None):
+        query = dict(params or {})
+        return normalized({
+            'quote_tasks': self.supplier_quote_task_list(query),
+            'purchase_orders': self.supplier_purchase_order_list(query),
+            'deliveries': self.supplier_delivery_list(query),
+            'as_of': host_ports().now().isoformat(),
+            'source_system': 'ERP',
+            'limitations': [
+                '供应商门户事实由当前 ERP 供应商身份决定；MoldPilot 不在本地模拟接单、报价或发货状态。',
+            ],
+        })
+
+    def submit_supplier_quote(self, task_id, payload):
+        return normalized(self.request(
+            'POST', f'supplier/quote-task/{int(task_id)}/submit', json=payload,
+        ).get('data') or {})
+
+    def decide_supplier_purchase_order(self, order_id, decision, payload=None):
+        decision_path = {
+            'ACCEPT': 'accept', 'REJECT': 'reject', 'PARTIAL': 'decision',
+        }.get(str(decision).upper())
+        if not decision_path:
+            raise DomainError('INVALID_TOOL_INPUT', '供应商订单决定不受支持', 400)
+        return normalized(self.request(
+            'PUT', f'supplier/purchase-order/{int(order_id)}/{decision_path}',
+            json=payload or {},
+        ).get('data') or {})
+
+    def create_supplier_delivery(self, payload):
+        return normalized(self.request(
+            'POST', 'supplier/delivery', json=payload,
+        ).get('data') or {})
+
+    def submit_supplier_exception(self, payload):
+        return normalized(self.request(
+            'POST', 'supplier/exception', json=payload,
+        ).get('data') or {})
+
     def accounting_checklist_reference(self, file_id):
         return self.request('GET', f'production/preplanOrder/cost-sheet/directory/{int(file_id)}/binding-reference')['data']
     def create_order(self,group_id):return self.request('POST',f'purchase/decision/{int(group_id)}/create-order')['data']
