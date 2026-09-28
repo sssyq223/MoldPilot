@@ -1,6 +1,7 @@
 from collections import defaultdict
 from pydantic import Field, model_validator
 from sqlalchemy import select, and_
+from sqlalchemy.exc import ProgrammingError
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import access, predicate, select_fields
 from domain_packs.mold.ports.db import now
@@ -108,13 +109,26 @@ def query(db,user,data:BusinessMatchInput,allowed_tools:set[str]):
 
     from domain_packs.mold.erp.core.domain_schemas import CATALOG
     from domain_packs.mold.erp.core.domains import data as subject_data
+    skipped_subject_kinds = set()
     for kind in CATALOG:
         tool='query_'+kind
         if tool not in allowed_tools:continue
         for subject in db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id.in_(list(by_id)),
             m.BusinessSubject.kind==kind).limit(501)):
-            try:visible_subject=subject_data(db,user,subject)
+            try:
+                # 旧库可能落后若干可选迁移。业务对象详情只是补充证据，
+                # 不能因为详情表字段不兼容而阻断项目/主数据候选查询。
+                # PostgreSQL 遇到缺列后会标记当前事务失败，因此这里必须使用保存点。
+                with db.begin_nested():
+                    visible_subject=subject_data(db,user,subject)
             except DomainError:continue
+            except ProgrammingError as error:
+                # 只容忍结构版本差异；连接失败和其他数据库错误仍交给 MCP 边界处理。
+                sqlstate = getattr(getattr(error, 'orig', None), 'sqlstate', None)
+                if sqlstate not in {'42703', '42P01'}:
+                    raise
+                skipped_subject_kinds.add(kind)
+                continue
             consider(subject.project_id,visible_subject.get('number'),'业务单号','business_subject')
             consider(subject.project_id,visible_subject.get('id'),'业务记录ID','business_subject')
             if kind in {'sales_contract','full_outsource_contract'}:
@@ -143,6 +157,8 @@ def query(db,user,data:BusinessMatchInput,allowed_tools:set[str]):
     limitations=['只返回当前用户同时具备项目读取和项目业务档案读取权限的候选，不查询隐藏项目。',
                  '候选匹配只用于人工确认或后续核对，不会自动创建、合并、承接或关闭业务对象。',
                  '合同、订单和联络线索仅在当前用户已具备对应查询工具与业务权限时参与匹配。']
+    if skipped_subject_kinds:
+        limitations.append('部分业务对象详情因本地数据库字段版本落后未参与匹配：' + '、'.join(sorted(skipped_subject_kinds)))
     if truncated:limitations.append('最多检查前500个可见项目，结果可能未覆盖全部可见范围。')
     return {'resolution':resolution,'data':candidates[:20],'source':'agent_db','as_of':now().isoformat(),
             'limit':20,'limitations':limitations}

@@ -75,6 +75,7 @@ TOOLS.update({
     'query_quote_acceptance_context':{'description':'按项目线索读取报价、承接、拒单、正式开工和销售合同上下文；只读，不自动承接或开工。','permission':'quote_acceptance.read'},
     'prepare_quote_acceptance_decision':{'description':'准备报价承接或拒单审批建议；必须使用查询返回的真实项目、项目版本和流程 ID，本人确认后才提交 Agent BPM。','permission':'quote_acceptance.create'},
     'query_quote_evaluation_context':{'description':'按项目线索核对报价阶段成本/工艺/工期依据、加工方式、客户反馈和后续合同上下文；只读，不生成报价或切换加工方式。','permission':'quote_acceptance.read'},
+    'prepare_quotation_form':{'description':'根据本轮客户资料预填客户报价工作表；只读核对项目和附件，不创建报价版本。','permission':'quotation.create'},
     'prepare_quotation_version':{'description':'使用本轮客户资料准备版本化客户报价；必须结构化填写成本/工艺/工期、初步加工方式、价格、交期和收款条件，本人确认后冻结资料并提交 Agent BPM。','permission':'quotation.create'},
     'prepare_quotation_feedback':{'description':'准备登记指定生效报价版本的客户反馈；本人确认后仅追加反馈事实，不自动承接、拒单或生成新报价。','permission':'quotation.execute'},
     'query_bid_intake_context':{'description':'按项目线索核对中标接收、客户分类、合同线索、模具关联、承接/拒单和开工上下文；只读，不读取邮箱或客户平台。','permission':'quote_acceptance.read'},
@@ -345,7 +346,7 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                                      'prepare_contact_close','prepare_contact_respond','prepare_contact_task',
                                      'prepare_contact_assign','prepare_contact_set_reviewer',
                                      'prepare_contact_cancel_task','prepare_contact_note',
-                                     'prepare_contact_attach','prepare_contact_create'],
+                                     'prepare_contact_attach','prepare_contact_create','prepare_contact_form_tasks'],
                    'activation_tools':['query_contact_cases','query_contact_context','prepare_contact_resolution',
                                        'prepare_contact_review','prepare_contact_close','prepare_contact_respond'],
                    'activation_queries':['工程联络','联络单','联络协作','工程联络关闭','联络单关闭','联络反馈']},
@@ -375,9 +376,20 @@ SKILLS.update({
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
         'suspended_tools': ['erp_design_import_new_mold'],
-        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '上传料单',
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '解析', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
+        # With one supported attachment and an unambiguous upload skill, the
+        # host can bind the current run file and call this deterministic ERP
+        # parser directly.  This avoids making the model synthesize a tool
+        # call whose UUID/nullable schema is rejected by some gateways.
+        'auto_activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传',
+                                    '设计清单导入', '导入料单', '解析料单', '解析', '解析这个清单',
+                                    '解析清单', '解析当前附件', '上传料单'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        'host_auto_invoke_current_attachment_only': True,
 
     },
     'erp_design_modify_mold_upload': {
@@ -393,7 +405,14 @@ SKILLS.update({
         'activation_tools': ['erp_design_parse_modify_mold_upload'],
         'activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
                                '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
-                               '修模改模清单上传', '解析改模清单附件'],
+                               '修模改模清单上传', '解析改模清单附件', '解析'],
+        'auto_activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
+                                    '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
+                                    '修模改模清单上传', '解析改模清单附件', '解析改模清单', '解析'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        'host_auto_invoke_current_attachment_only': True,
     },
     'erp_design_tolerance_evaluation': {
         'name': 'ERP 新模钢料公差判断',
@@ -649,14 +668,14 @@ SKILLS.update({
         'optional_tools': ['query_contact_context', 'prepare_contact_create', 'prepare_contact_note', 'prepare_contact_task',
                            'prepare_contact_assign', 'prepare_contact_respond', 'prepare_contact_resolution',
                            'prepare_contact_review', 'prepare_contact_close', 'prepare_contact_set_reviewer',
-                           'prepare_contact_cancel_task', 'prepare_contact_attach'],
+                           'prepare_contact_cancel_task', 'prepare_contact_attach', 'prepare_contact_form_tasks'],
         'activation_queries': ['工程联络', '联络单', '处理方案', '执行反馈', '独立复验', '联络关闭'],
     },
     'document_engineering_contact_intake': {
         'name': '工程联络单文档接收',
         'tools': ['query_document_intake'],
         'optional_tools': ['query_business_object_candidates', 'query_contact_cases', 'prepare_contact_create',
-                           'prepare_contact_attach', 'prepare_contact_task'],
+                           'prepare_contact_attach', 'prepare_contact_task', 'prepare_contact_form_tasks'],
         'activation_triggers': ['DOCUMENT_CLASSIFICATION_CONFIRMED'],
         'activation_media_types': ['application/pdf', 'image/png', 'image/jpeg', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
         'trusted_activation_tools': ['query_document_intake', 'query_business_object_candidates', 'query_contact_cases'],
@@ -711,6 +730,7 @@ CAPABILITY_NAMES = {
     'query_quote_acceptance_context': '读取报价承接上下文',
     'prepare_quote_acceptance_decision': '准备报价承接/拒单',
     'query_quote_evaluation_context': '读取报价评估上下文',
+    'prepare_quotation_form': '预填客户报价工作表',
     'prepare_quotation_version': '准备客户报价版本',
     'prepare_quotation_feedback': '准备客户报价反馈',
     'query_bid_intake_context': '读取中标接收上下文',
@@ -824,8 +844,8 @@ CAPABILITY_DEPARTMENTS = {
     'query_project_completion_context': 'project', 'project_completion_orchestration': 'project',
     'project_dossier_review': 'project', 'business_object_matching': 'project',
     'query_quote_acceptance_context': 'sales', 'prepare_quote_acceptance_decision': 'sales',
-    'query_quote_evaluation_context': 'sales', 'prepare_quotation_version': 'sales',
-    'prepare_quotation_feedback': 'sales',
+    'query_quote_evaluation_context': 'sales', 'prepare_quotation_form': 'sales',
+    'prepare_quotation_version': 'sales', 'prepare_quotation_feedback': 'sales',
     'query_bid_intake_context': 'sales', 'prepare_bid_intake_draft': 'sales',
     'query_confirmed_bid_notices': 'sales', 'prepare_bid_notice_match': 'sales',
     'prepare_bid_project_match': 'sales', 'prepare_bid_intake_confirmation': 'sales',
@@ -884,7 +904,7 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_contact_cancel_task': 'engineering', 'prepare_contact_create': 'engineering',
     'prepare_contact_note': 'engineering', 'prepare_contact_task': 'engineering',
     'prepare_contact_assign': 'engineering', 'prepare_contact_respond': 'engineering',
-    'prepare_contact_attach': 'engineering', 'query_uploaded_files': 'system',
+    'prepare_contact_attach': 'engineering', 'prepare_contact_form_tasks': 'engineering', 'query_uploaded_files': 'system',
     'query_local_change_context': 'engineering', 'prepare_local_change_intake': 'engineering',
     'prepare_local_change_association': 'engineering', 'prepare_local_change_acceptance': 'engineering',
     'engineering_change_intake': 'engineering', 'engineering_contact_collaboration': 'engineering',
@@ -906,7 +926,8 @@ CAPABILITY_DEPARTMENTS.update({
 CAPABILITY_TYPES = {
     'purchase_request_review': 'review', 'business_object_matching': 'review', 'quote_acceptance_review': 'review',
     'prepare_quote_acceptance_decision': 'approval',
-    'prepare_quotation_version': 'approval', 'prepare_quotation_feedback': 'operation',
+    'prepare_quotation_form': 'operation', 'prepare_quotation_version': 'approval',
+    'prepare_quotation_feedback': 'operation',
     'prepare_bid_intake_draft': 'operation',
     'prepare_bid_notice_match': 'operation', 'prepare_bid_project_match': 'approval',
     'prepare_bid_intake_confirmation': 'operation', 'prepare_start_notice': 'approval',
@@ -945,6 +966,7 @@ CAPABILITY_TYPES = {
     'prepare_project_settlement_close': 'approval', 'prepare_contact_resolution': 'approval',
     'prepare_contact_review': 'review', 'prepare_contact_close': 'operation',
     'prepare_contact_set_reviewer': 'operation', 'prepare_contact_cancel_task': 'operation',
+    'prepare_contact_form_tasks': 'operation',
     'prepare_customer_receivable_schedule': 'operation', 'prepare_supplier_deduction_settlement': 'operation',
     'prepare_mold_transfer_receipt': 'operation',
     'query_local_change_context': 'query', 'prepare_local_change_intake': 'operation',
@@ -976,7 +998,7 @@ def capability_descriptor(kind, key, spec):
     )
     mode = (
         'read_only' if capability_type in {'query', 'review'} and not key.startswith('prepare_') else
-        'human_confirmed_proposal' if key.startswith('prepare_') else
+        'human_confirmed_proposal' if key.startswith('prepare_') or spec.get('write') is True else
         'assigned_skill'
     )
     return {
@@ -1115,9 +1137,11 @@ def tool_schema(key):
     if key=='query_quote_evaluation_context':
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':QuoteContextInput.model_json_schema()}}
-    if key in {'prepare_quotation_version','prepare_quotation_feedback'}:
-        from domain_packs.mold.tools.erp.commercial.quotation_tools import quotation_schema, quotation_feedback_schema
-        parameters=quotation_schema() if key=='prepare_quotation_version' else quotation_feedback_schema()
+    if key in {'prepare_quotation_form', 'prepare_quotation_version','prepare_quotation_feedback'}:
+        from domain_packs.mold.tools.erp.commercial.quotation_tools import quotation_feedback_schema, quotation_form_schema, quotation_schema
+        parameters = (quotation_form_schema() if key == 'prepare_quotation_form' else
+                      quotation_schema() if key == 'prepare_quotation_version' else
+                      quotation_feedback_schema())
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key in {'query_bid_intake_context','prepare_bid_intake_draft'}:
         from domain_packs.mold.tools.erp.commercial.quote_tools import QuoteContextInput
@@ -1372,6 +1396,14 @@ def execute(db, user, key, arguments, run=None):
         from domain_packs.mold.tools.local.model_configuration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)
     if key in erp_design_mcp.TOOL_SPECS:
+        # Every ERP design write is a formal action.  The first model call
+        # creates a confirmation card; the trusted human-confirmation endpoint
+        # invokes erp_design_mcp directly after revalidating the card.  This
+        # prevents a write-capable tool from bypassing the selected "每次询问"
+        # policy simply because the model emitted its function name.
+        if erp_design_mcp.TOOL_SPECS[key].get('write') is True:
+            from domain_packs.mold.tools.erp.design import design_action_tools
+            return design_action_tools.execute_tool(db, user, key, arguments, run=run)
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         return contact_tools.execute_tool(db,user,key,arguments,run=run)
@@ -1394,7 +1426,7 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_quote_acceptance_decision':
         from domain_packs.mold.tools.erp.commercial.quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_quotation_version','prepare_quotation_feedback'}:
+    if key in {'prepare_quotation_form', 'prepare_quotation_version','prepare_quotation_feedback'}:
         from domain_packs.mold.tools.erp.commercial.quotation_tools import execute_quotation_tool
         return execute_quotation_tool(db,user,key,arguments,run=run)
     if key=='prepare_bid_intake_draft':

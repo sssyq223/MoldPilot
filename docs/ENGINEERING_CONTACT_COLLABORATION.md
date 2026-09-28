@@ -50,9 +50,15 @@ flowchart TD
 
 已确认的上传双模式和人员分派机制按上述约束实现，无需重复确认。后续实现时仍需细化发起后谁可调整责任、线下代录意见的确认方式、最终关闭责任及历史补录的状态认定。不将尚未确认的细节当作用户已确认规则。
 
+## 工程变更申请联络单批量办理事项（2026-09-27）
+
+附件关联确认后，ONLINE 联络单由 Skill 自动准备 `prepare_contact_form_tasks` 空表单 Proposal。工作台检测到 `contact/form_tasks` 后打开表单弹窗，本人从当前本地授权候选中选择责任部门、具体责任人、完成时间、完成类型、变更类别、作业内容、工时和金额；后端重新生成最终 Proposal，HumanIntent 确认前不创建 `ContactTask`。
+
+确认后由领域服务一次性校验全部部门、人员、Case revision 和权限，再批量创建状态为 `ASSIGNED` 的事项。完整纸质表单、当前附件版本、表单版本和 Proposal 哈希保存为不可变 `ContactRecord` 快照；HISTORY 只补录线下事实，不派发线上事项。普通会话追加事项仍使用 `prepare_contact_task`，不与批量表单语义混用。
+
 ## 本次实现与冻结范围（2026-09-15）
 
-上传 OCR 入口使用现有文字层/PaddleOCR和文档模型分类 Tool，不由视觉模型直接读取扫描图。工程联络单识别确认后由 `document_engineering_contact_intake` Skill 激活，继续调用 `prepare_contact_create`、`prepare_contact_attach` 和 `prepare_contact_task` 生成 Proposal；不增加常驻业务菜单。发起、补充记录、部门协作、分派、反馈、附件关联、方案审批、指定验收负责人、撤销未反馈事项、复验及关闭均封装为 `prepare_contact_*` 工具，先保存操作建议，用户核对并确认后才执行。
+上传 OCR 入口使用现有文字层/PaddleOCR和文档模型分类 Tool，不由视觉模型直接读取扫描图。工程联络单识别确认后由 `document_engineering_contact_intake` Skill 激活，继续调用 `prepare_contact_create`、`prepare_contact_attach` 和 `prepare_contact_form_tasks` 生成 Proposal；不增加常驻业务菜单。发起、补充记录、部门协作、批量表单、分派、反馈、附件关联、方案审批、指定验收负责人、撤销未反馈事项、复验及关闭均封装为 `prepare_contact_*` 工具，先保存操作建议，用户核对并确认后才执行。
 
 ```mermaid
 flowchart TD

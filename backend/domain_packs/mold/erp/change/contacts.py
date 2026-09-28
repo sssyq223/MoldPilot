@@ -17,6 +17,7 @@ from domain_packs.mold.ports.errors import DomainError
 router=APIRouter(prefix='/api/contacts')
 CATEGORY_NAMES={'hardware':'五金','raw_material':'原材','outsource':'委外','auxiliary':'辅材',
                 'office_supply':'办公用品','trial_material':'试模料'}
+FORM_SNAPSHOT_VERSION='engineering-change-contact-v1'
 
 
 class CreateInput(StrictModel):
@@ -41,6 +42,11 @@ class CreateInput(StrictModel):
     @classmethod
     def canonical_category(cls,v):
         # Normalize business data labels, never route a user's conversational intent.
+        # Some providers serialize a JSON null as the literal string "null";
+        # treat it as an omitted responsibility domain instead of exposing a
+        # misleading duplicate Proposal for the model to correct itself.
+        if isinstance(v,str) and v.strip().lower() == 'null':
+            return None
         return {name:key for key,name in CATEGORY_NAMES.items()}.get(v,v)
 
     @field_validator('title','description','customer_ref','customer_name','mold_number','product_ref','current_stage')
@@ -58,6 +64,78 @@ class CreateInput(StrictModel):
 class Mutation(StrictModel):
     request_key:UUID
     revision:int=Field(ge=1)
+
+
+class ContactUnitInput(StrictModel):
+    department_id:str=Field(min_length=1,max_length=36)
+    assignee_id:str=Field(min_length=1,max_length=36)
+    completion_date:date
+    work_content:str=Field(min_length=1,max_length=4000)
+    hours:Decimal=Field(ge=0,max_digits=12,decimal_places=2)
+    amount:Decimal=Field(ge=0,max_digits=18,decimal_places=2)
+    currency:str=Field(pattern=r'^[A-Z]{3}$')
+    remark:str=Field(default='',max_length=1000)
+
+    @field_validator('work_content','remark')
+    @classmethod
+    def clean_text(cls,v):
+        return v.strip()
+
+
+class EngineeringContactFormInput(StrictModel):
+    customer_ref:str=Field(min_length=1,max_length=200)
+    customer_name:str=Field(min_length=1,max_length=200)
+    product_name:str=Field(min_length=1,max_length=200)
+    mold_number:str=Field(min_length=1,max_length=100)
+    product_ref:str=Field(min_length=1,max_length=200)
+    responsible_department_id:str=Field(min_length=1,max_length=36)
+    application_date:date
+    completion_date:date
+    completion_type:Literal['NORMAL','URGENT','CRITICAL']
+    change_categories:list[Literal[
+        'CUSTOMER_CHANGE','DESIGN_ISSUE','ASSEMBLY_ISSUE','MACHINING_ISSUE',
+        'OUTSOURCE_DEFECT','COST_REDUCTION','PROCESS_IMPROVEMENT','OTHER',
+    ]]=Field(min_length=1,max_length=8)
+    change_description:str=Field(min_length=1,max_length=10000)
+    countermeasure:str=Field(min_length=1,max_length=10000)
+    related_units:list[ContactUnitInput]=Field(min_length=1,max_length=30)
+    pricing_note:str=Field(default='',max_length=2000)
+    total_amount:Decimal=Field(ge=0,max_digits=18,decimal_places=2)
+    currency:str=Field(pattern=r'^[A-Z]{3}$')
+
+    @field_validator('customer_ref','customer_name','product_name','mold_number','product_ref',
+                     'change_description','countermeasure')
+    @classmethod
+    def nonblank(cls,v):
+        value=v.strip()
+        if not value:
+            raise ValueError('内容不能为空')
+        return value
+
+    @field_validator('pricing_note')
+    @classmethod
+    def clean_pricing_note(cls,v):
+        return v.strip()
+
+    @model_validator(mode='after')
+    def validate_form(self):
+        if self.application_date>now().date():
+            raise ValueError('申请日期不能晚于当前日期')
+        if self.completion_date<self.application_date:
+            raise ValueError('完成日期不能早于申请日期')
+        if len(set(self.change_categories))!=len(self.change_categories):
+            raise ValueError('变更类别不能重复')
+        if any(unit.completion_date<self.application_date for unit in self.related_units):
+            raise ValueError('相关单位完成时间不能早于申请日期')
+        if any(unit.completion_date>self.completion_date for unit in self.related_units):
+            raise ValueError('相关单位完成时间不能晚于总完成日期')
+        return self
+
+
+class FormTaskBatchInput(Mutation):
+    case_id:str=Field(min_length=1,max_length=36)
+    # 自动触发阶段允许为空；弹窗重新准备时必须提供完整表单。
+    form:EngineeringContactFormInput|None=None
 
 
 class NoteInput(Mutation):
@@ -256,6 +334,39 @@ def progress_summary(db,c):
                            '线下记录、处理反馈或方案审批通过都不单独等同于整改完成、复验合格或联络单关闭。']}
 
 
+def latest_form_snapshot(db,c):
+    row=db.scalar(select(m.ContactRecord).where(
+        m.ContactRecord.case_id==c.id,
+        m.ContactRecord.kind=='FORM_TASKS_CREATED',
+    ).order_by(m.ContactRecord.created_at.desc(),m.ContactRecord.id.desc()).limit(1))
+    detail=row.detail if row and isinstance(row.detail,dict) else {}
+    snapshot=detail.get('form_snapshot')
+    return snapshot if isinstance(snapshot,dict) else None
+
+
+def form_snapshot(db,case,form,rows,digest,responsible_group):
+    from domain_packs.mold.ports.files import case_attachments
+    values=form.model_dump(mode='json')
+    values['form_version']=FORM_SNAPSHOT_VERSION
+    values['case_id']=case.id
+    values['case_revision']=case.revision
+    values['proposal_hash']=digest
+    values['source_files']=[{
+        'file_id':item['file_id'],'document_id':item['document_id'],'title':item['title'],
+        'version':item['version'],'sha256':item['sha256'],'is_current':item['is_current'],
+    } for item in case_attachments(db,case)]
+    values['responsible_department']={
+        'id':responsible_group.id,
+        'name':responsible_group.name,
+    }
+    values['related_units']=[{
+        **unit.model_dump(mode='json'),
+        'department_name':group.name,
+        'assignee_name':person.display_name,
+    } for group,person,unit in rows]
+    return values
+
+
 def serialize(db,c,details=False,user=None):
     creator=db.get(m.User,c.created_by)
     result={'id':c.id,'project_id':c.project_id,'category':c.category,'title':c.title,
@@ -271,6 +382,7 @@ def serialize(db,c,details=False,user=None):
         if user:result.update(context(db,user,c))
         from domain_packs.mold.ports.files import case_attachments
         result['attachments']=case_attachments(db,c)
+        result['engineering_contact_form']=latest_form_snapshot(db,c)
         result['can_coordinate']=bool(user and user.id==c.created_by and c.mode=='ONLINE' and not c.closed_at and permitted(db,user,'coordinate',c))
         result['can_record']=bool(user and not c.closed_at and permitted(db,user,'record',c))
         result['tasks']=[]
@@ -379,6 +491,43 @@ def add_note(cid:str,data:NoteInput,user=Depends(current_user),db=Depends(get_db
     if c.mode=='HISTORY' and data.source!='OFFLINE':raise DomainError('HISTORY_SOURCE','历史补录应明确线下来源')
     return append(db,user,c,data,'NOTE',digest,{'source':data.source,'participants':data.participants,
         'content':data.content,'is_approval':False},data.occurred_at)
+
+
+def add_form_tasks(cid:str,data:FormTaskBatchInput,user=Depends(current_user),db=Depends(get_db)):
+    if data.form is None:
+        raise DomainError('FORM_INCOMPLETE','请先补齐工程变更申请联络单表单',409)
+    c=load(db,user,cid,True);require(db,user,'coordinate',c)
+    if user.id!=c.created_by:raise DomainError('FORBIDDEN','由发起人组织协作事项',403)
+    if c.mode!='ONLINE':raise DomainError('HISTORY_NO_DISPATCH','历史补录不能派发线上任务',409)
+    digest,done=replay(db,user,c,data,'FORM_TASKS_CREATED')
+    if done:return serialize(db,c,True,user)
+    form=data.form
+    responsible_group=department(db,form.responsible_department_id)
+    rows=[]
+    for unit in form.related_units:
+        group=department(db,unit.department_id)
+        person=db.get(m.User,unit.assignee_id)
+        if not assignee_eligible(db,person,group,c):
+            raise DomainError('ASSIGNEE_UNAVAILABLE','存在无权或已停用的处理人',403)
+        rows.append((group,person,unit))
+    snapshot=form_snapshot(db,c,form,rows,digest,responsible_group)
+    tasks=[]
+    recipients=[]
+    for group,person,unit in rows:
+        task=m.ContactTask(
+            case_id=c.id,department_id=group.id,created_by=user.id,assignee_id=person.id,
+            status='ASSIGNED',title=unit.work_content,response=None,verified_plan_id=None,
+            affected_type='OTHER',affected_ref=f'engineering-contact-form:{c.id}',
+            impact_description=unit.remark or form.change_description,planned_action='CONTINUE',
+            delivery_impact_days=(unit.completion_date-form.application_date).days,
+            estimated_amount=unit.amount,currency=unit.currency,
+            source_system='MANUAL',source_ref='ENGINEERING_CONTACT_FORM',source_as_of=now(),
+        )
+        db.add(task);tasks.append(task)
+        if person.id not in recipients:recipients.append(person.id)
+    db.flush()
+    return append(db,user,c,data,'FORM_TASKS_CREATED',digest,
+        {'form_snapshot':snapshot,'task_ids':[task.id for task in tasks]},recipients=recipients)
 
 
 def add_task(cid:str,data:TaskInput,user=Depends(current_user),db=Depends(get_db)):

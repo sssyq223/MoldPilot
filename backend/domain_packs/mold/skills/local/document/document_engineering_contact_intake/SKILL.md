@@ -10,7 +10,7 @@
 3. 向本人展示识别字段、来源证据、项目候选、`ONLINE`/`HISTORY` 办理模式和原始附件版本；字段缺失或来源冲突时停止。
 4. 使用 `prepare_contact_create` 生成工程联络单创建 Proposal；不得直接调用数据库、联系人 API 或任何未登记写入动作。
 5. 创建 Proposal 经本人确认后，再查询新联络单版本并使用 `prepare_contact_attach` 生成原始附件关联 Proposal。
-6. 附件关联确认后，若办理模式为 `ONLINE`，再使用 `prepare_contact_task` 生成责任事项 Proposal；若为 `HISTORY`，只允许补录已发生的线下过程。
+6. 附件关联确认后，若办理模式为 `ONLINE`，使用 `prepare_contact_form_tasks` 自动生成完整工程变更申请联络单办理事项 Proposal，并由弹窗供本人选择表单字段、责任单位和具体责任人；若为 `HISTORY`，只允许补录已发生的线下过程，不创建线上责任事项。
 7. 后续分派、反馈、处理方案、独立复验和关闭分别遵循 `engineering_contact_collaboration` Skill，不把反馈或方案批准说成执行完成或关闭。
 
 识别前处理：可编辑 DOCX 先在本机转换为 PDF，不调用外部服务；转换结果只作为 OCR/版面解析输入，原始 Word 的 SHA256、派生 PDF 的 SHA256 和转换器信息写入完成事件，转换失败则不进入模型识别。

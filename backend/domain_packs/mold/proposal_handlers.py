@@ -6,6 +6,8 @@ replace these tool/action mappings without changing the harness or UI routes.
 from dataclasses import dataclass
 from importlib import import_module
 
+from domain_packs.mold.tools.erp.design import erp_design_mcp
+
 
 DELIVERY_LOGISTICS_MODULE = "domain_packs.mold.erp.procurement.delivery_logistics"
 ASSEMBLY_TRIAL_MODULE = "domain_packs.mold.tools.erp.manufacturing.assembly_trial_tools"
@@ -33,7 +35,7 @@ HANDLERS = (
     })),
     ProposalHandler("document_workflow.execute", "domain_packs.mold.erp.commercial.document_workflow", frozenset()),
     ProposalHandler("contact.execute", "domain_packs.mold.tools.erp.change.contact_tools", frozenset({
-        "prepare_contact_create", "prepare_contact_note", "prepare_contact_task",
+        "prepare_contact_create", "prepare_contact_note", "prepare_contact_task", "prepare_contact_form_tasks",
         "prepare_contact_assign", "prepare_contact_respond", "prepare_contact_attach",
         "prepare_contact_review", "prepare_contact_close", "prepare_contact_cancel_task",
         "prepare_contact_set_reviewer", "prepare_contact_resolution",
@@ -54,7 +56,7 @@ HANDLERS = (
     ProposalHandler("mold_handoff.execute", "domain_packs.mold.tools.erp.project.mold_handoff_tools", frozenset({"prepare_project_mold_handoff"})),
     ProposalHandler("quote_acceptance.execute", "domain_packs.mold.tools.erp.commercial.quote_tools", frozenset({"prepare_quote_acceptance_decision"})),
     ProposalHandler("quotation.execute", "domain_packs.mold.tools.erp.commercial.quotation_tools", frozenset({
-        "prepare_quotation_version", "prepare_quotation_feedback",
+        "prepare_quotation_form", "prepare_quotation_version", "prepare_quotation_feedback",
     })),
     ProposalHandler("bid_intake.execute", "domain_packs.mold.tools.erp.commercial.bid_intake_tools", frozenset({
         "prepare_bid_intake_draft",
@@ -86,6 +88,9 @@ HANDLERS = (
     ProposalHandler("assembly_trial.execute", ASSEMBLY_TRIAL_MODULE, frozenset({
         "prepare_assembly_execution", "prepare_trial_result",
     })),
+    ProposalHandler("design_erp.execute", "domain_packs.mold.tools.erp.design.design_action_tools",
+                    frozenset(key for key, spec in erp_design_mcp.TOOL_SPECS.items()
+                              if spec.get("write") is True)),
     ProposalHandler("full_outsource.execute", "domain_packs.mold.tools.erp.procurement.full_outsource_tools", frozenset({
         "prepare_supplier_material_handoff", "prepare_supplier_material_verification",
         "prepare_supplier_progress_policy",

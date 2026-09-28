@@ -256,7 +256,7 @@ def install(app):
             for key in (
                 "proposal_decisions", "proposal_resolution", "prior_finals",
                 "run_trigger", "model_selection", "post_proposal_continuation",
-                "worker_scope",
+                "continuation_tool", "worker_scope",
             )
             if key in previous
         }

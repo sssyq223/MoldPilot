@@ -1,8 +1,9 @@
 export type ErpDesignRow = Record<string, any>
 
 export type ErpDesignDueDateCommand = {
-  kind: 'set' | 'date_only' | 'invalid' | 'none'
+  kind: 'set' | 'date_only' | 'invalid' | 'query' | 'none'
   date?: string
+  display?: string
   message?: string
 }
 
@@ -61,28 +62,44 @@ function extractDueDate(value: string, today: Date): string | null {
     candidate.setDate(candidate.getDate() + days)
     return localDateString(candidate)
   }
+  const weekday = text.match(/(本|这|下|上)(?:个)?(?:周|星期|礼拜)([一二三四五六日天1-7])/)
+  if (weekday) {
+    const target = ({一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7} as Record<string, number>)[weekday[2]]
+    if (!target) return null
+    const current = today.getDay() === 0 ? 7 : today.getDay()
+    const weekOffset = weekday[1] === '下' ? 1 : weekday[1] === '上' ? -1 : 0
+    const candidate = new Date(today)
+    candidate.setDate(candidate.getDate() + weekOffset * 7 + target - current)
+    return localDateString(candidate)
+  }
   const absolute = text.match(/\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?/)
   return absolute ? parseAbsoluteDate(absolute[0], today) : null
+}
+
+function dueDateDisplay(value: string): string {
+  return String(value || '').match(/大后天|后天|明天|今天|(?:\d+|[零一二两三四五六七八九十]+)\s*(?:天|日)\s*(?:后|之后|以后)|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)[一二三四五六日天1-7]|\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?/)?.[0] || String(value || '').trim()
 }
 
 /** Parse only explicit due-date changes; a bare date is deliberately not a change. */
 export function parseErpDesignDueDateCommand(input: string, now = new Date()): ErpDesignDueDateCommand {
   const text = String(input || '').trim()
   if (!text) return { kind: 'none' }
-  const dateOnly = /^(?:\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?)$/.test(text)
+  const dueDateQuery = /(?:什么|哪天|何时|什么时候|当前|现在).{0,12}(?:交期|交货期|交付日期)|(?:交期|交货期|交付日期).{0,12}(?:是什么|哪天|何时|什么时候)/.test(text)
+  if (dueDateQuery) return { kind: 'query' }
+  const dateOnly = /^(?:\d{4}[-\/.年]\d{1,2}[-\/.月]\d{1,2}(?:日|号)?|\d{1,2}月\d{1,2}(?:日|号)?|(本|这|下|上)(?:个)?(?:周|星期|礼拜)([一二三四五六日天1-7]))$/.test(text)
   const date = extractDueDate(text, now)
   if (dateOnly) {
     if (!date) return { kind: 'invalid', message: '日期格式或日期本身无效。' }
-    return { kind: 'date_only', date }
+    return { kind: 'date_only', date, display: text }
   }
   const mentionsDueDate = /交期|交货期|交付日期/.test(text)
-  const asksToChange = /改|调整|变更|设为|设置|定为/.test(text)
+  const asksToChange = /改|调整|变更|设为|设置|定为|为/.test(text)
   const explicit = mentionsDueDate && asksToChange
   if (!explicit) return { kind: 'none' }
   if (!date) return { kind: 'invalid', message: '请提供有效的完整日期，或使用“几天后”的表达。' }
   const today = localDateString(now)
   if (date < today) return { kind: 'invalid', date, message: `交期不能早于今天（${today}）。` }
-  return { kind: 'set', date }
+  return { kind: 'set', date, display: dueDateDisplay(text) }
 }
 
 // Keep these choices in step with the ERP upload page. Heat treatment remains
@@ -146,6 +163,147 @@ export type ErpDesignPreviewSession = {
   additionalProcessingFeeRules: Record<string, any>[]
   techRequirements: Record<string, any> | null
   toleranceEvaluation: Record<string, any> | null
+}
+
+export type ErpDesignDraft = Pick<ErpDesignPreviewSession, 'expectedDate' | 'remark' | 'designOrderType' | 'purchaseReason'>
+
+/**
+ * Apply conversational form edits to the latest ERP session snapshot.
+ *
+ * ERP status responses remain the source of the parsed rows and other
+ * immutable session data, while the four editable form fields may be newer in
+ * the local conversation draft than in that response.
+ */
+export function mergeErpDesignDraft(
+  session: ErpDesignPreviewSession,
+  draft?: Partial<ErpDesignDraft> | null,
+): ErpDesignPreviewSession {
+  return draft ? { ...session, ...draft } : session
+}
+
+export type ErpDesignFormCommand = {
+  kind: 'update' | 'invalid' | 'query' | 'none'
+  fields?: {
+    designOrderType?: string
+    purchaseReason?: string
+    expectedDate?: string
+    remark?: string
+  }
+  message?: string
+}
+
+/** Messages describing automatic drawing corrections are informational. */
+export function erpDesignBlockingErrors(errors: readonly unknown[]): string[] {
+  return (Array.isArray(errors) ? errors : []).map(value => String(value ?? '').trim()).filter(Boolean).filter(message => (
+    !/(?:自动修正|图纸识别结果自动修正|双击.*(?:修正|回填)|按图纸.*(?:修正|回填)|自动回填)/.test(message)
+  ))
+}
+
+type ErpDesignOption = { value: string; label: string }
+
+const DEFAULT_DESIGN_ORDER_TYPES: ErpDesignOption[] = [
+  { value: 'new_model', label: '新模' },
+  { value: 'repair_other', label: '改模' },
+]
+
+const PURCHASE_REASON_ALIASES: Record<string, string[]> = {
+  customer_change: ['客户设变', '客户变更', '客户更改', '客户要求'],
+  design_abnormal: ['设计异常', '设计问题'],
+  machining_abnormal: ['加工异常', '加工问题'],
+  assembly_abnormal: ['装配异常', '装配问题', '组立异常', '组立问题'],
+  trial_mold_abnormal: ['试模异常', '试模问题'],
+  outsource_abnormal: ['外协异常', '外协问题'],
+  process_improvement: ['工艺改善', '工艺改进', '工艺优化', '制程改善', '制程改进'],
+  other_abnormal: ['其他异常', '其它异常', '其他', '其它'],
+}
+
+function compactChinese(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+}
+
+function optionMatches(option: ErpDesignOption, value: string): boolean {
+  const needle = compactChinese(value)
+  return Boolean(needle) && [option.value, option.label].some(candidate => compactChinese(candidate) === needle)
+}
+
+function resolveDesignOrderType(value: string, options: ReadonlyArray<ErpDesignOption>): string | null {
+  const text = compactChinese(value)
+  const aliases: Array<[string, string[]]> = [
+    ['new_model', ['新模', '新模型', '新模具', 'newmodel']],
+    ['repair_other', ['改模', '修模', '改模型', 'repairother']],
+  ]
+  const canonical = aliases.find(([, names]) => names.some(name => text === compactChinese(name)))?.[0]
+  const candidates = options.length ? options : DEFAULT_DESIGN_ORDER_TYPES
+  const matched = candidates.find(option => optionMatches(option, value) || (canonical != null && optionMatches(option, canonical)))
+  return matched?.value ?? null
+}
+
+function resolvePurchaseReason(value: string, options: ReadonlyArray<ErpDesignOption>): string | null {
+  const text = compactChinese(value)
+  const canonical = Object.entries(PURCHASE_REASON_ALIASES)
+    .find(([, names]) => names.some(name => text.includes(compactChinese(name))))?.[0]
+  const candidates = options.length
+    ? options
+    : Object.keys(PURCHASE_REASON_ALIASES).map(key => ({ value: key, label: key }))
+  const matched = candidates.find(option => optionMatches(option, value) || (canonical != null && optionMatches(option, canonical)))
+  return matched?.value ?? null
+}
+
+/**
+ * Parse conversational edits for the fields in the ERP design upload form.
+ * This only returns a draft update; importing still requires the explicit UI
+ * confirmation button.
+ */
+export function parseErpDesignFormCommand(
+  input: string,
+  session: {
+    designOrderTypeOptions: ReadonlyArray<ErpDesignOption>
+    purchaseReasonOptions: ReadonlyArray<ErpDesignOption>
+    designOrderType: string
+  },
+): ErpDesignFormCommand {
+  const text = String(input || '').trim()
+  if (!text) return { kind: 'none' }
+  // Questions such as “这个是什么类型的” ask about the current session;
+  // they are not an attempt to set the type to the word following “是”.
+  const typeQuery = /(?:什么|哪种|哪一个|当前|现在|这份|这个).{0,8}(?:类型|订单类型)|(?:类型|订单类型).{0,8}(?:是什么|是哪种|什么)/.test(text)
+  const hasTypeChange = /(?:改为|改成|设为|设置为|选择|选用|换成)/.test(text)
+  if (typeQuery && !hasTypeChange) return { kind: 'query' }
+  const fields: ErpDesignFormCommand['fields'] = {}
+  const typeMention = /(?:ERP\s*)?(?:设计订单)?类型|订单类型/.test(text)
+  const typeChange = /(?:改为|改成|设为|设置为|选择|选|是|为)\s*([^，。；;\s]+)/.exec(text)
+  const standaloneType = /(新模(?:型|具)?|改模(?:型)?|修模)/.exec(text)
+  if (typeMention || (standaloneType && /改|选|择|设|换|用/.test(text))) {
+    const raw = typeChange?.[1] || standaloneType?.[1] || ''
+    const type = resolveDesignOrderType(raw, session.designOrderTypeOptions || [])
+    if (!type) return { kind: 'invalid', message: `未找到匹配的 ERP 类型“${raw || text}”，可选项请以表单中的类型为准。` }
+    fields.designOrderType = type
+    if (type === 'new_model') fields.purchaseReason = ''
+  }
+
+  const reasonMention = /请购原因|采购原因|原因/.test(text)
+  const reasonChange = /(?:请购原因|采购原因|原因)\s*(?:改为|改成|设为|设置为|选择|选|是|为)?\s*([^，。；;]+)/.exec(text)
+  const reasonAliases = Object.values(PURCHASE_REASON_ALIASES).flat().sort((a, b) => b.length - a.length)
+  const standaloneReason = reasonAliases.find(alias => text.includes(alias))
+  if (reasonMention || standaloneReason) {
+    const raw = (reasonChange?.[1] || standaloneReason || '').trim()
+    const reason = resolvePurchaseReason(raw, session.purchaseReasonOptions || [])
+    if (!reason) return { kind: 'invalid', message: `未找到匹配的 ERP 请购原因“${raw || text}”，请按当前 ERP 选项输入。` }
+    const requestedType = fields.designOrderType || session.designOrderType
+    if (requestedType !== 'repair_other') {
+      return { kind: 'invalid', message: 'ERP 请购原因只适用于“改模/修模”，请先把类型改为改模。' }
+    }
+    fields.purchaseReason = reason
+  }
+
+  const remarkMention = /备注|说明/.test(text)
+  const clearRemark = /(?:备注|说明)\s*(?:清空|删除|取消|去掉)/.test(text)
+  const remarkChange = /(?:备注|说明)\s*(?:改为|改成|设为|设置为|写|填写|是|为|：|:)\s*(.*)$/s.exec(text)
+  if (remarkMention && (clearRemark || remarkChange)) {
+    fields.remark = clearRemark ? '' : String(remarkChange?.[1] || '').trim()
+  }
+
+  return Object.keys(fields).length ? { kind: 'update', fields } : { kind: 'none' }
 }
 
 export type ErpDesignImportReceipt = {

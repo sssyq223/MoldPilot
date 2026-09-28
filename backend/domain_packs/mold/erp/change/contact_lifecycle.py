@@ -266,7 +266,8 @@ def execute(db,user,cid,tid,action,data,agent_permission_mode="ask"):
 def context(db,user,case):
     from domain_packs.mold import domains,workflow_selection
     result={'reviewer_name':db.get(m.User,case.reviewer_id).display_name if case.reviewer_id else None,
-            'closed_at':case.closed_at,'closed_by_name':db.get(m.User,case.closed_by).display_name if case.closed_by else None}
+            'closed_at':case.closed_at,'closed_by_name':db.get(m.User,case.closed_by).display_name if case.closed_by else None,
+            'engineering_contact_form':c.latest_form_snapshot(db,case)}
     resource=plan_resource(case)
     try:result['approval_templates']=[workflow_selection.metadata(d,db) for d in workflow_selection.available(db,user,resource)]
     except DomainError:result['approval_templates']=[]

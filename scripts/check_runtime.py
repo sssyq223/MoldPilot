@@ -16,8 +16,8 @@ from sqlalchemy.pool import NullPool
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 MESSAGES = {
-    'LOCAL_POSTGRES_REQUIRED': 'Local launcher requires a loopback PostgreSQL target. Review .env; no remote connection attempted.',
-    'DATABASE_UNAVAILABLE': 'Local PostgreSQL is unavailable, recovering, or authentication failed. Check the configured port and Windows service moldpilot-postgresql-55432.',
+    'LOCAL_POSTGRES_REQUIRED': 'Launcher requires a loopback PostgreSQL target unless AGENT_ALLOW_REMOTE_DATABASE=true is explicitly configured.',
+    'DATABASE_UNAVAILABLE': 'Configured PostgreSQL is unavailable, recovering, or authentication failed. Check the database host, port and credentials.',
     'SCHEMA_VERSION_MISMATCH': 'Database version does not match this checkout. Stop and request a separately approved schema review; no migration was run.',
     'SCHEMA_COLUMNS_MISSING': 'Required database tables or columns are missing. Stop and request a separately approved schema review.',
     'READONLY_REQUIRED': 'Database probe did not enter read-only mode; startup stopped.',
@@ -26,26 +26,107 @@ MESSAGES = {
     'STARTUP_CHECK_FAILED': 'Read-only database check failed. No child traceback or credentials were forwarded.',
 }
 
+# 本机 agent_db 按部署约定可以暂时停留在 mb0d0e000016。后续领域迁移
+# 对应的能力会在 Tool 层按表是否存在进行隐藏；这些对象不能因为尚未获批
+# 的迁移而阻断既有服务启动。列表保持显式，避免把任意缺表/缺字段误判为
+# 可兼容的旧库。
+STALE_MOLD_OPTIONAL_TABLES = frozenset({
+    'local_change_intake',
+    'local_change_customer_mold_history',
+    'local_change_association',
+})
+STALE_MOLD_OPTIONAL_COLUMNS = frozenset({
+    ('contract_detail', 'material_version'),
+    ('payment_stage', 'condition_evidence_map'),
+    ('payment_stage', 'condition_profile'),
+    ('payment_stage', 'material_version'),
+    ('payment_stage', 'special_approval_reference'),
+    ('contract_receipt_evidence', 'material_version'),
+    ('contract_business_terms', 'attachment_selection'),
+    ('contract_business_terms', 'material_version'),
+    ('contract_settlement_allocation', 'material_version'),
+})
+STALE_MOLD_SCHEMA_BASE_REVISION = 'mb0d0e000016'
+
 
 class StartupCheckError(RuntimeError):
     pass
 
 
-def _check_schema(connection):
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        env_file = ROOT / '.env'
+        if env_file.exists():
+            for line in env_file.read_text(encoding='utf-8', errors='replace').splitlines():
+                if line.startswith(f'{name}='):
+                    value = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _is_revision_reachable(scripts, revision: str, heads: set[str]) -> bool:
+    """判断已知版本是否为仓库某个 head 的祖先。"""
+    pending = list(heads)
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        if current == revision:
+            return True
+        script = scripts.get_revision(current)
+        parents = script.down_revision
+        if parents:
+            pending.extend(parents if isinstance(parents, tuple) else (parents,))
+    return False
+
+
+def _check_schema(connection, allow_unknown_revisions: bool = False):
     from alembic.script import ScriptDirectory
     from agent_core.migration_runtime import alembic_configs
     from app.models import Base
 
     inspector = inspect(connection)
     versions = {}
+    stale_mold_optional_schema = False
+    warnings = []
     for stage, config in alembic_configs():
-        expected = set(ScriptDirectory.from_config(config).get_heads())
+        scripts = ScriptDirectory.from_config(config)
+        expected = set(scripts.get_heads())
+        known = {script.revision for script in scripts.walk_revisions()}
         if not inspector.has_table(stage.version_table, schema='public'):
             raise StartupCheckError('SCHEMA_VERSION_MISMATCH')
         name = connection.dialect.identifier_preparer.quote(stage.version_table)
         actual = set(connection.execute(text(f'SELECT version_num FROM public.{name}')).scalars())
-        if not expected or actual != expected:
+        if not expected or not actual:
             raise StartupCheckError('SCHEMA_VERSION_MISMATCH')
+        if actual != expected:
+            # Core is shared by every pack and must always match exactly. Mold
+            # may lag at a known ancestor while its newer optional capabilities
+            # remain hidden by the tool gateway.
+            revision = next(iter(actual)) if len(actual) == 1 else None
+            if allow_unknown_revisions and (revision is None or revision not in known):
+                warnings.append(
+                    f"{stage.name} database revision is newer or absent from this checkout; "
+                    "required ORM structure was checked without changing migration history"
+                )
+                continue
+            if (
+                stage.name != 'mold'
+                or revision is None
+                or revision not in known
+                or not _is_revision_reachable(scripts, revision, expected)
+            ):
+                raise StartupCheckError('SCHEMA_VERSION_MISMATCH')
+            stale_mold_optional_schema = _is_revision_reachable(
+                scripts, revision, {STALE_MOLD_SCHEMA_BASE_REVISION}
+            )
+            warnings.append(
+                f"mold database revision {revision} is behind checkout head "
+                f"{','.join(sorted(expected))}; newer optional domain schema was not checked"
+            )
         versions[stage.name] = sorted(actual)
 
     by_schema = {}
@@ -54,9 +135,17 @@ def _check_schema(connection):
         if schema not in by_schema:
             by_schema[schema] = inspector.get_multi_columns(schema=schema)
         columns = by_schema[schema].get((schema, table.name), [])
-        if not set(table.columns.keys()) <= {column['name'] for column in columns}:
+        if not columns and stale_mold_optional_schema and table.name in STALE_MOLD_OPTIONAL_TABLES:
+            continue
+        missing = {
+            (table.name, name)
+            for name in set(table.columns.keys()) - {column['name'] for column in columns}
+        }
+        if stale_mold_optional_schema:
+            missing -= STALE_MOLD_OPTIONAL_COLUMNS
+        if missing:
             raise StartupCheckError('SCHEMA_COLUMNS_MISSING')
-    return versions
+    return versions, warnings
 
 
 def check_database(url):
@@ -64,14 +153,20 @@ def check_database(url):
         parsed = make_url(url)
     except Exception:
         raise StartupCheckError('CONFIG_INVALID') from None
-    if parsed.get_backend_name() != 'postgresql' or parsed.host not in {'127.0.0.1', 'localhost', '::1'} or not parsed.database:
+    loopback_hosts = {'127.0.0.1', 'localhost', '::1'}
+    allow_remote = _env_flag('AGENT_ALLOW_REMOTE_DATABASE')
+    if (parsed.get_backend_name() != 'postgresql'
+            or not parsed.database
+            or (parsed.host not in loopback_hosts and not allow_remote)):
         raise StartupCheckError('LOCAL_POSTGRES_REQUIRED')
     engine = None
     try:
         # 即使数据库账号有写权限，检查连接也从建立时就强制只读及 SQL 超时。
         engine = create_engine(parsed, poolclass=NullPool, connect_args={
             'connect_timeout': 5,
-            'host': parsed.host, 'hostaddr': '::1' if parsed.host == '::1' else '127.0.0.1',
+            'host': parsed.host,
+            'hostaddr': ('::1' if parsed.host == '::1' else '127.0.0.1'
+                         if parsed.host in loopback_hosts else parsed.host),
             'port': parsed.port or 5432, 'dbname': parsed.database,
             'application_name': 'moldpilot-startup-preflight',
             'options': '-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=10000',
@@ -82,8 +177,15 @@ def check_database(url):
             database = connection.execute(text('SELECT current_database()')).scalar_one()
             if parsed.database and database != parsed.database:
                 raise StartupCheckError('CONFIG_INVALID')
-            versions = _check_schema(connection)
-        return {'ok': True, 'readonly': True, 'database': database, 'port': parsed.port or 5432, 'versions': versions}
+            versions, warnings = _check_schema(connection, allow_unknown_revisions=allow_remote)
+        return {
+            'ok': True,
+            'readonly': True,
+            'database': database,
+            'port': parsed.port or 5432,
+            'versions': versions,
+            'warnings': warnings,
+        }
     except SQLAlchemyError:
         raise StartupCheckError('DATABASE_UNAVAILABLE') from None
     finally:
@@ -128,6 +230,8 @@ def main(argv=None):
             code = result.get('code')
             raise StartupCheckError(code if isinstance(code, str) and code in MESSAGES else 'STARTUP_CHECK_FAILED')
         print('[OK] PostgreSQL connection, schema versions and required columns verified read-only.')
+        for warning in result.get('warnings', []):
+            print(f'[WARN] {warning}')
         print('[OK] No migrations executed.')
         return 0
     except subprocess.TimeoutExpired:

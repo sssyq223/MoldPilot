@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateErpDesignSteelTolerance,
+  erpDesignBlockingErrors,
   erpDesignCell,
   erpDesignColumns,
   erpDesignDrawingColumns,
@@ -28,7 +29,9 @@ import {
   normalizeErpDesignPreview,
   normalizeErpDesignParameterResult,
   normalizeErpDesignTechnicalRequirements,
+  mergeErpDesignDraft,
   parseErpDesignDueDateCommand,
+  parseErpDesignFormCommand,
 } from './erpDesignPreview'
 
 const tool = {
@@ -44,6 +47,129 @@ const tool = {
 }
 
 describe('ERP design preview', () => {
+  it('does not turn automatic correction notes into import blockers', () => {
+    expect(erpDesignBlockingErrors([
+      '图纸识别结果自动修正：第 8 行数量已回填',
+      '双击橙色提示可按图纸修正尺寸',
+      '第 12 行材质缺失',
+    ])).toEqual(['第 12 行材质缺失'])
+  })
+
+  const formOptions = {
+    designOrderType: 'new_model',
+    designOrderTypeOptions: [
+      { value: 'new_model', label: '新模' },
+      { value: 'repair_other', label: '改模' },
+    ],
+    purchaseReasonOptions: [
+      { value: 'customer_change', label: '客户设变' },
+      { value: 'design_abnormal', label: '设计异常' },
+      { value: 'process_improvement', label: '工艺改善' },
+    ],
+  } as const
+
+  it('parses text edits for ERP type and purchase reason against current options', () => {
+    expect(parseErpDesignFormCommand('把 ERP 类型改为改模，请购原因为客户设变', formOptions)).toEqual({
+      kind: 'update',
+      fields: { designOrderType: 'repair_other', purchaseReason: 'customer_change' },
+    })
+    expect(parseErpDesignFormCommand('类型选新模', { ...formOptions, designOrderType: 'repair_other' })).toEqual({
+      kind: 'update',
+      fields: { designOrderType: 'new_model', purchaseReason: '' },
+    })
+    expect(parseErpDesignFormCommand('订单类型为新模', { ...formOptions, designOrderType: 'repair_other' })).toEqual({
+      kind: 'update',
+      fields: { designOrderType: 'new_model', purchaseReason: '' },
+    })
+    expect(parseErpDesignFormCommand('请购原因改为设计异常', formOptions)).toMatchObject({
+      kind: 'invalid',
+    })
+    expect(parseErpDesignFormCommand('请购原因改为工艺改善', { ...formOptions, designOrderType: 'repair_other' })).toEqual({
+      kind: 'update',
+      fields: { purchaseReason: 'process_improvement' },
+    })
+  })
+
+  it('recognizes type and due-date questions without treating them as edits', () => {
+    expect(parseErpDesignFormCommand('这个是什么类型的', formOptions)).toEqual({ kind: 'query' })
+    expect(parseErpDesignFormCommand('当前订单类型是哪种', { ...formOptions, designOrderType: 'repair_other' })).toEqual({ kind: 'query' })
+    expect(parseErpDesignDueDateCommand('这个料单的交期是什么时候')).toEqual({ kind: 'query' })
+  })
+
+  it('parses conversational remark edits and clearing', () => {
+    expect(parseErpDesignFormCommand('备注写1', formOptions)).toEqual({
+      kind: 'update', fields: { remark: '1' },
+    })
+    expect(parseErpDesignFormCommand('备注改为客户确认后导入', formOptions)).toEqual({
+      kind: 'update', fields: { remark: '客户确认后导入' },
+    })
+    expect(parseErpDesignFormCommand('备注清空', formOptions)).toEqual({
+      kind: 'update', fields: { remark: '' },
+    })
+  })
+
+  it('carries a conversational type edit into the next form command', () => {
+    const first = parseErpDesignFormCommand('该类型改为改模', formOptions)
+    const current = mergeErpDesignDraft({
+      sessionId: 268,
+      sheetType: 'steel',
+      moldCode: 'M250238-P4',
+      fileName: '料单.xlsx',
+      rowCount: 0,
+      previewRows: [],
+      totalQuantity: 0,
+      drawingProcessing: false,
+      drawingProcessingStatus: '',
+      drawingProcessingMessage: '',
+      warnings: [],
+      errors: [],
+      expectedDate: '',
+      remark: '',
+      designOrderType: 'new_model',
+      purchaseReason: '',
+      designOrderTypeOptions: [...formOptions.designOrderTypeOptions],
+      purchaseReasonOptions: [...formOptions.purchaseReasonOptions],
+      designerName: '',
+      submitDate: '',
+      requestNo: '',
+      canImport: true,
+      additionalProcessingFeeRules: [],
+      techRequirements: null,
+      toleranceEvaluation: null,
+    }, first.fields)
+    expect(parseErpDesignFormCommand('请购原因改为客户设变', current)).toEqual({
+      kind: 'update',
+      fields: { purchaseReason: 'customer_change' },
+    })
+  })
+
+  it.each([
+    ['客户设变', 'customer_change'],
+    ['设计异常', 'design_abnormal'],
+    ['加工异常', 'machining_abnormal'],
+    ['装配异常', 'assembly_abnormal'],
+    ['试模异常', 'trial_mold_abnormal'],
+    ['外协异常', 'outsource_abnormal'],
+    ['工艺改善', 'process_improvement'],
+    ['其他异常', 'other_abnormal'],
+  ])('maps ERP purchase reason %s to %s', (label, value) => {
+    const session = {
+      ...formOptions,
+      designOrderType: 'repair_other',
+      purchaseReasonOptions: [
+        ...formOptions.purchaseReasonOptions,
+        { value: 'machining_abnormal', label: '加工异常' },
+        { value: 'assembly_abnormal', label: '装配异常' },
+        { value: 'trial_mold_abnormal', label: '试模异常' },
+        { value: 'outsource_abnormal', label: '外协异常' },
+        { value: 'other_abnormal', label: '其他异常' },
+      ],
+    }
+    expect(parseErpDesignFormCommand(`请购原因改为${label}`, session)).toEqual({
+      kind: 'update', fields: { purchaseReason: value },
+    })
+  })
+
   it('parses explicit and relative due-date changes, asks for confirmation on a bare date, and rejects past dates', () => {
     const today = new Date(2026, 8, 23)
     expect(parseErpDesignDueDateCommand('帮我把交期改为2026-10-15', today)).toMatchObject({
@@ -51,6 +177,9 @@ describe('ERP design preview', () => {
     })
     expect(parseErpDesignDueDateCommand('交期改为三天之后', today)).toMatchObject({
       kind: 'set', date: '2026-09-26',
+    })
+    expect(parseErpDesignDueDateCommand('交期为2026-10-15', today)).toMatchObject({
+      kind: 'set', date: '2026-10-15',
     })
     expect(parseErpDesignDueDateCommand('10月15号', today)).toMatchObject({
       kind: 'date_only', date: '2026-10-15',

@@ -34,6 +34,8 @@ def test_proposal_no_business_write_confirmation_and_retry(client,data,monkeypat
     ids,factory=data;_,ctx=start(client,monkeypatch,'admin')
     args={**create_args(ids),'category':'五金'};e=propose(client,ctx,'create',args)
     assert e['proposal']['input']['category']=='hardware'
+    null_category = propose(client,ctx,'create',{**create_args(ids),'category':'null'},1)
+    assert null_category['proposal']['input']['category'] is None
     assert e['proposal']['confirmation_policy']['status']=='HUMAN_CONFIRMATION_REQUIRED'
     assert e['proposal']['confirmation_policy']['requires_human_confirmation'] is True
     assert e['proposal']['confirmation_policy']['requires_approval'] is False

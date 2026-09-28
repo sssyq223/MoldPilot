@@ -10,8 +10,8 @@ from agent_core.run_status import RUNNING_STATUSES, SCOPED_QUEUED
 # 文档工程联络链在“创建/关联原件”确认后还需生成下一张 Proposal；
 # 其他业务 Proposal 仍只收口为确认回执，避免意外重复调用工具。
 _CONTACT_DOCUMENT_CONTINUATIONS = {
-    "prepare_contact_create": "attach",
-    "prepare_contact_attach": "task",
+    "prepare_contact_create": "prepare_contact_attach",
+    "prepare_contact_attach": "prepare_contact_form_tasks",
 }
 
 
@@ -66,6 +66,11 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     resumed_evidence_ids = list(dict.fromkeys(existing_evidence_ids + prior_evidence_ids))
 
     continuation = decision == "approved" and step.tool in _CONTACT_DOCUMENT_CONTINUATIONS
+    continuation_tool = _CONTACT_DOCUMENT_CONTINUATIONS.get(step.tool) if continuation else None
+    # HISTORY records may continue with a factual response, but must never
+    # expose the ONLINE form-task Proposal tool.
+    if step.tool == "prepare_contact_attach" and isinstance(receipt, dict) and receipt.get("mode") == "HISTORY":
+        continuation_tool = None
     if decision == "approved":
         fact = {
             "decision": "approved",
@@ -83,7 +88,9 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
             instruction = (
                 "这是已完成的可信人工确认及权威执行回执。原始附件已关联；"
                 "现在继续工程联络文档 Skill：查询联络单当前版本，若办理模式为 ONLINE，"
-                "仅准备责任事项 Proposal。不得重复调用 prepare_contact_attach，责任事项仍须等待本人另行确认。"
+                "仅准备 prepare_contact_form_tasks Proposal，由弹窗供本人选择责任部门、责任人、完成日期、完成类型、变更类别和工艺评估；"
+                "不得重复调用 prepare_contact_attach，不得直接调用 prepare_contact_task 或任何业务写入接口。"
+                "若为 HISTORY，只允许补录线下事实，不创建线上责任事项。"
             )
         else:
             instruction = (
@@ -164,6 +171,7 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
         "pending": [],
         "pending_index": 0,
         "post_proposal_continuation": continuation,
+        "continuation_tool": continuation_tool,
         "finalizing": not continuation,
         "deadline": None,
         "phase": "PREPARING",

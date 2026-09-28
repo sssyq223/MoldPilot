@@ -124,6 +124,7 @@ def _structured_result_text(content):
 
 
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。不要输出分析、推理过程或自然语言前缀；在单个响应中直接输出约定的 JSON 对象。summary 保持在 400 个汉字以内，suggestions 最多 6 条；evidence_ids 只能填写已经取得的证据编号。"""
+PROPOSAL_FINALIZE_REMINDER = """工具返回了待本人确认的 Proposal。工具调用阶段现在结束，不得再次调用任何工具或重复生成 Proposal。请直接输出约定的 JSON 对象，response_kind 必须为 AWAITING_APPROVAL，summary 说明已生成待确认建议，evidence_ids 只能填写本轮已取得的证据编号，suggestions 可为空。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 evidence_ids。附件 ID、会话 ID、业务对象 ID 和历史轮次证据都不是本轮证据编号。请删除无效编号；若用户询问业务事实且尚无本轮证据，请先调用当前可用的只读工具取得事实，再用工具返回的 evidence_id 作答。"""
 AUTHORITATIVE_READ_REMINDER = """本次问题涉及必须从权威业务数据源读取的事实，不能使用模型训练知识、历史助手答复或常识直接作答。请调用指定的只读工具；只有工具执行失败时才输出 CLARIFICATION，并准确说明无法取得当前数据。"""
@@ -933,6 +934,10 @@ def _skill_tool_groups(skills, all_tools):
                            skill.get("host_auto_invoke_empty_arguments")
                            or spec.get("host_auto_invoke_empty_arguments", False)
                        ),
+                       "host_auto_invoke_current_attachment_only": bool(
+                           skill.get("host_auto_invoke_current_attachment_only")
+                           or spec.get("host_auto_invoke_current_attachment_only", False)
+                       ),
                        "host_auto_invoke_queries": skill.get("host_auto_invoke_queries")
                        or spec.get("host_auto_invoke_queries", []),
                        "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", []),
@@ -1612,10 +1617,22 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     suppress_tool_search = False
     required_evidence_tools = set()
     host_auto_invoke_candidates = set()
+    forced_continuation_tool = (
+        context.get("continuation_tool")
+        if post_proposal_continuation and isinstance(context.get("continuation_tool"), str)
+        else None
+    )
     if not business_tools_allowed:
         active_tool_names.clear()
         active_skill_keys.clear()
     else:
+        if forced_continuation_tool in all_tools:
+            # Proposal continuations have an authoritative next operation. Do
+            # not send the model back through semantic ToolSearch, where a
+            # broad contact query can activate an unrelated operation.
+            active_tool_names.add(forced_continuation_tool)
+            load_selected_skills([forced_continuation_tool])
+            suppress_tool_search = True
         if design_upload_import_continuation:
             # A short explicit “导入” after parsing is a continuation of the
             # ERP upload workflow, not another request to parse the historical
@@ -1661,8 +1678,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 suppress_tool_search = True
         # Continuations such as “是的” inherit only the immediately preceding
         # explicit attachment confirmation. Activate the parser for the next
-        # model turn; the model still has to issue the normal tool call, so the
-        # durable receipt and authorization path remain unchanged.
+        # turn; deterministic empty-argument readers may be invoked by the
+        # host, while other tools still use the normal model tool-call path.
         attachment_confirmation = (
             _is_pure_conversation(context.get("prompt", ""))
             and _business_tool_activation_allowed(context)
@@ -1744,12 +1761,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             active_tool_names.update(selected)
             if selected or group_already_active:
                 load_selected_skills(selected, [group["key"]])
-            if group.get("requires_tool_evidence"):
+            if (group.get("requires_tool_evidence")
+                    and (not group.get("host_auto_invoke_current_attachment_only")
+                         or bool(context.get("files")))):
                 required_evidence_tools.update(group.get("required") or selected)
             host_auto_queries = [str(alias).strip().lower()
                                  for alias in group.get("host_auto_invoke_queries", [])
                                  if str(alias).strip()]
             if (group.get("host_auto_invoke_empty_arguments")
+                    and (not group.get("host_auto_invoke_current_attachment_only")
+                         or bool(context.get("files")))
                     and (not host_auto_queries
                          or any(alias in normalized_prompt for alias in host_auto_queries))):
                 eligible = set(selected)
@@ -1866,6 +1887,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     model_elapsed_ms = context.get('model_elapsed_ms', 0)
     model_metrics = context.get('model_metrics', {})
     finalizing = (bool(proposal_resolution) and not post_proposal_continuation) or context.get('finalizing', False)
+    awaiting_proposal = bool(context.get('awaiting_proposal', False))
     protocol_repairs = context.get('protocol_repairs', 0)
     protocol_repair_events = [
         event for event in context.get('protocol_repair_events', [])
@@ -2006,6 +2028,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             'phase': phase, 'model_started_at': model_started_at,
                             'model_elapsed_ms': model_elapsed_ms, 'model_metrics':model_metrics,
                             'finalizing': finalizing,
+                            'awaiting_proposal': awaiting_proposal,
                             'protocol_repairs': protocol_repairs,
                             'protocol_repair_events': protocol_repair_events,
                             'executed_tool_signatures': executed_tool_signatures,
@@ -2136,6 +2159,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                 'status': 'success',
                                 'evidence_id': evidence_id,
                             }
+                proposal_result = isinstance(result, dict) and result.get('source') == 'agent_proposal'
+                if proposal_result:
+                    # A Proposal is a confirmation boundary, not an ordinary
+                    # tool result.  Close the tool stage immediately so a model
+                    # cannot issue a second create/attach call before the user
+                    # has reviewed the first card.
+                    awaiting_proposal = True
+                    finalizing = True
+                    next_model_instructions.append(PROPOSAL_FINALIZE_REMINDER)
                 executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
@@ -2168,6 +2200,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         ),
                     })
                 save()
+                if proposal_result:
+                    break
             pending, pending_index = [], 0
             # A narrowly auto-activated authoritative reader has already
             # answered the user's read-only question. Close the tool stage
@@ -2449,6 +2483,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 + json.dumps(sorted(missing_authoritative_reads), ensure_ascii=False)
             )
             continue
+        if awaiting_proposal:
+            invalid_proposal = kind != 'AWAITING_APPROVAL'
+            if proposal_resolution:
+                invalid_proposal = invalid_proposal or result.get('proposal_decision') != resolution_decision
+            if invalid_proposal:
+                request_protocol_repair(
+                    PROPOSAL_FINALIZE_REMINDER
+                    + ("\n本轮还必须原样包含 proposal_decision=" + json.dumps(resolution_decision)
+                       if proposal_resolution else "")
+                )
+                continue
         if proposal_resolution:
             invalid_resolution = result.get('proposal_decision') != resolution_decision
             if post_proposal_continuation:
