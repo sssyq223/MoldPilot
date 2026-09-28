@@ -45,13 +45,16 @@ def enabled_accounts(db, resolver=resolve_secret):
         )
 
 
-def run_once(*, resolver=resolve_secret, archive_root=None, client_factory=None):
+def run_once(*, resolver=resolve_secret, archive_root=None, client_factory=None, owner=None):
+    owner = owner or f"mail-worker-{uuid.uuid4()}"
     with SessionLocal.begin() as db:
         ledger = SqlAlchemyMailLedger(db)
         configs = list(enabled_accounts(db, resolver))
         results = {}
         for config in configs:
             account = db.get(m.MailMonitorAccount, config.account_id)
+            if not ledger.try_acquire_lease(config.account_id, owner):
+                continue
             try:
                 result = MailMonitor(config, ledger, client_factory=client_factory, archive_root=archive_root).poll_once()
                 account.status = "HEALTHY"
@@ -61,6 +64,8 @@ def run_once(*, resolver=resolve_secret, archive_root=None, client_factory=None)
                 account.status = "ERROR"
                 account.last_error = str(exc)[:1000]
                 log.warning("mail account poll failed: %s", type(exc).__name__)
+            finally:
+                ledger.release_lease(config.account_id, owner)
         return results
 
 
