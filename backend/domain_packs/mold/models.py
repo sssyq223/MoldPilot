@@ -1,11 +1,11 @@
 """ORM models owned by the mold business pack."""
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from agent_core.model_base import Base, IdentityMixin
+from agent_core.model_base import Base, IdentityMixin, J
 from agent_core import models as _core_models
 
 # Business services may reference host-owned identities, workflow records and
@@ -56,6 +56,71 @@ class PurchaseLine(IdentityMixin, Base):
     __table_args__ = (CheckConstraint("quantity > 0"),)
 
 
+class MailMonitorAccount(IdentityMixin, Base):
+    """Encrypted/secret-backed IMAP account metadata; password is never stored here."""
+
+    __tablename__ = "mail_monitor_account"
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer, default=993)
+    username: Mapped[str] = mapped_column(String(255))
+    folder: Mapped[str] = mapped_column(String(255), default="INBOX")
+    transport: Mapped[str] = mapped_column(String(20), default="ssl")
+    secret_ref: Mapped[str] = mapped_column(String(255))
+    allowed_senders: Mapped[list] = mapped_column(J, default=list)
+    keywords: Mapped[dict] = mapped_column(J, default=dict)
+    poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    lookback_days: Mapped[int] = mapped_column(Integer, default=7)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(30), default="DISABLED")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+
+class MailMonitorCursor(IdentityMixin, Base):
+    __tablename__ = "mail_monitor_cursor"
+    account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), unique=True)
+    uid_validity: Mapped[str] = mapped_column(String(80), default="")
+    last_uid: Mapped[int] = mapped_column(Integer, default=0)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_owner: Mapped[str] = mapped_column(String(120), default="")
+
+
+class MailMessage(IdentityMixin, Base):
+    __tablename__ = "mail_message"
+    account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), index=True)
+    uid_validity: Mapped[str] = mapped_column(String(80), default="")
+    uid: Mapped[int] = mapped_column(Integer)
+    message_id: Mapped[str] = mapped_column(String(512), default="")
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    sender: Mapped[str] = mapped_column(String(500), default="")
+    source_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(40), default="RECEIVED")
+    error_code: Mapped[str] = mapped_column(String(80), default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    detail_json: Mapped[dict] = mapped_column(J, default=dict)
+    __table_args__ = (
+        CheckConstraint("outcome IN ('RECEIVED','IMPORTED','DUPLICATE','IGNORED_SENDER','IGNORED_NO_DOCUMENT','IGNORED_NO_KEYWORD','FAILED','QUARANTINED','PARTIAL_FAILURE')"),
+    )
+
+
+class MailDocument(IdentityMixin, Base):
+    __tablename__ = "mail_document"
+    message_id: Mapped[str] = mapped_column(ForeignKey("mail_message.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(30))
+    media_type: Mapped[str] = mapped_column(String(120), default="")
+    sha256: Mapped[str] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    business_type: Mapped[str] = mapped_column(String(40), default="")
+    classification_reason: Mapped[str] = mapped_column(Text, default="")
+    file_object_id: Mapped[str] = mapped_column(String(36), default="")
+    import_status: Mapped[str] = mapped_column(String(30), default="PENDING")
+
+
 def _mapped_exports(module):
     return {
         name: value
@@ -84,6 +149,10 @@ _exports = {
     "Material": Material,
     "PurchaseRequest": PurchaseRequest,
     "PurchaseLine": PurchaseLine,
+    "MailMonitorAccount": MailMonitorAccount,
+    "MailMonitorCursor": MailMonitorCursor,
+    "MailMessage": MailMessage,
+    "MailDocument": MailDocument,
     **_mapped_exports(_domain),
     **_mapped_exports(_contacts),
     **_mapped_exports(_attachments),
