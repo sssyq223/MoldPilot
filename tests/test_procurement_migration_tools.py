@@ -14,6 +14,17 @@ MIGRATED_TOOLS = {
     "prepare_raw_material_order",
     "prepare_hardware_order",
     "prepare_supplier_delivery_change",
+    "query_purchase_workbench_context",
+    "query_supplier_portal_context",
+    "query_purchase_adjustment_context",
+    "prepare_purchase_claim",
+    "prepare_hardware_inquiry",
+    "prepare_supplier_order_decision",
+    "prepare_supplier_quote_submit",
+    "prepare_supplier_delivery_create",
+    "prepare_supplier_exception",
+    "prepare_purchase_split_adjustment",
+    "prepare_purchase_split_adjustment_submit",
 }
 
 
@@ -37,6 +48,9 @@ def test_procurement_migration_skills_have_skill_documents_and_confirmation_hand
     assert {
         "prepare_raw_material_split", "prepare_purchase_decision", "prepare_hardware_quote",
         "prepare_raw_material_order", "prepare_hardware_order", "prepare_supplier_delivery_change",
+        "prepare_purchase_claim", "prepare_hardware_inquiry", "prepare_supplier_order_decision",
+        "prepare_supplier_quote_submit", "prepare_supplier_delivery_create", "prepare_supplier_exception",
+        "prepare_purchase_split_adjustment", "prepare_purchase_split_adjustment_submit",
     } <= handled
 
 
@@ -64,3 +78,60 @@ def test_prepare_hardware_quote_is_a_confirmation_card_and_does_not_call_erp(mon
     assert result["proposal"]["action"] == "procurement_erp.execute"
     assert result["proposal"]["tool"] == "prepare_hardware_quote"
     assert result["proposal"]["snapshot"]["version"] == 3
+
+
+def test_phase2_supplier_quote_prepare_is_typed_and_confirmation_only(monkeypatch):
+    monkeypatch.setattr(
+        migration_tools,
+        "_supplier_portal_context",
+        lambda db, user, data: {"status": "RESOLVED", "task_id": data.task_id},
+    )
+    monkeypatch.setattr(
+        migration_tools,
+        "_fresh_group_check",
+        lambda db, user, proposal: None,
+    )
+    result = migration_tools.execute_tool(
+        None,
+        None,
+        "prepare_supplier_quote_submit",
+        {
+            "task_id": 12,
+            "expected_version": 4,
+            "lines": [{
+                "material_id": 91,
+                "unit_price": "12.50",
+                "tax_rate": "13%",
+                "delivery_date": "2026-10-20",
+            }],
+        },
+    )
+    assert result["source"] == "agent_proposal"
+    assert result["proposal"]["tool"] == "prepare_supplier_quote_submit"
+    assert result["proposal"]["input"]["lines"][0]["material_id"] == 91
+
+
+def test_phase3_split_adjustment_prepare_is_typed_and_confirmation_only(monkeypatch):
+    result = migration_tools.execute_tool(
+        None,
+        None,
+        "prepare_purchase_split_adjustment",
+        {
+            "split_group_id": 7,
+            "expected_group_version": 3,
+            "expected_snapshot_hash": "a" * 64,
+            "reason_type": "quantity_adjust",
+            "reason": "按最新需求调整采购拆组",
+            "groups": [
+                {"group_key": "A", "group_name": "主供应商", "allocations": [
+                    {"group_detail_id": 101, "quantity": "2.500"},
+                ]},
+                {"group_key": "B", "group_name": "备选供应商", "allocations": [
+                    {"group_detail_id": 102, "quantity": "1"},
+                ]},
+            ],
+        },
+    )
+    assert result["source"] == "agent_proposal"
+    assert result["proposal"]["tool"] == "prepare_purchase_split_adjustment"
+    assert result["proposal"]["input"]["groups"][0]["allocations"][0]["quantity"] == "2.500"

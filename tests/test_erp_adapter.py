@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -356,6 +357,101 @@ def test_procurement_migration_adapter_uses_registered_decision_and_delivery_rou
         '/purchase/decision/7/quote-approval-preview',
         '/purchase/decision/7/hardware-quote', '/purchase/decision/7/confirm',
         '/purchase/decision/7/create-order', '/purchase/supplier-delivery/9/modify-request',
+    ]
+
+
+def test_phase2_adapter_uses_workbench_and_supplier_portal_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path.endswith('/purchase/request/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 1, 'requestNo': 'PR-1', 'secret': 'hidden'}]})
+        if path.endswith('/purchase/request/1'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 1, 'version': 2}})
+        if path.endswith('/purchase/workbench/split/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 2, 'requestNo': 'PR-1'}]})
+        if path.endswith('/purchase/workbench/split/1'):
+            return httpx.Response(200, json={'code': 200, 'data': {'requestId': 1, 'groups': []}})
+        if path.endswith('/supplier/quote-task/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 3, 'taskNo': 'QT-3'}]})
+        if path.endswith('/supplier/quote-task/3'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 3, 'version': 4}})
+        if path.endswith('/supplier/purchase-order/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 4, 'orderNo': 'PO-4'}]})
+        if path.endswith('/supplier/purchase-order/4'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 4, 'version': 5}})
+        if path.endswith('/supplier/delivery/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 5, 'deliveryNo': 'SD-5'}]})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_request_list()[0]['requestNo'] == 'PR-1'
+        assert client.purchase_request_detail(1)['version'] == 2
+        assert client.purchase_workbench_split_list()[0]['requestNo'] == 'PR-1'
+        assert client.purchase_workbench_split_detail(1)['requestId'] == 1
+        context = client.supplier_portal_context({'moldNo': 'M-1'})
+    finally:
+        client.close()
+    assert context['quote_tasks'][0]['taskNo'] == 'QT-3'
+    assert context['purchase_orders'][0]['orderNo'] == 'PO-4'
+    assert context['deliveries'][0]['deliveryNo'] == 'SD-5'
+    assert 'secret' not in str(context)
+    assert calls == [
+        ('GET', '/purchase/request/list'), ('GET', '/purchase/request/1'),
+        ('GET', '/purchase/workbench/split/list'), ('GET', '/purchase/workbench/split/1'),
+        ('GET', '/supplier/quote-task/list'), ('GET', '/supplier/purchase-order/list'),
+        ('GET', '/supplier/delivery/list'),
+    ]
+
+
+def test_phase3_adapter_uses_split_adjustment_routes_and_filters_history(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path, json.loads(request.content) if request.content else None))
+        path = request.url.path
+        if path.endswith('/purchase/workbench/split-adjustments/context/8'):
+            return httpx.Response(200, json={'code': 200, 'data': {'requestId': 8, 'version': 3}})
+        if path.endswith('/purchase/workbench/split-adjustments'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 12, 'adjustmentNo': 'ADJ-12', 'status': 'DRAFT', 'secret': 'hidden'},
+            ]})
+        if path.endswith('/purchase/workbench/split-adjustments/12'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 12, 'version': 4}})
+        if path.endswith('/purchase/workbench/split-adjustments/preview'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 12, 'status': 'PREVIEWED'}})
+        if path.endswith('/purchase/workbench/split-adjustments/12/submit'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 12, 'status': 'SUBMITTED'}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_split_adjustment_context(8)['version'] == 3
+        history = client.purchase_split_adjustment_history({'requestId': 8})
+        assert history[0]['adjustmentNo'] == 'ADJ-12'
+        assert 'secret' not in str(history)
+        assert client.purchase_split_adjustment_detail(12)['version'] == 4
+        assert client.preview_purchase_split_adjustment({'splitGroupId': 7})['status'] == 'PREVIEWED'
+        assert client.submit_purchase_split_adjustment(12, {'expectedVersion': 4})['status'] == 'SUBMITTED'
+    finally:
+        client.close()
+    assert [(method, path) for method, path, _ in calls] == [
+        ('GET', '/purchase/workbench/split-adjustments/context/8'),
+        ('GET', '/purchase/workbench/split-adjustments'),
+        ('GET', '/purchase/workbench/split-adjustments/12'),
+        ('POST', '/purchase/workbench/split-adjustments/preview'),
+        ('POST', '/purchase/workbench/split-adjustments/12/submit'),
     ]
 
 

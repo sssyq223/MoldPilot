@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import Field, ValidationError, model_validator
@@ -95,6 +96,150 @@ class SupplierDeliveryChangeProposalInput(StrictModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class PurchaseWorkbenchContextInput(StrictModel):
+    project_id: ProjectId | None = Field(default=None)
+    identifier: str | None = Field(default=None, min_length=1, max_length=200)
+    request_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_locator(self):
+        if not (self.project_id or self.identifier or self.request_id):
+            raise ValueError("project_id、identifier 和 request_id 至少填写一项")
+        if self.identifier:
+            self.identifier = self.identifier.strip()
+            if not self.identifier:
+                raise ValueError("业务线索不能为空")
+        return self
+
+
+class PurchaseAdjustmentContextInput(StrictModel):
+    request_id: int = Field(ge=1)
+    adjustment_id: int | None = Field(default=None, ge=1)
+
+
+class SupplierPortalContextInput(StrictModel):
+    identifier: str | None = Field(default=None, min_length=1, max_length=200)
+    order_id: int | None = Field(default=None, ge=1)
+    task_id: int | None = Field(default=None, ge=1)
+    mold_no: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_locator(self):
+        if not (self.identifier or self.order_id or self.task_id or self.mold_no):
+            raise ValueError("identifier、order_id、task_id 和 mold_no 至少填写一项")
+        if self.identifier:
+            self.identifier = self.identifier.strip()
+        if self.mold_no:
+            self.mold_no = self.mold_no.strip()
+        return self
+
+
+class PurchaseClaimProposalInput(StrictModel):
+    request_id: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
+    material_category: Literal["raw_material", "hardware", "unknown"] = "unknown"
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class HardwareInquiryProposalInput(StrictModel):
+    group_id: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
+    supplier_ids: list[int] = Field(default_factory=list, max_length=100)
+    remark: str = Field(default="", max_length=2000)
+
+
+class SupplierOrderDecisionProposalInput(StrictModel):
+    order_id: int = Field(ge=1)
+    decision: Literal["ACCEPT", "REJECT", "PARTIAL"]
+    expected_version: int | None = Field(default=None, ge=1)
+    detail_ids: list[int] = Field(default_factory=list, max_length=200)
+    promised_delivery_date: date | None = None
+    reason: str = Field(default="", max_length=2000)
+
+
+class SupplierQuoteLineInput(StrictModel):
+    material_id: int = Field(ge=1)
+    unit_price: str = Field(min_length=1, max_length=40)
+    tax_rate: str = Field(min_length=1, max_length=20)
+    delivery_date: date
+    quantity: str | None = Field(default=None, max_length=40)
+
+
+class SupplierQuoteSubmitProposalInput(StrictModel):
+    task_id: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
+    lines: list[SupplierQuoteLineInput] = Field(min_length=1, max_length=500)
+    remark: str = Field(default="", max_length=2000)
+
+
+class SupplierDeliveryLineInput(StrictModel):
+    detail_id: int = Field(ge=1)
+    quantity: str = Field(min_length=1, max_length=40)
+    delivery_date: date | None = None
+
+
+class SupplierDeliveryCreateProposalInput(StrictModel):
+    order_id: int = Field(ge=1)
+    destination_id: int = Field(ge=1)
+    lines: list[SupplierDeliveryLineInput] = Field(min_length=1, max_length=500)
+    remark: str = Field(default="", max_length=2000)
+
+
+class SupplierExceptionProposalInput(StrictModel):
+    order_id: int = Field(ge=1)
+    detail_id: int | None = Field(default=None, ge=1)
+    exception_type: Literal["DELAY", "SHORTAGE", "QUALITY", "OTHER"]
+    requested_delivery_date: date | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class PurchaseSplitAdjustAllocationInput(StrictModel):
+    group_detail_id: int = Field(ge=1)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+
+
+class PurchaseSplitAdjustGroupInput(StrictModel):
+    group_key: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    group_name: str = Field(min_length=1, max_length=200)
+    allocations: list[PurchaseSplitAdjustAllocationInput] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_detail_ids(self):
+        ids = [item.group_detail_id for item in self.allocations]
+        if len(ids) != len(set(ids)):
+            raise ValueError("同一目标采购组不能重复分配原组明细")
+        self.group_name = self.group_name.strip()
+        if not self.group_name:
+            raise ValueError("目标采购组名称不能为空")
+        return self
+
+
+class PurchaseSplitAdjustmentPreviewProposalInput(StrictModel):
+    split_group_id: int = Field(ge=1)
+    expected_group_version: int = Field(ge=0)
+    expected_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason_type: Literal["recognition_error", "supplier_unavailable", "quantity_adjust", "other"]
+    reason: str = Field(min_length=1, max_length=500)
+    groups: list[PurchaseSplitAdjustGroupInput] = Field(min_length=2, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_group_keys(self):
+        keys = [item.group_key for item in self.groups]
+        if len(keys) != len(set(keys)):
+            raise ValueError("目标采购组标识不能重复")
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("拆组调整原因不能为空")
+        return self
+
+
+class PurchaseSplitAdjustmentSubmitProposalInput(StrictModel):
+    adjustment_id: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=0)
+    expected_snapshot_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(default="", max_length=500)
+
+
 INPUTS = {
     "prepare_raw_material_split": RawMaterialSplitProposalInput,
     "prepare_purchase_decision": PurchaseDecisionProposalInput,
@@ -102,6 +247,14 @@ INPUTS = {
     "prepare_raw_material_order": PurchaseOrderProposalInput,
     "prepare_hardware_order": PurchaseOrderProposalInput,
     "prepare_supplier_delivery_change": SupplierDeliveryChangeProposalInput,
+    "prepare_purchase_claim": PurchaseClaimProposalInput,
+    "prepare_hardware_inquiry": HardwareInquiryProposalInput,
+    "prepare_supplier_order_decision": SupplierOrderDecisionProposalInput,
+    "prepare_supplier_quote_submit": SupplierQuoteSubmitProposalInput,
+    "prepare_supplier_delivery_create": SupplierDeliveryCreateProposalInput,
+    "prepare_supplier_exception": SupplierExceptionProposalInput,
+    "prepare_purchase_split_adjustment": PurchaseSplitAdjustmentPreviewProposalInput,
+    "prepare_purchase_split_adjustment_submit": PurchaseSplitAdjustmentSubmitProposalInput,
 }
 
 PROPOSAL_TOOLS = frozenset(INPUTS)
@@ -313,6 +466,182 @@ def query_purchase_decision_context(db, user, data, allowed_tools=None):
     return _query(db, user, data, category=None, label="采购决策")
 
 
+def _workbench_context(db, user, project=None, request_id=None):
+    result = {
+        "status": "NOT_CONFIGURED",
+        "request_records": [],
+        "split_records": [],
+        "selected_request": None,
+        "source_system": "ERP",
+        "as_of": now().isoformat(),
+        "limitations": [],
+    }
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+        return result
+    try:
+        params = {}
+        if project:
+            mold_numbers = _mold_numbers(db, project.id)
+            params.update({"projectNo": project.code})
+            if mold_numbers:
+                params["moldNo"] = mold_numbers[0]
+        if request_id:
+            params["requestId"] = request_id
+        result["request_records"] = client.purchase_request_list(params)
+        result["split_records"] = client.purchase_workbench_split_list(params)
+        if request_id:
+            result["selected_request"] = client.purchase_request_detail(request_id)
+        result["status"] = "RESOLVED"
+        result["as_of"] = now().isoformat()
+        result["limitations"].append(
+            "采购申请、拆单工作台和认领状态来自 ERP；MoldPilot 不复制采购申请或拆组台账。"
+        )
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+    finally:
+        client.close()
+    return normalized(result)
+
+
+def _supplier_portal_context(db, user, data: SupplierPortalContextInput):
+    result = {
+        "status": "NOT_CONFIGURED",
+        "quote_tasks": [],
+        "purchase_orders": [],
+        "deliveries": [],
+        "selected_quote_task": None,
+        "selected_order": None,
+        "source_system": "ERP",
+        "as_of": now().isoformat(),
+        "limitations": [],
+    }
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+        return result
+    try:
+        params = {}
+        if data.mold_no:
+            params["moldNo"] = data.mold_no
+        if data.order_id:
+            params["orderId"] = data.order_id
+        if data.task_id:
+            params["taskId"] = data.task_id
+        if data.identifier:
+            params["keyword"] = data.identifier
+        result["quote_tasks"] = client.supplier_quote_task_list(params)
+        result["purchase_orders"] = client.supplier_purchase_order_list(params)
+        result["deliveries"] = client.supplier_delivery_list(params)
+        if data.task_id:
+            result["selected_quote_task"] = client.supplier_quote_task_detail(data.task_id)
+        if data.order_id:
+            result["selected_order"] = client.supplier_purchase_order_detail(data.order_id)
+        result["status"] = "RESOLVED"
+        result["as_of"] = now().isoformat()
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+    finally:
+        client.close()
+    return normalized(result)
+
+
+def query_purchase_workbench_context(db, user, data, allowed_tools=None):
+    project = None
+    if data.project_id or data.identifier:
+        locator = ProcurementContextInput(project_id=data.project_id, identifier=data.identifier)
+        project, alternatives, truncated = _resolve_project(db, user, locator)
+        if not project:
+            return {
+                "resolution": "MULTIPLE_CANDIDATES" if alternatives else "NOT_FOUND",
+                "data": alternatives or [],
+                "source": "agent_db",
+                "as_of": now().isoformat(),
+                "limitations": ["采购工作台必须先定位唯一 Agent 项目。"],
+                "truncated": truncated,
+            }
+    workbench = _workbench_context(db, user, project, data.request_id)
+    return {
+        "resolution": "RESOLVED",
+        "data": [{
+            "project": _project_card(db, user, project, ("项目定位",)) if project else None,
+            "workbench": workbench,
+        }],
+        "source": "erp",
+        "as_of": workbench.get("as_of", now().isoformat()),
+        "limitations": [
+            "本工具只读；认领、拆单、询价和正式下单必须单独生成确认提案。",
+        ] + workbench.get("limitations", []),
+    }
+
+
+def query_supplier_portal_context(db, user, data, allowed_tools=None):
+    context = _supplier_portal_context(db, user, data)
+    return {
+        "resolution": "RESOLVED" if context.get("status") == "RESOLVED" else context.get("status"),
+        "data": [context],
+        "source": "erp",
+        "as_of": context.get("as_of", now().isoformat()),
+        "limitations": [
+            "供应商门户查询使用当前 ERP 身份；不能用采购员本地状态推断供应商已接单、已报价或已发货。",
+        ] + context.get("limitations", []),
+    }
+
+
+def _purchase_split_adjustment_context(db, user, data):
+    result = {
+        "status": "NOT_CONFIGURED",
+        "context": None,
+        "history": [],
+        "selected_adjustment": None,
+        "source_system": "ERP",
+        "as_of": now().isoformat(),
+        "limitations": [],
+    }
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+        return result
+    try:
+        result["context"] = client.purchase_split_adjustment_context(data.request_id)
+        result["history"] = client.purchase_split_adjustment_history({"requestId": data.request_id})
+        if data.adjustment_id:
+            result["selected_adjustment"] = client.purchase_split_adjustment_detail(data.adjustment_id)
+        result["status"] = "RESOLVED"
+        result["as_of"] = now().isoformat()
+        result["limitations"].append(
+            "拆组调整上下文、版本、快照和历史来自 ERP；MoldPilot 不复制原采购组或调整台账。"
+        )
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+    finally:
+        client.close()
+    return normalized(result)
+
+
+def query_purchase_adjustment_context(db, user, data, allowed_tools=None):
+    context = _purchase_split_adjustment_context(db, user, data)
+    return {
+        "resolution": "RESOLVED" if context.get("status") == "RESOLVED" else context.get("status"),
+        "data": [context],
+        "source": "erp",
+        "as_of": context.get("as_of", now().isoformat()),
+        "limitations": [
+            "本工具只读；拆组预览和提交必须分别生成确认提案，并以 ERP 当前版本和快照为准。",
+        ] + context.get("limitations", []),
+    }
+
+
 def _group_snapshot(db, user, group_id):
     client, _identity = _client_for_user(db, user)
     try:
@@ -330,6 +659,14 @@ def _proposal_display(key, data, snapshot):
         "prepare_raw_material_order": "生成原材采购订单",
         "prepare_hardware_order": "生成五金采购订单",
         "prepare_supplier_delivery_change": "提交供应商交期变更申请",
+        "prepare_purchase_claim": "认领 ERP 采购申请",
+        "prepare_hardware_inquiry": "发送五金询价",
+        "prepare_supplier_order_decision": "处理供应商采购订单决定",
+        "prepare_supplier_quote_submit": "提交供应商报价",
+        "prepare_supplier_delivery_create": "创建供应商发货单",
+        "prepare_supplier_exception": "提交供应商交付异常",
+        "prepare_purchase_split_adjustment": "预览采购拆组调整",
+        "prepare_purchase_split_adjustment_submit": "提交采购拆组调整",
     }
     return {
         "操作": names[key],
@@ -341,6 +678,24 @@ def _proposal_display(key, data, snapshot):
 
 
 def execute_tool(db, user, key, arguments, run=None):
+    if key == "query_purchase_workbench_context":
+        try:
+            data = PurchaseWorkbenchContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购工作台查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_workbench_context(db, user, data)
+    if key == "query_supplier_portal_context":
+        try:
+            data = SupplierPortalContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商门户查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_portal_context(db, user, data)
+    if key == "query_purchase_adjustment_context":
+        try:
+            data = PurchaseAdjustmentContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购调整查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_adjustment_context(db, user, data)
     if key.startswith("query_"):
         try:
             data = ProcurementContextInput.model_validate(arguments or {})
@@ -365,6 +720,20 @@ def execute_tool(db, user, key, arguments, run=None):
         # Delivery modification is supported by the ERP contract, but the
         # preview must be checked again by the trusted confirmation handler.
         snapshot = {"delivery_id": data.delivery_id}
+    elif key == "prepare_purchase_claim":
+        snapshot = {"request_id": data.request_id}
+    elif key in {
+        "prepare_supplier_order_decision", "prepare_supplier_delivery_create",
+        "prepare_supplier_exception", "prepare_supplier_quote_submit",
+    }:
+        snapshot = {
+            "native_id": getattr(data, "order_id", None) or getattr(data, "task_id", None),
+            "tool": key,
+        }
+    elif key == "prepare_purchase_split_adjustment_submit":
+        snapshot = {"native_id": data.adjustment_id, "tool": key}
+    elif key == "prepare_purchase_split_adjustment":
+        snapshot = {"native_id": data.split_group_id, "tool": key}
     else:
         snapshot = _group_snapshot(db, user, getattr(data, "group_id", 0))
     proposal = {
@@ -409,15 +778,30 @@ def source(db, user, step_id):
 def _fresh_group_check(db, user, proposal):
     data = proposal.get("input") or {}
     group_id = data.get("group_id")
-    if not group_id:
-        return None
-    current = _group_snapshot(db, user, int(group_id))
+    tool = proposal.get("tool")
+    if group_id:
+        current = _group_snapshot(db, user, int(group_id))
+    else:
+        client, _identity = _client_for_user(db, user)
+        try:
+            if tool == "prepare_purchase_claim" and data.get("request_id"):
+                current = client.purchase_request_detail(int(data["request_id"]))
+            elif tool in {"prepare_supplier_quote_submit"} and data.get("task_id"):
+                current = client.supplier_quote_task_detail(int(data["task_id"]))
+            elif tool in {"prepare_supplier_order_decision", "prepare_supplier_delivery_create", "prepare_supplier_exception"} and data.get("order_id"):
+                current = client.supplier_purchase_order_detail(int(data["order_id"]))
+            elif tool == "prepare_purchase_split_adjustment_submit" and data.get("adjustment_id"):
+                current = client.purchase_split_adjustment_detail(int(data["adjustment_id"]))
+            else:
+                return None
+        finally:
+            client.close()
     expected_status = data.get("expected_status")
     if expected_status and str(current.get("groupStatus") or current.get("status") or "") != str(expected_status):
         raise DomainError("VERSION_CONFLICT", "ERP 采购分组状态已变化，请重新查询并准备操作", 409)
     expected_version = data.get("expected_version")
     if expected_version is not None:
-        actual = current.get("version") or current.get("versionNo") or current.get("rowVersion")
+        actual = current.get("version") or current.get("versionNo") or current.get("rowVersion") or current.get("claim_version")
         if actual is not None and int(actual) != int(expected_version):
             raise DomainError("VERSION_CONFLICT", "ERP 采购分组版本已变化，请重新查询并准备操作", 409)
     return current
@@ -453,7 +837,16 @@ def _operation_record(db, user, payload, proposal, identity):
         user_id=user.id,
         intent_id=intent.id,
         action=proposal.get("tool", "procurement"),
-        native_id=str((proposal.get("input") or {}).get("group_id") or (proposal.get("input") or {}).get("delivery_id") or "-"),
+        native_id=str(
+            (proposal.get("input") or {}).get("group_id")
+            or (proposal.get("input") or {}).get("delivery_id")
+            or (proposal.get("input") or {}).get("request_id")
+            or (proposal.get("input") or {}).get("task_id")
+            or (proposal.get("input") or {}).get("order_id")
+            or (proposal.get("input") or {}).get("split_group_id")
+            or (proposal.get("input") or {}).get("adjustment_id")
+            or "-"
+        ),
         state="DISPATCHING",
         request_hash=content_hash(proposal),
         erp_user_id=identity.erp_user_id,
@@ -516,6 +909,117 @@ def confirm(db, user, payload):
             }
             result = client.create_supplier_delivery_modify_request(
                 int(data["delivery_id"]), request_payload
+            )
+        elif tool == "prepare_purchase_claim":
+            result = client.claim_purchase_request(
+                int(data["request_id"]),
+                {
+                    key: value for key, value in {
+                        "expectedVersion": data.get("expected_version"),
+                        "materialCategory": data.get("material_category"),
+                    }.items() if value not in (None, "unknown", "")
+                },
+            )
+        elif tool == "prepare_hardware_inquiry":
+            result = client.send_group_inquiry(
+                int(data["group_id"]),
+                {
+                    key: value for key, value in {
+                        "expectedVersion": data.get("expected_version"),
+                        "supplierIds": data.get("supplier_ids") or None,
+                        "remark": data.get("remark"),
+                    }.items() if value not in (None, "")
+                },
+            )
+        elif tool == "prepare_supplier_order_decision":
+            request_payload = {
+                key: value for key, value in {
+                    "expectedVersion": data.get("expected_version"),
+                    "detailIds": data.get("detail_ids") or None,
+                    "promisedDeliveryDate": data.get("promised_delivery_date"),
+                    "reason": data.get("reason"),
+                }.items() if value not in (None, "")
+            }
+            result = client.decide_supplier_purchase_order(
+                int(data["order_id"]), data["decision"], request_payload
+            )
+        elif tool == "prepare_supplier_quote_submit":
+            result = client.submit_supplier_quote(
+                int(data["task_id"]),
+                {
+                    "lines": [
+                        {
+                            key: value for key, value in {
+                                "materialId": line["material_id"],
+                                "unitPrice": line["unit_price"],
+                                "taxRate": line["tax_rate"],
+                                "deliveryDate": line["delivery_date"],
+                                "quantity": line.get("quantity"),
+                            }.items() if value not in (None, "")
+                        }
+                        for line in data["lines"]
+                    ],
+                    "remark": data.get("remark", ""),
+                },
+            )
+        elif tool == "prepare_supplier_delivery_create":
+            result = client.create_supplier_delivery({
+                "orderId": data["order_id"],
+                "destinationId": data["destination_id"],
+                "lines": [
+                    {
+                        key: value for key, value in {
+                            "detailId": line["detail_id"],
+                            "quantity": line["quantity"],
+                            "deliveryDate": line.get("delivery_date"),
+                        }.items() if value not in (None, "")
+                    }
+                    for line in data["lines"]
+                ],
+                "remark": data.get("remark", ""),
+            })
+        elif tool == "prepare_supplier_exception":
+            result = client.submit_supplier_exception({
+                key: value for key, value in {
+                    "orderId": data["order_id"],
+                    "detailId": data.get("detail_id"),
+                    "exceptionType": data["exception_type"],
+                    "requestedDeliveryDate": data.get("requested_delivery_date"),
+                    "reason": data["reason"],
+                }.items() if value not in (None, "")
+            })
+        elif tool == "prepare_purchase_split_adjustment":
+            result = client.preview_purchase_split_adjustment({
+                "splitGroupId": data["split_group_id"],
+                "expectedGroupVersion": data["expected_group_version"],
+                "expectedSnapshotHash": data["expected_snapshot_hash"],
+                "reasonType": data["reason_type"],
+                "reason": data["reason"],
+                "groups": [
+                    {
+                        "groupKey": group["group_key"],
+                        "groupName": group["group_name"],
+                        "allocations": [
+                            {
+                                "groupDetailId": allocation["group_detail_id"],
+                                "quantity": allocation["quantity"],
+                            }
+                            for allocation in group["allocations"]
+                        ],
+                    }
+                    for group in data["groups"]
+                ],
+            })
+        elif tool == "prepare_purchase_split_adjustment_submit":
+            result = client.submit_purchase_split_adjustment(
+                int(data["adjustment_id"]),
+                {
+                    key: value for key, value in {
+                        "expectedVersion": data.get("expected_version"),
+                        "expectedSnapshotHash": data.get("expected_snapshot_hash"),
+                        "reason": data.get("reason"),
+                    }.items() if value not in (None, "")
+                },
             )
         else:
             raise DomainError("TOOL_UNKNOWN", "采购正式动作未实现", 403)

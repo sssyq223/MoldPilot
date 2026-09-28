@@ -224,6 +224,50 @@ TOOLS.update({
         'description': '准备供应商交期/数量变更申请；批准后调用 ERP 受控变更接口。',
         'permission': 'shipment.confirm',
     },
+    'query_purchase_workbench_context': {
+        'description': '查询 ERP 采购申请认领、采购办理摘要和拆单工作台；只读，不自动认领或修改拆组。',
+        'permission': 'purchase.read',
+    },
+    'query_supplier_portal_context': {
+        'description': '查询当前 ERP 供应商身份下的报价任务、采购订单和发货记录；只读，不模拟供应商状态。',
+        'permission': 'order.read',
+    },
+    'query_purchase_adjustment_context': {
+        'description': '查询 ERP 采购拆组调整上下文、版本、快照和历史；只读，不修改原采购组。',
+        'permission': 'purchase.read',
+    },
+    'prepare_purchase_claim': {
+        'description': '准备认领 ERP 已审批采购申请的确认卡；确认后调用原生认领接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_hardware_inquiry': {
+        'description': '准备向 ERP 候选供应商发送五金询价的确认卡；确认后调用原生询价接口。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_supplier_order_decision': {
+        'description': '准备供应商订单接单、拒单或部分接单确认卡；确认后调用供应商门户接口。',
+        'permission': 'order.confirm',
+    },
+    'prepare_supplier_quote_submit': {
+        'description': '准备供应商逐行含税报价提交确认卡；确认后调用供应商报价接口。',
+        'permission': 'purchase_price.submit',
+    },
+    'prepare_supplier_delivery_create': {
+        'description': '准备供应商分批发货单确认卡；确认后调用供应商发货接口。',
+        'permission': 'shipment.create',
+    },
+    'prepare_supplier_exception': {
+        'description': '准备供应商交付延期、短缺或质量异常反馈确认卡；确认后调用 ERP 异常接口。',
+        'permission': 'shipment.confirm',
+    },
+    'prepare_purchase_split_adjustment': {
+        'description': '准备按 ERP 原采购组版本和快照预览拆组调整；确认后调用 ERP 服务端预览，不直接改写原采购组。',
+        'permission': 'purchase.submit',
+    },
+    'prepare_purchase_split_adjustment_submit': {
+        'description': '准备提交已有 ERP 拆组调整提案；确认后按调整版本调用 ERP 提交接口。',
+        'permission': 'purchase.submit',
+    },
 })
 SKILLS = {"purchase_request_review": {"name": "采购申请核对", "tools": ["query_purchase_requests"]}}
 SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','tools':['analyze_delivery_risk']},
@@ -769,6 +813,26 @@ SKILLS.update({
                            'prepare_raw_material_order', 'prepare_hardware_order'],
         'activation_queries': ['采购决策', '采购定标', '采购价格审批', '生成采购订单'],
     },
+    'purchase_workbench': {
+        'name': '采购工作台认领与拆单',
+        'tools': ['query_purchase_workbench_context'],
+        'optional_tools': ['prepare_purchase_claim', 'prepare_raw_material_split',
+                           'prepare_hardware_inquiry'],
+        'activation_queries': ['采购认领', '采购申请办理', '采购工作台', '采购拆单', '发送询价'],
+    },
+    'supplier_portal': {
+        'name': '供应商门户履约办理',
+        'tools': ['query_supplier_portal_context'],
+        'optional_tools': ['prepare_supplier_order_decision', 'prepare_supplier_quote_submit',
+                           'prepare_supplier_delivery_create', 'prepare_supplier_exception'],
+        'activation_queries': ['供应商报价任务', '供应商接单', '供应商拒单', '供应商发货', '供应商交付异常'],
+    },
+    'purchase_adjustment': {
+        'name': '采购拆组调整',
+        'tools': ['query_purchase_adjustment_context'],
+        'optional_tools': ['prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit'],
+        'activation_queries': ['采购调整', '采购拆组调整', '临时拆组', '采购拆组提案'],
+    },
 })
 
 DEPARTMENT_NAMES = {
@@ -918,6 +982,17 @@ CAPABILITY_NAMES = {
     'prepare_raw_material_order': '准备原材采购下单',
     'prepare_hardware_order': '准备五金采购下单',
     'prepare_supplier_delivery_change': '准备供应商交期变更',
+    'query_purchase_workbench_context': '查询采购工作台上下文',
+    'query_supplier_portal_context': '查询供应商门户上下文',
+    'query_purchase_adjustment_context': '查询采购拆组调整上下文',
+    'prepare_purchase_claim': '准备认领采购申请',
+    'prepare_hardware_inquiry': '准备发送五金询价',
+    'prepare_supplier_order_decision': '准备供应商订单决定',
+    'prepare_supplier_quote_submit': '准备提交供应商报价',
+    'prepare_supplier_delivery_create': '准备创建供应商发货单',
+    'prepare_supplier_exception': '准备供应商交付异常反馈',
+    'prepare_purchase_split_adjustment': '准备采购拆组调整预览',
+    'prepare_purchase_split_adjustment_submit': '准备提交采购拆组调整',
     **{key: value['name'] for key, value in SKILLS.items()},
 }
 
@@ -982,8 +1057,15 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_raw_material_split': 'purchase', 'prepare_purchase_decision': 'purchase',
     'prepare_hardware_quote': 'purchase', 'prepare_raw_material_order': 'purchase',
     'prepare_hardware_order': 'purchase', 'prepare_supplier_delivery_change': 'purchase',
+    'query_purchase_workbench_context': 'purchase', 'query_supplier_portal_context': 'purchase',
+    'query_purchase_adjustment_context': 'purchase',
+    'prepare_purchase_claim': 'purchase', 'prepare_hardware_inquiry': 'purchase',
+    'prepare_supplier_order_decision': 'purchase', 'prepare_supplier_quote_submit': 'purchase',
+    'prepare_supplier_delivery_create': 'purchase', 'prepare_supplier_exception': 'purchase',
+    'prepare_purchase_split_adjustment': 'purchase', 'prepare_purchase_split_adjustment_submit': 'purchase',
     'steel_purchase': 'purchase', 'hardware_purchase': 'purchase',
     'supplier_collaboration': 'purchase', 'purchase_decision_governance': 'purchase',
+    'purchase_workbench': 'purchase', 'supplier_portal': 'purchase',
     'query_project_control_context': 'project', 'prepare_project_pause': 'project',
     'prepare_project_resume': 'project', 'project_pause_resume': 'project',
     'query_project_closure_context': 'project', 'prepare_project_closure_checklist': 'project',
@@ -1050,8 +1132,12 @@ CAPABILITY_TYPES = {
     'prepare_raw_material_split': 'operation', 'prepare_purchase_decision': 'approval',
     'prepare_hardware_quote': 'approval', 'prepare_raw_material_order': 'approval',
     'prepare_hardware_order': 'approval', 'prepare_supplier_delivery_change': 'operation',
+    'prepare_purchase_claim': 'operation', 'prepare_hardware_inquiry': 'operation',
+    'prepare_supplier_order_decision': 'operation', 'prepare_supplier_quote_submit': 'operation',
+    'prepare_supplier_delivery_create': 'operation', 'prepare_supplier_exception': 'operation',
     'steel_purchase': 'review', 'hardware_purchase': 'review',
     'supplier_collaboration': 'review', 'purchase_decision_governance': 'review',
+    'purchase_workbench': 'review', 'supplier_portal': 'review', 'purchase_adjustment': 'review',
     'change_intake_review': 'review', 'procurement_price_context_review': 'review',
     'delivery_risk_analysis': 'review', 'contact_collaboration_review': 'review',
     'business_status_review': 'review', 'project_dossier_review': 'review',
@@ -1372,9 +1458,21 @@ def tool_schema(key):
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import procurement_context_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':procurement_context_schema()}}
+    if key == 'query_purchase_workbench_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseWorkbenchContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseWorkbenchContextInput.model_json_schema()}}
+    if key == 'query_supplier_portal_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import SupplierPortalContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':SupplierPortalContextInput.model_json_schema()}}
+    if key == 'query_purchase_adjustment_context':
+        from domain_packs.mold.tools.erp.procurement.migration_tools import PurchaseAdjustmentContextInput
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':PurchaseAdjustmentContextInput.model_json_schema()}}
     if key in {
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+        'prepare_purchase_claim', 'prepare_hardware_inquiry', 'prepare_supplier_order_decision',
+        'prepare_supplier_quote_submit', 'prepare_supplier_delivery_create', 'prepare_supplier_exception',
+        'prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import proposal_schema
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':proposal_schema(key)}}
@@ -1708,8 +1806,12 @@ def execute(db, user, key, arguments, run=None):
     if key in {
         'query_raw_material_purchase_context', 'query_hardware_purchase_context',
         'query_supplier_procurement_context', 'query_purchase_decision_context',
+        'query_purchase_workbench_context', 'query_supplier_portal_context', 'query_purchase_adjustment_context',
         'prepare_raw_material_split', 'prepare_purchase_decision', 'prepare_hardware_quote',
         'prepare_raw_material_order', 'prepare_hardware_order', 'prepare_supplier_delivery_change',
+        'prepare_purchase_claim', 'prepare_hardware_inquiry', 'prepare_supplier_order_decision',
+        'prepare_supplier_quote_submit', 'prepare_supplier_delivery_create', 'prepare_supplier_exception',
+        'prepare_purchase_split_adjustment', 'prepare_purchase_split_adjustment_submit',
     }:
         from domain_packs.mold.tools.erp.procurement.migration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)

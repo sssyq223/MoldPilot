@@ -100,6 +100,9 @@ HANDLERS = (
     ProposalHandler("procurement_erp.execute", "domain_packs.mold.tools.erp.procurement.migration_tools", frozenset({
         "prepare_raw_material_split", "prepare_purchase_decision", "prepare_hardware_quote",
         "prepare_raw_material_order", "prepare_hardware_order", "prepare_supplier_delivery_change",
+        "prepare_purchase_claim", "prepare_hardware_inquiry", "prepare_supplier_order_decision",
+        "prepare_supplier_quote_submit", "prepare_supplier_delivery_create", "prepare_supplier_exception",
+        "prepare_purchase_split_adjustment", "prepare_purchase_split_adjustment_submit",
     })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
         "prepare_finance_correction", "prepare_supplier_payment_condition", "prepare_supplier_payment_request",
