@@ -16,8 +16,8 @@ from sqlalchemy.pool import NullPool
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 MESSAGES = {
-    'LOCAL_POSTGRES_REQUIRED': 'Local launcher requires a loopback PostgreSQL target. Review .env; no remote connection attempted.',
-    'DATABASE_UNAVAILABLE': 'Local PostgreSQL is unavailable, recovering, or authentication failed. Check the configured port and Windows service moldpilot-postgresql-55432.',
+    'LOCAL_POSTGRES_REQUIRED': 'Launcher requires a loopback PostgreSQL target unless AGENT_ALLOW_REMOTE_DATABASE=true is explicitly configured.',
+    'DATABASE_UNAVAILABLE': 'Configured PostgreSQL is unavailable, recovering, or authentication failed. Check the database host, port and credentials.',
     'SCHEMA_VERSION_MISMATCH': 'Database version does not match this checkout. Stop and request a separately approved schema review; no migration was run.',
     'SCHEMA_COLUMNS_MISSING': 'Required database tables or columns are missing. Stop and request a separately approved schema review.',
     'READONLY_REQUIRED': 'Database probe did not enter read-only mode; startup stopped.',
@@ -53,6 +53,18 @@ class StartupCheckError(RuntimeError):
     pass
 
 
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        env_file = ROOT / '.env'
+        if env_file.exists():
+            for line in env_file.read_text(encoding='utf-8', errors='replace').splitlines():
+                if line.startswith(f'{name}='):
+                    value = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def _is_revision_reachable(scripts, revision: str, heads: set[str]) -> bool:
     """判断已知版本是否为仓库某个 head 的祖先。"""
     pending = list(heads)
@@ -71,7 +83,7 @@ def _is_revision_reachable(scripts, revision: str, heads: set[str]) -> bool:
     return False
 
 
-def _check_schema(connection):
+def _check_schema(connection, allow_unknown_revisions: bool = False):
     from alembic.script import ScriptDirectory
     from agent_core.migration_runtime import alembic_configs
     from app.models import Base
@@ -95,6 +107,12 @@ def _check_schema(connection):
             # may lag at a known ancestor while its newer optional capabilities
             # remain hidden by the tool gateway.
             revision = next(iter(actual)) if len(actual) == 1 else None
+            if allow_unknown_revisions and (revision is None or revision not in known):
+                warnings.append(
+                    f"{stage.name} database revision is newer or absent from this checkout; "
+                    "required ORM structure was checked without changing migration history"
+                )
+                continue
             if (
                 stage.name != 'mold'
                 or revision is None
@@ -135,14 +153,20 @@ def check_database(url):
         parsed = make_url(url)
     except Exception:
         raise StartupCheckError('CONFIG_INVALID') from None
-    if parsed.get_backend_name() != 'postgresql' or parsed.host not in {'127.0.0.1', 'localhost', '::1'} or not parsed.database:
+    loopback_hosts = {'127.0.0.1', 'localhost', '::1'}
+    allow_remote = _env_flag('AGENT_ALLOW_REMOTE_DATABASE')
+    if (parsed.get_backend_name() != 'postgresql'
+            or not parsed.database
+            or (parsed.host not in loopback_hosts and not allow_remote)):
         raise StartupCheckError('LOCAL_POSTGRES_REQUIRED')
     engine = None
     try:
         # 即使数据库账号有写权限，检查连接也从建立时就强制只读及 SQL 超时。
         engine = create_engine(parsed, poolclass=NullPool, connect_args={
             'connect_timeout': 5,
-            'host': parsed.host, 'hostaddr': '::1' if parsed.host == '::1' else '127.0.0.1',
+            'host': parsed.host,
+            'hostaddr': ('::1' if parsed.host == '::1' else '127.0.0.1'
+                         if parsed.host in loopback_hosts else parsed.host),
             'port': parsed.port or 5432, 'dbname': parsed.database,
             'application_name': 'moldpilot-startup-preflight',
             'options': '-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=10000',
@@ -153,7 +177,7 @@ def check_database(url):
             database = connection.execute(text('SELECT current_database()')).scalar_one()
             if parsed.database and database != parsed.database:
                 raise StartupCheckError('CONFIG_INVALID')
-            versions, warnings = _check_schema(connection)
+            versions, warnings = _check_schema(connection, allow_unknown_revisions=allow_remote)
         return {
             'ok': True,
             'readonly': True,
