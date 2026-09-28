@@ -42,6 +42,11 @@ class CreateInput(StrictModel):
     @classmethod
     def canonical_category(cls,v):
         # Normalize business data labels, never route a user's conversational intent.
+        # Some providers serialize a JSON null as the literal string "null";
+        # treat it as an omitted responsibility domain instead of exposing a
+        # misleading duplicate Proposal for the model to correct itself.
+        if isinstance(v,str) and v.strip().lower() == 'null':
+            return None
         return {name:key for key,name in CATEGORY_NAMES.items()}.get(v,v)
 
     @field_validator('title','description','customer_ref','customer_name','mold_number','product_ref','current_stage')
@@ -315,12 +320,17 @@ def latest_form_snapshot(db,c):
     return snapshot if isinstance(snapshot,dict) else None
 
 
-def form_snapshot(case,form,rows,digest,responsible_group):
+def form_snapshot(db,case,form,rows,digest,responsible_group):
+    from domain_packs.mold.ports.files import case_attachments
     values=form.model_dump(mode='json')
     values['form_version']=FORM_SNAPSHOT_VERSION
     values['case_id']=case.id
     values['case_revision']=case.revision
     values['proposal_hash']=digest
+    values['source_files']=[{
+        'file_id':item['file_id'],'document_id':item['document_id'],'title':item['title'],
+        'version':item['version'],'sha256':item['sha256'],'is_current':item['is_current'],
+    } for item in case_attachments(db,case)]
     values['responsible_department']={
         'id':responsible_group.id,
         'name':responsible_group.name,
@@ -468,7 +478,7 @@ def add_form_tasks(cid:str,data:FormTaskBatchInput,user=Depends(current_user),db
         if not assignee_eligible(db,person,group,c):
             raise DomainError('ASSIGNEE_UNAVAILABLE','存在无权或已停用的处理人',403)
         rows.append((group,person,unit))
-    snapshot=form_snapshot(c,form,rows,digest,responsible_group)
+    snapshot=form_snapshot(db,c,form,rows,digest,responsible_group)
     tasks=[]
     recipients=[]
     for group,person,unit in rows:

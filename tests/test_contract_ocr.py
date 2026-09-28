@@ -175,6 +175,61 @@ def _recognized_from_pdf(document, ocr):
     ))
 
 
+def test_classifier_accepts_evidence_with_punctuation_inserted_between_source_lines():
+    _, ocr = _modules()
+    document = ocr.RecognizedDocument(pages=(ocr.RecognizedPage(
+        page_number=1,
+        blocks=(ocr.PageTextBlock(
+            "p1-t0001", "主题\n测试文档", (10, 20, 180, 45), "TEXT_LAYER", None,
+        ),),
+    ),))
+    provider = ocr.DocumentTextProvider(
+        _document_model_settings(), transport=httpx.MockTransport(lambda _request: httpx.Response(
+            200, json=_openai_response({
+                "document_type": "OTHER",
+                "event_type": "UNKNOWN",
+                "confidence": 0.9,
+                "evidence": [{"page": 1, "text": "主题：测试文档", "rule": "TITLE"}],
+                "extracted": {},
+                "bid_fields": [],
+                "classifier_version": "document-classifier-v1",
+                "needs_human_confirmation": True,
+            }),
+        )))
+
+    result = provider.classify(document)
+
+    assert result.document_type == "OTHER"
+
+
+def test_classifier_prompt_lists_only_registered_bid_field_keys():
+    _, ocr = _modules()
+
+    def handler(request):
+        payload = json.loads(request.content)
+        prompt = payload["messages"][0]["content"]
+        assert "project_number" in prompt
+        assert "external_order_number" in prompt
+        assert "customer_due_date" in prompt
+        assert "bid_amount" in prompt
+        assert "bid_currency" in prompt
+        return httpx.Response(200, json=_openai_response({
+            "document_type": "OTHER",
+            "event_type": "UNKNOWN",
+            "confidence": 0.9,
+            "evidence": [],
+            "extracted": {},
+            "bid_fields": [],
+            "classifier_version": "document-classifier-v1",
+            "needs_human_confirmation": True,
+        }))
+
+    provider = ocr.DocumentTextProvider(
+        _document_model_settings(), transport=httpx.MockTransport(handler)
+    )
+    provider.classify(_recognized_document(*_modules()))
+
+
 def test_text_provider_sends_only_numbered_text_blocks_to_qwen():
     pdf, ocr = _modules()
 

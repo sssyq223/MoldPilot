@@ -198,14 +198,15 @@ def verify_runtime_database(url: str, repo_root: Path | None = None) -> None:
                     scripts = ScriptDirectory.from_config(config)
                     heads = set(scripts.get_heads())
                     known = {revision.revision for revision in scripts.walk_revisions()}
-                    if not versions or (versions & known) - heads:
-                        raise RuntimeError(
-                            f"Migration stage {stage.name} is behind this checkout; sync migrations first"
-                        )
+                    if not versions:
+                        raise RuntimeError(f"Migration stage {stage.name} has no installed revision")
                     print(f"[{stage.name}] database={','.join(sorted(versions))} "
                           f"local={','.join(sorted(heads))}")
                     if versions - known:
                         print("[WARN] Shared database revision is absent from this checkout; "
+                              "checking ORM structure only. Migration history remains unchanged.")
+                    elif versions != heads:
+                        print("[WARN] Shared database revision is behind this checkout; "
                               "checking ORM structure only. Migration history remains unchanged.")
                 verify_schema(connection, metadata)
         print("[OK] Shared database ORM structure verified (read-only; no migrations applied).")

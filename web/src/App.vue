@@ -10,6 +10,7 @@ import ApprovalPanel from './components/ApprovalPanel.vue'
 import WelcomePanel from '@domain-pack/components/WelcomePanel.vue'
 import DomainWorkspacePanel from '@domain-pack/components/DomainWorkspacePanel.vue'
 import ProposalCard from './components/ProposalCard.vue'
+import EngineeringContactTaskDialog from '@domain-pack/components/EngineeringContactTaskDialog.vue'
 import FileMaterial from './components/FileMaterial.vue'
 import MarkdownText from './components/MarkdownText.vue'
 import BusinessFacts from '@domain-pack/components/BusinessFacts.vue'
@@ -413,6 +414,10 @@ function proposalResolutionFor(run:any,stepId:string){
 }
 function runFinalTraces(run:any){return runTrace(run).filter((item:any)=>item.type==='final')}
 function visibleRunFinalTrace(run:any){return runFinalTrace(run)}
+function isEngineeringContactFormProposal(item:any){
+ const proposal=item?.proposal
+ return proposal?.kind==='contact'&&proposal?.action==='form_tasks'
+}
 const pendingApprovalContext=computed(()=>{
  for(const run of [...runs.value].reverse()){
   const item=runPendingProposal(run)
@@ -1081,7 +1086,8 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
     </article>
   </div>
-  <ProposalCard v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="openWorkspaceTarget"/>
+  <EngineeringContactTaskDialog v-if="pendingApprovalContext && isEngineeringContactFormProposal(pendingApprovalContext.item)" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="()=>{}" @error="fail"/>
+  <ProposalCard v-else-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="openWorkspaceTarget"/>
   <form v-else class="composer" @submit.prevent="send">
     <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>

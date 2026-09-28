@@ -1,5 +1,16 @@
 # V1.1 全量需求开发覆盖表
 
+## 工程变更申请联络单批量办理事项（2026-09-27）
+
+| 需求链路 | 当前实现 | 证据 |
+| --- | --- | --- |
+| 附件关联确认 → Skill 续办 | `prepare_contact_attach` 确认后进入 `prepare_contact_form_tasks` | `backend/app/agent_resume.py`、两个工程联络 Skill |
+| 批量表单 Proposal | 初始空表单只读预览，弹窗通过受控 `/form-intent` 重新生成完整 Proposal | `backend/domain_packs/mold/tools/erp/change/contact_tools.py` |
+| 部门/人员候选 | 只返回启用部门，以及同时具备成员资格、联络读取和反馈权限的人员 | `form-options` 路由、`assignee_eligible` |
+| 人工确认门禁 | `contact.execute` handler 校验原 Proposal、修订 Proposal 哈希、Case 范围和版本 | `proposal_handlers.py`、`contact_tools.py` |
+| 批量创建和追溯 | 全部校验后一次性创建 `ASSIGNED` 事项，并保存表单、来源附件版本和 Proposal 哈希快照 | `contacts.py`、`ContactPanel.vue` |
+| HISTORY 边界 | 仅允许线下补录，不创建线上 `ContactTask` | `add_form_tasks`、工程联络 Skill |
+
 ## 第 11 章 FR-078～FR-090：本地 Skill/Tool 增量（2026-09-24）
 
 - FR-078～081：新增本地 `engineering_change_intake` Skill、`LocalChangeIntake`、客户模号历史和本地关联对象。支持客户/内部/委外分类、内部/委外执行、收费与合同独立记录、已有模具复用和首次外部模具人工承接分支；多候选和外部 ERP 标识不自动合并。由于本机库仍为 `mb0d0e000016` 且未批准迁移，当前启动预检会隐藏该组依赖新表的 Tool；Proposal/确认链代码已通过非迁移测试，但未宣称正式库可用。

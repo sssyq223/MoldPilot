@@ -87,6 +87,58 @@ def test_history_batch_service_does_not_create_tasks(client, data):
         assert db.scalar(select(func.count()).select_from(ContactTask).where(ContactTask.case_id == case["id"])) == 0
 
 
+def test_batch_confirmation_is_idempotent_for_same_request_key(client, data):
+    ids, factory = data
+    sign_in(client)
+    department = group(client, [ids["admin"]], kind="DEPARTMENT", name="幂等设计部", heads=[ids["admin"]])
+    grant(factory, ids, ids["admin"], ["read", "respond"])
+    case, _ = create(client, ids)
+    payload = complete_payload(form={
+        "responsible_department_id": department["id"],
+        "related_units": [unit(department["id"], ids["admin"])],
+    })
+    request_key = __import__("uuid").uuid4()
+    data_input = domain.FormTaskBatchInput(request_key=request_key, case_id=case["id"], revision=case["revision"], form=payload["form"])
+
+    with factory.begin() as db:
+        user = db.get(User, ids["admin"])
+        first = domain.add_form_tasks(case["id"], data_input, user, db)
+    with factory.begin() as db:
+        user = db.get(User, ids["admin"])
+        second = domain.add_form_tasks(case["id"], data_input, user, db)
+
+    assert first["revision"] == second["revision"]
+    with factory() as db:
+        assert db.scalar(select(func.count()).select_from(ContactTask).where(ContactTask.case_id == case["id"])) == 1
+        assert db.scalar(select(func.count()).select_from(ContactRecord).where(ContactRecord.case_id == case["id"])) == 1
+
+
+def test_batch_confirmation_rejects_stale_case_revision(client, data):
+    ids, factory = data
+    sign_in(client)
+    department = group(client, [ids["admin"]], kind="DEPARTMENT", name="版本设计部", heads=[ids["admin"]])
+    grant(factory, ids, ids["admin"], ["read", "respond"])
+    case, _ = create(client, ids)
+    payload = complete_payload(form={
+        "responsible_department_id": department["id"],
+        "related_units": [unit(department["id"], ids["admin"])],
+    })
+    data_input = domain.FormTaskBatchInput(request_key=__import__("uuid").uuid4(), case_id=case["id"], revision=case["revision"] + 1, form=payload["form"])
+
+    with factory.begin() as db:
+        user = db.get(User, ids["admin"])
+        try:
+            domain.add_form_tasks(case["id"], data_input, user, db)
+        except domain.DomainError as error:
+            assert error.code == "VERSION_CONFLICT"
+        else:
+            raise AssertionError("旧版本不应创建批量事项")
+
+    with factory() as db:
+        assert db.scalar(select(func.count()).select_from(ContactTask).where(ContactTask.case_id == case["id"])) == 0
+        assert db.scalar(select(func.count()).select_from(ContactRecord).where(ContactRecord.case_id == case["id"])) == 0
+
+
 def test_ineligible_assignee_rolls_back_all_units(client, data):
     ids, factory = data
     sign_in(client)
