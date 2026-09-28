@@ -6,6 +6,8 @@ replace these tool/action mappings without changing the harness or UI routes.
 from dataclasses import dataclass
 from importlib import import_module
 
+from domain_packs.mold.tools.erp.design import erp_design_mcp
+
 
 DELIVERY_LOGISTICS_MODULE = "domain_packs.mold.erp.procurement.delivery_logistics"
 
@@ -81,6 +83,9 @@ HANDLERS = (
     ProposalHandler("design_approval.execute", "domain_packs.mold.tools.erp.design.design_approval_tools", frozenset({
         "prepare_design_order_approval",
     })),
+    ProposalHandler("design_erp.execute", "domain_packs.mold.tools.erp.design.design_action_tools",
+                    frozenset(key for key, spec in erp_design_mcp.TOOL_SPECS.items()
+                              if spec.get("write") is True)),
     ProposalHandler("full_outsource.execute", "domain_packs.mold.tools.erp.procurement.full_outsource_tools", frozenset({
         "prepare_supplier_material_handoff", "prepare_supplier_material_verification",
         "prepare_supplier_progress_policy",

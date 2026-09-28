@@ -99,14 +99,14 @@ class ModelAdapter:
             + (time.perf_counter() - attempt_started) * 1000
         )
 
-    def _payload(self, messages, tools, stream=False):
+    def _payload(self, messages, tools, stream=False, json_mode=True):
         payload = {"model": self.model, "messages": messages, self._token_parameter: self.max_tokens,
                    **self._reasoning_parameters}
         if self._token_parameter == 'max_tokens':
             payload['temperature'] = 0.2
         if tools:
             payload["tools"] = tools
-        else:
+        elif json_mode:
             # A no-tool turn is the Harness terminal protocol, not free-form
             # chat. Ask compatible OpenAI-style providers to constrain it as a
             # JSON object instead of trying to recover prose/YAML afterward.
@@ -115,6 +115,18 @@ class ModelAdapter:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
         return payload
+
+    @staticmethod
+    def _can_retry_without_json_mode(status_code, tools, json_mode):
+        """Some OpenAI-compatible gateways reject response_format on final turns.
+
+        Tool turns must keep their function schema.  For a terminal no-tool
+        turn, retrying once without response_format is safe because no tool can
+        run and the Harness still validates the structured envelope returned by
+        the model.  Limit this to request-validation statuses so real upstream
+        failures keep their original error code.
+        """
+        return (not tools and json_mode and status_code in {400, 422})
 
     def _trace(self, started):
         def trace(event, info):
@@ -152,7 +164,8 @@ class ModelAdapter:
 
     def generate(self, messages, tools):
         started = time.perf_counter()
-        payload = self._payload(messages, tools)
+        json_mode = not bool(tools)
+        payload = self._payload(messages, tools, json_mode=json_mode)
         self.last_metrics = {'tool_count':len(tools), 'request_bytes':len(json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode('utf-8'))}
         try:
             headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
@@ -170,6 +183,15 @@ class ModelAdapter:
                         self._record_retry('connect_timeout_before_response', attempt_started)
                         continue
                     raise
+                if self._can_retry_without_json_mode(response.status_code, tools, json_mode):
+                    response.close()
+                    self._record_retry('json_mode_rejected', attempt_started)
+                    json_mode = False
+                    payload = self._payload(messages, tools, json_mode=False)
+                    self.last_metrics['request_bytes'] = len(
+                        json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+                    )
+                    continue
                 break
             self._check_status(response)
             data = response.json()
@@ -196,7 +218,8 @@ class ModelAdapter:
     def generate_stream(self, messages, tools, on_update):
         """Return one assistant message while publishing coalesced SSE snapshots."""
         started = time.perf_counter()
-        payload = self._payload(messages, tools, stream=True)
+        json_mode = not bool(tools)
+        payload = self._payload(messages, tools, stream=True, json_mode=json_mode)
         self.last_metrics = {
             'tool_count': len(tools),
             'request_bytes': len(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')),
@@ -239,6 +262,15 @@ class ModelAdapter:
                     with self.client.stream("POST", self.url, headers=headers, json=payload,
                                             extensions={'trace': self._trace(started)}) as response:
                         self.last_metrics['http_status'] = response.status_code
+                        if self._can_retry_without_json_mode(response.status_code, tools, json_mode):
+                            response.read()
+                            self._record_retry('json_mode_rejected', attempt_started)
+                            json_mode = False
+                            payload = self._payload(messages, tools, stream=True, json_mode=False)
+                            self.last_metrics['request_bytes'] = len(
+                                json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+                            )
+                            continue
                         if response.status_code in {500, 502, 503, 504} and attempt == 0:
                             response.read()
                             self._record_retry('upstream_5xx', attempt_started)

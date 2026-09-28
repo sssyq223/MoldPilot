@@ -528,6 +528,10 @@ def _skill_tool_groups(skills, all_tools):
                            skill.get("host_auto_invoke_empty_arguments")
                            or spec.get("host_auto_invoke_empty_arguments", False)
                        ),
+                       "host_auto_invoke_current_attachment_only": bool(
+                           skill.get("host_auto_invoke_current_attachment_only")
+                           or spec.get("host_auto_invoke_current_attachment_only", False)
+                       ),
                        "host_auto_invoke_queries": skill.get("host_auto_invoke_queries")
                        or spec.get("host_auto_invoke_queries", []),
                        "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", [])})
@@ -1213,8 +1217,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 suppress_tool_search = True
         # Continuations such as “是的” inherit only the immediately preceding
         # explicit attachment confirmation. Activate the parser for the next
-        # model turn; the model still has to issue the normal tool call, so the
-        # durable receipt and authorization path remain unchanged.
+        # turn; deterministic empty-argument readers may be invoked by the
+        # host, while other tools still use the normal model tool-call path.
         attachment_confirmation = (
             _is_pure_conversation(context.get("prompt", ""))
             and _business_tool_activation_allowed(context)
@@ -1296,12 +1300,16 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             active_tool_names.update(selected)
             if selected or group_already_active:
                 load_selected_skills(selected, [group["key"]])
-            if group.get("requires_tool_evidence"):
+            if (group.get("requires_tool_evidence")
+                    and (not group.get("host_auto_invoke_current_attachment_only")
+                         or bool(context.get("files")))):
                 required_evidence_tools.update(group.get("required") or selected)
             host_auto_queries = [str(alias).strip().lower()
                                  for alias in group.get("host_auto_invoke_queries", [])
                                  if str(alias).strip()]
             if (group.get("host_auto_invoke_empty_arguments")
+                    and (not group.get("host_auto_invoke_current_attachment_only")
+                         or bool(context.get("files")))
                     and (not host_auto_queries
                          or any(alias in normalized_prompt for alias in host_auto_queries))):
                 eligible = set(selected)

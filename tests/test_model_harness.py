@@ -163,8 +163,35 @@ def test_model_stream_does_not_retry_non_transient_http_error():
     with pytest.raises(ModelError, match='MODEL_HTTP_FAILED'):
         model.generate_stream([], [], lambda _: None)
 
-    assert len(calls) == 1
+    # A terminal no-tool request gets one compatibility retry without
+    # response_format.  It still fails closed when the provider rejects both
+    # payload shapes.
+    assert len(calls) == 2
+    assert json.loads(calls[0].content)['response_format'] == {'type': 'json_object'}
+    assert 'response_format' not in json.loads(calls[1].content)
     assert model.last_metrics['http_status'] == 400
+
+
+def test_model_stream_retries_without_json_mode_when_terminal_provider_rejects_it():
+    calls = []
+    body = 'data: ' + json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '{"response_kind":"CONVERSATION","summary":"完成","evidence_ids":[],"suggestions":[]}'}, 'finish_reason': 'stop'}]}) + '\n\ndata: [DONE]\n\n'
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            assert json.loads(request.content)['response_format'] == {'type': 'json_object'}
+            return httpx.Response(400, text='response_format is unsupported')
+        payload = json.loads(request.content)
+        assert 'response_format' not in payload
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate_stream([], [], lambda _: None)
+
+    assert message['content'].startswith('{"response_kind":"CONVERSATION"')
+    assert len(calls) == 2
+    assert model.last_metrics['retry_reason'] == 'json_mode_rejected'
 
 
 @pytest.mark.parametrize('status,code', [(401,'MODEL_AUTH_FAILED'), (403,'MODEL_AUTH_FAILED'),
@@ -1181,11 +1208,8 @@ def test_design_business_vocabulary_allows_tool_search(prompt):
 def test_design_upload_attachment_uses_erp_parser_without_tool_search():
     class InspectingModel(Model):
         def generate(self, messages, tools):
-            assert [tool['function']['name'] for tool in tools] == ['erp_design_parse_new_mold_upload']
-            assert '# 按需工具' not in messages[0]['content']
-            return {'content': json.dumps({'response_kind': 'CLARIFICATION',
-                                           'summary': 'ERP 解析器已就绪。',
-                                           'evidence_ids': [], 'suggestions': []})}
+            assert tools == []
+            return copy.deepcopy(FINAL)
 
     run_loop(context(prompt='帮我解析当前附件', core_tool_names=[],
                      files=[{'filename': 'M250238-P4料单.XLSX',
@@ -1193,6 +1217,7 @@ def test_design_upload_attachment_uses_erp_parser_without_tool_search():
                      tools=[{'type': 'function', 'function': {
                          'name': 'erp_design_parse_new_mold_upload',
                          'description': '解析并上传当前新模钢料或五金清单附件。',
+                         'parameters': {'type': 'object', 'properties': {}, 'required': []},
                      }}],
                      skills=[{'key': 'erp_new_mold_design_upload',
                               'name': 'ERP 新模设计上传流程',
@@ -1201,6 +1226,40 @@ def test_design_upload_attachment_uses_erp_parser_without_tool_search():
                               'activation_tools': ['erp_design_parse_new_mold_upload'],
                               'activation_queries': ['上传新模钢料表', '上传新模五金表']}]),
              InspectingModel([]), Gateway())
+
+
+def test_design_upload_attachment_host_invokes_parser_before_model_call():
+    class FinalOnlyModel(Model):
+        def generate(self, messages, tools):
+            # The parser is deterministic once the host has bound the unique
+            # attachment, so the model should only write the final envelope.
+            assert tools == []
+            return copy.deepcopy(FINAL)
+
+    gateway = Gateway()
+    result = run_loop(context(prompt='解析', core_tool_names=[],
+                              files=[{'id': 'file-1', 'filename': 'M250238-P4料单.XLSX',
+                                      'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}],
+                              tools=[{'type': 'function', 'function': {
+                                  'name': 'erp_design_parse_new_mold_upload',
+                                  'description': '解析当前设计清单。',
+                                  'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                              }}],
+                              skills=[{'key': 'erp_new_mold_design_upload',
+                                       'name': 'ERP 新模设计上传流程',
+                                       'agent_description': '解析设计清单',
+                                       'tools': ['erp_design_parse_new_mold_upload'],
+                                       'activation_tools': ['erp_design_parse_new_mold_upload'],
+                                       'activation_queries': ['解析料单'],
+                                       'auto_activation_queries': ['解析料单', '解析'],
+                                       'suppress_tool_search_on_auto_activation': True,
+                                       'requires_tool_evidence': True,
+                                       'host_auto_invoke_empty_arguments': True}],
+                              tool_annotations={'erp_design_parse_new_mold_upload': {'readOnlyHint': True}}),
+             FinalOnlyModel([]), gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
 
 
 def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
@@ -1357,15 +1416,24 @@ def test_unspecified_upload_activates_erp_parser_for_form_type_selection():
         'name': 'erp_design_parse_modify_mold_upload',
         'description': '解析改模设计清单',
     }}
-    parser_call = {'role': 'assistant', 'tool_calls': [{
-        'id': 'parse-form', 'type': 'function',
-        'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'},
-    }]}
     final = {'role': 'assistant', 'content': json.dumps({
         'response_kind': 'BUSINESS', 'summary': 'ERP 表单已就绪',
         'evidence_ids': ['e1'], 'suggestions': [],
     })}
-    model = InspectingRepliesModel([parser_call, final])
+    class FormModel(Model):
+        def __init__(self):
+            super().__init__([])
+            self.tool_names = []
+        def generate(self, messages, tools):
+            self.tool_names.append([tool['function']['name'] for tool in tools])
+            self.calls += 1
+            if self.calls == 1:
+                return {'role': 'assistant', 'tool_calls': [
+                    {'id': 'parse-form-new', 'type': 'function', 'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'}},
+                    {'id': 'parse-form-modify', 'type': 'function', 'function': {'name': 'erp_design_parse_modify_mold_upload', 'arguments': '{}'}},
+                ]}
+            return copy.deepcopy(final)
+    model = FormModel()
     result = run_loop(context(
         prompt='解析',
         files=[{'filename': 'M250238-P4-五金请购单.CSV'}],
@@ -1377,7 +1445,7 @@ def test_unspecified_upload_activates_erp_parser_for_form_type_selection():
         core_tool_names=[],
     ), model, Gateway())
     assert result['summary'] == 'ERP 表单已就绪'
-    assert model.tool_names[0] == ['erp_design_parse_new_mold_upload']
+    assert model.tool_names[0] == ['erp_design_parse_new_mold_upload', 'erp_design_parse_modify_mold_upload']
 
 
 def test_explicit_new_mold_upload_omits_unrelated_skill_and_tool_catalog_context():
@@ -1532,23 +1600,12 @@ def test_attached_hardware_parse_prefers_upload_tool_over_erp_bom_queries():
     class InspectingModel(Model):
         def generate(self, messages, tools):
             names = [tool['function']['name'] for tool in tools]
-            if self.calls == 0:
-                assert names == ['erp_design_parse_new_mold_upload']
-                self.calls += 1
-                return {'role': 'assistant', 'tool_calls': [{
-                    'id': 'search-hardware-upload',
-                    'type': 'function',
-                    'function': {'name': 'erp_design_parse_new_mold_upload',
-                                 'arguments': '{}'},
-                }]}
-            assert names == ['erp_design_parse_new_mold_upload']
             self.calls += 1
-            return {'role': 'assistant', 'content': json.dumps({
-                'response_kind': 'CLARIFICATION',
-                'summary': '附件已由 ERP 解析。',
-                'evidence_ids': [],
-                'suggestions': [],
-            }, ensure_ascii=False)}
+            if self.calls == 1:
+                assert names == ['erp_design_parse_new_mold_upload']
+                return {'role': 'assistant', 'tool_calls': [{'id': 'search-hardware-upload', 'type': 'function', 'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'}}]}
+            return {'role': 'assistant', 'content': json.dumps({'response_kind': 'CLARIFICATION', 'summary': '附件已由 ERP 解析。', 'evidence_ids': [], 'suggestions': []}, ensure_ascii=False)}
+
 
     gateway = Gateway()
     run_loop(context(

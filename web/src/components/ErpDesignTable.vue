@@ -5,6 +5,7 @@ import {
   ERP_DESIGN_HEAT_TREATMENT_OPTIONS,
   erpDesignAgingTreatmentDisabled,
   erpDesignAgingTreatmentSupported,
+  erpDesignBlockingErrors,
   erpDesignCell,
   erpDesignColumns,
   normalizeErpDesignTreatments,
@@ -170,7 +171,7 @@ watch(() => props.preview.sessionId, () => {
   // or sheet type; an omitted date must result in a follow-up question.
   expectedDate.value = props.preview.expectedDate || ''
   remark.value = props.preview.remark || ''
-  purchaseReason.value = ''
+  purchaseReason.value = props.preview.purchaseReason || ''
   designOrderType.value = String(props.preview.designOrderType || '').toLowerCase().includes('repair')
     || String(props.preview.designOrderType || '').toLowerCase().includes('modify')
     ? 'repair_other' : 'new_model'
@@ -180,6 +181,18 @@ watch(() => props.preview.sessionId, () => {
 watch(() => props.preview.expectedDate, value => {
   const nextValue = String(value || '')
   if (expectedDate.value !== nextValue) expectedDate.value = nextValue
+})
+
+watch(() => props.preview.designOrderType, value => {
+  const raw = String(value || '').toLowerCase()
+  const nextValue = raw.includes('repair') || raw.includes('modify') || raw.includes('改') || raw.includes('修')
+    ? 'repair_other' : (raw || 'new_model')
+  if (designOrderType.value !== nextValue) designOrderType.value = nextValue
+})
+
+watch(() => props.preview.purchaseReason, value => {
+  const nextValue = String(value || '')
+  if (purchaseReason.value !== nextValue) purchaseReason.value = nextValue
 })
 
 function sumField(fields: string[], fallbackToQty = false): number {
@@ -669,7 +682,7 @@ const canImport = computed(() => Boolean(
   && !props.repricing
   && !props.importing
   && !props.preview.drawingProcessing
-  && !props.preview.errors.length
+  && !erpDesignBlockingErrors(props.preview.errors).length
   && (normalizedDesignOrderType.value !== 'repair_other' || purchaseReason.value.trim())
 ))
 
@@ -765,10 +778,10 @@ const toleranceRows = computed(() => {
 
     <div v-if="autoCorrectedCount||drawingCorrectableCount" class="erp-design-correction-summary">
       <span v-if="autoCorrectedCount"><strong>自动修正</strong><b>{{autoCorrectedCount}} 条</b><em>已自动完成</em></span>
-      <span v-if="drawingCorrectableCount"><strong>双击图纸修正</strong><b>{{drawingCorrectableCount}} 条</b><em>双击橙色提示可按图纸回填料型、长宽厚与数量</em></span>
+      <span v-if="drawingCorrectableCount"><strong>图纸修正参考</strong><b>{{drawingCorrectableCount}} 条</b><em>已作为参考保留，不阻拦文字确认导入</em></span>
     </div>
     <details v-if="autoCorrectedCount||correctionDetails.length" class="erp-design-correction-details" aria-label="自动修正明细">
-      <summary>自动修正明细（本页 {{correctionDetails.length}} 项，导入前请核对）</summary>
+      <summary>自动处理明细（参考，本页 {{correctionDetails.length}} 项）</summary>
       <ul v-if="correctionDetails.length">
         <li v-for="item in correctionDetails" :key="item.key">
           <span>第 {{item.row}} 行 · {{item.field}}：{{item.before}} → {{item.after}}</span>

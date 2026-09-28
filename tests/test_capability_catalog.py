@@ -1,4 +1,9 @@
+from types import SimpleNamespace
+
 from domain_packs.mold.tools.erp.design.erp_design_mcp import TOOL_NAMES
+from domain_packs.mold.tools.erp.design import design_action_tools
+from domain_packs.mold import proposal_handlers
+from domain_packs.mold import tool_gateway as gateway
 from app.tool_gateway import SKILLS, TOOLS, capability_descriptor
 
 
@@ -13,6 +18,70 @@ def test_tool_descriptor_carries_backend_catalog_metadata():
     assert item["business_key"] == "purchase"
     assert item["dependencies"] == []
     assert item["optional_dependencies"] == []
+
+
+def test_design_write_tools_are_human_confirmed_proposals():
+    write_tools = {
+        key for key, spec in design_action_tools.erp_design_mcp.TOOL_SPECS.items()
+        if spec.get("write") is True
+    }
+    handler = next(item for item in proposal_handlers.HANDLERS
+                   if item.action == "design_erp.execute")
+    assert write_tools
+    assert write_tools == set(handler.tools)
+    for key in write_tools:
+        descriptor = capability_descriptor("TOOL", key, TOOLS[key])
+        assert descriptor["mode"] == "human_confirmed_proposal"
+
+
+def test_design_write_tool_is_gated_before_erp_execution(monkeypatch):
+    key = "erp_design_manage_density"
+    monkeypatch.setattr(gateway, "available_tools", lambda _db, _user: [key])
+    run = SimpleNamespace(checkpoint={"agent_permission_mode": "ask"})
+    result = gateway.execute(None, SimpleNamespace(), key, {
+        "operation": "create", "material_mark": "S50C", "density": "7.85",
+    }, run=run)
+    assert result["source"] == "agent_proposal"
+    assert result["proposal"]["tool"] == key
+    assert result["proposal"]["requires_approval"] is True
+    assert result["proposal"]["input"]["confirm"] is True
+
+
+def test_design_write_confirmation_executes_only_after_card_approval(monkeypatch):
+    key = "erp_design_manage_density"
+    user = SimpleNamespace(id="user-1", security_version=1)
+    run = SimpleNamespace(
+        id="run-1", user_id=user.id, security_version=1, status="SUCCEEDED",
+        checkpoint={"authorization_hash": "auth"},
+    )
+    proposal_result = design_action_tools.execute_tool(None, user, key, {
+        "operation": "create", "material_mark": "S50C", "density": "7.85",
+    }, run=run)
+    step = SimpleNamespace(id="step-1", run_id=run.id, tool=key, result=proposal_result)
+
+    class FakeDb:
+        def get(self, model, identity):
+            if identity == step.id:
+                return step
+            if identity == run.id:
+                return run
+            return None
+
+    monkeypatch.setattr(design_action_tools, "fingerprint", lambda _db, _user: "auth")
+    monkeypatch.setattr(design_action_tools, "_available_tools", lambda _db, _user: {key})
+    executed = []
+    monkeypatch.setattr(
+        design_action_tools.erp_design_mcp,
+        "execute_tool",
+        lambda _db, _user, tool, arguments, run=None: executed.append((tool, arguments)) or {"ok": True},
+    )
+    payload = {
+        "step_id": step.id,
+        "proposal_hash": design_action_tools.content_hash(proposal_result["proposal"]),
+    }
+    receipt = design_action_tools.confirm(FakeDb(), user, payload)
+    assert executed == [(key, {"operation": "create", "material_mark": "S50C", "density": "7.85", "confirm": True})]
+    assert receipt["status"] == "EXECUTED"
 
 
 def test_skill_descriptor_keeps_dependencies_and_review_metadata():
@@ -112,7 +181,7 @@ def test_delivery_logistics_skill_exposes_separate_route_and_price_authorities()
     assert quote["mode"] == "human_confirmed_proposal"
     skill = capability_descriptor("SKILL", "delivery_logistics_review", SKILLS["delivery_logistics_review"])
     assert skill["dependencies"] == ["query_delivery_logistics_context"]
-    assert skill["optional_dependencies"] == ["prepare_logistics_route", "prepare_logistics_quote"]
+    assert skill["optional_dependencies"] == ["prepare_logistics_route", "prepare_logistics_quote", "prepare_customer_acceptance"]
 
 
 def test_contact_collaboration_skill_has_curated_activation_pack():

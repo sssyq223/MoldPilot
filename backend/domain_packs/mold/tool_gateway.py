@@ -325,9 +325,20 @@ SKILLS.update({
         # status/result tools remain discoverable later by exact ToolSearch,
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
-        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '上传料单',
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '解析', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
+        # With one supported attachment and an unambiguous upload skill, the
+        # host can bind the current run file and call this deterministic ERP
+        # parser directly.  This avoids making the model synthesize a tool
+        # call whose UUID/nullable schema is rejected by some gateways.
+        'auto_activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传',
+                                    '设计清单导入', '导入料单', '解析料单', '解析', '解析这个清单',
+                                    '解析清单', '解析当前附件', '上传料单'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        'host_auto_invoke_current_attachment_only': True,
 
     },
     'erp_design_modify_mold_upload': {
@@ -343,7 +354,14 @@ SKILLS.update({
         'activation_tools': ['erp_design_parse_modify_mold_upload'],
         'activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
                                '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
-                               '修模改模清单上传', '解析改模清单附件'],
+                               '修模改模清单上传', '解析改模清单附件', '解析'],
+        'auto_activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
+                                    '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
+                                    '修模改模清单上传', '解析改模清单附件', '解析改模清单', '解析'],
+        'suppress_tool_search_on_auto_activation': True,
+        'requires_tool_evidence': True,
+        'host_auto_invoke_empty_arguments': True,
+        'host_auto_invoke_current_attachment_only': True,
     },
     'erp_design_tolerance_evaluation': {
         'name': 'ERP 新模钢料公差判断',
@@ -908,7 +926,7 @@ def capability_descriptor(kind, key, spec):
     )
     mode = (
         'read_only' if capability_type in {'query', 'review'} and not key.startswith('prepare_') else
-        'human_confirmed_proposal' if key.startswith('prepare_') else
+        'human_confirmed_proposal' if key.startswith('prepare_') or spec.get('write') is True else
         'assigned_skill'
     )
     return {
@@ -1272,6 +1290,14 @@ def execute(db, user, key, arguments, run=None):
         from domain_packs.mold.tools.local.model_configuration_tools import execute_tool
         return execute_tool(db, user, key, arguments, run=run)
     if key in erp_design_mcp.TOOL_SPECS:
+        # Every ERP design write is a formal action.  The first model call
+        # creates a confirmation card; the trusted human-confirmation endpoint
+        # invokes erp_design_mcp directly after revalidating the card.  This
+        # prevents a write-capable tool from bypassing the selected "每次询问"
+        # policy simply because the model emitted its function name.
+        if erp_design_mcp.TOOL_SPECS[key].get('write') is True:
+            from domain_packs.mold.tools.erp.design import design_action_tools
+            return design_action_tools.execute_tool(db, user, key, arguments, run=run)
         return erp_design_mcp.execute_tool(db, user, key, arguments, run=run)
     if key.startswith('prepare_contact_') or key=='query_contact_context':
         return contact_tools.execute_tool(db,user,key,arguments,run=run)
