@@ -7,6 +7,9 @@ from decimal import Decimal
 from typing import Any
 
 from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_all
+from domain_packs.mold.tools.erp.procurement.outsource_queries.match_candidates import (
+    fetch_match_candidates as load_match_candidates,
+)
 from domain_packs.mold.ports.errors import DomainError
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
@@ -15,14 +18,28 @@ MOLD_BATCH_CODE = re.compile(r"(?i)^M\d{5,}-P\d+$")
 MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
 PROJECT_NO = re.compile(r"(?i)(?<![A-Z0-9])(E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])")
 ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
-PART_NO = re.compile(r"(?i)(?:零件\s*)([A-Z]{1,8}-?\d{1,4}[A-Z]?)")
+PART_NO = re.compile(r"(?i)(?:零件\s*(?:是|为|:|：)?)([A-Z]{1,8}-?\d{1,4}[A-Z]?)")
 QUOTE_AMOUNT = re.compile(r"(?:我方报价|填报价|报价|总价格|总价)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
 MAX_AMOUNT = re.compile(r"(?:上限区间|接单上限|上限)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
 ROW_INDEX = re.compile(r"第\s*(\d+)\s*行")
+ROW_SPOKEN = re.compile(r"第\s*(\d+|[一二三四五六七八九十])\s*行")
+CN_ROW = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+FIRST_BOARD_ROW = re.compile(r"第\s*(?:1|一)\s*行")
+PENDING_FIRST_QUOTE = re.compile(r"(?:待排(?:列)?|排列)第\s*(?:1|一)")
+NAMED_SEND_STATION = re.compile(r"待发询价")
+THIS_ORDER = re.compile(r"这[一笔张]?[单订]|这个订单|这笔订单|这单")
 BUYER_QUOTE_SPEECH = (
     "填我方报价", "填写我方报价", "填报价", "填写报价", "填价格",
     "帮我填报价", "帮我填价格",
     "准备填写我方报价", "准备填写报价",
+    "报报价", "报个价", "帮我报价",
+)
+INQUIRY_SEND_SPEECH = (
+    "发询价", "发送询价", "办理发询价", "办理发送询价",
+    "确认发询价", "确认发送询价", "确认办理发询价", "确认办理发送询价",
 )
 ROW_LIMIT = 200
 STATIONS = {
@@ -351,7 +368,9 @@ def _promote_batch_code(mold: str, batch: str) -> tuple[str, str]:
     return mold, batch
 
 
-PART_CODE = re.compile(r"(?i)\b([A-Z]{1,8}\d{0,4}-\d{1,4}[A-Z]{0,3}|[A-Z]{2,8}-\d{1,4}[A-Z]{0,3})\b")
+PART_CODE = re.compile(
+    r"(?i)(?<![A-Z0-9])([A-Z]{1,8}\d{0,4}-\d{1,4}[A-Z]{0,3}|[A-Z]{2,8}-\d{1,4}[A-Z]{0,3})(?![A-Z0-9])"
+)
 
 
 def normalize_part_token(value: Any) -> str:
@@ -465,16 +484,23 @@ def format_quotes(invitations: list[Any]) -> str:
     return "；".join(labels)
 
 
-def pending_quote_suppliers(invitations: list[Any], dispatch_pending: str = "") -> str:
+def invitation_supplier_label(invitation: dict[str, Any]) -> str:
+    return str(
+        invitation.get("supplierName")
+        or invitation.get("supplier_name")
+        or invitation.get("supplierCode")
+        or invitation.get("supplier_code")
+        or ""
+    ).strip()
+
+
+def invitation_supplier_names(invitations: list[Any], dispatch_pending: str = "") -> str:
     names = []
     seen = set()
     for invite in invitations:
         if not isinstance(invite, dict):
             continue
-        status = str(invite.get("status") or "").strip().lower()
-        if status not in PENDING_INVITE_STATUS:
-            continue
-        name = str(invite.get("supplierName") or invite.get("supplier_name") or "").strip()
+        name = invitation_supplier_label(invite)
         if name and name not in seen:
             seen.add(name)
             names.append(name)
@@ -487,33 +513,185 @@ def pending_quote_suppliers(invitations: list[Any], dispatch_pending: str = "") 
     return "、".join(names)
 
 
-def resolve_supplier_ids(item: dict[str, Any], suppliers: list[str]) -> list[int]:
-    wanted = [_norm_code(name) for name in suppliers if str(name).strip()]
+def pending_quote_suppliers(invitations: list[Any], dispatch_pending: str = "") -> str:
+    names = []
+    seen = set()
+    for invite in invitations:
+        if not isinstance(invite, dict):
+            continue
+        status = str(invite.get("status") or "").strip().lower()
+        if status and status not in PENDING_INVITE_STATUS:
+            continue
+        name = invitation_supplier_label(invite)
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not names:
+        for name in str(dispatch_pending or "").split("、"):
+            text = name.strip()
+            if text and text not in seen:
+                seen.add(text)
+                names.append(text)
+    return "、".join(names)
+
+
+def _invitation_codes(invitation: dict[str, Any]) -> set[str]:
+    return {
+        _norm_code(invitation.get("supplierCode")),
+        _norm_code(invitation.get("supplier_code")),
+        _norm_code(invitation.get("supplierName")),
+        _norm_code(invitation.get("supplier_name")),
+    } - {""}
+
+
+def _invitation_supplier_id(invitation: dict[str, Any]) -> int | None:
+    supplier_id = invitation.get("supplierId") or invitation.get("supplier_id")
+    if supplier_id is None:
+        return None
+    return int(supplier_id)
+
+
+def listed_supplier_names(item: dict[str, Any]) -> list[str]:
+    names = []
+    seen = set()
+    for invitation in item.get("invitations") or []:
+        if not isinstance(invitation, dict):
+            continue
+        name = invitation_supplier_label(invitation)
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    fallback = str(item.get("pendingQuoteSuppliers") or item.get("supplierName") or "").strip()
+    if fallback:
+        for name in fallback.split("、"):
+            text = name.strip()
+            if text and text not in seen:
+                seen.add(text)
+                names.append(text)
+    return names
+
+
+def _match_invitations(invitations: list[dict[str, Any]], token: str) -> list[dict[str, Any]]:
+    exact = []
+    contained = []
+    for invitation in invitations:
+        codes = _invitation_codes(invitation)
+        if token in codes:
+            exact.append(invitation)
+            continue
+        if len(token) >= 2 and any(token in code or code in token for code in codes):
+            contained.append(invitation)
+    return exact or contained
+
+
+def match_candidates_as_invitations(rows: list[Any]) -> list[dict[str, Any]]:
+    invitations = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        supplier_id = row.get("supplierId") or row.get("supplier_id")
+        if supplier_id is None:
+            continue
+        supplier_id = int(supplier_id)
+        if supplier_id in seen:
+            continue
+        seen.add(supplier_id)
+        invitations.append({
+            "supplierId": supplier_id,
+            "supplierCode": str(row.get("supplierCode") or row.get("supplier_code") or "").strip(),
+            "supplierName": str(row.get("supplierName") or row.get("supplier_name") or "").strip(),
+            "status": "matched",
+        })
+    return invitations
+
+
+def invitations_from_match_payload(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    source = payload if isinstance(payload, dict) else {}
+    data = source.get("data") if isinstance(source.get("data"), dict) else source
+    rows: list[Any] = []
+    groups = data.get("groups") if isinstance(data, dict) else {}
+    if isinstance(groups, dict):
+        for key in ("A", "B", "C"):
+            rows.extend(item for item in (groups.get(key) or []) if isinstance(item, dict))
+    if isinstance(data, dict):
+        rows.extend(item for item in (data.get("rows") or []) if isinstance(item, dict))
+    return match_candidates_as_invitations(rows)
+
+
+def fetch_match_candidates(project_id: Any) -> list[dict[str, Any]]:
+    return load_match_candidates(project_id)
+
+
+def attach_match_candidates(item: dict[str, Any]) -> dict[str, Any]:
+    if str(item.get("station") or "") != "inquiry_send":
+        return item
+    invitations = [invite for invite in (item.get("invitations") or []) if isinstance(invite, dict)]
+    if any(_invitation_supplier_id(invite) is not None for invite in invitations):
+        return item
+    matched = fetch_match_candidates(item.get("projectId") or item.get("project_id"))
+    if not matched:
+        return item
+    item["invitations"] = matched
+    names = invitation_supplier_names(matched)
+    item["pendingQuoteSuppliers"] = names
+    if not item.get("supplierName"):
+        item["supplierName"] = matched[0].get("supplierName") or ""
+    if not item.get("supplierCode"):
+        item["supplierCode"] = matched[0].get("supplierCode") or ""
+    if item.get("supplierId") is None:
+        item["supplierId"] = matched[0].get("supplierId")
+    return item
+
+
+def resolve_suppliers(item: dict[str, Any], suppliers: list[str] | None = None) -> tuple[list[int], list[str]]:
+    item = attach_match_candidates(item)
+    invitations = [invite for invite in (item.get("invitations") or []) if isinstance(invite, dict)]
+    wanted = [_norm_code(name) for name in (suppliers or []) if str(name).strip()]
     if not wanted:
-        raise DomainError("INVALID_TOOL_INPUT", "请提供加工商编码或名称", 400)
-    found: list[int] = []
-    invitations = item.get("invitations") or []
-    for token in wanted:
-        match = None
+        found: list[int] = []
+        labels: list[str] = []
+        seen = set()
         for invitation in invitations:
-            if not isinstance(invitation, dict):
+            supplier_id = _invitation_supplier_id(invitation)
+            if supplier_id is None or supplier_id in seen:
                 continue
-            codes = {
-                _norm_code(invitation.get("supplierCode")),
-                _norm_code(invitation.get("supplier_code")),
-                _norm_code(invitation.get("supplierName")),
-                _norm_code(invitation.get("supplier_name")),
-            }
-            if token in codes - {""}:
-                supplier_id = invitation.get("supplierId") or invitation.get("supplier_id")
-                if supplier_id is None:
-                    continue
-                match = int(supplier_id)
-                break
-        if match is None:
-            raise DomainError("NOT_FOUND", f"查询结果中没有加工商 {token}，请用待发询价列出的编码或名称", 404)
-        found.append(match)
-    return found
+            seen.add(supplier_id)
+            found.append(supplier_id)
+            labels.append(invitation_supplier_label(invitation) or str(supplier_id))
+        if not found:
+            raise DomainError(
+                "NOT_FOUND",
+                "ERP 选商结果里还没有可发询价的加工商。请先在 ERP 待发询价页确认匹配名单",
+                404,
+            )
+        return found, labels
+    found = []
+    labels = []
+    listed = "、".join(listed_supplier_names(item))
+    hint = f"本单已匹配：{listed}" if listed else "本单还没有已匹配加工商"
+    for raw, token in zip((name for name in (suppliers or []) if str(name).strip()), wanted):
+        matches = _match_invitations(invitations, token)
+        if not matches:
+            raise DomainError(
+                "NOT_FOUND",
+                f"查询结果中没有加工商「{raw}」。{hint}。请用名单里的编码或全称，不要自行改写",
+                404,
+            )
+        if len(matches) > 1:
+            names = "、".join(invitation_supplier_label(item) or "?" for item in matches)
+            raise DomainError("AMBIGUOUS", f"「{raw}」对应多家加工商：{names}。请用完整名称或编码", 409)
+        supplier_id = _invitation_supplier_id(matches[0])
+        if supplier_id is None:
+            raise DomainError("NOT_FOUND", f"加工商「{raw}」没有可用编码，请重新查询待发询价", 404)
+        found.append(supplier_id)
+        labels.append(invitation_supplier_label(matches[0]) or str(raw).strip())
+    return found, labels
+
+
+def resolve_supplier_ids(item: dict[str, Any], suppliers: list[str] | None = None) -> list[int]:
+    ids, _labels = resolve_suppliers(item, suppliers)
+    return ids
 
 
 def parse_question(question: str) -> dict[str, str]:
@@ -566,6 +744,296 @@ def is_spoken_buyer_quote(question: str) -> bool:
     return any(token in text for token in BUYER_QUOTE_SPEECH)
 
 
+def is_spoken_inquiry_send(question: str) -> bool:
+    text = question or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要发", "不发询价", "不发送询价")):
+        return False
+    return any(token in text for token in INQUIRY_SEND_SPEECH)
+
+
+def inquiry_send_identity_locked(arguments: dict[str, Any]) -> bool:
+    return bool(
+        str(arguments.get("order_no") or "").strip()
+        or str(arguments.get("batch") or "").strip()
+        or str(arguments.get("mold") or "").strip()
+        or str(arguments.get("part") or "").strip()
+    )
+
+
+def _identity_arguments(source: str) -> dict[str, Any]:
+    parsed = parse_question(source)
+    arguments: dict[str, Any] = {}
+    order = ORDER_NO.search(source or "")
+    if order:
+        arguments["order_no"] = order.group(1).upper()
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    return arguments
+
+
+def _sendable_board_items(items: list[Any] | None) -> list[dict[str, Any]]:
+    sendable = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        station = str(item.get("station") or item.get("stationLabel") or "").strip()
+        if station not in {"待发询价", "inquiry_send"}:
+            continue
+        if not any(str(item.get(key) or "").strip() for key in (
+            "orderNo", "order_no", "mold", "moldFamily", "moldNo", "batch", "moldBatch",
+        )):
+            continue
+        sendable.append(item)
+    return sendable
+
+
+def _arguments_from_send_item(item: dict[str, Any]) -> dict[str, Any]:
+    arguments: dict[str, Any] = {}
+    order = str(item.get("orderNo") or item.get("order_no") or "").strip()
+    mold = str(item.get("mold") or item.get("moldFamily") or item.get("moldNo") or "").strip()
+    batch = str(item.get("batch") or item.get("moldBatch") or "").strip()
+    if order:
+        arguments["order_no"] = order
+    if batch:
+        arguments["batch"] = batch.split("、", 1)[0].strip()
+        if MOLD_BATCH_CODE.match(arguments["batch"]):
+            arguments.setdefault("mold", arguments["batch"].split("-P", 1)[0])
+    if mold:
+        first = mold.split("、", 1)[0].strip()
+        if MOLD_BATCH_CODE.match(first) and not arguments.get("batch"):
+            arguments["batch"] = first
+            arguments.setdefault("mold", first.split("-P", 1)[0])
+        elif first:
+            arguments.setdefault("mold", first.split("-P", 1)[0] if "-P" in first else first)
+    family, item_batch = item_identity(item)
+    if item_batch and not arguments.get("batch"):
+        arguments["batch"] = item_batch.split("、", 1)[0].strip()
+        if MOLD_BATCH_CODE.match(arguments["batch"]):
+            arguments.setdefault("mold", arguments["batch"].split("-P", 1)[0])
+    if family:
+        arguments.setdefault("mold", family.split("-P", 1)[0] if "-P" in family else family)
+    part = part_code_from_item(item)
+    if part:
+        arguments["part"] = part
+    return arguments
+
+
+def apply_first_pending_send_row(arguments: dict[str, Any], *, require_unique: bool = False) -> dict[str, Any]:
+    """Lock 第一行/唯一待发询价 to the first pending-send enquiry."""
+    parsed = {
+        "station": "inquiry_send",
+        "mold_family": str(arguments.get("mold") or ""),
+        "mold_batch": str(arguments.get("batch") or ""),
+        "project_no": "",
+        "outsource_type": "",
+    }
+    if parsed["mold_batch"] and MOLD_BATCH_CODE.match(parsed["mold_batch"]):
+        parsed["mold_family"] = ""
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return arguments
+    if not items:
+        return arguments
+    if require_unique and len(items) != 1:
+        return arguments
+    filled = _arguments_from_send_item(items[0])
+    filled["board_row"] = 1
+    return filled
+
+
+def find_unique_station_item(station: str) -> dict[str, Any] | None:
+    parsed = {
+        "station": station,
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return None
+    if len(items) != 1 or not items[0].get("inquiryId"):
+        return None
+    return items[0]
+
+
+def parse_spoken_inquiry_send(question: str, context_text: str = "") -> dict[str, Any] | None:
+    if not is_spoken_inquiry_send(question):
+        return None
+    row_no = spoken_board_row_number(question)
+    if row_no and not _question_locks_identity(question):
+        item = item_from_visible_board_row(row_no)
+        if item and _item_is_station(item, "inquiry_send"):
+            filled = _arguments_from_send_item(item)
+            filled["board_row"] = row_no
+            return filled if inquiry_send_identity_locked(filled) else None
+        return None
+    first_row = bool(FIRST_BOARD_ROW.search(question or "") or PENDING_FIRST_QUOTE.search(question or ""))
+    ignore_history = bool(
+        first_row
+        or NAMED_SEND_STATION.search(question or "")
+        or THIS_ORDER.search(question or "")
+    )
+    if ignore_history:
+        filled = apply_first_pending_send_row({}, require_unique=not first_row)
+        if inquiry_send_identity_locked(filled):
+            return filled
+        return None
+    arguments = _identity_arguments(f"{question or ''}\n{context_text or ''}")
+    if not inquiry_send_identity_locked(arguments):
+        return None
+    return arguments
+
+
+def _visible_row_item_for_station(question: str, station: str) -> tuple[int, dict[str, Any]] | None:
+    row_no = spoken_board_row_number(question)
+    if not row_no or _question_locks_identity(question):
+        return None
+    item = item_from_visible_board_row(row_no)
+    if not item or not _item_is_station(item, station):
+        return None
+    return row_no, item
+
+
+def send_arguments_from_board(question: str, items: list[Any] | None) -> dict[str, Any] | None:
+    if not is_spoken_inquiry_send(question):
+        return None
+    visible = _visible_row_item_for_station(question, "inquiry_send")
+    if visible:
+        row_no, chosen = visible
+        arguments = _arguments_from_send_item(chosen)
+        arguments["board_row"] = row_no
+        return arguments if inquiry_send_identity_locked(arguments) else None
+    sendable = _sendable_board_items(items)
+    first_row = bool(FIRST_BOARD_ROW.search(question or "") or PENDING_FIRST_QUOTE.search(question or ""))
+    if first_row:
+        chosen = sendable[0] if sendable else None
+    elif len(sendable) == 1:
+        chosen = sendable[0]
+    else:
+        return None
+    if chosen is None:
+        return None
+    arguments = _arguments_from_send_item(chosen)
+    if first_row:
+        arguments["board_row"] = 1
+    if not inquiry_send_identity_locked(arguments):
+        return None
+    return arguments
+
+
+def _quoteable_board_items(items: list[Any] | None) -> list[dict[str, Any]]:
+    quoteable = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        station = str(item.get("station") or item.get("stationLabel") or "").strip()
+        if station not in {"待采购填报价", "待填价", "buyer_quote"}:
+            continue
+        if not any(str(item.get(key) or "").strip() for key in (
+            "orderNo", "order_no", "mold", "moldFamily", "moldNo", "batch", "moldBatch",
+        )):
+            continue
+        quoteable.append(item)
+    return quoteable
+
+
+def _arguments_from_quote_item(item: dict[str, Any], amounts: dict[str, Any]) -> dict[str, Any]:
+    arguments = dict(amounts)
+    order = str(item.get("orderNo") or item.get("order_no") or "").strip()
+    mold = str(item.get("mold") or item.get("moldFamily") or item.get("moldNo") or "").strip()
+    batch = str(item.get("batch") or item.get("moldBatch") or "").strip()
+    if order:
+        arguments["order_no"] = order
+    if batch:
+        first_batch = batch.split("、", 1)[0].strip()
+        arguments["batch"] = first_batch
+        if MOLD_BATCH_CODE.match(first_batch):
+            arguments.setdefault("mold", first_batch.split("-P", 1)[0])
+    if mold:
+        first = mold.split("、", 1)[0].strip()
+        if MOLD_BATCH_CODE.match(first) and not arguments.get("batch"):
+            arguments["batch"] = first
+            arguments.setdefault("mold", first.split("-P", 1)[0])
+        elif first:
+            arguments.setdefault("mold", first.split("-P", 1)[0] if "-P" in first else first)
+    family, item_batch = item_identity(item)
+    if item_batch and not arguments.get("batch"):
+        arguments["batch"] = item_batch.split("、", 1)[0].strip()
+        if MOLD_BATCH_CODE.match(arguments["batch"]):
+            arguments.setdefault("mold", arguments["batch"].split("-P", 1)[0])
+    if family:
+        arguments.setdefault("mold", family.split("-P", 1)[0] if "-P" in family else family)
+    part = part_code_from_item(item)
+    if part:
+        arguments["part"] = part
+    return arguments
+
+
+def apply_first_pending_quote_row(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Lock 待排/待排列第一 to the first pending-fill-quote enquiry."""
+    parsed = {
+        "station": "buyer_quote",
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return arguments
+    if not items:
+        return arguments
+    filled = _arguments_from_quote_item(items[0], {
+        key: arguments[key]
+        for key in ("our_quote_amount", "auto_accept_max_amount")
+        if key in arguments
+    })
+    filled["board_row"] = 1
+    return filled
+
+
+def quote_arguments_from_board(question: str, items: list[Any] | None) -> dict[str, Any] | None:
+    if not is_spoken_buyer_quote(question):
+        return None
+    quote = QUOTE_AMOUNT.search(question or "")
+    ceiling = MAX_AMOUNT.search(question or "")
+    if quote is None or ceiling is None:
+        return None
+    amounts = {
+        "our_quote_amount": float(quote.group(1)),
+        "auto_accept_max_amount": float(ceiling.group(1)),
+    }
+    visible = _visible_row_item_for_station(question, "buyer_quote")
+    if visible:
+        row_no, chosen = visible
+        filled = _arguments_from_quote_item(chosen, amounts)
+        filled["board_row"] = row_no
+        return filled if buyer_quote_identity_locked(filled) else None
+    quoteable = _quoteable_board_items(items)
+    if PENDING_FIRST_QUOTE.search(question or ""):
+        chosen = quoteable[0] if quoteable else None
+    elif len(quoteable) == 1:
+        chosen = quoteable[0]
+    else:
+        return None
+    if chosen is None:
+        return None
+    arguments = _arguments_from_quote_item(chosen, amounts)
+    if not buyer_quote_identity_locked(arguments):
+        filled = apply_spoken_board_row(dict(arguments), "第1行")
+        arguments.update({key: value for key, value in filled.items() if value not in (None, "")})
+    if not buyer_quote_identity_locked(arguments):
+        return None
+    return arguments
+
+
 def buyer_quote_identity_locked(arguments: dict[str, Any]) -> bool:
     """Fill-quote form only after mold is locked, plus order or batch+part."""
     mold = str(arguments.get("mold") or "").strip()
@@ -591,10 +1059,6 @@ def part_code_from_item(item: dict[str, Any]) -> str:
 
 def spoken_part_token(question: str) -> str:
     text = question or ""
-    match = PART_NO.search(text)
-    token = normalize_part_token(match.group(1)) if match else ""
-    if token:
-        return token
     found = []
     for match in PART_CODE.finditer(text):
         code = normalize_part_token(match.group(1))
@@ -602,15 +1066,64 @@ def spoken_part_token(question: str) -> str:
             continue
         if code not in found:
             found.append(code)
-    return found[0] if len(found) == 1 else ""
+    if len(found) == 1:
+        return found[0]
+    match = PART_NO.search(text)
+    return normalize_part_token(match.group(1)) if match else ""
+
+
+def spoken_board_row_number(question: str) -> int | None:
+    match = ROW_SPOKEN.search(question or "")
+    if not match:
+        return None
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    return CN_ROW.get(token)
+
+
+def _question_locks_identity(question: str) -> bool:
+    parsed = parse_question(question or "")
+    return bool(
+        parsed.get("mold_family")
+        or parsed.get("mold_batch")
+        or spoken_part_token(question)
+        or ORDER_NO.search(question or "")
+    )
+
+
+def item_from_visible_board_row(row_no: int) -> dict[str, Any] | None:
+    """Row N of the same unfiltered board the '查看完整表格' card shows."""
+    parsed = {
+        "station": "",
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        items = query_items(parsed)
+    except Exception:
+        return None
+    if row_no < 1 or row_no > len(items):
+        return None
+    return items[row_no - 1]
+
+
+def _item_is_station(item: dict[str, Any], station: str) -> bool:
+    raw = str(item.get("station") or "").strip()
+    label = str(item.get("stationLabel") or "").strip()
+    if not raw and not label:
+        return station == "buyer_quote"
+    labels = {station, STATIONS.get(station, "")}
+    return raw in labels or label in labels
 
 
 def apply_spoken_board_row(arguments: dict[str, Any], question: str) -> dict[str, Any]:
     """Lock 第N行 to the same enquiry the follow-up board would show."""
-    row_match = ROW_INDEX.search(question or "")
-    if not row_match:
+    row_no = spoken_board_row_number(question)
+    if not row_no:
         return arguments
-    row_no = int(row_match.group(1))
     tokens = _batch_tokens(arguments.get("batch"))
     query_batch = tokens[0] if tokens and MOLD_BATCH_CODE.match(tokens[0]) else ""
     parsed = {
@@ -649,13 +1162,22 @@ def parse_spoken_buyer_quote(question: str, context_text: str = "") -> dict[str,
     ceiling = MAX_AMOUNT.search(question or "")
     if quote is None or ceiling is None:
         return None
-    identity_source = f"{question or ''}\n{context_text or ''}"
-    parsed = parse_question(identity_source)
-    order = ORDER_NO.search(identity_source)
-    arguments: dict[str, Any] = {
+    amounts = {
         "our_quote_amount": float(quote.group(1)),
         "auto_accept_max_amount": float(ceiling.group(1)),
     }
+    row_no = spoken_board_row_number(question)
+    if row_no and not _question_locks_identity(question):
+        item = item_from_visible_board_row(row_no)
+        if item and _item_is_station(item, "buyer_quote"):
+            filled = _arguments_from_quote_item(item, amounts)
+            filled["board_row"] = row_no
+            return filled if buyer_quote_identity_locked(filled) else None
+        return None
+    identity_source = f"{question or ''}\n{context_text or ''}"
+    parsed = parse_question(identity_source)
+    order = ORDER_NO.search(identity_source)
+    arguments: dict[str, Any] = dict(amounts)
     if order:
         arguments["order_no"] = order.group(1).upper()
     if parsed.get("mold_family"):
@@ -666,10 +1188,12 @@ def parse_spoken_buyer_quote(question: str, context_text: str = "") -> dict[str,
     part = spoken_part_token(question)
     if part:
         arguments["part"] = part
-    row_match = ROW_INDEX.search(question or "")
-    if row_match and (arguments.get("mold") or arguments.get("batch")):
-        arguments["board_row"] = int(row_match.group(1))
+    row_no = spoken_board_row_number(question)
+    if row_no and (arguments.get("mold") or arguments.get("batch")):
+        arguments["board_row"] = row_no
         arguments = apply_spoken_board_row(arguments, question)
+    elif PENDING_FIRST_QUOTE.search(question or "") and not buyer_quote_identity_locked(arguments):
+        arguments = apply_first_pending_quote_row(arguments)
     if not buyer_quote_identity_locked(arguments):
         return None
     return arguments
@@ -733,8 +1257,10 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
     quotes = format_quotes(invitations)
     awarded_amount = money(row.get("awarded_amount"))
     pending = pending_quote_suppliers(invitations)
+    if station == "inquiry_send":
+        pending = invitation_supplier_names(invitations) or pending
     if not pending and station in {"inquiry_send", "supplier_quote", "exhausted"}:
-        pending = pending_quote_suppliers([], str(row.get("pending_dispatch_suppliers") or ""))
+        pending = invitation_supplier_names([], str(row.get("pending_dispatch_suppliers") or ""))
     if not quotes and awarded_amount is not None:
         supplier = str(row.get("supplier_name") or "").strip()
         quotes = f"{supplier} {awarded_amount}".strip() if supplier else str(awarded_amount)
@@ -778,7 +1304,7 @@ def query_items(parsed: dict[str, str]) -> list[dict[str, Any]]:
             continue
         if scoped["station"] and station != scoped["station"]:
             continue
-        items.append(item_from_row(row, station))
+        items.append(attach_match_candidates(item_from_row(row, station)))
     return items
 
 
@@ -805,11 +1331,15 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
             details = item["partDetails"]
             if len(details) > 80:
                 details = details[:80] + "…"
-            lines.append(
+            suppliers = item.get("pendingQuoteSuppliers") or item.get("supplierName") or ""
+            line = (
                 f"{item['stationLabel']} {item['outsourceTypeLabel']} "
                 f"{item.get('orderNo') or '尚未下单'} {item.get('moldFamily') or item['moldNo']} "
                 f"{item.get('moldBatch') or item['moldNo']} {details}"
             )
+            if suppliers:
+                line += f" 加工商 {suppliers}"
+            lines.append(line)
         summary += "\n" + "\n".join(f"- {line}".rstrip() for line in lines)
         if len(visible) > 30:
             summary += "\n明细只展开前 30 条，完整列表在 items。"
@@ -937,19 +1467,20 @@ def find_item_by_board_row(
     *,
     mold: str | None = None,
     batch: str | None = None,
+    station: str = "buyer_quote",
 ) -> dict[str, Any] | None:
-    """Pick 第N行 from the same buyer_quote board the user just saw."""
+    """Pick 第N行 from the same station board the user just named."""
     mold, batch = _promote_batch_code(str(mold or "").strip().upper(), str(batch or "").strip().upper())
     tokens = _batch_tokens(batch)
     query_batch = tokens[0] if tokens and MOLD_BATCH_CODE.match(tokens[0]) else ""
     parsed = {
-        "station": "buyer_quote",
+        "station": station or "buyer_quote",
         "mold_family": "" if query_batch else mold,
         "mold_batch": query_batch,
         "project_no": "",
         "outsource_type": "",
     }
-    if not parsed["mold_family"] and not parsed["mold_batch"]:
+    if parsed["station"] == "buyer_quote" and not parsed["mold_family"] and not parsed["mold_batch"]:
         return None
     try:
         items = query_items(parsed)
@@ -975,6 +1506,20 @@ def find_item_by_order(order_id: int, *, mold: str | None = None) -> dict[str, A
     return None
 
 
+def _query_station_items(station: str) -> list[dict[str, Any]]:
+    parsed = {
+        "station": station,
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        return query_items(parsed)
+    except Exception:
+        return []
+
+
 def find_item_by_identity(
     *,
     order_no: str | None = None,
@@ -982,17 +1527,42 @@ def find_item_by_identity(
     batch: str | None = None,
     part: str | None = None,
     require_inquiry: bool = False,
+    station: str | None = None,
 ) -> dict[str, Any] | None:
+    """Locate one enquiry.
+
+    When *station* is set (办理), search that station first.  Same mold/batch/part
+    on another station must not count.  If that station has exactly one row,
+    that row is the target even if leftover mold/batch from an earlier turn
+    would miss it.
+    """
     order_no = str(order_no or "").strip()
     mold, batch = _promote_batch_code(str(mold or "").strip().upper(), str(batch or "").strip().upper())
     part = normalize_part_token(part)
-    if not order_no and not mold and not batch and not part:
+    if not order_no and not mold and not batch and not part and not station:
         raise DomainError("INVALID_TOOL_INPUT", "请用订单号、模具号、批次号或零件号定位，不要使用内部数字编号")
 
     def matches(item: dict[str, Any]) -> bool:
         return item_matches_identity(
             item, order_no=order_no, mold=mold, batch=batch
         ) and item_matches_part(item, part)
+
+    if station:
+        pool = _query_station_items(station)
+        if require_inquiry:
+            pool = [item for item in pool if item.get("inquiryId")]
+        hits = [item for item in pool if matches(item)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) == 0 and len(pool) == 1:
+            return pool[0]
+        if len(hits) > 1:
+            raise DomainError("AMBIGUOUS", _ambiguous_identity_message(hits, part=part), 409)
+        if not hits and not pool:
+            return None
+        if not hits:
+            return None
+        return hits[0]
 
     hits = [item for item in _scan_items(batch or mold) if matches(item)]
     if not hits and (order_no or part):

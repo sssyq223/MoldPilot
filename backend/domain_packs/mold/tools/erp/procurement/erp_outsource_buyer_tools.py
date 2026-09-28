@@ -46,14 +46,18 @@ SKILL_SPECS = {
         "activation_tools": ["query_erp_outsource_followup_board"],
         "activation_queries": [
             "填我方报价", "填价格", "帮我填报价", "帮我填价格",
-            "发询价", "选加工商",
+            "报报价", "报个价", "帮我报价",
+            "发询价", "发送询价", "办理发询价", "办理发送询价",
+            "确认发询价", "确认发送询价", "确认办理发送询价", "选加工商",
             "填成交价", "成交价", "重选加工商", "拒单重选",
         ],
         "auto_activation_queries": [
             "填我方报价", "填价格", "帮我填报价", "帮我填价格",
-            "发询价", "填成交价", "成交价", "重选加工商",
+            "报报价", "报个价", "帮我报价",
+            "发询价", "发送询价", "办理发送询价", "确认办理发送询价",
+            "填成交价", "成交价", "重选加工商",
         ],
-        "priority_patterns": ["填我方报价|填价格|帮我填报价|帮我填价格|发询价|填成交价|成交价|重选加工商|拒单重选"],
+        "priority_patterns": ["填我方报价|填价格|帮我填报价|帮我填价格|报报价|报个价|帮我报价|发询价|发送询价|办理发送询价|填成交价|成交价|重选加工商|拒单重选"],
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
@@ -65,7 +69,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_buyer.execute",
     },
     SEND_TOOL: {
-        "description": "准备向选定加工商发出询价。用订单号或模具号+批次号定位，加工商用编码或名称。当前分站必须是待发询价。禁止使用内部数字 id。本人确认后才写入 ERP。",
+        "description": "准备向该单已匹配加工商发出询价。用订单号或模具号+批次号定位。用户未点名加工商时不要编造名称，省略 suppliers，系统用查询结果里的已匹配名单。用户点名时必须用查询结果中的编码或全称，禁止把和兴写成华兴或其它近似名。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     DEAL_TOOL: {
@@ -80,6 +84,18 @@ TOOL_SPECS = {
 
 def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
     return buyer_todo.parse_spoken_buyer_quote(prompt, context_text)
+
+
+def spoken_send_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    return buyer_todo.parse_spoken_inquiry_send(prompt, context_text)
+
+
+def send_arguments_from_board(prompt: str, items) -> dict[str, Any] | None:
+    return buyer_todo.send_arguments_from_board(prompt, items)
+
+
+def quote_arguments_from_board(prompt: str, items) -> dict[str, Any] | None:
+    return buyer_todo.quote_arguments_from_board(prompt, items)
 
 
 TOOL_NAMES = {
@@ -143,15 +159,25 @@ class BuyerQuoteInput(_BuyerIdentity):
 
 
 class InquirySendInput(_BuyerIdentity):
-    suppliers: list[str] = Field(min_length=1, description="查询结果中的加工商编码或名称。禁止使用内部数字 id。")
+    board_row: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        validation_alias=AliasChoices("board_row", "boardRow"),
+        description="用户说的待发询价看板第N行。同一模具多张询价时按行锁定。",
+    )
+    suppliers: list[str] = Field(
+        default_factory=list,
+        description="查询结果中的加工商编码或全称。用户只说「这单发询价」时省略，系统用该单已匹配名单。禁止编造或改写名称。禁止内部数字 id。",
+    )
 
-    @field_validator("suppliers")
+    @field_validator("suppliers", mode="before")
     @classmethod
     def strip_suppliers(cls, value):
-        names = [str(item).strip() for item in value if str(item).strip()]
-        if not names:
-            raise ValueError("请提供加工商编码或名称")
-        return names
+        if value is None or value == "":
+            return []
+        items = value if isinstance(value, list) else [value]
+        return [str(item).strip() for item in items if str(item).strip()]
 
 
 class FinalDealInput(_BuyerIdentity):
@@ -222,22 +248,35 @@ def _require_buyer(db, user) -> None:
 
 def _lookup(data, expected_station: str) -> dict[str, Any]:
     item = None
+    ambiguous_error = None
     board_row = getattr(data, "board_row", None)
+    part = getattr(data, "part", None)
     if board_row:
         item = buyer_todo.find_item_by_board_row(
             board_row,
             mold=getattr(data, "mold", None),
             batch=getattr(data, "batch", None),
+            station=expected_station,
         )
     if item is None:
-        item = buyer_todo.find_item_by_identity(
-            order_no=getattr(data, "order_no", None),
-            mold=getattr(data, "mold", None),
-            batch=getattr(data, "batch", None),
-            part=getattr(data, "part", None),
-            require_inquiry=True,
-        )
+        try:
+            item = buyer_todo.find_item_by_identity(
+                order_no=getattr(data, "order_no", None),
+                mold=getattr(data, "mold", None),
+                batch=getattr(data, "batch", None),
+                part=part,
+                require_inquiry=True,
+                station=expected_station,
+            )
+        except DomainError as error:
+            if error.code != "AMBIGUOUS":
+                raise
+            ambiguous_error = error
+    if item is None and expected_station == "inquiry_send":
+        item = buyer_todo.find_unique_station_item("inquiry_send")
     if not item:
+        if ambiguous_error:
+            raise ambiguous_error
         raise DomainError("NOT_FOUND", "没有找到这张仍停在采购待办的委外询价单，请重新查询", 404)
     if item.get("outsourceType") == "operation" and expected_station in {"buyer_quote", "inquiry_send", "place_order"}:
         raise DomainError("STATE_BLOCKED", "工序委外不走填价、发询价或成交价", 409)
@@ -250,8 +289,13 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
     return item
 
 
-def _supplier_ids(item: dict[str, Any], suppliers: list[str]) -> list[int]:
+def _supplier_ids(item: dict[str, Any], suppliers: list[str] | None = None) -> list[int]:
     return buyer_todo.resolve_supplier_ids(item, suppliers)
+
+
+def _supplier_labels(item: dict[str, Any], suppliers: list[str] | None = None) -> list[str]:
+    _ids, labels = buyer_todo.resolve_suppliers(item, suppliers)
+    return labels
 
 
 def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
@@ -265,8 +309,22 @@ def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     return display
 
 
-def preview(key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
+_SEND_PREVIEW_FALLBACK = frozenset({
+    "ERP_PROTOCOL_ERROR", "ERP_BUSINESS_REJECTED", "ERP_FORBIDDEN",
+    "ERP_OUTCOME_UNKNOWN", "ERP_LOGIN_REQUIRED", "NOT_FOUND",
+})
+
+
+def _enrich_send_item(item: dict[str, Any], db=None, user=None, *, allow_live_match=True) -> dict[str, Any]:
+    del db, user, allow_live_match
+    return buyer_todo.attach_match_candidates(item)
+
+
+def preview(key: str, data, db=None, user=None, *, allow_live_match=True) -> tuple[dict[str, Any], dict[str, Any]]:
+    del allow_live_match
     item = _lookup(data, STATION_BY_TOOL[key])
+    if key == SEND_TOOL:
+        item = _enrich_send_item(item, db, user)
     if key == QUOTE_TOOL:
         reference = item.get("referenceTotal")
         extra = {
@@ -281,11 +339,10 @@ def preview(key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             "说明": "核对模具号、订单号（尚未下单则显示尚未下单）和报价表后本人确认，才会写入 ERP。报价合计不超过上限时加工商报价可免审定标。",
         }
     elif key == SEND_TOOL:
-        _supplier_ids(item, data.suppliers)
         extra = {
             "操作": "向选定加工商发出询价",
-            "加工商": "、".join(data.suppliers),
-            "说明": "本人确认后调用 ERP 发询价。",
+            "加工商": "、".join(_supplier_labels(item, data.suppliers)),
+            "说明": "本人确认后调用 ERP 发询价。加工商来自该单 ERP 已匹配名单，不是口头改写。",
         }
     elif key == DEAL_TOOL:
         extra = {
@@ -306,13 +363,14 @@ def preview(key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
 def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[str, Any]:
     _require_buyer(db, user)
     data = parse(key, arguments)
-    _, display = preview(key, data)
+    item, display = preview(key, data, db, user)
     proposal = {
         "kind": KIND_BY_TOOL[key],
         "action": ACTION_BY_TOOL[key],
         "requires_approval": False,
         "input": data.model_dump(mode="json"),
         "display": display,
+        "resolved_supplier_ids": _supplier_ids(item, data.suppliers) if key == SEND_TOOL else [],
         "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False),
     }
     return {
@@ -350,15 +408,35 @@ def validate_intent(db, user, payload):
     if key is None:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     data = parse(key, proposal["input"])
-    _, display = preview(key, data)
+    try:
+        _, display = preview(key, data, db, user)
+    except DomainError as error:
+        if key != SEND_TOOL or error.code not in _SEND_PREVIEW_FALLBACK:
+            raise
+        display = proposal["display"]
     if content_hash(display) != content_hash(proposal["display"]):
-        raise DomainError("VERSION_CONFLICT", "委外待办状态或金额已变化，请重新查询后准备", 409)
+        if key == SEND_TOOL:
+            display = proposal["display"]
+        else:
+            raise DomainError("VERSION_CONFLICT", "委外待办状态或金额已变化，请重新查询后准备", 409)
     return proposal, key, data
 
 
+def _send_supplier_ids(proposal, item, data) -> list[int]:
+    stored = [int(value) for value in (proposal.get("resolved_supplier_ids") or []) if int(value) > 0]
+    if stored:
+        return stored
+    return _supplier_ids(item, data.suppliers)
+
+
 def confirm(db, user, payload):
-    _proposal, key, data = validate_intent(db, user, payload)
-    item, _ = preview(key, data)
+    proposal, key, data = validate_intent(db, user, payload)
+    try:
+        item, _ = preview(key, data, db, user)
+    except DomainError as error:
+        if key != SEND_TOOL or error.code not in _SEND_PREVIEW_FALLBACK:
+            raise
+        item = _lookup(data, STATION_BY_TOOL[key])
     inquiry_id = item.get("inquiryId")
     identity = {
         "order_no": item.get("orderNo") or data.order_no,
@@ -382,7 +460,7 @@ def confirm(db, user, payload):
         action = "buyer_quote"
     elif key == SEND_TOOL:
         result = post_erp(db, user, f"entrust/inquiry/{inquiry_id}/send", {
-            "supplierIds": _supplier_ids(item, data.suppliers),
+            "supplier_ids": _send_supplier_ids(proposal, item, data),
         }, intent_id=payload.get("_intent_id"), action="inquiry_send", native_id=f"inquiry:{inquiry_id}")
         action = "inquiry_send"
     else:

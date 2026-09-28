@@ -1,13 +1,22 @@
 """Configuration owned exclusively by the Mold ERP business pack."""
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Always the checkout .env, not whatever the process current directory happens to be.
+REPO_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+
 
 class MoldSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="MOLD_", env_file=".env", extra="ignore", populate_by_name=True
+        env_prefix="MOLD_",
+        env_file=str(REPO_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+        env_ignore_empty=True,
     )
     logistics_quote_max_valid_days: int = Field(default=183, ge=1, le=3660)
     erp_base_url: str = ""

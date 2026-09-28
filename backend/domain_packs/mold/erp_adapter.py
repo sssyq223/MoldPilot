@@ -1,10 +1,13 @@
 """New adapter for existing ERP business APIs; no old Agent Tool/Skill imports."""
 from urllib.parse import urlsplit
 from decimal import Decimal
+from pathlib import Path
 import json
+import os
 import httpx
 from cryptography.fernet import Fernet,InvalidToken
-from domain_packs.mold.config import settings
+from dotenv import dotenv_values
+from domain_packs.mold.config import REPO_ENV_FILE, settings
 from agent_core.host_ports import host_ports
 from agent_core.errors import DomainError
 
@@ -22,9 +25,37 @@ PLAN_PROGRESS_FIELDS=['id','nodeId','nodeName','name','code','projectNo','projec
                       'ownerName','responsibleName','updatedAt','createTime','createdAt']
 
 
+AUTH_ABORT_CODES = frozenset({
+    "ERP_LOGIN_REQUIRED", "ERP_FORBIDDEN", "ERP_NOT_CONFIGURED",
+    "ERP_KEY_REQUIRED", "ERP_HTTPS_REQUIRED",
+})
+
+
+def _clean_encryption_key(value):
+    return str(value or "").strip().strip('"').strip("'")
+
+
+def encryption_key():
+    """Read the Fernet key from this checkout's .env.
+
+    Process env only fills in when the file key is blank. An empty machine
+    variable must not hide the file, or login and confirm would use two keys.
+    """
+    file_key = _clean_encryption_key(dotenv_values(Path(REPO_ENV_FILE)).get("MOLD_CREDENTIAL_ENCRYPTION_KEY"))
+    env_key = _clean_encryption_key(os.environ.get("MOLD_CREDENTIAL_ENCRYPTION_KEY"))
+    cached = _clean_encryption_key(settings().credential_encryption_key)
+    return file_key or env_key or cached
+
+
 def cipher():
-    try:return Fernet(settings().credential_encryption_key.encode())
-    except (ValueError,TypeError):raise DomainError('ERP_KEY_REQUIRED','管理员尚未配置 ERP 凭据加密密钥',503) from None
+    try:
+        return Fernet(encryption_key().encode())
+    except (ValueError, TypeError):
+        settings.cache_clear()
+        try:
+            return Fernet(encryption_key().encode())
+        except (ValueError, TypeError):
+            raise DomainError('ERP_KEY_REQUIRED','管理员尚未配置 ERP 凭据加密密钥',503) from None
 
 
 def encrypt(token):return cipher().encrypt(token.encode()).decode()
@@ -32,6 +63,28 @@ def decrypt(value):
     if not value:raise DomainError('ERP_LOGIN_REQUIRED','请先验证本人的 ERP 账号',401)
     try:return cipher().decrypt(value.encode()).decode()
     except InvalidToken:raise DomainError('ERP_LOGIN_REQUIRED','ERP 连接凭据已失效，请重新验证',401) from None
+
+
+def erp_token_readable(ciphertext):
+    if not ciphertext:
+        return False
+    try:
+        decrypt(ciphertext)
+        return True
+    except DomainError as error:
+        if error.code == "ERP_LOGIN_REQUIRED":
+            return False
+        raise
+
+
+def discard_unreadable_erp_token(identity):
+    if identity is None or not getattr(identity, "token_ciphertext", None):
+        return False
+    if erp_token_readable(identity.token_ciphertext):
+        return False
+    identity.token_ciphertext = None
+    identity.authenticated_at = None
+    return True
 
 
 class ERPClient:
@@ -54,7 +107,9 @@ class ERPClient:
             with self.client.stream(method,path.lstrip('/'),**kwargs) as response:
                 if response.status_code in {401,403}:raise DomainError('ERP_FORBIDDEN','ERP 登录失效或原系统权限不足',403)
                 if response.status_code>=500:raise DomainError('ERP_OUTCOME_UNKNOWN','ERP 服务异常，执行结果需要核对',502)
-                if response.status_code!=200:raise DomainError('ERP_PROTOCOL_ERROR','ERP 未返回有效业务响应',502)
+                if 300<=response.status_code<400:
+                    raise DomainError('ERP_PROTOCOL_ERROR',f'ERP 对本次请求返回了跳转（HTTP {response.status_code}），不是业务结果',502)
+                if response.status_code!=200:raise DomainError('ERP_PROTOCOL_ERROR',f'ERP 未返回有效业务响应（HTTP {response.status_code}）',502)
                 parts=[];size=0
                 for part in response.iter_bytes():
                     size+=len(part)
@@ -63,7 +118,10 @@ class ERPClient:
             payload=json.loads(b''.join(parts),parse_float=Decimal)
         except httpx.HTTPError:raise DomainError('ERP_OUTCOME_UNKNOWN','ERP 连接中断或超时；不会自动重复正式操作',502) from None
         except (ValueError,UnicodeError):raise DomainError('ERP_PROTOCOL_ERROR','ERP 响应格式不合法',502) from None
-        if not isinstance(payload,dict) or payload.get('code')!=200:raise DomainError('ERP_BUSINESS_REJECTED','ERP 未接受本次请求，请核对原系统业务条件',409)
+        if not isinstance(payload,dict) or payload.get('code')!=200:
+            if isinstance(payload,dict) and payload.get('code') in {401,403}:
+                raise DomainError('ERP_LOGIN_REQUIRED','ERP 登录已失效，请重新验证本人 ERP 账号后再确认办理',401)
+            raise DomainError('ERP_BUSINESS_REJECTED','ERP 未接受本次请求，请核对原系统业务条件',409)
         return payload
 
     def info(self):return self.request('GET','getInfo')

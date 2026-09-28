@@ -185,6 +185,7 @@ async function loadErpSession(){
  try{
   erpSession.value=await api('/erp-session/status')
   erpNotice.value=''
+  if(!erpUsername.value&&props.me?.username)erpUsername.value=String(props.me.username)
   if(erpSession.value.configured&&!erpSession.value.authenticated)await refreshErpCaptcha()
  }catch(e:any){erpNotice.value=e.message}
 }
@@ -413,7 +414,7 @@ async function clearAvatar(){
       <p class="muted small">{{erpSession.authenticated?'已验证':'尚未验证'}}<template v-if="erpSession.authenticated_at"> · {{shanghai(erpSession.authenticated_at)}}</template></p>
       <form class="erp-session-form" @submit.prevent="verifyErpSession">
        <div class="form-grid compact">
-        <label>ERP 用户名<input v-model.trim="erpUsername" autocomplete="username"/></label>
+        <label>ERP 登录名<input v-model.trim="erpUsername" autocomplete="username" placeholder="xuguili"/></label>
         <label>ERP 密码<input v-model="erpPassword" type="password" autocomplete="current-password"/></label>
        </div>
        <div v-if="erpCaptcha?.captcha_enabled!==false" class="erp-captcha-row">

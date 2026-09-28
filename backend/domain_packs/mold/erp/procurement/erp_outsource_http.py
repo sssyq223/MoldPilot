@@ -8,7 +8,12 @@ from sqlalchemy import select
 
 from domain_packs.mold import models as m
 from domain_packs.mold.config import settings
-from domain_packs.mold.erp_adapter import ERPClient, decrypt
+from domain_packs.mold.erp_adapter import (
+    AUTH_ABORT_CODES,
+    ERPClient,
+    decrypt,
+    discard_unreadable_erp_token,
+)
 from domain_packs.mold.ports.bpm import content_hash
 from domain_packs.mold.ports.errors import DomainError
 
@@ -26,9 +31,17 @@ def call_erp(
     identity = db.get(m.ERPIdentity, user.id)
     if not identity or not identity.token_ciphertext:
         raise DomainError("ERP_LOGIN_REQUIRED", "请先验证本人的 ERP 账号后再确认办理", 401)
-    client = ERPClient(decrypt(identity.token_ciphertext))
     try:
-        kwargs: dict[str, Any] = {"json": body or {}}
+        token = decrypt(identity.token_ciphertext)
+    except DomainError:
+        if discard_unreadable_erp_token(identity):
+            db.commit()
+        raise
+    client = ERPClient(token)
+    try:
+        kwargs: dict[str, Any] = {}
+        if method.upper() != "GET":
+            kwargs["json"] = body or {}
         if params:
             kwargs["params"] = params
         return client.request(method.upper(), path.lstrip("/"), **kwargs)
@@ -36,6 +49,10 @@ def call_erp(
         close = getattr(client, "close", None)
         if close:
             close()
+
+
+def get_erp(db, user, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return call_erp(db, user, "GET", path, params=params)
 
 
 def post_erp(
@@ -106,6 +123,12 @@ def dispatch_erp(
     identity = db.get(m.ERPIdentity, user.id)
     if not identity or not identity.token_ciphertext:
         raise DomainError("ERP_LOGIN_REQUIRED", "请先验证本人的 ERP 账号后再确认办理", 401)
+    try:
+        decrypt(identity.token_ciphertext)
+    except DomainError:
+        if discard_unreadable_erp_token(identity):
+            db.commit()
+        raise
     request_hash = content_hash({
         "method": method.upper(),
         "path": path.lstrip("/"),
@@ -168,6 +191,10 @@ def dispatch_erp(
     try:
         response = call_erp(db, user, method, path, body, params)
     except DomainError as error:
+        if error.code in AUTH_ABORT_CODES:
+            db.delete(operation)
+            db.commit()
+            raise
         operation.state = "UNKNOWN" if error.code == "ERP_OUTCOME_UNKNOWN" else "REJECTED"
         operation.error_code = error.code
         db.commit()

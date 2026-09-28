@@ -11,9 +11,11 @@ ACTION_INTENT_TERMS = (
 OUTSOURCE_FORMAL_ACTION_TERMS = (
     # 采购员
     "我要报价", "填我方报价", "填写我方报价", "填报价", "填写报价", "填价格",
-    "帮我填报价", "帮我填价格",
+    "帮我填报价", "帮我填价格", "报报价", "报个价", "帮我报价",
     "准备填写我方报价", "出确认卡",
-    "发询价", "填成交价", "重选加工商",
+    "发询价", "发送询价", "办理发询价", "办理发送询价",
+    "确认发询价", "确认发送询价", "确认办理发询价", "确认办理发送询价",
+    "填成交价", "重选加工商",
     # 加工商 报价 / 接单
     "我要接单", "帮我接单", "确认接单", "接这单", "我接了", "这单我接了",
     "拒绝接单", "我要拒单", "拒这单",
@@ -43,7 +45,7 @@ OUTSOURCE_STATUS_PHRASES = (
 )
 OUTSOURCE_NEGATED_PHRASES = (
     *OUTSOURCE_STATUS_PHRASES,
-    "不要报价", "不报价", "不要发询价", "不发询价",
+    "不要报价", "不报价", "不要发询价", "不发询价", "不要发送询价", "不发送询价",
     "不要填价格", "不填价格", "不要填报价", "不填报价",
     "不要填我方报价", "不填我方报价",
     "不要确认接单", "不确认接单", "不要接单", "不接单",
@@ -321,6 +323,41 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
     extra = set()
     names = set(all_tool_names or ())
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            QUOTE_TOOL,
+            spoken_quote_arguments,
+        )
+        from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+            MAX_AMOUNT,
+            QUOTE_AMOUNT,
+            is_spoken_buyer_quote,
+        )
+        if QUOTE_TOOL in names and (
+            spoken_quote_arguments(prompt, context_text)
+            or (
+                is_spoken_buyer_quote(prompt)
+                and QUOTE_AMOUNT.search(prompt or "")
+                and MAX_AMOUNT.search(prompt or "")
+            )
+        ):
+            extra.add(QUOTE_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            SEND_TOOL,
+            spoken_send_arguments,
+        )
+        from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+            is_spoken_inquiry_send,
+        )
+        if SEND_TOOL in names and (
+            spoken_send_arguments(prompt, context_text) or is_spoken_inquiry_send(prompt)
+        ):
+            extra.add(SEND_TOOL)
+    except ImportError:
+        pass
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             ACCEPT_TOOL,
             spoken_accept_arguments,
@@ -381,6 +418,18 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
         if arguments:
             return QUOTE_TOOL, arguments
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            SEND_TOOL,
+            spoken_send_arguments,
+        )
+    except ImportError:
+        SEND_TOOL = ""
+        spoken_send_arguments = None
+    if SEND_TOOL in names and spoken_send_arguments:
+        arguments = spoken_send_arguments(prompt, context_text)
+        if arguments:
+            return SEND_TOOL, arguments
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools import (
             SHIP_TOOL,
             spoken_ship_arguments,
@@ -404,3 +453,27 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
     if not arguments:
         return None
     return ACCEPT_TOOL, arguments
+
+
+def spoken_write_from_board(prompt: str, items, active_tool_names):
+    """After a board hit, lock the matching prepare when speech already asked to quote or send."""
+    names = set(active_tool_names or ())
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            QUOTE_TOOL,
+            SEND_TOOL,
+            quote_arguments_from_board,
+            send_arguments_from_board,
+        )
+    except ImportError:
+        return None
+    if QUOTE_TOOL in names:
+        arguments = quote_arguments_from_board(prompt, items)
+        if arguments:
+            return QUOTE_TOOL, arguments
+    if SEND_TOOL not in names:
+        return None
+    arguments = send_arguments_from_board(prompt, items)
+    if not arguments:
+        return None
+    return SEND_TOOL, arguments

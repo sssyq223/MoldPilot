@@ -57,7 +57,7 @@ const boardColumns: ErpDesignColumn[] = [
   { key: 'ceiling', label: '接单上限', fields: ['autoAcceptMaxAmount', 'auto_accept_max_amount', 'ceiling'], width: 100, decimals: 2 },
   { key: 'supplierQuotes', label: '加工商报价', fields: ['supplierQuotes', 'supplier_quotes'], width: 160 },
   { key: 'finalDeal', label: '成交价', fields: ['finalDealAmount', 'final_deal_amount'], width: 100, decimals: 2 },
-  { key: 'pending', label: '待报价加工商', fields: ['pendingQuoteSuppliers', 'pending_quote_suppliers'], width: 160 },
+  { key: 'pending', label: '加工商', fields: ['pendingQuoteSuppliers', 'pending_quote_suppliers', 'supplierName', 'supplier_name'], width: 200 },
 ]
 
 const stepColumns: ErpDesignColumn[] = [

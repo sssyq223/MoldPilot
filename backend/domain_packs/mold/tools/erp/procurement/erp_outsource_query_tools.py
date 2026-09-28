@@ -264,6 +264,8 @@ def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
         }
         if "待接单" in stations:
             summary = (summary + " 本轮 prepare 接单确认卡，并说明可拒单。").strip()
+        elif "待发询价" in stations:
+            summary = (summary + " 用户要发询价时本轮立刻 prepare 发询价确认卡，不要再口头确认下一步。").strip()
         elif "待报价" in stations:
             summary = (summary + " 本轮 prepare 报价确认卡。").strip()
     return {

@@ -492,6 +492,8 @@ def _board_actionable_items(messages):
                     "orderNo": identity[1],
                     "mold": identity[2],
                     "batch": identity[3],
+                    "parts": item.get("parts") or [],
+                    "partDetails": item.get("partDetails") or item.get("part_details") or "",
                 })
             counts = bucket.get("counts")
             if isinstance(counts, dict):
@@ -1798,6 +1800,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 stage = "正在准备接单确认表，请核对订单号、模具号和批次号。"
             elif name == "prepare_erp_outsource_warehouse_ship":
                 stage = "正在准备仓库发料/备料确认表，请核对订单号、模具号和批次号。"
+            elif name == "prepare_erp_outsource_inquiry_send":
+                stage = "正在准备发询价确认表，请核对模具号、批次号和加工商。"
             host_spoken_write_name = name
             host_spoken_write_summary = stage
             # Identity is already locked in speech; the prepare tool looks up
@@ -2097,6 +2101,39 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 activate_named_tools(station_write_names())
                 save()
             pending, pending_index = [], 0
+            if (not pending
+                    and not host_spoken_write_proposal
+                    and not _messages_have_proposal(messages)
+                    and callable(getattr(_policy, "spoken_write_from_board", None))):
+                board_write = _policy.spoken_write_from_board(
+                    current_prompt,
+                    _board_actionable_items(messages),
+                    active_tool_names,
+                )
+                if board_write:
+                    name, arguments = board_write
+                    tool = all_tools.get(name)
+                    if name in active_tool_names and isinstance(arguments, dict) and tool:
+                        call_id = "host_auto_" + hashlib.sha256(
+                            (name + "\n" + json.dumps(arguments, ensure_ascii=False, sort_keys=True)).encode("utf-8")
+                        ).hexdigest()[:20]
+                        pending = [{
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+                        }]
+                        pending_index = 0
+                        stage = "正在准备发询价确认表，请核对模具号、批次号和加工商。"
+                        if name == "prepare_erp_outsource_buyer_quote":
+                            stage = "正在准备报价确认表，请核对模具号、订单号和金额。"
+                        host_spoken_write_name = name
+                        host_spoken_write_summary = stage
+                        required_evidence_tools.clear()
+                        messages.append({
+                            "role": "assistant",
+                            "content": stage,
+                            "tool_calls": pending,
+                        })
             if host_spoken_write_proposal:
                 result = {
                     "response_kind": "AWAITING_APPROVAL",

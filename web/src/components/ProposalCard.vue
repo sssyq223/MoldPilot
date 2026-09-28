@@ -6,9 +6,50 @@ import {fieldName,valueText} from '../domain-packs/mold/uiText'
 type ProposalDetailLink={target:string;receipt_field:string;label:string}
 type ProposalPresentation={action_prefixes?:string[];action_suffixes?:string[];value_names?:Record<string,string>;detail_links?:Record<string,ProposalDetailLink>}
 const proposalFieldNames:Record<string,string>={payments:'付款阶段',stage_id:'节点标识',reservation:'付款占用',original_application:'原申请材料'}
-const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string;decision?:string;presentation?:ProposalPresentation}>(),{placement:'message',productName:'Agent',decision:'',presentation:()=>({})})
+const props=withDefaults(defineProps<{stepId:string;proposal:any;placement?:'message'|'composer';productName?:string;decision?:string;presentation?:ProposalPresentation;workbenchUsername?:string}>(),{placement:'message',productName:'Agent',decision:'',presentation:()=>({}),workbenchUsername:''})
 const emit=defineEmits<{open:[link:{target:string;id:string}];status:[confirmed:boolean];confirmed:[];dismissed:[]}>()
 const intent=ref<any>(null),receipt=ref<any>(null),showDetails=ref(false),busy=ref(false),error=ref('')
+const erpSession=ref<any>({configured:false,authenticated:false})
+const erpUsername=ref(''),erpPassword=ref(''),erpCode=ref(''),erpCaptcha=ref<any>(null),erpBusy=ref(false),erpNotice=ref('')
+const needsErpVerify=computed(()=>Boolean(erpSession.value.configured)&&!erpSession.value.authenticated)
+function erpLoginRequiredText(message:string){
+  return /验证本人的 ERP|连接凭据已失效|请重新验证/.test(message)
+}
+function explainError(message:string, stage:'review'|'confirm'|'other'='other'){
+  if(erpLoginRequiredText(message))return '查询看板不用登录 ERP。报价、接单等写入要先验证本人 ERP 账号，验证一次后即可确认。'
+  if(stage==='confirm')return message||'ERP 没有接受本次发询价，请核对账号后再确认执行。'
+  return message
+}
+function erpCaptchaSrc(img:string){
+  if(!img)return ''
+  return img.startsWith('data:')?img:'data:image/jpeg;base64,'+img
+}
+async function refreshErpCaptcha(){
+  if(!erpSession.value.configured)return
+  try{erpCaptcha.value=await api('/erp-session/captcha');erpCode.value=''}catch(e:any){erpNotice.value=e.message}
+}
+async function refreshErpStatus(){
+  try{
+    erpSession.value=await api('/erp-session/status')
+    if(!erpUsername.value&&props.workbenchUsername)erpUsername.value=props.workbenchUsername
+    if(needsErpVerify.value)await refreshErpCaptcha()
+  }catch(e:any){erpNotice.value=e.message}
+}
+async function verifyErpSession(){
+  erpBusy.value=true;erpNotice.value=''
+  try{
+    erpSession.value=await post('/erp-session/login',{
+      username:erpUsername.value,password:erpPassword.value,
+      code:erpCode.value||null,uuid:erpCaptcha.value?.uuid||null,
+    })
+    erpPassword.value='';erpCode.value='';erpCaptcha.value=null
+    error.value=''
+    erpNotice.value='ERP 账号已验证，可以点击查看并批准。'
+  }catch(e:any){
+    erpNotice.value=e.message
+    if(erpSession.value.configured)await refreshErpCaptcha()
+  }finally{erpBusy.value=false}
+}
 const policy=computed(()=>intent.value?.confirmation_policy||props.proposal.confirmation_policy)
 const actionTitle=computed(()=>{
   let title=String(props.proposal.display?.操作||props.proposal.action||'业务操作')
@@ -47,12 +88,37 @@ function displayValue(key:string,value:any){
 }
 const base='/proposals/'
 const approval=computed(()=>Boolean(policy.value?.requires_approval??props.proposal.requires_approval))
-onMounted(async()=>{try{receipt.value=(await api(base+props.stepId)).receipt;emit('status',Boolean(receipt.value))}catch(e:any){error.value=e.message;emit('status',false)}})
+onMounted(async()=>{
+  try{receipt.value=(await api(base+props.stepId)).receipt;emit('status',Boolean(receipt.value))}
+  catch{emit('status',false)}
+  await refreshErpStatus()
+})
 async function review(){
   if(resolved.value){showDetails.value=true;return}
-  busy.value=true;error.value='';try{intent.value=await post(base+props.stepId+'/intent')}catch(e:any){error.value=e.message}finally{busy.value=false}
+  if(needsErpVerify.value){
+    error.value=explainError('请先验证本人的 ERP 账号后再确认办理')
+    await refreshErpStatus()
+    return
+  }
+  busy.value=true;error.value=''
+  try{
+    intent.value=await post(base+props.stepId+'/intent')
+  }catch(e:any){
+    error.value=explainError(e.message,'review')
+    if(props.proposal?.display)showDetails.value=true
+  }finally{busy.value=false}
 }
-async function confirm(){busy.value=true;error.value='';try{receipt.value=await post('/human-actions/'+intent.value.id+'/confirm',{challenge:intent.value.challenge});intent.value=null;emit('status',true);emit('confirmed')}catch(e:any){error.value=e.message;if(e.status===403||e.status===409)intent.value=null}finally{busy.value=false}}
+async function confirm(){
+  busy.value=true;error.value=''
+  try{
+    receipt.value=await post('/human-actions/'+intent.value.id+'/confirm',{challenge:intent.value.challenge})
+    intent.value=null;emit('status',true);emit('confirmed')
+  }catch(e:any){
+    error.value=explainError(e.message,'confirm')
+    if(e.status===401)await refreshErpStatus()
+    if(e.status===403||e.status===409)intent.value=null
+  }finally{busy.value=false}
+}
 async function dismiss(){busy.value=true;error.value='';try{await post(base+props.stepId+'/dismiss');emit('status',true);emit('dismissed')}catch(e:any){error.value=e.message}finally{busy.value=false}}
 </script>
 <template>
@@ -62,9 +128,25 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
       <strong>允许 {{productName}} 执行“{{actionTitle}}”吗？</strong>
       <small>操作前会展示完整字段供你核对，批准后才会生成正式回执。</small>
     </div>
+    <form v-if="needsErpVerify" class="erp-session-form proposal-erp-form" @submit.prevent="verifyErpSession">
+      <p class="muted">工作台账号只决定你能看哪些待办。写入 ERP 必须再用 ERP 自己的登录名和密码（登录名一般是 xuguili，不是姓名徐桂利）。右边算式请填得数，例如 8×7 填 56。</p>
+      <div class="form-grid compact">
+        <label>ERP 登录名<input v-model.trim="erpUsername" autocomplete="username" placeholder="xuguili"/></label>
+        <label>ERP 密码<input v-model="erpPassword" type="password" autocomplete="current-password"/></label>
+      </div>
+      <div v-if="erpCaptcha?.captcha_enabled!==false" class="erp-captcha-row">
+        <label>验证码（得数）<input v-model.trim="erpCode" maxlength="16" autocomplete="off"/></label>
+        <button type="button" class="erp-captcha-button" :disabled="erpBusy" @click="refreshErpCaptcha">
+          <img v-if="erpCaptcha?.img" :src="erpCaptchaSrc(erpCaptcha.img)" alt="ERP 验证码"/>
+          <span v-else>获取验证码</span>
+        </button>
+      </div>
+      <button type="submit" :disabled="erpBusy||!erpUsername||!erpPassword">{{erpBusy?'正在验证…':'验证 ERP'}}</button>
+      <p v-if="erpNotice" class="muted">{{erpNotice}}</p>
+    </form>
     <div class="composer-approval-actions">
       <button type="button" :disabled="busy" @click="dismiss">暂不执行</button>
-      <button type="button" class="primary" :disabled="busy" @click="review">{{busy?'正在处理…':'查看并批准'}}</button>
+      <button type="button" class="primary" :disabled="busy||needsErpVerify" @click="review">{{busy?'正在处理…':'查看并批准'}}</button>
     </div>
     <p v-if="error" class="proposal-error" role="alert">{{error}}</p>
   </section>
@@ -94,4 +176,4 @@ async function dismiss(){busy.value=true;error.value='';try{await post(base+prop
     <div v-else class="actions"><button :disabled="busy" @click="intent=null">暂不执行</button><button class="primary" :disabled="busy" @click="confirm">确认执行</button></div>
   </section></div></Teleport>
 </template>
-<style scoped>.proposal-card{display:flex;flex-direction:column;gap:6px}.composer-approval{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 18px;width:min(820px,calc(100% - 48px));margin:8px auto 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--border) 82%,transparent);border-radius:18px;background:var(--surface);box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent)}.composer-approval-label{grid-column:1/-1;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.composer-approval-copy{min-width:0;display:grid;gap:4px}.composer-approval-copy strong{font-size:14px;line-height:1.5;color:var(--text)}.composer-approval-copy small{font-size:12px;line-height:1.5;color:var(--muted)}.composer-approval-actions{display:flex;align-items:end;justify-content:flex-end;gap:8px}.composer-approval-actions button{height:34px;padding:0 13px;border-radius:9px;font-size:12px;white-space:nowrap}.composer-approval>.proposal-error{grid-column:1/-1}.proposal-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 38%,transparent)}.proposal-brief>span{min-width:0;display:grid;gap:2px}.proposal-brief strong{font-size:14px;font-weight:500;color:var(--text);line-height:1.45}.proposal-brief small{font-size:12px;color:var(--muted);line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.proposal-brief button{flex-shrink:0;height:30px;padding:0 11px;border-radius:8px;font-size:12px}.proposal-error{margin:0;color:var(--error,#b4534b);font-size:12px}.confirmation-policy{border:1px solid color-mix(in srgb,var(--border) 85%,var(--accent));border-radius:8px;background:color-mix(in srgb,var(--surface) 86%,var(--accent) 14%);padding:10px 12px;display:grid;gap:4px}.confirmation-policy strong{font-size:13px}.confirmation-policy small{color:var(--muted);line-height:1.5}.confirmation-policy.delegated{border-color:color-mix(in srgb,var(--success,#6fcf97) 45%,var(--border));background:color-mix(in srgb,var(--surface) 82%,var(--success,#6fcf97) 18%)}.modal-policy{margin:12px 0}.proposal-modal{width:500px;max-height:calc(100vh - 32px);overflow:auto;scrollbar-width:none;-ms-overflow-style:none}.proposal-modal::-webkit-scrollbar{display:none}.proposal-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}.proposal-modal-head h2{margin:0}.proposal-modal-head .icon-button{flex-shrink:0;margin:-4px -4px 0 0}dl{margin:0;display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px 16px}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:620px){.composer-approval{width:calc(100% - 20px);grid-template-columns:1fr}.composer-approval-actions{justify-content:flex-end}.proposal-brief{align-items:flex-start;flex-direction:column}.proposal-brief small{white-space:normal}.proposal-modal{width:calc(100vw - 24px)}dl{grid-template-columns:82px minmax(0,1fr)}}</style>
+<style scoped>.proposal-card{display:flex;flex-direction:column;gap:6px}.composer-approval{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 18px;width:min(820px,calc(100% - 48px));margin:8px auto 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--border) 82%,transparent);border-radius:18px;background:var(--surface);box-shadow:0 18px 50px color-mix(in srgb,var(--shadow) 16%,transparent)}.composer-approval-label{grid-column:1/-1;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.composer-approval-copy{min-width:0;display:grid;gap:4px}.composer-approval-copy strong{font-size:14px;line-height:1.5;color:var(--text)}.composer-approval-copy small{font-size:12px;line-height:1.5;color:var(--muted)}.composer-approval-actions{display:flex;align-items:end;justify-content:flex-end;gap:8px}.composer-approval-actions button{height:34px;padding:0 13px;border-radius:9px;font-size:12px;white-space:nowrap}.composer-approval>.proposal-error,.composer-approval>.proposal-erp-form{grid-column:1/-1}.proposal-erp-form{margin:0;padding-top:4px}.proposal-erp-form>.muted{margin:0 0 8px}.proposal-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:10px;background:color-mix(in srgb,var(--surface) 38%,transparent)}.proposal-brief>span{min-width:0;display:grid;gap:2px}.proposal-brief strong{font-size:14px;font-weight:500;color:var(--text);line-height:1.45}.proposal-brief small{font-size:12px;color:var(--muted);line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.proposal-brief button{flex-shrink:0;height:30px;padding:0 11px;border-radius:8px;font-size:12px}.proposal-error{margin:0;color:var(--error,#b4534b);font-size:12px}.confirmation-policy{border:1px solid color-mix(in srgb,var(--border) 85%,var(--accent));border-radius:8px;background:color-mix(in srgb,var(--surface) 86%,var(--accent) 14%);padding:10px 12px;display:grid;gap:4px}.confirmation-policy strong{font-size:13px}.confirmation-policy small{color:var(--muted);line-height:1.5}.confirmation-policy.delegated{border-color:color-mix(in srgb,var(--success,#6fcf97) 45%,var(--border));background:color-mix(in srgb,var(--surface) 82%,var(--success,#6fcf97) 18%)}.modal-policy{margin:12px 0}.proposal-modal{width:500px;max-height:calc(100vh - 32px);overflow:auto;scrollbar-width:none;-ms-overflow-style:none}.proposal-modal::-webkit-scrollbar{display:none}.proposal-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}.proposal-modal-head h2{margin:0}.proposal-modal-head .icon-button{flex-shrink:0;margin:-4px -4px 0 0}dl{margin:0;display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px 16px}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:620px){.composer-approval{width:calc(100% - 20px);grid-template-columns:1fr}.composer-approval-actions{justify-content:flex-end}.proposal-brief{align-items:flex-start;flex-direction:column}.proposal-brief small{white-space:normal}.proposal-modal{width:calc(100vw - 24px)}dl{grid-template-columns:82px minmax(0,1fr)}}</style>

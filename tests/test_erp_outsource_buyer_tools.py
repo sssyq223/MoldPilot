@@ -113,6 +113,22 @@ def test_spoken_quote_requires_mold_and_order_or_batch_part(monkeypatch):
         "就第1行零件 PH-01 这一张，准备填写我方报价 300、上限 380，出确认卡",
     ) is None
     assert buyer_todo.parse_spoken_buyer_quote("待采购填报价有几个") is None
+    assert buyer_todo.is_spoken_buyer_quote(
+        "M260063-P4 有零件是B1-01的 这笔订单的报报价：总价150000上限300000",
+    )
+    named = buyer_todo.parse_spoken_buyer_quote(
+        "M260063-P4 B1-01下托板（S-Z 1040×1290×30）；这笔订单的报报价：总价150000上限300000",
+    )
+    assert named["mold"] == "M260063"
+    assert named["batch"] == "M260063-P4"
+    assert named["part"] == "B1-01"
+    assert named["our_quote_amount"] == 150000
+    assert named["auto_accept_max_amount"] == 300000
+    part_spoken = buyer_todo.parse_spoken_buyer_quote(
+        "M260063-P4 有零件是B1-01的 这笔订单的报报价：总价150000上限300000",
+    )
+    assert part_spoken["mold"] == "M260063"
+    assert part_spoken["part"] == "B1-01"
 
 
 def test_spoken_quote_locks_first_board_row_without_repeating_part(monkeypatch):
@@ -139,10 +155,65 @@ def test_spoken_quote_locks_first_board_row_without_repeating_part(monkeypatch):
     assert locked["part"] == "PH-01"
 
 
+def test_spoken_quote_locks_first_pending_row_from_board_speech(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "moldNo": "M260063-P4",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+            "orderNo": "",
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+        },
+        {
+            "parts": [{"partNo": "PH-01"}],
+            "partDetails": "PH-01 上夹板",
+            "moldNo": "M260063-P1",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "orderNo": "",
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+        },
+    ])
+    locked = buyer_todo.parse_spoken_buyer_quote(
+        "把待排列第一的这个订单报报价：总价150000上限300000",
+    )
+    assert locked["mold"] == "M260063"
+    assert locked["batch"] == "M260063-P4"
+    assert locked["part"] == "B1-01"
+    assert locked["our_quote_amount"] == 150000
+    assert locked["auto_accept_max_amount"] == 300000
+    from_board = buyer_todo.quote_arguments_from_board(
+        "把待排列第一的这个订单报报价：总价150000上限300000",
+        [
+            {
+                "station": "待采购填报价",
+                "mold": "M260063",
+                "batch": "M260063-P4",
+                "parts": [{"partNo": "B1-01"}],
+                "partDetails": "B1-01 下托板",
+            },
+            {
+                "station": "待采购填报价",
+                "mold": "M260063",
+                "batch": "M260063-P1",
+                "parts": [{"partNo": "PH-01"}],
+            },
+        ],
+    )
+    assert from_board["batch"] == "M260063-P4"
+    assert from_board["part"] == "B1-01"
+
+
 def test_normalize_keeps_hyphenated_part_codes():
     assert buyer_todo.normalize_part_token("B1-01 下托板") == "B1-01"
     assert buyer_todo.spoken_part_token("待办第1行 B1-01 下托板") == "B1-01"
     assert buyer_todo.spoken_part_token("模具 M260063-P1 零件 PH-01") == "PH-01"
+    assert buyer_todo.spoken_part_token("M260063-P4 B1-01下托板") == "B1-01"
+    assert buyer_todo.spoken_part_token("有零件是B1-01的") == "B1-01"
 
 
 def test_spoken_quote_row_uses_full_board_batch(monkeypatch):
@@ -359,3 +430,399 @@ def test_buyer_inquiry_send_uses_supplier_names(monkeypatch):
     assert result["proposal"]["kind"] == "erp_outsource_inquiry_send"
     assert result["proposal"]["display"]["加工商"] == "铂锐"
     assert "supplier_ids" not in result["proposal"]["input"]
+    assert result["proposal"]["resolved_supplier_ids"] == [11]
+
+
+def test_buyer_inquiry_send_uses_matched_list_when_user_does_not_name_supplier(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
+        "inquiryId": 9,
+        "station": "inquiry_send",
+        "stationLabel": "待发询价",
+        "outsourceType": "part",
+        "outsourceTypeLabel": "零件委外",
+        "moldNo": "M260063-P5",
+        "partDetails": "B1-01 下托板",
+        "invitations": [{
+            "supplierId": 22,
+            "supplierCode": "HX001",
+            "supplierName": "青岛和兴金属制品有限公司",
+        }],
+    })
+    result = erp_outsource_buyer_tools.execute_tool(None, Admin(), erp_outsource_buyer_tools.SEND_TOOL, {
+        "batch": "M260063-P5",
+    })
+    assert result["proposal"]["display"]["加工商"] == "青岛和兴金属制品有限公司"
+    assert result["proposal"]["input"].get("suppliers") == []
+    assert result["proposal"]["resolved_supplier_ids"] == [22]
+
+
+def test_attach_match_candidates_uses_erp_match_when_invitations_empty(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "fetch_match_candidates", lambda project_id: [{
+        "supplierId": 22,
+        "supplierCode": "HX001",
+        "supplierName": "青岛和兴金属制品有限公司",
+        "status": "matched",
+    }] if project_id == 4367 else [])
+    item = {
+        "station": "inquiry_send",
+        "projectId": 4367,
+        "invitations": [],
+    }
+    attached = buyer_todo.attach_match_candidates(item)
+    assert attached["pendingQuoteSuppliers"] == "青岛和兴金属制品有限公司"
+    ids, labels = buyer_todo.resolve_suppliers(attached, None)
+    assert ids == [22]
+    assert labels == ["青岛和兴金属制品有限公司"]
+
+
+def test_invitations_from_match_payload_reads_group_a():
+    invitations = buyer_todo.invitations_from_match_payload({
+        "data": {
+            "groups": {
+                "A": [{
+                    "supplier_id": 22,
+                    "supplier_name": "青岛和兴金属制品有限公司",
+                    "supplier_code": "HX001",
+                }],
+            },
+        },
+    })
+    assert invitations == [{
+        "supplierId": 22,
+        "supplierCode": "HX001",
+        "supplierName": "青岛和兴金属制品有限公司",
+        "status": "matched",
+    }]
+
+
+def test_spoken_inquiry_send_locks_batch_without_inventing_supplier(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {"station": "inquiry_send", "moldFamily": "M260063", "moldBatch": "M260063-P1"},
+        {"station": "inquiry_send", "moldFamily": "M260063", "moldBatch": "M260063-P5"},
+    ])
+    assert buyer_todo.parse_spoken_inquiry_send("确认办理发送询价吧") is None
+    parsed = buyer_todo.parse_spoken_inquiry_send(
+        "确认办理发送询价吧",
+        "已经查到待发询价 M260063 M260063-P5",
+    )
+    assert parsed == {"mold": "M260063", "batch": "M260063-P5"}
+    from_board = buyer_todo.send_arguments_from_board("确认办理发送询价吧", [
+        {"station": "待采购填报价", "mold": "M260063", "batch": "M260063-P1"},
+        {"station": "待发询价", "mold": "M260063", "batch": "M260063-P5"},
+        {"station": "待发询价"},
+    ])
+    assert from_board == {"mold": "M260063", "batch": "M260063-P5"}
+
+
+def test_visible_board_row_locks_send_and_quote_separately(monkeypatch):
+    rows = [
+        {
+            "inquiryId": 160,
+            "station": "inquiry_send",
+            "stationLabel": "待发询价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+            "moldNo": "M260063-P4",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板（S-Z 1040×1290×30）",
+            "orderNo": "",
+        },
+        {
+            "inquiryId": 11,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "moldNo": "M260063-P1",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板（S-Z 850×1200×30）",
+            "orderNo": "",
+        },
+        {
+            "inquiryId": 12,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+            "moldNo": "M260063-P4",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板（S-Z-WC 1040×1290×30）",
+            "orderNo": "",
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    send = buyer_todo.parse_spoken_inquiry_send("第一行的订单给加工商发送询价吧")
+    assert send["batch"] == "M260063-P4"
+    assert send["board_row"] == 1
+    quote = buyer_todo.parse_spoken_buyer_quote("第二行订单填写报价总价150000上限200000")
+    assert quote["batch"] == "M260063-P1"
+    assert quote["our_quote_amount"] == 150000
+    assert quote["auto_accept_max_amount"] == 200000
+    assert quote["board_row"] == 2
+    board_send = buyer_todo.send_arguments_from_board("第一行的订单给加工商发送询价吧", rows)
+    assert board_send["batch"] == "M260063-P4"
+    assert board_send["board_row"] == 1
+    board_quote = buyer_todo.quote_arguments_from_board("第二行订单填写报价总价150000上限200000", rows)
+    assert board_quote["batch"] == "M260063-P1"
+    assert board_quote["board_row"] == 2
+
+
+def test_spoken_inquiry_send_locks_first_pending_row(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {
+            "station": "inquiry_send",
+            "stationLabel": "待发询价",
+            "moldNo": "M260063-P5",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P5",
+            "orderNo": "",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+        },
+    ])
+    locked = buyer_todo.parse_spoken_inquiry_send("第一行发送询价")
+    assert locked["mold"] == "M260063"
+    assert locked["batch"] == "M260063-P5"
+    assert locked["part"] == "B1-01"
+    assert locked["board_row"] == 1
+    assert buyer_todo.parse_spoken_inquiry_send("发送询价") is None
+    from_board = buyer_todo.send_arguments_from_board("第一行发送询价", [
+        {"station": "待采购填报价", "mold": "M260063", "batch": "M260063-P4"},
+        {"station": "待发询价", "mold": "M260063", "batch": "M260063-P5"},
+    ])
+    assert from_board["mold"] == "M260063"
+    assert from_board["batch"] == "M260063-P5"
+    assert from_board["board_row"] == 1
+    named = buyer_todo.parse_spoken_inquiry_send(
+        "进度是待发询价的这个订单发送询价吧",
+        "ERP 委外待办 M260063 · M260063-P4 共 20 条",
+    )
+    assert named["batch"] == "M260063-P5"
+    assert named["part"] == "B1-01"
+    this_order = buyer_todo.parse_spoken_inquiry_send(
+        "这个订单发送询价",
+        "已经查到待采购填报价 M260063 M260063-P4",
+    )
+    assert this_order["batch"] == "M260063-P5"
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
+        {"station": "inquiry_send", "moldFamily": "M260063", "moldBatch": "M260063-P4"},
+        {"station": "inquiry_send", "moldFamily": "M260063", "moldBatch": "M260063-P5"},
+    ])
+    assert buyer_todo.parse_spoken_inquiry_send(
+        "进度是待发询价的这个订单发送询价吧",
+        "已经查到待发询价 M260063 M260063-P4",
+    ) is None
+
+
+def test_send_identity_uses_station_not_same_part_on_other_tabs(monkeypatch):
+    send_item = {
+        "inquiryId": 160,
+        "station": "inquiry_send",
+        "stationLabel": "待发询价",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P4",
+        "moldNo": "M260063-P4",
+        "parts": [{"partNo": "B1-01"}],
+        "partDetails": "B1-01 下托板（S-Z 1040×1290×30）",
+    }
+    quote_sz = {
+        **send_item,
+        "inquiryId": 11,
+        "station": "buyer_quote",
+        "stationLabel": "待采购填报价",
+        "partDetails": "B1-01 下托板（S-Z 1040×1290×30）",
+    }
+    quote_wc = {
+        **quote_sz,
+        "inquiryId": 12,
+        "partDetails": "B1-01 下托板（S-Z-WC 1040×1290×30）",
+    }
+
+    def fake_query(parsed):
+        if parsed.get("station") == "inquiry_send":
+            return [send_item]
+        return [send_item, quote_sz, quote_wc]
+
+    monkeypatch.setattr(buyer_todo, "query_items", fake_query)
+    monkeypatch.setattr(buyer_todo, "_scan_items", lambda mold=None: [send_item, quote_sz, quote_wc])
+    hit = buyer_todo.find_item_by_identity(
+        mold="M260063",
+        batch="M260063-P4",
+        part="B1-01",
+        require_inquiry=True,
+        station="inquiry_send",
+    )
+    assert hit["inquiryId"] == 160
+    leftover = buyer_todo.find_item_by_identity(
+        mold="M260063",
+        batch="M260063-P1",
+        require_inquiry=True,
+        station="inquiry_send",
+    )
+    assert leftover["inquiryId"] == 160
+    try:
+        buyer_todo.find_item_by_identity(mold="M260063", batch="M260063-P4", part="B1-01")
+    except DomainError as error:
+        assert error.code == "AMBIGUOUS"
+        assert error.message.count("B1-01") >= 1
+    else:
+        raise AssertionError("expected AMBIGUOUS across stations")
+
+
+def test_send_lookup_ignores_same_batch_fill_quote_rows(monkeypatch):
+    send_item = {
+        "inquiryId": 160,
+        "station": "inquiry_send",
+        "stationLabel": "待发询价",
+        "outsourceType": "part",
+        "outsourceTypeLabel": "零件委外",
+        "moldNo": "M260063-P5",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P5",
+        "orderNo": "",
+        "parts": [{"partNo": "B1-01"}],
+        "partDetails": "B1-01 下托板",
+        "invitations": [{
+            "supplierId": 22,
+            "supplierCode": "HX001",
+            "supplierName": "青岛和兴金属制品有限公司",
+        }],
+    }
+    quote_item = {
+        **send_item,
+        "inquiryId": 11,
+        "station": "buyer_quote",
+        "stationLabel": "待采购填报价",
+        "moldNo": "M260063-P4",
+        "moldBatch": "M260063-P4",
+        "invitations": [],
+    }
+
+    def fake_query(parsed):
+        if parsed.get("station") == "inquiry_send":
+            return [send_item]
+        return [quote_item, {**quote_item, "inquiryId": 12}, send_item]
+
+    monkeypatch.setattr(buyer_todo, "query_items", fake_query)
+    monkeypatch.setattr(buyer_todo, "_scan_items", lambda mold=None: [quote_item, {**quote_item, "inquiryId": 12}, send_item])
+    monkeypatch.setattr(buyer_todo, "attach_match_candidates", lambda item: item)
+    data = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.SEND_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P5",
+        "part": "B1-01",
+        "board_row": 1,
+    })
+    item, display = erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.SEND_TOOL, data)
+    assert item["inquiryId"] == 160
+    assert display["当前分站"] == "待发询价"
+    stale = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.SEND_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P4",
+        "part": "B1-01",
+    })
+    stale_item, _display = erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.SEND_TOOL, stale)
+    assert stale_item["inquiryId"] == 160
+
+
+def test_buyer_inquiry_send_rejects_invented_supplier_and_lists_matched():
+    item = {
+        "invitations": [{
+            "supplierId": 22,
+            "supplierCode": "HX001",
+            "supplierName": "青岛和兴金属制品有限公司",
+        }],
+    }
+    ids, labels = buyer_todo.resolve_suppliers(item, ["和兴"])
+    assert ids == [22]
+    assert labels == ["青岛和兴金属制品有限公司"]
+    try:
+        buyer_todo.resolve_suppliers(item, ["华兴机械"])
+    except DomainError as error:
+        assert error.code == "NOT_FOUND"
+        assert "华兴机械" in error.message
+        assert "青岛和兴金属制品有限公司" in error.message
+    else:
+        raise AssertionError("expected NOT_FOUND")
+
+
+def test_send_intent_keeps_prepared_card_when_live_match_http_fails(monkeypatch):
+    item = {
+        "inquiryId": 9,
+        "station": "inquiry_send",
+        "stationLabel": "待发询价",
+        "outsourceType": "part",
+        "outsourceTypeLabel": "零件委外",
+        "moldNo": "M260063-P5",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P5",
+        "projectId": 4367,
+        "partDetails": "B1-01 下托板",
+        "invitations": [{
+            "supplierId": 22,
+            "supplierCode": "HX001",
+            "supplierName": "青岛和兴金属制品有限公司",
+        }],
+    }
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: item)
+    data = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.SEND_TOOL, {"batch": "M260063-P5"})
+    _, display = erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.SEND_TOOL, data)
+    stored = {
+        "kind": "erp_outsource_inquiry_send",
+        "input": {"batch": "M260063-P5"},
+        "display": display,
+        "resolved_supplier_ids": [22],
+    }
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {**item, "invitations": []})
+    monkeypatch.setattr(buyer_todo, "attach_match_candidates", lambda row: row)
+    monkeypatch.setattr(erp_outsource_buyer_tools, "source", lambda db, user, step_id: stored)
+    from domain_packs.mold.ports.bpm import content_hash
+
+    proposal, key, parsed = erp_outsource_buyer_tools.validate_intent(None, Admin(), {
+        "step_id": "step-1",
+        "proposal_hash": content_hash(stored),
+    })
+    assert key == erp_outsource_buyer_tools.SEND_TOOL
+    assert proposal["display"]["加工商"] == "青岛和兴金属制品有限公司"
+    assert parsed.batch == "M260063-P5"
+
+
+def test_send_confirm_uses_locked_supplier_ids_when_live_match_empty(monkeypatch):
+    item = {
+        "inquiryId": 160,
+        "station": "inquiry_send",
+        "stationLabel": "待发询价",
+        "outsourceType": "part",
+        "outsourceTypeLabel": "零件委外",
+        "moldNo": "M260063-P5",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P5",
+        "orderNo": "",
+        "partDetails": "B1-01 下托板",
+        "invitations": [],
+    }
+    stored = {
+        "kind": "erp_outsource_inquiry_send",
+        "input": {"batch": "M260063-P5"},
+        "display": {"操作": "向选定加工商发出询价", "加工商": "青岛和兴金属制品有限公司"},
+        "resolved_supplier_ids": [921159],
+    }
+    captured = {}
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: item)
+    monkeypatch.setattr(buyer_todo, "attach_match_candidates", lambda row: row)
+    monkeypatch.setattr(erp_outsource_buyer_tools, "source", lambda db, user, step_id: stored)
+    monkeypatch.setattr(
+        erp_outsource_buyer_tools,
+        "post_erp",
+        lambda *args, **kwargs: captured.update({"path": args[2], "body": args[3]}) or {"code": 200},
+    )
+    from domain_packs.mold.ports.bpm import content_hash
+
+    result = erp_outsource_buyer_tools.confirm(None, Admin(), {
+        "step_id": "step-1",
+        "proposal_hash": content_hash(stored),
+        "_intent_id": "intent-1",
+    })
+    assert result["status"] == "CONFIRMED"
+    assert result["action"] == "inquiry_send"
+    assert captured["path"] == "entrust/inquiry/160/send"
+    assert captured["body"] == {"supplier_ids": [921159]}

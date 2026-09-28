@@ -171,6 +171,30 @@ def test_buyer_todo_item_hides_project_and_shows_pending_quoters():
     assert item["ourQuoteAmount"] == 320
 
 
+def test_inquiry_send_item_shows_matched_suppliers_even_without_pending_status():
+    item = buyer_todo.item_from_row(
+        {
+            "outsource_type": "part",
+            "mold_no": "M260063-P5",
+            "our_quote_amount": 200000,
+            "auto_accept_max_amount": 300000,
+            "reference_total": 22165.89,
+            "final_deal_amount": None,
+            "parts": [{"partNo": "B1-01", "partName": "下托板", "qty": 1}],
+            "invitations": [{
+                "supplierName": "青岛和兴金属制品有限公司",
+                "supplierCode": "HX001",
+                "status": "matched",
+            }],
+        },
+        "inquiry_send",
+    )
+    assert item["stationLabel"] == "待发询价"
+    assert item["pendingQuoteSuppliers"] == "青岛和兴金属制品有限公司"
+    presented = buyer_todo.present({"station": "inquiry_send"}, [item])
+    assert "青岛和兴金属制品有限公司" in presented["summary"]
+
+
 def test_buyer_todo_classify_keeps_operation_on_inquiry_path():
     assert buyer_todo.classify({
         "awarded_stage": "",

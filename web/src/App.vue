@@ -1019,7 +1019,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
             <div v-if="runResolvedProposals(run).length" class="resolved-proposals" aria-label="已处理确认卡">
               <div v-for="item in runResolvedProposals(run)" :key="'resolved:'+item.id" class="resolved-proposal">
-                <ProposalCard placement="message" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="item.id" :proposal="item.proposal" :decision="item.proposal_decision||'approved'" @status="confirmed=>setProposalConfirmed(item.id,confirmed)" @open="openWorkspaceTarget"/>
+                <ProposalCard placement="message" :product-name="product.product_name" :presentation="product.proposal_presentation" :workbench-username="me?.username" :step-id="item.id" :proposal="item.proposal" :decision="item.proposal_decision||'approved'" @status="confirmed=>setProposalConfirmed(item.id,confirmed)" @open="openWorkspaceTarget"/>
                 <div v-if="proposalResolutionFor(run,item.id)" class="agent-tool-row proposal-resolution-row">
                   <span class="agent-tool-icon"><Check :size="13"/></span>
                   <span class="proposal-resolution-copy">{{proposalResolutionFor(run,item.id).decision==='approved'?'本人已确认':'本人已取消'}} · {{proposalResolutionFor(run,item.id).receipt?.status==='CONFIRMED'?'执行回执已确认':(proposalResolutionFor(run,item.id).receipt?.status||'决定已记录')}}</span>
@@ -1075,7 +1075,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
     </article>
   </div>
-  <ProposalCard v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="openWorkspaceTarget"/>
+  <ProposalCard v-if="pendingApprovalContext" placement="composer" :product-name="product.product_name" :presentation="product.proposal_presentation" :workbench-username="me?.username" :step-id="pendingApprovalContext.item.id" :proposal="pendingApprovalContext.item.proposal" @confirmed="handleCurrentProposalDecision(false)" @dismissed="handleCurrentProposalDecision(true)" @open="openWorkspaceTarget"/>
   <form v-else class="composer" @submit.prevent="send">
     <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
@@ -1235,7 +1235,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             </div>
           </section>
         </article>
-        <ProposalCard v-if="selectedEvidence.proposal" :product-name="product.product_name" :presentation="product.proposal_presentation" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="openEvidenceTarget"/>
+        <ProposalCard v-if="selectedEvidence.proposal" :product-name="product.product_name" :presentation="product.proposal_presentation" :workbench-username="me?.username" :step-id="selectedEvidence.id" :proposal="selectedEvidence.proposal" @status="confirmed=>setProposalConfirmed(selectedEvidence.id,confirmed)" @confirmed="()=>handleProposalConfirmed(selectedEvidence.id)" @open="openEvidenceTarget"/>
       </div>
     </section>
   </div>
