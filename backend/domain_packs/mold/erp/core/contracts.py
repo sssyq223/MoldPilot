@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 """Schemas and matching rules shared by mold-domain application services."""
 from pydantic import Field, model_validator
 
@@ -5,7 +6,7 @@ from agent_core.schemas import StrictModel
 
 
 class ProjectPlanContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(
         default=None,
         min_length=1,

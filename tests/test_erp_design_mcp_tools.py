@@ -9,7 +9,39 @@ from sqlalchemy.orm import sessionmaker
 from app.errors import DomainError
 from app import models as m
 from app.models import Base
-from app.tool_gateway import SKILLS, TOOLS, execute, skill_context, tool_schema
+from app.tool_gateway import SKILLS, TOOLS, available_tools, execute as gateway_execute, skill_context, tool_schema
+
+
+def execute(db, user, key, arguments, run=None):
+    """Exercise the ERP payload mapper without exposing writes to the Agent."""
+    from domain_packs.mold import erp_design_mcp
+    if erp_design_mcp.TOOL_SPECS.get(key, {}).get("write"):
+        return erp_design_mcp._execute_registered_tool(db, user, key, arguments, run=run)
+    return gateway_execute(db, user, key, arguments, run=run)
+
+
+def test_erp_design_write_tools_require_host_confirmed_dispatch(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    def unexpected_erp_call(*_args, **_kwargs):
+        pytest.fail("An unconfirmed Agent tool reached the ERP MCP")
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", unexpected_erp_call)
+    monkeypatch.setattr(erp_design_mcp, "call_design_control_mcp", unexpected_erp_call)
+    user = SimpleNamespace(super_admin=True)
+    write_keys = {key for key, spec in erp_design_mcp.TOOL_SPECS.items() if spec.get("write")}
+    assert write_keys
+    assert write_keys.isdisjoint(available_tools(None, user))
+    for key in write_keys:
+        with pytest.raises(DomainError) as gateway_error:
+            gateway_execute(None, user, key, {"confirm": True, "confirm_import": True})
+        assert gateway_error.value.code == "TOOL_FORBIDDEN"
+        with pytest.raises(DomainError) as direct_error:
+            erp_design_mcp.execute_tool(None, user, key, {"confirm": True, "confirm_import": True})
+        assert direct_error.value.code == "ERP_DESIGN_CONFIRMATION_REQUIRED"
+    for skill in skill_context(None, user):
+        assert write_keys.isdisjoint(skill["optional_tools"])
+        assert write_keys.isdisjoint(skill["activation_tools"] or [])
 
 
 def test_new_mold_design_upload_accepts_csv_attachment(monkeypatch, tmp_path):
@@ -328,7 +360,7 @@ def test_modify_mold_config_and_import_use_dedicated_erp_flow(monkeypatch):
 def test_modify_mold_import_rejects_missing_purchase_reason():
     with pytest.raises(DomainError) as caught:
         from domain_packs.mold import erp_design_mcp
-        erp_design_mcp.execute_tool(SimpleNamespace(), SimpleNamespace(), "erp_design_import_modify_mold", {
+        erp_design_mcp._execute_registered_tool(SimpleNamespace(), SimpleNamespace(), "erp_design_import_modify_mold", {
             "session_id": 1,
             "sheet_type": "hardware",
             "mold_code": "M250238-P4",

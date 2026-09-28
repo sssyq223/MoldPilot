@@ -27,8 +27,14 @@ def test_docx_upload_is_registered_for_document_intake(contact_document_db, monk
 
     manifest.after_files_uploaded(db, owner, [blob], str(uuid4()))
 
-    intake = db.scalar(select(m.DocumentIntake))
-    job = db.scalar(select(m.DocumentOcrJob))
+    intake = db.scalar(select(m.DocumentIntake).where(
+        m.DocumentIntake.created_by == owner.id,
+        m.DocumentIntake.conversation_id == conversation.id,
+    ))
+    job = db.scalar(select(m.DocumentOcrJob).join(
+        m.DocumentIntakeFile,
+        m.DocumentOcrJob.intake_file_id == m.DocumentIntakeFile.id,
+    ).where(m.DocumentIntakeFile.intake_id == intake.id))
     assert intake is not None
     assert job is not None and job.status == 'QUEUED'
 

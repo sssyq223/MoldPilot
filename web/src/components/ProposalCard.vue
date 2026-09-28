@@ -47,6 +47,11 @@ function displayValue(key:string,value:any){
 }
 const base='/proposals/'
 const approval=computed(()=>Boolean(policy.value?.requires_approval??props.proposal.requires_approval))
+const pendingLabel=computed(()=>approval.value?'等待批准':'等待本人确认')
+const reviewLabel=computed(()=>approval.value?'查看并批准':'查看并确认')
+const pendingDescription=computed(()=>approval.value
+  ? '操作前会展示完整字段供你核对，批准后才会生成正式回执。'
+  : '操作前会展示完整字段供你核对，确认后才会生成正式回执。')
 onMounted(async()=>{try{receipt.value=(await api(base+props.stepId)).receipt;emit('status',Boolean(receipt.value))}catch(e:any){error.value=e.message;emit('status',false)}})
 async function review(){
   if(resolved.value){showDetails.value=true;return}
@@ -56,15 +61,15 @@ async function confirm(){busy.value=true;error.value='';try{receipt.value=await 
 async function dismiss(){busy.value=true;error.value='';try{await post(base+props.stepId+'/dismiss');emit('status',true);emit('dismissed')}catch(e:any){error.value=e.message}finally{busy.value=false}}
 </script>
 <template>
-  <section v-if="placement==='composer'&&!receipt" class="proposal-card composer-approval" aria-label="等待批准">
+  <section v-if="placement==='composer'&&!receipt" class="proposal-card composer-approval" :aria-label="pendingLabel">
     <div class="composer-approval-label"><ShieldCheck :size="15"/><span>权限</span></div>
     <div class="composer-approval-copy">
       <strong>允许 {{productName}} 执行“{{actionTitle}}”吗？</strong>
-      <small>操作前会展示完整字段供你核对，批准后才会生成正式回执。</small>
+      <small>{{pendingDescription}}</small>
     </div>
     <div class="composer-approval-actions">
       <button type="button" :disabled="busy" @click="dismiss">暂不执行</button>
-      <button type="button" class="primary" :disabled="busy" @click="review">{{busy?'正在处理…':'查看并批准'}}</button>
+      <button type="button" class="primary" :disabled="busy" @click="review">{{busy?'正在处理…':reviewLabel}}</button>
     </div>
     <p v-if="error" class="proposal-error" role="alert">{{error}}</p>
   </section>

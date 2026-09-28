@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import Body,Depends,Request,Response
 from fastapi.responses import JSONResponse
 from .db import get_db
-from .config import settings
+from .config import settings, trusted_origin_set
 from .errors import DomainError
 from . import tool_gateway as tools
 
@@ -24,7 +24,7 @@ def error(rid,code,message,status=200):
 def install_mcp(app,worker_auth,fence,execute_step):
     def transport(request:Request):
         worker_auth(request)
-        if request.headers.get('origin') not in {None,settings().origin}:
+        if request.headers.get('origin') not in {None, *trusted_origin_set()}:
             raise DomainError('ORIGIN_DENIED','请求来源不受信任',403)
         if request.headers.get('mcp-protocol-version',VERSION)!=VERSION:
             raise DomainError('MCP_VERSION_UNSUPPORTED','不支持的工具协议版本',400)
@@ -63,12 +63,14 @@ def install_mcp(app,worker_auth,fence,execute_step):
         elif method=='ping':result={}
         elif method=='tools/list':
             if params.get('cursor'):return error(rid,-32602,'无效的工具分页标识')
-            result={'tools':[{'name':k,'description':tools.TOOLS[k]['description'],
-                'inputSchema':tools.tool_schema(k)['function']['parameters'],
-                'annotations':{'readOnlyHint':not (k.startswith('prepare_') or tools.TOOLS[k].get('write',False)),
-                               'destructiveHint':bool(tools.TOOLS[k].get('destructive',False)),
-                               'idempotentHint':True}}
-                for k in tools.available_tools(db,user)]}
+            result={'tools':[]}
+            for k in tools.available_tools(db,user):
+                function=tools.tool_schema(k)['function']
+                result['tools'].append({'name':function['name'],'description':function['description'],
+                    'inputSchema':function['parameters'],
+                    'annotations':{'readOnlyHint':not (k.startswith('prepare_') or tools.TOOLS[k].get('write',False)),
+                                   'destructiveHint':bool(tools.TOOLS[k].get('destructive',False)),
+                                   'idempotentHint':True}})
         elif method=='tools/call':
             name=params.get('name');arguments=params.get('arguments',{});meta=params.get('_meta',{})
             if not isinstance(name,str) or not isinstance(arguments,dict) or not isinstance(meta,dict):
@@ -82,7 +84,7 @@ def install_mcp(app,worker_auth,fence,execute_step):
                         'structuredContent':value,'isError':False}
             except DomainError as exc:
                 db.rollback()
-                tool_error={'tool_error':{'code':exc.code,'message':exc.message}}
+                tool_error={'tool_error':exc.as_dict()}
                 result={'content':[{'type':'text','text':json.dumps(tool_error,ensure_ascii=False)}],
                         'structuredContent':tool_error,'errorCode':exc.code,'isError':True}
             except Exception as exc:

@@ -22,6 +22,10 @@ def test_harness_mcp_discovery_and_execution_use_same_receipt(client,data,monkey
     gateway=Gateway(client,c)
     catalog=gateway.discover()
     assert {t['function']['name'] for t in catalog}=={'query_purchase_requests'}
+    from app.tool_gateway import tool_schema
+    assert catalog == [tool_schema('query_purchase_requests')]
+    assert catalog == c['tools']
+    assert '查询采购申请' in catalog[0]['function']['description']
     assert gateway.tool_annotations['query_purchase_requests']['readOnlyHint'] is True
     first=gateway.execute(0,'query_purchase_requests',{})
     assert first['source']=='agent_db' and len(first['data'])==1
@@ -132,3 +136,53 @@ def test_mcp_revocation_and_cancel_fence_cached_receipts(client,data,monkeypatch
     assert rpc(client,c,'tools/call',args).status_code==403
     client.post(f"/api/runs/{c['id']}/cancel")
     assert rpc(client,c,'tools/call',args).status_code==409
+
+
+def test_native_validation_details_reach_worker_and_http_without_failed_receipt(client,data,monkeypatch):
+    from agent_core import tool_gateway
+    from test_tool_validation import parse
+    _,c=start(client,monkeypatch)
+    def domain_execute(db,user,key,arguments,run=None):
+        parse(arguments)
+        return {'source':'synthetic','data':[]}
+    monkeypatch.setattr(tool_gateway._gateway,'execute',domain_execute)
+    client.headers.update(worker_headers())
+    gateway=Gateway(client,c)
+    arguments={'lines':[{'amount':0,'evidence':'private-marker'}]}
+    observed=gateway.execute(0,'query_purchase_requests',arguments)
+    details=observed['tool_error']['details']
+    assert details['validation_errors'][0]['path']==['lines',0,'amount']
+    assert details['validation_error_count']==2
+    assert 'private-marker' not in str(observed)
+    http=client.post(f"/internal/runs/{c['id']}/tools",headers=worker_headers(),json={
+        'epoch':c['epoch'],'sequence':0,'key':'query_purchase_requests','arguments':arguments})
+    assert http.status_code==400
+    assert http.json()['error']==observed['tool_error']
+    with data[1]() as db:
+        assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==c['id']))==0
+    corrected={'lines':[{'amount':'2.50','evidence':'Confirmed evidence ' * 3}]}
+    receipt=gateway.execute(1,'query_purchase_requests',corrected)
+    assert 'evidence_id' in receipt and 'tool_error' not in receipt
+    with data[1]() as db:
+        assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==c['id']))==1
+
+
+def test_customer_acceptance_native_validation_survives_real_domain_and_mcp(client,data,monkeypatch):
+    _,context=start(client,monkeypatch,username='admin')
+    client.headers.update(worker_headers())
+    gateway=Gateway(client,context)
+    arguments={
+        'project_id':data[0]['project'],'project_version':1,
+        'result':'PASSED','accepted_date':'2026-09-20',
+        'evidence':'Synthetic acceptance evidence','deduction_amount':0,
+    }
+    rejected=gateway.execute(0,'prepare_customer_acceptance',arguments)
+    error=rejected['tool_error']
+    assert error['code']=='INVALID_TOOL_INPUT'
+    assert error['details']['validation_errors']==[{
+        'path':['deduction_amount'],'pointer':'/deduction_amount',
+        'code':'greater_than','message':'Input should be greater than 0',
+    }]
+    assert arguments['deduction_amount']==0
+    with data[1]() as db:
+        assert db.scalar(select(func.count()).select_from(Step).where(Step.run_id==context['id']))==0

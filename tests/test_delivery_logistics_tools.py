@@ -12,6 +12,7 @@ from app.db import now
 from app.errors import DomainError
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold import file_policy
 
 
 @pytest.fixture
@@ -258,13 +259,14 @@ def customer_signature(db, project, creator, reference="CUSTOMER-SIGN-001"):
     return row
 
 
-def customer_acceptance(db, project, creator, signature, result="FAILED", recheck=False, deduction=True):
+def customer_acceptance(db, project, creator, signature, result="FAILED", recheck=False, deduction=True, previous=None, accepted_date=None):
     row = m.CustomerAcceptanceRecord(
         project_id=project.id,
         signature_id=signature.id,
         acceptance_type="RECHECK" if recheck else "INITIAL",
+        previous_acceptance_id=previous.id if previous else None,
         result=result,
-        accepted_date=date.today(),
+        accepted_date=accepted_date or date.today(),
         issue_description="客户验收尺寸偏差" if result == "FAILED" else "复验通过",
         responsibility="SUPPLIER" if result == "FAILED" else "UNKNOWN",
         corrective_due_date=date.today() + timedelta(days=5) if result == "FAILED" else None,
@@ -314,6 +316,99 @@ def test_delivery_logistics_schema_and_context_summary(pg_session_factory):
         assert "试模通过只代表试模结论" in "".join(analysis["warnings"])
 
 
+def test_delivery_logistics_connects_erp_fulfillment_without_claiming_customer_acceptance(
+    pg_session_factory, monkeypatch
+):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-ERP")
+        plan(db, p, admin)
+
+    def fake_erp_delivery(db, current_user, current_project):
+        assert current_project.code == "DLV-ERP"
+        return {
+            "status": "RESOLVED",
+            "source": "erp",
+            "project_code": current_project.code,
+            "records": {
+                "fulfillment_records": [{
+                    "order_no": "EO-ERP-1",
+                    "stage": "shipping",
+                    "source_ref": "entrust/fulfillment/orders:EO-ERP-1",
+                    "source_endpoint": "entrust/fulfillment/orders",
+                }],
+                "product_shipment_records": [{
+                    "shipment_no": "PS-ERP-1",
+                    "logistics_company": "顺达物流",
+                    "tracking_no": "TRACK-ERP-1",
+                    "arrival_status": "pending",
+                    "source_ref": "entrust/fulfillment/product-shipment/list:PS-ERP-1",
+                    "source_endpoint": "entrust/fulfillment/product-shipment/list",
+                }],
+                "exception_records": [{
+                    "order_no": "EO-ERP-1",
+                    "status": "open",
+                    "description": "待处理交付异常",
+                    "source_ref": "entrust/exception/list:9",
+                    "source_endpoint": "entrust/exception/list",
+                }],
+                "quality_inspection_records": [{
+                    "inspection_no": "QI-ERP-1",
+                    "order_no": "EO-ERP-1",
+                    "status": "partial",
+                    "result": "partial",
+                    "source_ref": "quality/inspection/list:QI-ERP-1",
+                    "source_endpoint": "quality/inspection/list",
+                }],
+                "quality_totals": {
+                    "inspections": 1,
+                    "open_inspections": 0,
+                    "completed_inspections": 1,
+                    "failed_inspections": 1,
+                    "qualified_inspections": 0,
+                },
+                "quality_status": "RESOLVED",
+                "totals": {
+                    "fulfillment_orders": 1,
+                    "product_shipments": 1,
+                    "exceptions": 1,
+                    "quality_inspections": 1,
+                },
+                "as_of": "2026-09-23T00:00:00+08:00",
+                "source_system": "ERP",
+                "limitations": [],
+            },
+            "limitations": [],
+        }
+
+    monkeypatch.setattr(
+        "domain_packs.mold.erp.design.erp_progress.query_project_delivery_execution",
+        fake_erp_delivery,
+    )
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ERP"})
+        analysis = result["data"][0]["analysis"]
+        status = analysis["derived_status"]
+        assert status["has_erp_fulfillment_record"] is True
+        assert status["has_erp_product_shipment"] is True
+        assert status["has_erp_tracking_no"] is True
+        assert status["has_erp_pending_receipt"] is True
+        assert status["has_erp_delivery_exception"] is True
+        assert status["has_erp_quality_inspection"] is True
+        assert status["has_erp_quality_failure"] is True
+        assert analysis["erp_quality_inspections"][0]["source_ref"].endswith("QI-ERP-1")
+        assert analysis["erp_product_shipments"][0]["tracking_no"] == "TRACK-ERP-1"
+        assert analysis["erp_delivery_execution"]["records"]["fulfillment_records"][0]["source_ref"].endswith(
+            "EO-ERP-1"
+        )
+        assert status["has_customer_signature"] is False
+        assert status["has_customer_acceptance"] is False
+        assert "ERP 原系统已有履约记录" in "".join(analysis["warnings"])
+        assert "不合格或部分合格质量任务" in "".join(analysis["warnings"])
+
+
 def test_delivery_logistics_returns_effective_route_quote_and_settlement_price(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:
@@ -360,6 +455,55 @@ def test_delivery_logistics_keeps_customer_signature_separate_from_acceptance(pg
         assert status["has_customer_acceptance"] is False
         assert customer["signatures"][0]["move_type"] == "MOLD_TRANSFER"
         assert "已有客户签收记录，但未见客户质量验收" in "".join(analysis["gaps"])
+        handoffs = {
+            row["key"]: row
+            for row in analysis["delivery_handoffs"]
+        }
+        assert handoffs["outbound_release_to_shipment"]["state"] == "BLOCKED"
+        assert handoffs["shipment_to_customer_signature"]["state"] == "CONNECTED"
+        assert handoffs["customer_signature_to_acceptance"]["state"] == "READY"
+
+
+def test_delivery_handoffs_connect_release_signature_acceptance_and_follow_up(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-HANDOFF")
+        wh = warehouse(db)
+        plan(db, p, admin)
+        order_with_flow(db, p, admin, material(db, "HANDOFF-MAT"), wh)
+        trial = trial_result(db, p, admin, passed=True)
+        db.add(m.OutboundReleaseRecord(
+            project_id=p.id,
+            project_version=p.row_version,
+            trial_request_id=trial.id,
+            inspection_type="SELF_INSPECTION",
+            result="PASSED",
+            inspected_date=date.today(),
+            issue_description="",
+            corrective_due_date=None,
+            evidence="出厂自检报告-HANDOFF",
+            source_ref="OUTBOUND-HANDOFF-001",
+            confirmed_by=admin.id,
+        ))
+        signature = customer_signature(db, p, admin, "CUSTOMER-HANDOFF-001")
+        customer_acceptance(db, p, admin, signature, result="PASSED", deduction=False)
+
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        result = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-HANDOFF"})
+        analysis = result["data"][0]["analysis"]
+        handoffs = {row["key"]: row for row in analysis["delivery_handoffs"]}
+        assert all(
+            handoffs[key]["state"] == "CONNECTED"
+            for key in (
+                "outbound_release_to_shipment",
+                "shipment_to_customer_signature",
+                "customer_signature_to_acceptance",
+                "customer_acceptance_to_follow_up",
+            )
+        )
+        assert analysis["derived_status"]["delivery_handoff_states"]["customer_acceptance_to_follow_up"] == "CONNECTED"
 
 
 def test_delivery_logistics_reports_failed_customer_acceptance_deduction_and_recheck_gap(pg_session_factory):
@@ -390,10 +534,82 @@ def test_delivery_logistics_reports_failed_customer_acceptance_deduction_and_rec
         assert "合同变化" in warnings
 
 
+def test_latest_recheck_controls_delivery_and_outsource_close_readiness(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "DLV-RECHECK-CURRENT")
+        db.add(m.ProjectProfile(
+            project_id=p.id,
+            owner_user_id=admin.id,
+            execution_mode="FULL_OUTSOURCE",
+            customer_due_date=date.today() + timedelta(days=30),
+            settlement_status="OPEN",
+        ))
+        signature = customer_signature(db, p, admin, "CURRENT-SIGN")
+        signature.signed_date = date.today() - timedelta(days=4)
+        closure_acceptance(db, p, admin, status="DONE")
+        initial = customer_acceptance(db, p, admin, signature, result="FAILED", deduction=False, accepted_date=date.today()-timedelta(days=3))
+        passed = customer_acceptance(db, p, admin, signature, result="PASSED", recheck=True, deduction=False, previous=initial, accepted_date=date.today()-timedelta(days=2))
+        failed_again = customer_acceptance(db, p, admin, signature, result="FAILED", recheck=True, deduction=False, previous=passed, accepted_date=date.today()-timedelta(days=1))
+
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        for tool in ("query_delivery_logistics_context", "query_full_outsource_context"):
+            result = execute(db, admin, tool, {"identifier": "DLV-RECHECK-CURRENT"})
+            analysis = result["data"][0]["analysis"]
+            customer = analysis["customer_delivery_acceptance"]["derived_status"]
+            assert customer["has_failed_customer_acceptance"] is True
+            assert customer["has_unresolved_failure"] is True
+            assert customer["has_recheck_passed"] is False
+            assert customer["has_customer_acceptance"] is False
+            assert analysis["derived_status"]["has_unresolved_customer_acceptance_failure"] is True
+            close_key = "has_customer_acceptance" if tool == "query_delivery_logistics_context" else "has_customer_acceptance_or_close_evidence"
+            assert analysis["derived_status"][close_key] is False
+            assert "客户验收未通过" in "".join(analysis["warnings"])
+        project_row = db.query(m.Project).filter_by(code="DLV-RECHECK-CURRENT").one()
+        signature_row = db.query(m.CustomerDeliverySignature).filter_by(shipment_reference="CURRENT-SIGN").one()
+        recovered = customer_acceptance(db, project_row, admin, signature_row, result="PASSED", recheck=True, deduction=False, previous=failed_again)
+
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        for tool in ("query_delivery_logistics_context", "query_full_outsource_context"):
+            result = execute(db, admin, tool, {"identifier": "DLV-RECHECK-CURRENT"})
+            analysis = result["data"][0]["analysis"]
+            customer = analysis["customer_delivery_acceptance"]["derived_status"]
+            assert customer["has_failed_customer_acceptance"] is True
+            assert customer["has_unresolved_failure"] is False
+            assert customer["has_recheck_passed"] is True
+            assert customer["has_customer_acceptance"] is True
+            assert analysis["derived_status"]["has_unresolved_customer_acceptance_failure"] is False
+            close_key = "has_customer_acceptance" if tool == "query_delivery_logistics_context" else "has_customer_acceptance_or_close_evidence"
+            assert analysis["derived_status"][close_key] is True
+
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        project_row = db.query(m.Project).filter_by(code="DLV-RECHECK-CURRENT").one()
+        second_signature = customer_signature(db, project_row, admin, "SECOND-SIGN")
+        customer_acceptance(db, project_row, admin, second_signature, result="FAILED", deduction=False)
+
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        for tool in ("query_delivery_logistics_context", "query_full_outsource_context"):
+            result = execute(db, admin, tool, {"identifier": "DLV-RECHECK-CURRENT"})
+            analysis = result["data"][0]["analysis"]
+            customer = analysis["customer_delivery_acceptance"]["derived_status"]
+            assert customer["has_unresolved_failure"] is True
+            assert customer["has_customer_acceptance"] is False
+            assert customer["has_recheck_passed"] is False
+            close_key = "has_customer_acceptance" if tool == "query_delivery_logistics_context" else "has_customer_acceptance_or_close_evidence"
+            assert analysis["derived_status"][close_key] is False
+
+
 def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_distinct(pg_session_factory):
     Session = pg_session_factory
     with Session.begin() as db:
         admin = user(db, "admin", True)
+        viewer = user(db, "acceptance-viewer")
+        outsider = user(db, "acceptance-outsider")
         p = project(db, "DLV-ACCEPT-CONFIRM")
         signature = customer_signature(db, p, admin, "CUSTOMER-SIGN-CONFIRM")
         sup = supplier(db, "acceptance")
@@ -409,6 +625,22 @@ def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_d
             checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
         )
         db.add(run)
+        db.flush()
+        acceptance_file = m.FileObject(
+            owner_id=admin.id,
+            conversation_id=conversation.id,
+            request_key="acceptance-evidence-confirm",
+            filename="客户验收报告-001.pdf",
+            media_type="application/pdf",
+            size=12,
+            sha256="e" * 64,
+            backend="local",
+            storage_namespace="test",
+            object_key="acceptance-evidence-confirm",
+        )
+        db.add(acceptance_file)
+        db.flush()
+        db.add(m.RunFile(run_id=run.id, file_id=acceptance_file.id))
         db.flush()
         args = {
             "project_id": p.id,
@@ -426,6 +658,7 @@ def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_d
             "schedule_impact_days": 7,
             "contract_change_required": True,
             "evidence": "客户盖章验收报告-001",
+            "file_ids": [acceptance_file.id],
         }
     schema = tool_schema("prepare_customer_acceptance")["function"]["parameters"]
     assert {"project_id", "project_version", "result", "evidence"} <= set(schema["properties"])
@@ -435,6 +668,7 @@ def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_d
         evidence = execute(db, admin, "prepare_customer_acceptance", args, run=run)
         assert evidence["proposal"]["kind"] == "customer_acceptance"
         assert evidence["proposal"]["display"]["验收扣款"] == "3000.00 CNY"
+        assert evidence["proposal"]["display"]["客户验收原件"][0]["filename"] == "客户验收报告-001.pdf"
         assert db.scalar(select(m.CustomerAcceptanceRecord.id)) is None
         step = m.Step(run_id=run.id, sequence=0, tool="prepare_customer_acceptance", request_hash="hash", result=evidence)
         db.add(step)
@@ -452,14 +686,244 @@ def test_prepare_customer_acceptance_requires_confirmation_and_keeps_signature_d
         assert row.deduction_amount == Decimal("3000.00")
         assert row.schedule_impact_days == 7
         assert row.confirmed_by == admin.id
+        attachment = db.scalar(
+            select(m.CustomerAcceptanceAttachment).where(
+                m.CustomerAcceptanceAttachment.customer_acceptance_id == row.id
+            )
+        )
+        assert attachment.file_id == acceptance_file.id
+        assert attachment.content_sha256 == acceptance_file.sha256
+        grant(db, admin, viewer, "project_close.read", p.id)
+        assert file_policy.readable(db, viewer, acceptance_file) is True
+        assert file_policy.readable(db, outsider, acceptance_file) is False
         context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ACCEPT-CONFIRM"})
         delivery = context["data"][0]["analysis"]["customer_delivery_acceptance"]
         assert delivery["derived_status"]["has_customer_signature"] is True
         assert delivery["derived_status"]["has_customer_acceptance"] is False
         assert delivery["acceptance_records"][0]["id"] == row.id
+        assert delivery["acceptance_records"][0]["attachments"][0]["filename"] == "客户验收报告-001.pdf"
         with pytest.raises(DomainError) as duplicate:
             execute(db, admin, "prepare_customer_acceptance", args, run=run)
         assert duplicate.value.code == "CUSTOMER_ACCEPTANCE_DUPLICATE"
+
+
+def test_prepare_customer_delivery_signature_connects_shipment_to_acceptance(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "delivery-signature-admin", True)
+        p = project(db, "DLV-SIGNATURE")
+        wh = warehouse(db)
+        order_with_flow(db, p, admin, material(db, "SIGNATURE-MAT"), wh)
+        conversation = m.Conversation(user_id=admin.id, title="客户签收确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记发运后的客户签收",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        signature_file = m.FileObject(
+            owner_id=admin.id,
+            conversation_id=conversation.id,
+            request_key="customer-signature-evidence",
+            filename="客户签收回执-001.pdf",
+            media_type="application/pdf",
+            size=12,
+            sha256="g" * 64,
+            backend="local",
+            storage_namespace="test",
+            object_key="customer-signature-evidence",
+        )
+        db.add(signature_file)
+        db.flush()
+        db.add(m.RunFile(run_id=run.id, file_id=signature_file.id))
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "signed_date": date.today().isoformat(),
+            "shipment_reference": "CUSTOMER-DELIVERY-SIGN-001",
+            "signer_name": "客户代表-张工",
+            "evidence": "客户盖章签收回执-001",
+            "file_ids": [signature_file.id],
+        }
+    schema = tool_schema("prepare_customer_delivery_signature")["function"]["parameters"]
+    assert {"project_id", "project_version", "signed_date", "shipment_reference", "signer_name", "evidence"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="delivery-signature-admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        prepared = execute(db, admin, "prepare_customer_delivery_signature", args, run=run)
+        assert prepared["proposal"]["kind"] == "customer_delivery_signature"
+        assert prepared["proposal"]["display"]["签收或交付单号"] == args["shipment_reference"]
+        assert prepared["proposal"]["display"]["客户签收原件"][0]["filename"] == "客户签收回执-001.pdf"
+        assert db.scalar(select(m.CustomerDeliverySignature.id)) is None
+        step = m.Step(
+            run_id=run.id,
+            sequence=0,
+            tool="prepare_customer_delivery_signature",
+            request_hash="customer-signature",
+            result=prepared,
+        )
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "delivery_logistics.execute", step.id, {
+            "step_id": step.id,
+            "proposal_hash": bpm.content_hash(prepared["proposal"]),
+        })
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.CustomerDeliverySignature, receipt["customer_delivery_signature_id"])
+        assert receipt["status"] == "CONFIRMED"
+        assert row.project_id == p.id
+        assert row.shipment_reference == args["shipment_reference"]
+        assert row.move_type == "DELIVERY"
+        assert row.sign_status == "SIGNED"
+        attachment = db.scalar(
+            select(m.CustomerDeliverySignatureAttachment).where(
+                m.CustomerDeliverySignatureAttachment.signature_id == row.id
+            )
+        )
+        assert attachment.file_id == signature_file.id
+        assert attachment.content_sha256 == signature_file.sha256
+        context = execute(db, admin, "query_delivery_logistics_context", {"identifier": p.code})
+        delivery = context["data"][0]["analysis"]["customer_delivery_acceptance"]
+        assert delivery["derived_status"]["has_customer_signature"] is True
+        assert delivery["signatures"][0]["move_type"] == "DELIVERY"
+        handoffs = {
+            item["key"]: item
+            for item in context["data"][0]["analysis"]["delivery_handoffs"]
+        }
+        assert handoffs["customer_signature_to_acceptance"]["state"] == "READY"
+        with pytest.raises(DomainError) as duplicate:
+            execute(db, admin, "prepare_customer_delivery_signature", args, run=run)
+        assert duplicate.value.code == "CUSTOMER_SIGNATURE_DUPLICATE"
+
+
+def test_prepare_outbound_release_requires_trial_and_records_agent_fact(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "release-admin", True)
+        viewer = user(db, "release-viewer")
+        outsider = user(db, "release-outsider")
+        p = project(db, "DLV-RELEASE")
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "inspection_type": "SELF_INSPECTION",
+            "result": "PASSED",
+            "inspected_date": date.today().isoformat(),
+            "evidence": "出厂自检报告-001",
+            "source_ref": "OUTBOUND-RELEASE-001",
+        }
+        with pytest.raises(DomainError) as missing_trial:
+            execute(db, admin, "prepare_outbound_release", args)
+        assert missing_trial.value.code == "TRIAL_PREREQUISITE"
+        trial = trial_result(db, p, admin, passed=True)
+        conversation = m.Conversation(user_id=admin.id, title="出厂自检放行确认")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记试模通过后的出厂自检放行",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        release_file = m.FileObject(
+            owner_id=admin.id,
+            conversation_id=conversation.id,
+            request_key="outbound-release-evidence",
+            filename="出厂放行报告-001.pdf",
+            media_type="application/pdf",
+            size=12,
+            sha256="f" * 64,
+            backend="local",
+            storage_namespace="test",
+            object_key="outbound-release-evidence",
+        )
+        db.add(release_file)
+        db.flush()
+        db.add(m.RunFile(run_id=run.id, file_id=release_file.id))
+        db.flush()
+        args["trial_request_id"] = trial.id
+        args["file_ids"] = [release_file.id]
+        prepared = execute(db, admin, "prepare_outbound_release", args, run=run)
+        assert prepared["proposal"]["kind"] == "outbound_release"
+        assert prepared["proposal"]["display"]["检查结果"] == "PASSED"
+        assert prepared["proposal"]["display"]["出厂放行原件"][0]["filename"] == "出厂放行报告-001.pdf"
+        assert db.scalar(select(m.OutboundReleaseRecord.id)) is None
+        step = m.Step(
+            run_id=run.id,
+            sequence=0,
+            tool="prepare_outbound_release",
+            request_hash="release",
+            result=prepared,
+        )
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "delivery_logistics.execute", step.id, {
+            "step_id": step.id,
+            "proposal_hash": bpm.content_hash(prepared["proposal"]),
+        })
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.OutboundReleaseRecord, receipt["outbound_release_record_id"])
+        assert receipt["status"] == "CONFIRMED"
+        assert row.trial_request_id == trial.id
+        assert row.result == "PASSED"
+        attachment = db.scalar(
+            select(m.OutboundReleaseAttachment).where(
+                m.OutboundReleaseAttachment.outbound_release_id == row.id
+            )
+        )
+        assert attachment.file_id == release_file.id
+        assert attachment.content_sha256 == release_file.sha256
+        grant(db, admin, viewer, "project_close.read", p.id)
+        assert file_policy.readable(db, viewer, release_file) is True
+        assert file_policy.readable(db, outsider, release_file) is False
+
+        context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-RELEASE"})
+        analysis = context["data"][0]["analysis"]
+        assert analysis["derived_status"]["has_outbound_self_inspection_passed"] is True
+        assert analysis["outbound_release"]["records"][0]["source_ref"] == "OUTBOUND-RELEASE-001"
+        assert analysis["outbound_release"]["records"][0]["attachments"][0]["filename"] == "出厂放行报告-001.pdf"
+
+
+def test_failed_outbound_release_blocks_delivery_stage_until_recheck(pg_session_factory):
+    from domain_packs.mold.tools.erp.project.execution_lifecycle_tools import _delivery_stage
+
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "release-failure-admin", True)
+        p = project(db, "DLV-RELEASE-FAIL")
+        trial = trial_result(db, p, admin, passed=True)
+        db.add(m.OutboundReleaseRecord(
+            project_id=p.id,
+            project_version=p.row_version,
+            trial_request_id=trial.id,
+            inspection_type="SELF_INSPECTION",
+            result="FAILED",
+            inspected_date=date.today(),
+            issue_description="外观和尺寸未达到放行标准",
+            corrective_due_date=date.today() + timedelta(days=3),
+            evidence="出厂自检报告-FAIL",
+            source_ref="OUTBOUND-RELEASE-FAIL",
+            confirmed_by=admin.id,
+        ))
+    with Session() as db:
+        admin = db.query(m.User).filter_by(username="release-failure-admin").one()
+        context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-RELEASE-FAIL"})
+        analysis = context["data"][0]["analysis"]
+        stage = _delivery_stage({"analysis": analysis, "profile": {}})
+        assert analysis["derived_status"]["has_outbound_release_failure"] is True
+        assert stage["state"] == "NEEDS_ATTENTION"
+        assert "出厂自检/放行未通过" in "".join(stage["blockers"])
 
 
 def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
@@ -502,6 +966,11 @@ def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
         )
         db.add(first)
         db.flush()
+        args['previous_acceptance_id'] = first.id
+        same_project_signature = customer_signature(db, p, admin, "RECHECK-SIGN-WITHOUT-FAILURE")
+        with pytest.raises(DomainError) as unrelated_failure:
+            execute(db, admin, "prepare_customer_acceptance", {**args, "signature_id": same_project_signature.id})
+        assert unrelated_failure.value.code == "RECHECK_WITHOUT_FAILURE"
         conversation = m.Conversation(user_id=admin.id, title="客户复验确认")
         db.add(conversation)
         db.flush()
@@ -521,6 +990,7 @@ def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
             "issue_description": "整改复验通过",
             "evidence": "复验报告-002",
         })):
+            current_args = {**current_args, 'previous_acceptance_id': first.id}
             evidence = execute(db, admin, "prepare_customer_acceptance", current_args, run=run)
             step = m.Step(
                 run_id=run.id,
@@ -536,6 +1006,7 @@ def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
                 "proposal_hash": bpm.content_hash(evidence["proposal"]),
             })
             receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+            first = db.get(m.CustomerAcceptanceRecord, receipt['customer_acceptance_record_id'])
             assert db.get(m.CustomerAcceptanceRecord, receipt["customer_acceptance_record_id"]).result == current_args["result"]
             context = execute(db, admin, "query_delivery_logistics_context", {"identifier": "DLV-ACCEPT-RECHECK"})
             status = context["data"][0]["analysis"]["derived_status"]
@@ -549,6 +1020,46 @@ def test_customer_acceptance_recheck_and_invalid_inputs(pg_session_factory):
         with pytest.raises(DomainError) as missing_currency:
             execute(db, admin, "prepare_customer_acceptance", {**args, "deduction_amount": "100.00", "responsibility": "INTERNAL"})
         assert missing_currency.value.code == "CURRENCY_REQUIRED"
+
+
+def test_recheck_confirmation_revalidates_predecessor_and_preserves_facts(pg_session_factory):
+    from domain_packs.mold.erp.procurement.delivery_logistics import parse_customer_acceptance, create_customer_acceptance
+    from sqlalchemy.exc import DBAPIError
+    with pg_session_factory.begin() as db:
+        admin = user(db, 'recheck-owner', True)
+        p = project(db, 'RECHECK-LINEAGE')
+        signature = customer_signature(db, p, admin, 'RECHECK-LINEAGE-SIGN')
+        failure = customer_acceptance(db, p, admin, signature, deduction=False,
+            accepted_date=date.today()-timedelta(days=1))
+        args = dict(project_id=p.id, project_version=p.row_version, signature_id=signature.id,
+            previous_acceptance_id=failure.id, acceptance_type='RECHECK', result='PASSED',
+            accepted_date=date.today().isoformat(), evidence='复验签字原件')
+        prepared = execute(db, admin, 'prepare_customer_acceptance', args)
+        assert prepared['proposal']['display']['前次验收记录'] == failure.id
+        with pytest.raises(DomainError, match='日期'):
+            execute(db, admin, 'prepare_customer_acceptance', {**args, 'accepted_date': (date.today()-timedelta(days=2)).isoformat()})
+        confirmed = create_customer_acceptance(db, admin, parse_customer_acceptance(args))
+        assert confirmed.previous_acceptance_id == failure.id
+        with pytest.raises(DomainError) as stale:
+            create_customer_acceptance(db, admin, parse_customer_acceptance({**args, 'evidence':'另一份已准备复验'}))
+        assert stale.value.code == 'RECHECK_SOURCE_CHANGED'
+        with pytest.raises(DBAPIError, match='uq_customer_acceptance_previous'):
+            with db.begin_nested():
+                db.add(m.CustomerAcceptanceRecord(project_id=p.id,signature_id=signature.id,
+                    previous_acceptance_id=failure.id,acceptance_type='RECHECK',result='PASSED',
+                    accepted_date=date.today(),evidence='并发重复复验',confirmed_by=admin.id))
+                db.flush()
+        with pytest.raises(DBAPIError, match='immutable'):
+            with db.begin_nested():
+                db.execute(text('UPDATE customer_acceptance_record SET result=:result WHERE id=:id'),
+                    {'result':'PASSED','id':failure.id})
+        assert db.get(m.CustomerAcceptanceRecord, failure.id).result == 'FAILED'
+        p.status = 'CLOSED'
+        db.flush()
+        with pytest.raises(DomainError) as closed:
+            create_customer_acceptance(db, admin, parse_customer_acceptance({**args,
+                'previous_acceptance_id':confirmed.id, 'evidence':'关闭后追加'}))
+        assert closed.value.code == 'PROJECT_CLOSED'
 
 
 def test_delivery_logistics_does_not_leak_order_without_order_tool(pg_session_factory):

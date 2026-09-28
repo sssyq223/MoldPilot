@@ -19,9 +19,13 @@ Return one JSON object without hidden reasoning. Evidence identifiers may only c
 
 
 REPLY_SCHEMA = {'type':'object','properties':{
-    'response_kind':{'type':'string','enum':['BUSINESS','CONVERSATION','CLARIFICATION']},
+    'response_kind':{'type':'string','enum':['BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION']},
     'summary':{'type':'string'},'evidence_ids':{'type':'array','items':{'type':'string'}},
-    'suggestions':{'type':'array','items':{'type':'string'}}},
+    'suggestions':{'type':'array','items':{'type':'string'}},
+    # Only the trusted proposal-resolution continuation needs this field.
+    # Keeping it optional preserves the ordinary response shape while allowing
+    # a local model to consume the host-owned approval decision explicitly.
+    'proposal_decision':{'type':'string','enum':['approved','dismissed']}},
     'required':['response_kind','summary','evidence_ids','suggestions'],'additionalProperties':False}
 
 
@@ -145,7 +149,14 @@ class OllamaAdapter:
                         'name':action['tool_name'],'arguments':json.dumps(arguments)}}]}
                 if action.get('action')!='RESPOND' or action.get('tool_name')!='' or action.get('arguments')!={}:
                     raise ModelError('MODEL_OUTPUT_INVALID')
-                return {'role':'assistant','content':json.dumps({k:action[k] for k in REPLY_SCHEMA['required']},ensure_ascii=False)}
+                allowed = REPLY_SCHEMA['properties']
+                return {
+                    'role': 'assistant',
+                    'content': json.dumps(
+                        {key: action[key] for key in allowed if key in action},
+                        ensure_ascii=False,
+                    ),
+                }
         except httpx.ConnectError:raise ModelError('MODEL_LOCAL_UNAVAILABLE') from None
         except httpx.ConnectTimeout:raise ModelError('MODEL_CONNECT_TIMEOUT') from None
         except httpx.ReadTimeout:raise ModelError('MODEL_READ_TIMEOUT') from None

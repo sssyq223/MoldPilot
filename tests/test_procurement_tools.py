@@ -132,6 +132,72 @@ def test_procurement_context_schema_prices_design_need_and_order_tracking():
         engine.dispose()
 
 
+def test_procurement_context_connects_erp_purchase_delivery_and_inventory_facts(monkeypatch):
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, 'admin', True)
+            project(db, 'PROC-ERP')
+
+        def fake_erp_procurement(db, current_user, current_project):
+            assert current_project.code == 'PROC-ERP'
+            return {
+                'status': 'RESOLVED',
+                'source': 'erp',
+                'project_code': current_project.code,
+                'records': {
+                    'purchase_order_records': [{
+                        'orderNo': 'PO-ERP-1',
+                        'source_ref': 'purchase/order/list:1',
+                        'source_endpoint': 'purchase/order/list',
+                    }],
+                    'supplier_delivery_records': [{
+                        'deliveryNo': 'SD-ERP-1',
+                        'source_ref': 'purchase/supplier-delivery/list:2',
+                        'source_endpoint': 'purchase/supplier-delivery/list',
+                    }],
+                    'inbound_records': [{
+                        'inboundNo': 'IN-ERP-1',
+                        'source_ref': 'material/inbound/list:3',
+                        'source_endpoint': 'material/inbound/list',
+                    }],
+                    'stock_flow_records': [{
+                        'flowNo': 'SF-ERP-1',
+                        'source_ref': 'material/stock-flow/list:4',
+                        'source_endpoint': 'material/stock-flow/list',
+                    }],
+                    'totals': {
+                        'purchase_orders': 1,
+                        'supplier_deliveries': 1,
+                        'inbounds': 1,
+                        'stock_flows': 1,
+                    },
+                    'as_of': '2026-09-23T00:00:00+08:00',
+                    'source_system': 'ERP',
+                    'limitations': [],
+                },
+                'limitations': [],
+            }
+
+        monkeypatch.setattr(
+            'domain_packs.mold.erp.design.erp_progress.query_project_procurement_execution',
+            fake_erp_procurement,
+        )
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username='admin').one()
+            result = execute(db, admin, 'query_procurement_price_context', {'identifier': 'PROC-ERP'})
+            analysis = result['data'][0]['analysis']
+            status = analysis['derived_status']
+            assert status['has_erp_purchase_order'] is True
+            assert status['has_erp_supplier_delivery'] is True
+            assert status['has_erp_inbound'] is True
+            assert status['has_erp_stock_flow'] is True
+            assert analysis['erp_procurement_execution']['records']['stock_flow_records'][0]['flowNo'] == 'SF-ERP-1'
+            assert 'ERP 原系统采购订单' in ''.join(analysis['warnings'])
+    finally:
+        engine.dispose()
+
+
 def test_procurement_context_hides_orders_without_order_tool():
     engine,Session=factory()
     try:

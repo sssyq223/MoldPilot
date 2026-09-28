@@ -103,6 +103,10 @@ def create_start_notice(db, user, match_id, *, expected_row_version, effective_d
     material = start_materials.build(
         db, project, match.bid_intake_revision_id, effective_date,
         expected_contract_date, contract_visibility=True,
+        # This legacy bid-to-start-notice path is only the new-mold intake
+        # flow. Existing-mold changes use prepare_internal_start with an
+        # explicit processing_kind and never enter this workflow.
+        processing_kind="NEW_MOLD",
     )
     profile = db.get(m.ProjectProfile, project.id)
     legacy_subject = db.scalar(select(m.BusinessSubject).where(

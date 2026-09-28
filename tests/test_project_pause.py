@@ -96,6 +96,11 @@ def test_project_control_context_resolves_identifier_and_returns_shift_evidence(
     assert {'project_id','identifier'}<=set(schema['properties'])
     result=execute(db,user,'query_project_control_context',{'identifier':'P-PAUSE'})
     assert result['resolution']=='RESOLVED'
+    assert result['scope_boundary']['complete'] is True
+    assert result['scope_boundary']['scope_key'] == 'project_control'
+    assert set(result['scope_boundary']['write_tools']) == {'prepare_project_pause','prepare_project_resume'}
+    assert result['model_context']['project']['code'] == 'P-PAUSE'
+    assert result['model_context']['project_control']['derived_status']['has_resume_shift_evidence'] is True
     row=result['data'][0]
     assert row['code']=='P-PAUSE'
     assert row['derived_status']['has_resume_shift_evidence'] is True

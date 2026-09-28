@@ -1,6 +1,10 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
+rem Keep Python and child consoles on UTF-8 even when Windows starts a fresh console.
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONLEGACYWINDOWSSTDIO=0"
 
 set "ROOT=%~dp0"
 set "PYTHON_EXE=%ROOT%.venv\Scripts\python.exe"
@@ -19,13 +23,6 @@ echo ========================================
 echo   MoldPilot Local Development Launcher
 echo ========================================
 echo.
-
-echo [CLEANUP] Stopping existing MoldPilot services...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\stop_project_services.ps1" -Root "%ROOT:~0,-1%"
-if errorlevel 1 (
-    echo [ERROR] Existing MoldPilot services could not be stopped safely.
-    goto :failed
-)
 
 if not exist "%ROOT%.env" (
     echo [ERROR] Missing .env.
@@ -55,57 +52,51 @@ if not exist "%WEB_MODULES%" (
 set "PYTHONPATH=%ROOT%backend"
 
 echo [CHECK] Validating backend imports...
-"%PYTHON_EXE%" -c "import app.api; import app.agent_worker; import app.document_worker; import app.message_worker"
+"%PYTHON_EXE%" -c "import app.api; import app.agent_worker; import app.message_worker; import app.document_worker"
 if errorlevel 1 (
     echo [ERROR] Backend import validation failed. Review the Python traceback above.
     goto :failed
 )
 
-echo [CHECK] Checking local PostgreSQL read-only ^(20 second limit^)...
+echo [CHECK] Verifying local PostgreSQL and schema read-only...
 "%PYTHON_EXE%" "%ROOT%scripts\check_runtime.py"
 if errorlevel 1 (
-    echo [ERROR] Database preflight failed. No API or worker was started.
-    echo Check Windows service moldpilot-postgresql-55432 and the configured database port.
-    echo This launcher never applies database migrations.
+    echo [ERROR] Read-only startup preflight failed. No service was launched.
     goto :failed
 )
 
 if /I "%~1"=="--check" (
     echo [OK] Found .env, Python virtual environment, npm and frontend dependencies.
-    echo [OK] API, Agent Worker, Document Worker and Message Worker imports are valid.
-    echo [OK] PostgreSQL connection, schema versions and required columns passed read-only checks.
-    echo [OK] No database migrations were executed.
-    echo [INFO] Redis and model connectivity is checked by the running services.
+    echo [OK] API, Agent Worker, Message Worker and Document Worker imports are valid.
+    echo [OK] PostgreSQL schema and required columns were verified read-only; no migrations executed.
+    echo [INFO] Redis and model connectivity are checked by the running services.
     popd
     exit /b 0
 )
 
-echo [1/5] Starting FastAPI: http://127.0.0.1:8000
-start "MoldPilot API" /D "%ROOT%" cmd.exe /k ""%PYTHON_EXE%" -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log"
+set "PORT_BUSY="
+for %%P in (8001 5173) do (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$c=Get-NetTCPConnection -State Listen -LocalPort %%P -ErrorAction SilentlyContinue; if($c){exit 1}else{exit 0}"
+    if errorlevel 1 set "PORT_BUSY=%%P"
+)
+if defined PORT_BUSY (
+    echo [ERROR] Port %PORT_BUSY% is already in use. Stop the existing MoldPilot service before starting another one.
+    goto :failed
+)
+
+echo [1/5] Starting FastAPI, Agent Worker, Message Worker and optional Document Worker
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\start_services.ps1" -Root "%ROOT:~0,-1%" -IncludeDocument
 if errorlevel 1 goto :launch_failed
 
-echo [2/5] Starting Agent Worker
-start "MoldPilot Agent Worker" /D "%ROOT%" cmd.exe /k ""%PYTHON_EXE%" -m app.agent_worker"
-if errorlevel 1 goto :launch_failed
-
-echo [3/5] Starting Document Worker ^(PDF text extraction, PaddleOCR and configured document model^)
-start "MoldPilot Document Worker" /D "%ROOT%" cmd.exe /k ""%PYTHON_EXE%" -m app.document_worker"
-if errorlevel 1 goto :launch_failed
-
-echo [4/5] Starting Message Worker ^(Redis delivery and workflow timers^)
-start "MoldPilot Message Worker" /D "%ROOT%" cmd.exe /k ""%PYTHON_EXE%" -m app.message_worker"
-if errorlevel 1 goto :launch_failed
-
-echo [5/5] Starting Vue development server: http://127.0.0.1:5173
-start "MoldPilot Web" /D "%WEB_DIR%" cmd.exe /k "npm.cmd run dev -- --host 127.0.0.1"
-if errorlevel 1 goto :launch_failed
+echo [4/4] Starting Vue development server: http://127.0.0.1:5173
 
 echo.
-echo [OK] The five services were launched in separate windows.
-echo If a worker window exits, check .env, Redis and the model configuration in the workbench.
+echo [OK] Core API, Agent Worker, Message Worker and Web were launched as hidden detached processes.
+echo Document Worker starts only when AGENT_OCR_SERVICE_TOKEN is configured in .env.
+echo Check .local\logs if a service exits or a dependency is unavailable.
 echo The browser will open shortly. The first frontend build may take a moment.
 timeout /t 3 /nobreak >nul
-start "" "http://127.0.0.1:5173/"
+echo [INFO] Open http://127.0.0.1:5173/ in the browser.
 
 popd
 exit /b 0
@@ -116,6 +107,6 @@ echo [ERROR] Failed to launch a service window. Check the messages above.
 
 :failed
 echo.
-if /I not "%~1"=="--check" pause
+pause
 popd
 exit /b 1

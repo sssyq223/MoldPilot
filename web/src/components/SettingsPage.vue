@@ -67,12 +67,14 @@ function toolUsageText(tool:any){
   ? '用法：在对话里说清要办理的对象和目标，系统先生成操作建议，确认后才提交。'
   : capabilityUi.queryUsage
 }
-function skillUsageText(){
- return '用法：在对话里描述任务目标，系统会按当前授权工具组合处理。'
+function skillUsageText(skill:any){
+ return skill.suspended_dependencies?.length
+  ? '用法：目前可在对话中查询和核对资料。相关 ERP 写操作暂停，不能仅凭模型传入“确认”参数执行；待接入人工确认闭环后再开放。'
+  : '用法：在对话里描述任务目标，系统会按当前授权工具组合处理。'
 }
 function capabilityUsageText(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''
- return detail.kind==='tool'?toolUsageText(detail.item):skillUsageText()
+ return detail.kind==='tool'?toolUsageText(detail.item):skillUsageText(detail.item)
 }
 function escapePattern(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 function localizeCapabilityText(value:string){
@@ -84,7 +86,7 @@ function localizeCapabilityText(value:string){
 }
 function capabilityDescription(detail:{kind:'tool'|'skill';item:any}|null){
  if(!detail)return ''
- if(detail.kind==='skill')return localizeCapabilityText(String(detail.item.agent_description||detail.item.description||'该技能会按当前授权工具组合完成任务。')
+ if(detail.kind==='skill')return (detail.item.suspended_dependencies?.length?'当前只开放查询与核对，以下为完整技能设计说明；其中写操作暂不可执行。\n\n':'')+localizeCapabilityText(String(detail.item.agent_description||detail.item.description||'该技能会按当前授权工具组合完成任务。')
   .split('\n')
   .filter(line=>!line.trim().startsWith('版本：')&&!/^第\s*[\d.]+\s*版/.test(line.trim())&&!/^#\s+/.test(line.trim()))
   .join('\n')
@@ -97,6 +99,8 @@ function dependencyNames(item:any,optional=false){
  return keys.map((key:string)=>capabilityName({key})).join('、')
 }
 function capabilityExample(detail:{kind:'tool'|'skill';item:any}|null){
+ if(detail?.kind==='skill'&&detail.item.suspended_dependencies?.length)
+  return '请查询并核对当前资料、来源和风险，不要执行修改。'
  return domainCapabilityExample(detail)
 }
 function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
@@ -104,7 +108,7 @@ function capabilityDetailMeta(detail:{kind:'tool'|'skill';item:any}|null){
  const item=detail.item
  return detail.kind==='tool'
   ? `${permissionName(item.permission)} · ${capabilityMeta(item).typeName} · ${item.mode==='human_confirmed_proposal'?'需确认':'只读'}`
-  : `技能 · 第 ${item.version} 版`
+  : `技能 · 第 ${item.version} 版${item.suspended_dependencies?.length?' · 写操作暂停':''}`
 }
 function auditSummary(entry:any){
  if(entry.summary)return entry.summary
@@ -420,7 +424,7 @@ async function clearAvatar(){
       <h3 class="capability-department-title"><span>{{department.name}}</span><button type="button" class="capability-type-pill total" :class="{active:capabilityGroupTab('skills',department)==='all'}" @click="setCapabilityGroupTab('skills',department,'all')">{{department.types.reduce((sum,type)=>sum+type.items.length,0)}} 项</button><button v-for="type in department.types" :key="type.key" type="button" class="capability-type-pill" :class="{active:capabilityGroupTab('skills',department)===type.key}" @click="setCapabilityGroupTab('skills',department,type.key)">{{type.name}}<small>{{type.items.length}} 项</small></button></h3>
       <div v-for="category in visibleCapabilityCategoryGroups('skills',department)" :key="category.name" class="capability-category-block">
        <div class="capability-category-heading"><strong>{{category.name}}</strong><small class="muted">{{category.items.length}} 项</small></div>
-       <article v-for="skill in category.items" :key="skill.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'skill',item:skill}" @keydown.enter.prevent="selectedCapability={kind:'skill',item:skill}" @keydown.space.prevent="selectedCapability={kind:'skill',item:skill}"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3></div><div class="capability-row-meta"><small class="muted">技能 · 可用</small></div></article>
+       <article v-for="skill in category.items" :key="skill.key" class="capability-row" role="button" tabindex="0" @click="selectedCapability={kind:'skill',item:skill}" @keydown.enter.prevent="selectedCapability={kind:'skill',item:skill}" @keydown.space.prevent="selectedCapability={kind:'skill',item:skill}"><div><h3><Layers :size="15"/>{{capabilityName(skill)}}</h3></div><div class="capability-row-meta"><small class="muted">{{skill.suspended_dependencies?.length?'技能 · 部分可用（写操作暂停）':'技能 · 可用'}}</small></div></article>
       </div>
      </section>
     </div>
@@ -435,6 +439,7 @@ async function clearAvatar(){
       <section><h3>{{selectedCapability.kind==='skill'?'智能体技能说明':'说明'}}</h3><p class="preserve">{{capabilityDescription(selectedCapability)}}</p></section>
       <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.dependencies?.length"><h3>会调用的工具</h3><p>{{dependencyNames(selectedCapability.item)}}</p></section>
       <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.optional_dependencies?.length"><h3>可选工具</h3><p>{{dependencyNames(selectedCapability.item,true)}}</p></section>
+      <section v-if="selectedCapability.kind==='skill'&&selectedCapability.item.suspended_dependencies?.length"><h3>暂不可执行的写操作</h3><p>{{dependencyNames({dependencies:selectedCapability.item.suspended_dependencies})}}</p></section>
       <section><h3>怎么用</h3><p>{{capabilityUsageText(selectedCapability)}}</p></section>
       <section><h3>使用示例</h3><p class="capability-example">{{capabilityExample(selectedCapability)}}</p></section>
      </div>

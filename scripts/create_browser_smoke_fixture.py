@@ -1780,6 +1780,7 @@ def build_internal_start_handoff(
                 date.today(),
                 expected_contract_date=expected_contract_date,
                 contract_visibility=True,
+                processing_kind="NEW_MOLD",
             )
             start_materials.create(
                 db,

@@ -42,6 +42,12 @@ class Mold(IdentityMixin, Base):
     internal_number: Mapped[str] = mapped_column(String(80), unique=True)
     name: Mapped[str] = mapped_column(String(150))
     status: Mapped[str] = mapped_column(String(30), default='ACTIVE')
+    # ERP remains authoritative for the mold identity.  These fields preserve
+    # the exact read-only source used by the human handoff; they are not a
+    # mirrored ERP ledger and are never used to write back to ERP.
+    source_system: Mapped[str] = mapped_column(String(20), default='MANUAL', server_default='MANUAL')
+    source_ref: Mapped[str | None] = mapped_column(String(300))
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ProjectMold(IdentityMixin, Base):
@@ -49,6 +55,26 @@ class ProjectMold(IdentityMixin, Base):
     project_id: Mapped[str] = mapped_column(ForeignKey('project.id'))
     mold_id: Mapped[str] = mapped_column(ForeignKey('mold.id'))
     __table_args__ = (UniqueConstraint('project_id','mold_id'),)
+
+
+class ProjectERPMapping(IdentityMixin, Base):
+    """Human-confirmed mapping between an Agent project and an ERP project.
+
+    ERP remains the source of truth for the external project code.  This row
+    is an Agent-side evidence record and never authorizes a write to ERP.
+    """
+    __tablename__ = 'project_erp_mapping'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), unique=True)
+    erp_project_code: Mapped[str] = mapped_column(String(80), unique=True)
+    source_ref: Mapped[str] = mapped_column(String(300))
+    source_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    evidence: Mapped[str] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), default='CONFIRMED', server_default='CONFIRMED')
+    __table_args__ = (
+        CheckConstraint("status IN ('CONFIRMED','REVOKED')", name='project_erp_mapping_status'),
+    )
 
 
 class ProjectProfile(Base):
@@ -230,11 +256,60 @@ class CustomerDeliverySignature(IdentityMixin, Base):
     )
 
 
+class CustomerDeliverySignatureAttachment(IdentityMixin, Base):
+    """Immutable customer receipt originals linked to a signature fact."""
+
+    __tablename__ = 'customer_delivery_signature_attachment'
+    signature_id: Mapped[str] = mapped_column(
+        ForeignKey('customer_delivery_signature.id'),
+        index=True,
+    )
+    file_id: Mapped[str] = mapped_column(ForeignKey('file_object.id'), index=True)
+    role: Mapped[str] = mapped_column(String(40), default='SIGNATURE_EVIDENCE')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(200))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    linked_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    previous_id: Mapped[str | None] = mapped_column(
+        ForeignKey('customer_delivery_signature_attachment.id')
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('SIGNATURE_EVIDENCE')",
+            name='customer_delivery_signature_attachment_role',
+        ),
+        CheckConstraint(
+            'version > 0',
+            name='customer_delivery_signature_attachment_version',
+        ),
+        CheckConstraint(
+            'previous_id IS NULL OR previous_id <> id',
+            name='customer_delivery_signature_attachment_previous_not_self',
+        ),
+        UniqueConstraint(
+            'signature_id',
+            'version',
+            name='customer_delivery_signature_attachment_unique_version',
+        ),
+        UniqueConstraint(
+            'signature_id',
+            'file_id',
+            'role',
+            name='customer_delivery_signature_attachment_unique_file',
+        ),
+        UniqueConstraint(
+            'previous_id',
+            name='customer_delivery_signature_attachment_unique_previous',
+        ),
+    )
+
+
 class CustomerAcceptanceRecord(IdentityMixin, Base):
     """Customer acceptance, rejection and recheck evidence; failures may carry deductions."""
     __tablename__ = 'customer_acceptance_record'
     project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
     signature_id: Mapped[str | None] = mapped_column(ForeignKey('customer_delivery_signature.id'), index=True)
+    previous_acceptance_id: Mapped[str | None] = mapped_column(ForeignKey('customer_acceptance_record.id', name='fk_customer_acceptance_previous'))
     acceptance_type: Mapped[str] = mapped_column(String(30), default='INITIAL')
     result: Mapped[str] = mapped_column(String(30))
     accepted_date: Mapped[date] = mapped_column(Date)
@@ -250,11 +325,100 @@ class CustomerAcceptanceRecord(IdentityMixin, Base):
     evidence: Mapped[str] = mapped_column(Text)
     confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
     __table_args__ = (
+        CheckConstraint("previous_acceptance_id IS NULL OR (acceptance_type = 'RECHECK' AND previous_acceptance_id <> id)", name='customer_acceptance_previous_recheck'),
+        UniqueConstraint('previous_acceptance_id', name='uq_customer_acceptance_previous'),
         CheckConstraint("acceptance_type IN ('INITIAL','RECHECK')", name='customer_acceptance_type'),
         CheckConstraint("result IN ('PASSED','FAILED','CONDITIONALLY_PASSED')", name='customer_acceptance_result'),
         CheckConstraint("responsibility IN ('CUSTOMER','SUPPLIER','INTERNAL','SHARED','UNKNOWN')", name='customer_acceptance_responsibility'),
         CheckConstraint('deduction_amount IS NULL OR deduction_amount >= 0', name='customer_acceptance_deduction_nonnegative'),
         CheckConstraint('schedule_impact_days >= 0', name='customer_acceptance_schedule_impact_nonnegative'),
+    )
+
+
+class CustomerAcceptanceAttachment(IdentityMixin, Base):
+    """Immutable customer acceptance evidence linked to a confirmed record."""
+
+    __tablename__ = 'customer_acceptance_attachment'
+    customer_acceptance_id: Mapped[str] = mapped_column(
+        ForeignKey('customer_acceptance_record.id'),
+        index=True,
+    )
+    file_id: Mapped[str] = mapped_column(ForeignKey('file_object.id'), index=True)
+    role: Mapped[str] = mapped_column(String(40), default='ACCEPTANCE_EVIDENCE')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(200))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    linked_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    previous_id: Mapped[str | None] = mapped_column(
+        ForeignKey('customer_acceptance_attachment.id')
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('ACCEPTANCE_EVIDENCE')",
+            name='customer_acceptance_attachment_role',
+        ),
+        CheckConstraint(
+            'version > 0',
+            name='customer_acceptance_attachment_version',
+        ),
+        CheckConstraint(
+            'previous_id IS NULL OR previous_id <> id',
+            name='customer_acceptance_attachment_previous_not_self',
+        ),
+        UniqueConstraint(
+            'customer_acceptance_id',
+            'version',
+            name='customer_acceptance_attachment_unique_version',
+        ),
+        UniqueConstraint(
+            'customer_acceptance_id',
+            'file_id',
+            'role',
+            name='customer_acceptance_attachment_unique_file',
+        ),
+        UniqueConstraint(
+            'previous_id',
+            name='customer_acceptance_attachment_unique_previous',
+        ),
+    )
+
+
+class OutboundReleaseRecord(IdentityMixin, Base):
+    """Agent-owned self-inspection / outbound release evidence before delivery."""
+    __tablename__ = 'outbound_release_record'
+    project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
+    project_version: Mapped[int] = mapped_column(Integer)
+    trial_request_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
+    previous_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey('outbound_release_record.id', name='fk_outbound_release_previous')
+    )
+    inspection_type: Mapped[str] = mapped_column(String(30), default='SELF_INSPECTION')
+    result: Mapped[str] = mapped_column(String(30))
+    inspected_date: Mapped[date] = mapped_column(Date)
+    issue_description: Mapped[str] = mapped_column(Text, default='')
+    corrective_due_date: Mapped[date | None] = mapped_column(Date)
+    evidence: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str] = mapped_column(String(120))
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    __table_args__ = (
+        UniqueConstraint('project_id', 'source_ref', name='outbound_release_unique_source'),
+        UniqueConstraint('previous_record_id', name='uq_outbound_release_previous'),
+        CheckConstraint(
+            "inspection_type IN ('SELF_INSPECTION','OUTBOUND_ACCEPTANCE')",
+            name='outbound_release_inspection_type',
+        ),
+        CheckConstraint(
+            "result IN ('PASSED','FAILED','CONDITIONALLY_PASSED')",
+            name='outbound_release_result',
+        ),
+        CheckConstraint(
+            "previous_record_id IS NULL OR previous_record_id <> id",
+            name='outbound_release_previous_not_self',
+        ),
+        CheckConstraint(
+            "corrective_due_date IS NULL OR corrective_due_date >= inspected_date",
+            name='outbound_release_corrective_due_date',
+        ),
     )
 
 
@@ -398,6 +562,7 @@ class StockMovement(IdentityMixin, Base):
 
 class ContractDetail(Base):
     __tablename__ = 'contract_detail'
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
     subject_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'), primary_key=True)
     customer_id: Mapped[str | None] = mapped_column(ForeignKey('customer.id'))
     supplier_id: Mapped[str | None] = mapped_column(ForeignKey('supplier.id'))
@@ -455,6 +620,7 @@ class ContractSigningRecord(IdentityMixin, Base):
 
 class PaymentStage(IdentityMixin, Base):
     __tablename__ = 'payment_stage'
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
     contract_id: Mapped[str] = mapped_column(ForeignKey('business_subject.id'))
     name: Mapped[str] = mapped_column(String(100))
     sequence: Mapped[int] = mapped_column(Integer, default=1)
@@ -463,8 +629,13 @@ class PaymentStage(IdentityMixin, Base):
     currency: Mapped[str] = mapped_column(String(3))
     condition: Mapped[str] = mapped_column(Text)
     term_days: Mapped[int | None] = mapped_column(Integer)
+    # Structured applicability is kept with the contract material snapshot;
+    # the legacy condition text remains the human-readable summary.
+    condition_profile: Mapped[dict] = mapped_column(J, default=dict, nullable=False)
     condition_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     condition_evidence: Mapped[str | None] = mapped_column(Text)
+    condition_evidence_map: Mapped[dict] = mapped_column(J, default=dict, nullable=False)
+    special_approval_reference: Mapped[str | None] = mapped_column(String(160))
     ratio_percent: Mapped[Decimal | None] = mapped_column(Numeric(7,4))
     trigger_event: Mapped[str | None] = mapped_column(String(120))
     trigger_date: Mapped[date | None] = mapped_column(Date)
@@ -552,6 +723,8 @@ class SupplierDeductionSettlement(IdentityMixin, Base):
     __tablename__ = 'supplier_deduction_settlement'
     project_id: Mapped[str] = mapped_column(ForeignKey('project.id'), index=True)
     supplier_id: Mapped[str] = mapped_column(ForeignKey('supplier.id'), index=True)
+    previous_deduction_id: Mapped[str | None] = mapped_column(ForeignKey('supplier_deduction_settlement.id', name='fk_supplier_deduction_previous'))
+    customer_acceptance_id: Mapped[str | None] = mapped_column(ForeignKey('customer_acceptance_record.id', name='fk_supplier_deduction_acceptance'))
     contract_subject_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'), index=True)
     contact_case_id: Mapped[str | None] = mapped_column(ForeignKey('contact_case.id'), index=True)
     contact_task_id: Mapped[str | None] = mapped_column(ForeignKey('contact_task.id'), index=True)
@@ -570,6 +743,8 @@ class SupplierDeductionSettlement(IdentityMixin, Base):
     source_ref: Mapped[str | None] = mapped_column(String(120))
     __table_args__ = (
         UniqueConstraint('project_id','supplier_id','reason','source_ref', name='supplier_deduction_settlement_unique_source'),
+        UniqueConstraint('previous_deduction_id', name='uq_supplier_deduction_previous'),
+        CheckConstraint("previous_deduction_id IS NULL OR (status = 'SETTLED' AND previous_deduction_id <> id AND source_ref IS NULL)", name='supplier_deduction_follow_up'),
         CheckConstraint("responsibility IN ('CUSTOMER','SUPPLIER','INTERNAL','SHARED','UNKNOWN')", name='supplier_deduction_responsibility'),
         CheckConstraint("status IN ('PROPOSED','RESPONSIBILITY_CONFIRMED','SETTLED','CANCELLED')", name='supplier_deduction_status'),
         CheckConstraint('deduction_amount >= 0', name='supplier_deduction_nonnegative'),
@@ -935,6 +1110,88 @@ class TrialResult(IdentityMixin, Base):
     findings: Mapped[str] = mapped_column(Text)
     change_id: Mapped[str | None] = mapped_column(ForeignKey('business_subject.id'))
     confirmed_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+
+
+class TrialResultAttachment(IdentityMixin, Base):
+    """Immutable report originals linked to a confirmed trial result."""
+
+    __tablename__ = 'trial_result_attachment'
+    trial_result_id: Mapped[str] = mapped_column(ForeignKey('trial_result.id'), index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey('file_object.id'), index=True)
+    role: Mapped[str] = mapped_column(String(30), default='TRIAL_REPORT')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(200))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    linked_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    previous_id: Mapped[str | None] = mapped_column(ForeignKey('trial_result_attachment.id'))
+    __table_args__ = (
+        CheckConstraint("role IN ('TRIAL_REPORT')", name='trial_result_attachment_role'),
+        CheckConstraint('version > 0', name='trial_result_attachment_version'),
+        CheckConstraint(
+            'previous_id IS NULL OR previous_id <> id',
+            name='trial_result_attachment_previous_not_self',
+        ),
+        UniqueConstraint(
+            'trial_result_id', 'version',
+            name='trial_result_attachment_unique_version',
+        ),
+        UniqueConstraint(
+            'trial_result_id', 'file_id', 'role',
+            name='trial_result_attachment_unique_file',
+        ),
+        UniqueConstraint(
+            'previous_id',
+            name='trial_result_attachment_unique_previous',
+        ),
+    )
+
+
+class OutboundReleaseAttachment(IdentityMixin, Base):
+    """Immutable inspection/report originals linked to an outbound release fact."""
+
+    __tablename__ = 'outbound_release_attachment'
+    outbound_release_id: Mapped[str] = mapped_column(
+        ForeignKey('outbound_release_record.id'),
+        index=True,
+    )
+    file_id: Mapped[str] = mapped_column(ForeignKey('file_object.id'), index=True)
+    role: Mapped[str] = mapped_column(String(40), default='RELEASE_EVIDENCE')
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(200))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    linked_by: Mapped[str] = mapped_column(ForeignKey('app_user.id'))
+    previous_id: Mapped[str | None] = mapped_column(
+        ForeignKey('outbound_release_attachment.id')
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('RELEASE_EVIDENCE')",
+            name='outbound_release_attachment_role',
+        ),
+        CheckConstraint(
+            'version > 0',
+            name='outbound_release_attachment_version',
+        ),
+        CheckConstraint(
+            'previous_id IS NULL OR previous_id <> id',
+            name='outbound_release_attachment_previous_not_self',
+        ),
+        UniqueConstraint(
+            'outbound_release_id',
+            'version',
+            name='outbound_release_attachment_unique_version',
+        ),
+        UniqueConstraint(
+            'outbound_release_id',
+            'file_id',
+            'role',
+            name='outbound_release_attachment_unique_file',
+        ),
+        UniqueConstraint(
+            'previous_id',
+            name='outbound_release_attachment_unique_previous',
+        ),
+    )
 
 
 class FinanceCorrectionDetail(Base):

@@ -176,10 +176,15 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
     run.checkpoint = checkpoint
     run.result = None
     run.lease_until = None
-    if checkpoint.get("model_selection") or model_settings().llm_enabled:
+    if checkpoint.get("model_selection") or checkpoint.get("worker_scope"):
         checkpoint["worker_scope"] = settings().worker_scope
         run.checkpoint = checkpoint
         run.status = SCOPED_QUEUED
+    elif model_settings().llm_enabled:
+        # Legacy callers and old persisted runs have no worker scope. Keep
+        # their resume compatible with the legacy queue; new runs always carry
+        # a scope and use the scoped queue above.
+        run.status = "QUEUED"
     else:
         run.status = "WAITING_CONFIGURATION"
     return True

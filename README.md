@@ -165,7 +165,7 @@ ERP 工程产出的 npm 包不复制进 Agent 仓库；设置 `MOLD_ERP_DESIGN_M
 
 ### 5. 启动服务
 
-Windows 日常启动可使用根目录 `一键启动.bat`。它先验证后端导入，再用 `scripts/check_runtime.py` 检查本地 PostgreSQL：连接与 SQL 有超时，子进程整体限时 20 秒，连接从建立时强制只读，并核对版本表和必需表列。不可用或结构不匹配就明确退出，不自动执行迁移、盖章或建表。`一键启动.bat --check` 只检查，不启动服务，也不打开浏览器。
+Windows 日常启动可使用根目录 `一键启动.bat`。它先验证后端导入，再用 `scripts/check_runtime.py` 检查本地 PostgreSQL：连接与 SQL 有超时，子进程整体限时 20 秒，连接从建立时强制只读，并核对版本表和必需表列。不可用或结构不匹配就明确退出，不自动执行迁移、盖章或建表。启动器随后直接以隐藏、独立的 Python/Node 进程运行 API、Agent Worker、消息 Worker 和 Vite，并把标准输出/错误重定向到 `.local/logs/*-detached-*.log`，不会打开乱码 `cmd` 窗口。文档 Worker 只有在 `.env` 配置 `AGENT_OCR_SERVICE_TOKEN` 时才启动；未配置时会明确跳过。`一键启动.bat --check` 只检查，不启动服务，也不打开浏览器。
 
 本开发机的数据库由独立 Windows 服务 **`moldpilot-postgresql-55432`** 托管，自动启动，使用原 `.local/pgdata`，账号为低权限 `NetworkService`，失败后按 5/15/60 秒重启。现有 `postgresql-x64-18`（5432，另一数据目录）不是该项目实例，不能用它替代。数据库不再依附启动终端；关闭 API/Worker 窗口不会停止数据库。数据库日志在 `.local/pgdata/log/`。不要在服务运行时另用 `pg_ctl start` 创建重复实例。
 
@@ -183,13 +183,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_local_
 
 ```powershell
 $env:PYTHONPATH='backend'
-.\.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
+.\.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 终端二：配置好模型后启动 Agent Worker。
 
 ```powershell
 $env:PYTHONPATH='backend'
+$env:MOLD_API_BASE_URL='http://127.0.0.1:8001'
 .\.venv\Scripts\python.exe -m app.agent_worker
 ```
 
@@ -198,6 +199,7 @@ $env:PYTHONPATH='backend'
 
 ```powershell
 $env:PYTHONPATH='backend'
+$env:MOLD_API_BASE_URL='http://127.0.0.1:8001'
 .\.venv\Scripts\python.exe -m app.message_worker
 ```
 
@@ -228,7 +230,7 @@ npm run dev -- --host 127.0.0.1
 启动完成后访问：
 
 - Web 工作台：<http://127.0.0.1:5173>
-- API 健康检查：<http://127.0.0.1:8000/api/health>
+- API 健康检查：<http://127.0.0.1:8001/api/health>
 
 ## 供应商、多模型与思考档位
 

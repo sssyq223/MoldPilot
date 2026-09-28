@@ -10,6 +10,7 @@ from app import bpm, business, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold import file_policy
 
 
 def factory():
@@ -200,6 +201,10 @@ def test_finance_context_schema_and_summary():
             admin = db.query(m.User).filter_by(username="admin").one()
             result = execute(db, admin, "query_finance_context", {"identifier": "FIN-M001"})
             assert result["resolution"] == "RESOLVED"
+            assert result["scope_boundary"]["complete"] is True
+            assert result["scope_boundary"]["scope_key"] == "finance"
+            assert "prepare_customer_receipt_confirmation" in result["scope_boundary"]["write_tools"]
+            assert "prepare_supplier_payment_confirmation" in result["scope_boundary"]["write_tools"]
             analysis = result["data"][0]["analysis"]
             status = analysis["derived_status"]
             assert status["has_effective_start_notice"] is True
@@ -216,6 +221,75 @@ def test_finance_context_schema_and_summary():
             assert "审批通过不等于已付款" in "".join(analysis["warnings"])
             assert "未返回：客户实际回款确认" not in "".join(result["limitations"])
             assert "不同事实" in "".join(result["limitations"])
+    finally:
+        engine.dispose()
+
+
+def test_finance_context_connects_erp_payment_facts_by_local_contract_role(monkeypatch):
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            seed_finance_project(db, "FIN-ERP")
+
+        def fake_erp_finance(db, current_user, current_project, contract_numbers=()):
+            assert current_project.code == "FIN-ERP"
+            assert set(contract_numbers) == {
+                "SC-SECRET-FIN-ERP",
+                "FOC-SECRET-FIN-ERP",
+            }
+            return {
+                "status": "RESOLVED",
+                "source": "erp",
+                "project_code": current_project.code,
+                "contract_numbers": list(contract_numbers),
+                "records": {
+                    "contract_records": [],
+                    "payment_plan_records": [
+                        {"contractNo": "SC-SECRET-FIN-ERP", "paymentStage": "验收款"},
+                        {"contractNo": "FOC-SECRET-FIN-ERP", "paymentStage": "供应商验收款"},
+                    ],
+                    "payment_records": [
+                        {
+                            "contractNo": "SC-SECRET-FIN-ERP",
+                            "paymentNo": "ERP-REC-1",
+                            "invoiceStatus": "已开票",
+                            "invoiceNo": "INV-ERP-1",
+                        },
+                        {
+                            "contractNo": "FOC-SECRET-FIN-ERP",
+                            "paymentNo": "ERP-PAY-1",
+                            "invoiceStatus": "待开票",
+                        },
+                    ],
+                    "totals": {"contracts": 2, "payment_plans": 2, "payment_records": 2},
+                    "as_of": "2026-09-23T00:00:00+08:00",
+                    "source_system": "ERP",
+                    "limitations": [],
+                },
+                "limitations": [],
+            }
+
+        monkeypatch.setattr(
+            "domain_packs.mold.erp.design.erp_progress.query_project_finance_execution",
+            fake_erp_finance,
+        )
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(db, admin, "query_finance_context", {"identifier": "FIN-ERP"})
+            analysis = result["data"][0]["analysis"]
+            status = analysis["derived_status"]
+            assert status["has_erp_customer_payment_plan"] is True
+            assert status["has_erp_customer_payment_record"] is True
+            assert status["has_erp_supplier_payment_plan"] is True
+            assert status["has_erp_supplier_payment_record"] is True
+            assert status["has_erp_customer_invoice_record"] is True
+            assert status["erp_customer_invoice_issued_count"] == 1
+            assert status["has_erp_supplier_invoice_record"] is True
+            assert status["erp_supplier_invoice_pending_count"] == 1
+            assert status["has_erp_invoice_record"] is True
+            assert analysis["erp_finance_execution"]["records"]["payment_records"][0]["paymentNo"] == "ERP-REC-1"
+            assert "ERP 原系统合同付款计划/付款记录" in "".join(analysis["warnings"])
+            assert "发票编号/状态" in "".join(analysis["warnings"])
     finally:
         engine.dispose()
 
@@ -688,6 +762,8 @@ def test_finance_records_mold_transfer_time_from_customer_signature_without_acce
     try:
         with Session.begin() as db:
             admin, p = seed_finance_project(db, "FIN-MOLD-TRANSFER")
+            viewer = user(db, "mold-transfer-viewer")
+            outsider = user(db, "mold-transfer-outsider")
             conversation = m.Conversation(user_id=admin.id, title="登记移模客户签收")
             db.add(conversation);db.flush()
             run = m.Run(conversation_id=conversation.id,user_id=admin.id,
@@ -695,9 +771,24 @@ def test_finance_records_mold_transfer_time_from_customer_signature_without_acce
                 status="SUCCEEDED",checkpoint={"authorization_hash":fingerprint(db,admin),
                 "agent_permission_mode":"ask"})
             db.add(run);db.flush()
+            receipt_file = m.FileObject(
+                owner_id=admin.id,
+                conversation_id=conversation.id,
+                request_key="mold-transfer-receipt-evidence",
+                filename="客户签收单-001.pdf",
+                media_type="application/pdf",
+                size=12,
+                sha256="g" * 64,
+                backend="local",
+                storage_namespace="test",
+                object_key="mold-transfer-receipt-evidence",
+            )
+            db.add(receipt_file);db.flush()
+            db.add(m.RunFile(run_id=run.id, file_id=receipt_file.id));db.flush()
             args={"project_id":p.id,"project_version":p.row_version,
                 "signed_date":date.today().isoformat(),"shipment_reference":"MOVE-SIGN-001",
-                "signer_name":"客户项目经理","evidence":"客户签收单原件"}
+                "signer_name":"客户项目经理","evidence":"客户签收单原件",
+                "file_ids":[receipt_file.id]}
         schema=tool_schema("prepare_mold_transfer_receipt")["function"]["parameters"]
         assert {"project_id","project_version","signed_date","shipment_reference","signer_name","evidence"} <= set(schema["properties"])
         with Session.begin() as db:
@@ -705,6 +796,7 @@ def test_finance_records_mold_transfer_time_from_customer_signature_without_acce
             run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
             evidence=execute(db,admin,"prepare_mold_transfer_receipt",args,run=run)
             assert evidence["proposal"]["kind"]=="mold_transfer_receipt"
+            assert evidence["proposal"]["display"]["客户签收原件"][0]["filename"]=="客户签收单-001.pdf"
             step=m.Step(run_id=run.id,sequence=0,tool="prepare_mold_transfer_receipt",request_hash="move",result=evidence)
             db.add(step);db.flush()
             payload={"step_id":step.id,"proposal_hash":bpm.content_hash(evidence["proposal"])}
@@ -714,6 +806,12 @@ def test_finance_records_mold_transfer_time_from_customer_signature_without_acce
             row=db.get(m.CustomerDeliverySignature,receipt["customer_delivery_signature_id"])
             assert row.move_type=="MOLD_TRANSFER"
             assert row.signed_date==date.today()
+            attachment=db.scalar(select(m.CustomerDeliverySignatureAttachment).where(
+                m.CustomerDeliverySignatureAttachment.signature_id==row.id))
+            assert attachment.file_id==receipt_file.id
+            grant(db, admin, viewer, "project.dossier.read", args["project_id"])
+            assert file_policy.readable(db, viewer, receipt_file) is True
+            assert file_policy.readable(db, outsider, receipt_file) is False
             assert db.scalar(select(m.CustomerAcceptanceRecord).where(
                 m.CustomerAcceptanceRecord.project_id==args["project_id"])) is None
         with Session() as db:
@@ -723,6 +821,7 @@ def test_finance_records_mold_transfer_time_from_customer_signature_without_acce
             assert analysis["derived_status"]["has_mold_transfer_time"] is True
             assert analysis["derived_status"]["mold_transfer_is_quality_acceptance"] is False
             assert analysis["mold_transfer_receipts"][0]["move_time"]==date.today().isoformat()
+            assert analysis["mold_transfer_receipts"][0]["attachments"][0]["filename"]=="客户签收单-001.pdf"
     finally:
         engine.dispose()
 

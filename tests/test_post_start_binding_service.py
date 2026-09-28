@@ -7,10 +7,10 @@ from domain_packs.mold.erp.commercial import checklist_binding
 from domain_packs.mold.ports.errors import DomainError
 
 
-def test_erp_checklist_reference_is_a_bindable_versioned_target():
+def test_local_checklist_reference_is_a_bindable_versioned_target():
     reference = {
-        "kind": "accounting_checklist", "revision": 1,
-        "fingerprint": "a" * 64, "mold_no": "M-001",
+        "kind": "local_accounting_checklist", "project_id": "p1",
+        "revision": 1, "fingerprint": "a" * 64, "source_system": "agent_db",
     }
     assert validate_target_reference(
         reference, target_type="ACCOUNTING_CHECKLIST", project_id="p1", target_version=1,
@@ -24,38 +24,23 @@ def test_erp_checklist_reference_is_a_bindable_versioned_target():
     assert error.value.code == "VERSION_CONFLICT"
 
 
-def test_erp_checklist_reference_reads_external_identity_without_copying_rows(monkeypatch):
+def test_local_checklist_reference_reads_local_identity_without_copying_rows():
     class Db:
-        def get(self, model, user_id):
-            return type("Identity", (), {"token_ciphertext": "cipher"})()
+        def get(self, model, row_id):
+            return type("Row", (), {
+                "id": row_id, "kind": "local_cost_sheet", "project_id": "p1",
+                "revision": 1, "number": "CS-001",
+            })()
 
-    class Client:
-        def __init__(self, token):
-            assert token == "token"
-            self.closed = False
-
-        def accounting_checklist_reference(self, file_id):
-            assert file_id == 42
-            return {
-                "source_system": "ERP", "source_type": "production_cost_sheet_file",
-                "id": 42, "version": 1, "fingerprint": "b" * 64,
-                "bindable": True, "mold_no": "M-001", "line_count": 3,
-            }
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(checklist_binding, "settings", lambda: type("S", (), {"erp_base_url": "https://erp.example"})())
-    monkeypatch.setattr(checklist_binding, "decrypt", lambda value: "token")
     result = checklist_binding.resolve_reference(
-        Db(), type("User", (), {"id": "u1"})(),
-        "erp:production_cost_sheet_file:42", 1, client_factory=Client,
+        Db(), type("User", (), {"id": "u1"})(), "local-id", 1,
     )
-    assert result == {
-        "kind": "accounting_checklist", "id": "42", "project_id": None,
-        "revision": 1, "fingerprint": "b" * 64, "mold_no": "M-001",
-        "line_count": 3, "source_system": "ERP", "source_type": "production_cost_sheet_file",
-    }
+    assert result["kind"] == "local_accounting_checklist"
+    assert result["id"] == "local-id"
+    assert result["project_id"] == "p1"
+    assert result["source_system"] == "agent_db"
+    assert result["source_type"] == "local_cost_sheet"
+    assert result["fingerprint"]
 
 
 def test_contract_binding_requires_sales_contract_in_same_project_and_current_revision():

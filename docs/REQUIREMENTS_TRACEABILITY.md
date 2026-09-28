@@ -44,8 +44,8 @@ Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实
 内部模具号应保持稳定。已有模具的设变沿用原内部模具号，另建独立设变记录及任务；首次承接的外部模具按建档规则建立内部档案。新模建档与已有模具设变应在内部开工流程中分支处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：backend/app/project_control_tools.py 会话查询、暂停建议和本人确认后提交 BPM；ProjectPauseDetail 冻结有效计划与未完成任务范围；项目暂停生效后复用执行门禁阻断普通执行动作
-- 验证证据：tests/test_project_pause.py 覆盖审批前范围变化阻断；非 PostgreSQL 测试 109 passed；Vue 生产构建通过；专用 PostgreSQL 与 ERP 联调待执行
+- 实现证据：erp/core/domain_models.py 的 Mold.internal_number 唯一且通过 ProjectMold 关联项目；erp/project/start_materials.py 校验开工材料所引用内部模具关系并冻结快照；首次开工必须明确 NEW_MOLD 或 FIRST_EXTERNAL_CHANGE；BACKUP/REFERENCE 单独保存历史关系，不再从历史模号推断原模设变；提交与生效前重新锁定并核对冻结对象、状态与接收资料版本；prepare_internal_start 新增 EXISTING_MOLD_CHANGE 分支，复用 ACTIVE 原项目和选定原模具，引用当前已批准工程联络方案，经过本人确认与正式开工 BPM；不重复建项目/模具，不重新下达所有任务
+- 验证证据：tests/test_start_tools.py 验证首次开工分支和冻结对象漂移；tests/test_change_start.py 验证原模再次开工、收费独立语义、书面附件、重复阻断、BPM 冻结材料和生效前核对；真实 ERP 编码治理与生产业务未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-002
@@ -53,8 +53,8 @@ Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实
 客户订单编号、项目编号、客户模号、内部模号、机型和物料号分别保存其业务含义，通过确认的映射关系关联。不得仅因某客户样本中字段值相同，就将全部客户的不同编码视为同一字段。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：恢复强制关联当前有效 PauseRecord；按实际暂停天数顺延冻结且未完成的计划任务；PauseTaskShift 保存每个节点计划日期前后值并以唯一约束防重复
-- 验证证据：tests/test_project_pause.py 覆盖未完成节点顺延、已完成节点不变与重复恢复阻断；d33a12f7b9e1 PostgreSQL DDL 离线生成通过
+- 实现证据：bid_intake_revision 分别保存 external_order_number、customer_mold_number、customer_model_number、customer_material_number；项目编号和内部模具号仍取各自实体；prepare_bid_intake_draft 确认卡分别展示客户机型与物料号，经本人确认后追加不可变接收版本；查询、正式开工确认卡、InternalStartSnapshot 和模型语义上下文保持字段含义；mc0d0e000013 仅增加可空列；旧 customer_model_or_material 保留未分类原文，不猜测、不回填、不改历史开工快照；真实客户映射样本仍需验收
+- 验证证据：tests/test_bid_intake_tools.py 验证两字段分别确认/落库/查询、旧版不被重写和历史来源指纹保持兼容；tests/test_start_tools.py 验证开工冻结和模型上下文传递；tests/test_split_migrations.py 验证空库安装、旧版采用及 schema 一致性
 - 验收状态：NOT_VERIFIED
 
 ### FR-003
@@ -62,8 +62,8 @@ Agent 开发关联、候选确认、防重和历史追溯；引用 ERP 已有实
 一个项目包含多少套模具、合同与订单如何对应、设变是否增加订单及编号格式，在数据适配时确认；系统应保留实际确认的对应关系，不能仅凭合同号或模号相似自动合并。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：PauseRecord 保存区间与客户交期快照；恢复不修改 ProjectProfile.customer_due_date；暂停期仅阻断普通执行动作，资料、沟通、工程联络和结算核对仍按权限办理
-- 验证证据：tests/test_project_pause.py 验证客户承诺交期保持不变及顺延审计；真实业务验收尚未执行
+- 实现证据：ProjectMold 保存项目与多套模具显式关系；erp/commercial/contract_terms.py 冻结项目、模具、接收订单和开工关联快照，合同输入保留 mapping_evidence；query_business_object_candidates 对相同模具号关联多个项目返回 MULTIPLE_CANDIDATES，不自动合并；实际一合同多订单/多模具及设变增单规则仍须按客户资料核验
+- 验证证据：tests/test_business_matching.py 验证多项目同模号不合并、权限不可见对象不泄漏；tests/test_contract_tools.py 验证合同与人工确认订单映射；真实编码格式与复杂对应关系未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-004
@@ -236,8 +236,8 @@ Agent 开发开工依据、正式下达、业务状态、合同催补及财务�
 正式下达前允许匹配数据、准备草稿和项目计划草案，并按业务需要开展开工前的工艺评估及客户确认；不得下达或执行生产、采购、装配、试模任务。正式下达后，部门任务仍应按项目计划审批结果执行。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；工具返回计划上下文并提示正式开工后仍须按项目计划审批结果执行；正式开工生效的唯一自动副作用是项目状态、不可变部门交接证据和站内通知；没有创建 PlanTask、PurchaseRequest 或其他 ERP 执行单据；计划草稿可在通用业务材料层先保存，但提交审批仍由 before_submit 强制要求项目已正式开工；生效计划前不会把项目投影为执行中
-- 验证证据：tests/test_start_tools.py 验证工具只读核对、can_prepare_start_from_known_facts、正式开工生效不生成计划任务或采购申请，以及计划生效前后状态切换；真实 ERP 各执行动作的联合门禁仍待联调验收
+- 实现证据：query_internal_start_readiness 在项目仍为 DRAFT 时只提示可准备开工申请，不下达采购、生产、装配、试模任务；`prepare_project_plan_draft` 经本人确认后只在 Agent 保存 `project_plan=DRAFT` 与 PlanTask，不提交 BPM、不生效基线、不下达 ERP 执行任务；正式开工生效的唯一自动副作用是项目状态、不可变部门交接证据和站内通知；基线计划提交仍由 before_submit 强制要求项目已正式开工；生效计划前不会把项目投影为执行中
+- 验证证据：tests/test_plan_tools.py 验证草案建议卡、确认前无写入、确认后 DRAFT 保存和任务落库；tests/test_start_tools.py 验证工具只读核对、can_prepare_start_from_known_facts、正式开工生效不生成计划任务或采购申请，以及计划生效前后状态切换；真实 ERP 各执行动作的联合门禁仍待联调验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-022
@@ -321,8 +321,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 客户设变可能替换合同、追加合同或修改原合同。海信替换原合同与海尔保留原合同等不同情况按实际文件记录。区分当前有效合同内容、补充内容和历史版本，不以“只保留一个合同”删除历史资料。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContractDetail 使用 relation_type 明确区分 ORIGINAL、REPLACEMENT、ADDITION；prepare_contract_record 在同一会话工具中校验同项目、同合同类型、同客户/供应商和币种的真实前序合同；替代合同只有在 BPM 审批生效时才关闭前序版本；追加合同与主合同保持独立有效，建议确认和审批期间不提前改变旧合同状态；query_contract_context 同时返回全部历史合同、当前有效合同合计、替代/追加关系和不可变结算归属；历史合同和原始附件不删除
-- 验证证据：tests/test_contract_tools.py 覆盖替代确认前不写库、确认后只提交审批、审批前旧合同仍有效、审批生效后关闭前序版本，以及追加合同与主合同同时有效；tests/test_contract_tools.py 覆盖追加关系不进入替代版本链，替代追加合同时不会吸收主合同历史回款
+- 实现证据：ContractDetail 使用 relation_type 明确区分 ORIGINAL、REPLACEMENT、ADDITION；prepare_contract_record 在同一会话工具中校验同项目、同合同类型、同客户/供应商和币种的真实前序合同；替代合同只有在 BPM 审批生效时才关闭前序版本；追加合同与主合同保持独立有效，建议确认和审批期间不提前改变旧合同状态；query_contract_context 同时返回全部历史合同、当前有效合同合计、替代/追加关系和不可变结算归属；历史合同和原始附件不删除；未生效合同修订复用原 prepare_contract_record 与通用修订/BPM，材料版本追加保存条款、节点、接收依据和收付款分配；显式附件选择保留全部历史；查询与执行仅使用当前版本，不覆盖旧审批材料。mg0d0e000017 保留历史版本 1 并拒绝有损降级。
+- 验证证据：tests/test_contract_tools.py 覆盖替代确认前不写库、确认后只提交审批、审批前旧合同仍有效、审批生效后关闭前序版本，以及追加合同与主合同同时有效；tests/test_contract_tools.py 覆盖追加关系不进入替代版本链，替代追加合同时不会吸收主合同历史回款；tests/test_contract_revisions.py/test_contract_tools.py/test_split_migrations.py/test_start_tools.py/test_change_start.py 最终 57 项通过：退回/驳回/生效阻断修订重审、冲正后补齐分配、不可变历史、竞争、旧节点执行拒绝和迁移保护。独立验收库升级与结构检查通过；真实合同修订 UI/模型与 ERP 未验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-031
@@ -330,8 +330,8 @@ Agent 开发上传、版本、审核、业务关联、晚到差异及替代追�
 保留原合同、变更版本及历史收付款，明确替代或追加关系。财务确认后更新有效应收应付，历史已收已付不因合同替换而丢失，不得在新旧合同中重复累计。查询合同号应能追溯原版本、变更内容和已收未收情况。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ContractSettlementAllocation 把前序替代版本链中的每笔实际回款/付款映射到新合同付款节点，原财务记录保持在原合同且数据库禁止修改或删除归属记录；替代提交前要求历史实收实付逐条完整且唯一分配，校验来源金额/币种、目标节点、节点金额和合同金额；遗漏、重复、并行替代或无关合同重复归属均阻断；query_finance_context 只用当前有效合同形成节点和余额，把直接结算与历史归属合计一次；query_contract_context 分开返回历史总额和当前有效合同总额
-- 验证证据：tests/test_contract_tools.py 端到端覆盖原合同 300 元实际回款在 1200 元替代合同和 500 元新节点中只计一次，原回款记录仍关联旧合同，并覆盖遗漏分配阻断；tests/test_contract_tools.py 覆盖 200 元追加合同与 1000 元主合同独立累计，主合同 400 元回款不进入追加合同余额
+- 实现证据：ContractSettlementAllocation 把前序替代版本链中的每笔实际回款/付款映射到新合同付款节点，原财务记录保持在原合同且数据库禁止修改或删除归属记录；替代提交前要求历史实收实付逐条完整且唯一分配，校验来源金额/币种、目标节点、节点金额和合同金额；遗漏、重复、并行替代或无关合同重复归属均阻断；query_finance_context 只用当前有效合同形成节点和余额，把直接结算与历史归属合计一次；query_contract_context 分开返回历史总额和当前有效合同总额；合同替代的历史分配同时约束新增实际回款、付款占用与实际付款；原付款冲正按既有明确关联追加负向分配，后续替换保留全部正负原件各一次；未生效合同修订复用原 prepare_contract_record 与通用修订/BPM，材料版本追加保存条款、节点、接收依据和收付款分配；显式附件选择保留全部历史；查询与执行仅使用当前版本，不覆盖旧审批材料。mg0d0e000017 保留历史版本 1 并拒绝有损降级。
+- 验证证据：tests/test_contract_tools.py 端到端覆盖原合同 300 元实际回款在 1200 元替代合同和 500 元新节点中只计一次，原回款记录仍关联旧合同，并覆盖遗漏分配阻断；tests/test_contract_tools.py 覆盖 200 元追加合同与 1000 元主合同独立累计，主合同 400 元回款不进入追加合同余额；tests/test_replacement_finance_execution.py 覆盖替代后超额收/付款、旧授权阻断、追加冲正分配、再次替代、两种审批交错、历史快照及跨会话余额；合同/财务/领域集合 56 项及补充财务/收尾集合 32 项通过（重叠）；真实模型/UI/ERP 与完整需求仍未验收；tests/test_contract_revisions.py/test_contract_tools.py/test_split_migrations.py/test_start_tools.py/test_change_start.py 最终 57 项通过：退回/驳回/生效阻断修订重审、冲正后补齐分配、不可变历史、竞争、旧节点执行拒绝和迁移保护。独立验收库升级与结构检查通过；真实合同修订 UI/模型与 ERP 未验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-032
@@ -571,8 +571,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 供应商付款按合同对应阶段核验适用条件，包括交付、验收、发票、客户回款及累计已付款。预付款、进度款、验收款和尾款分别采用对应要求，不适用条件不作为阻断项；缺少适用资料时退回补齐，偏离约定时走特殊审批。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：整套委外合同付款节点通过 query_contract_context 返回，供应商付款申请仍由既有 supplier_payment 条件核验处理；上下文工具不把节点展示视为条件已满足或付款可执行
-- 验证证据：tests/test_contract_tools.py 覆盖付款节点只读展示；tests/test_domains.py 已有供应商付款条件与预留相关测试，完整客户回款/发票/验收条件矩阵尚未验收
+- 实现证据：整套委外合同付款节点通过 query_contract_context 返回，供应商付款申请仍由既有 supplier_payment 条件核验处理；上下文工具不把节点展示视为条件已满足或付款可执行；新增 prepare_supplier_payment_condition 与 prepare_supplier_payment_request，复用现有条件核验、节点占用、Agent BPM 和 finance.execute 确认卡；财务查询提供当前合同节点与可选流程。原申请明确 ID/版本/原因后可在草稿、退回、驳回或生效阻断状态修订并完整重审，保留旧快照，金额/节点变化重核条件和余额，不形成实际付款。；付款申请提交时按合同完整读取权限冻结 payment_basis（合同/供应商/节点/条件依据）供审批人核对；旧快照不回填。复用通用审批材料工作区。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。
+- 验证证据：tests/test_contract_tools.py 覆盖付款节点只读展示；tests/test_domains.py 已有供应商付款条件与预留相关测试，完整客户回款/发票/验收条件矩阵尚未验收；供应商付款工具最终 9 项通过；相关财务、合同替代、目录、领域包和 MCP 集合 97 项通过（集合重叠）。覆盖条件→申请→审批→实付分离、幂等、竞争余额、完整权限/申请人、回滚、合同替代后的缓存刷新及阻断原申请转新节点完整重审。完整条件矩阵、特殊审批及真实 ERP 财务仍未验收。；审批依据补全后的相关集合43项通过。内置浏览器付款条件真实模型→确认通过；付款申请真实模型错误选流程后预算失败。非模型生成合成卡完成60申请→退回→原申请50重审生效，旧轮保留且实付0；恢复模型误称最终审批完成仍判失败，完整需求未验收。；tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ### FR-057
@@ -633,8 +633,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 系统显示适用的齐套进度，钳工主管确认装配条件后分配任务并下达装配工单。装配完成后确认完工，无异常由钳工主管发起试模申请；有异常关联质检及工程联络单，定位责任任务处理。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_assembly_trial_context 按项目、装配任务或试模线索核对计划节点、设计BOM路线、装配任务下发、装配开工/完工、试模申请、试模结果和工程联络异常上下文；analysis.derived_status 区分 has_assembly_order、has_assembly_started、has_assembly_done、has_trial_request、has_trial_result、has_open_assembly_or_trial_issue，避免把装配完成误判为试模完成或异常关闭；工具 limitations 明确实际装配/试模执行复用 ERP 或正式业务回执，Agent 不下达装配工单、不登记开完工、不修改 ERP 执行数据；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
-- 验证证据：tests/test_assembly_trial_tools.py 覆盖装配计划节点、设计BOM路线、装配完工、试模未通过、工程联络异常聚合；真实 ERP 齐套率、关键件口径、钳工主管确认和装配工单联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
+- 实现证据：query_assembly_trial_context 按项目、装配任务或试模线索核对计划节点、设计BOM路线、装配任务下发、装配开工/完工、试模申请、试模结果和工程联络异常上下文；analysis.derived_status 区分 has_assembly_order、has_assembly_started、has_assembly_done、has_trial_request、has_trial_result、has_open_assembly_or_trial_issue，避免把装配完成误判为试模完成或异常关闭；工具 limitations 明确实际装配/试模执行复用 ERP 或正式业务回执，Agent 不下达装配工单、不登记开完工、不修改 ERP 执行数据；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据；query_assembly_trial_context 在权限隔离后投影可见设计 BOM、采购/收货/质检/库存事实，按物料需求与已核验数量给出 assembly_readiness 和装配试模 handoffs；关键件清单、70%～80%阈值、机台/资源排程和原始试模报告附件未被推断，分别明确返回 UNCONFIGURED、UNVERIFIED 或 UNAVAILABLE，不新增 ERP 页面或复制执行台账；query_assembly_trial_context 在权限隔离后投影可见设计 BOM、采购/收货/质检/库存事实，按物料需求与已核验数量给出 assembly_readiness 和装配试模 handoffs；prepare_assembly_execution 仅基于真实生效装配任务准备开工/完工回执确认卡，本人确认后复用既有 assembly.execute 命令写入 Agent 执行事实；关键件清单、70%～80%阈值、机台/资源排程和原始试模报告附件未被推断，分别明确返回 UNCONFIGURED、UNVERIFIED 或 UNAVAILABLE，不新增 ERP 页面或复制执行台账
+- 验证证据：tests/test_assembly_trial_tools.py 覆盖装配计划节点、设计BOM路线、装配完工、试模未通过、工程联络异常聚合；真实 ERP 齐套率、关键件口径、钳工主管确认和装配工单联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并；tests/test_assembly_trial_tools.py 覆盖可见 BOM、采购/收货/库存数量投影、READY/NO_EFFECTIVE_BOM 状态、权限隔离、关键件规则未配置和阈值不被猜测；tests/test_project_execution_lifecycle.py 覆盖装配试模 handoff 与阶段事实隔离；tests/test_assembly_trial_tools.py 覆盖可见 BOM、采购/收货/库存数量投影、READY/NO_EFFECTIVE_BOM 状态、权限隔离、关键件规则未配置和阈值不被猜测；新增 prepare_assembly_execution 确认前零写入、确认后登记装配完工回执；tests/test_project_execution_lifecycle.py 覆盖装配试模 handoff 与阶段事实隔离
 - 验收状态：NOT_VERIFIED
 
 ### FR-063
@@ -642,8 +642,8 @@ Agent 开发合同草稿/审批、付款条件与防重申请；引用既有合�
 试模安排确认机台租赁或内部资源及计划可用性，由试模主管分配任务。试模人员记录执行结果并上传报告；通过后形成出厂自检合格资料，不通过时发起工程联络单，返回对应任务整改后重新验证。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_assembly_trial_context 返回试模 planned_date、location、acceptance_criteria、responsible_id、results，并在 analysis 中区分 has_trial_request、has_trial_result、has_trial_passed、has_trial_failed；试模未通过时 warnings 提醒需关联工程联络单、整改责任任务和重新验证依据；试模通过时提醒不等于客户验收、出厂放行或项目关闭；试模记录仅在当前用户具备 trial_request.read 授权时通过同一上下文工具读取，未授权时不泄露试模单号、报告或结论
-- 验证证据：tests/test_assembly_trial_tools.py 覆盖试模结果读取、试模未通过整改提示、无 trial_request.read 时不泄露 TRIAL-SECRET 或 SECRET-TRIAL-REPORT；机台租赁/内部资源可用性、试模报告附件解析和出厂自检资料联调尚未验收
+- 实现证据：query_assembly_trial_context 返回试模 planned_date、location、acceptance_criteria、responsible_id、results，并在 analysis 中区分 has_trial_request、has_trial_result、has_trial_passed、has_trial_failed；试模未通过时 warnings 提醒需关联工程联络单、整改责任任务和重新验证依据；试模通过时提醒不等于客户验收、出厂放行或项目关闭；试模记录仅在当前用户具备 trial_request.read 授权时通过同一上下文工具读取，未授权时不泄露试模单号、报告或结论；query_assembly_trial_context 在装配/试模上下文中返回 trial_resources、trial_report_evidence 和 assembly_trial_handoffs，区分责任人/日期/地点等文本证据、资源可用性和试模报告附件状态；没有 ERP 排程或 FileObject 关联时保持 UNVERIFIED/UNAVAILABLE，并将后续交付放行作为独立 handoff；query_assembly_trial_context 在装配/试模上下文中返回 trial_resources、trial_report_evidence 和 assembly_trial_handoffs，区分责任人/日期/地点等文本证据、资源可用性和试模报告附件状态；确认试模结论时可在权限范围内关联当前用户上传的 FileObject 原件并保留不可变版本，没有 Agent 报告附件时仍保持 UNAVAILABLE；没有 ERP 排程时资源保持 UNVERIFIED，并将后续交付放行作为独立 handoff；query_assembly_trial_context 在装配/试模上下文中返回 trial_resources、trial_report_evidence 和 assembly_trial_handoffs，区分责任人/日期/地点等文本证据、资源可用性和试模报告附件状态；prepare_trial_result 仅基于真实生效试模申请准备通过/未通过确认卡，未通过必须关联工程联络单，本人确认后复用既有 trial.confirm 命令；确认试模结论时可在权限范围内关联当前用户上传的 FileObject 原件并保留不可变版本，没有 Agent 报告附件时仍保持 UNAVAILABLE；没有 ERP 排程时资源保持 UNVERIFIED，并将后续交付放行作为独立 handoff
+- 验证证据：tests/test_assembly_trial_tools.py 覆盖试模结果读取、试模未通过整改提示、无 trial_request.read 时不泄露 TRIAL-SECRET 或 SECRET-TRIAL-REPORT；机台租赁/内部资源可用性、试模报告附件解析和出厂自检资料联调尚未验收；tests/test_assembly_trial_tools.py 覆盖试模资源字段、资源可用性未核验、报告文本证据和附件不可用状态；tests/test_project_execution_lifecycle.py 覆盖 assembly_trial_handoffs 在交付放行前的串联；真实 ERP 排程、报告 FileObject 关联和业务现场验收仍需后续确认；tests/test_assembly_trial_tools.py 覆盖试模资源字段、资源可用性未核验、报告文本证据和附件不可用状态；新增试模结论→FileObject 报告原件关联及 assembly_readiness ATTACHED/VERIFIED 状态测试；tests/test_project_execution_lifecycle.py 覆盖 assembly_trial_handoffs 在交付放行前的串联；真实 ERP 排程、ERP 原生报告权限和业务现场验收仍需后续确认；tests/test_assembly_trial_tools.py 覆盖试模资源字段、资源可用性未核验、报告文本证据和附件不可用状态；新增 prepare_trial_result 确认前零写入、确认后登记试模结论及未通过边界；新增试模结论→FileObject 报告原件关联及 assembly_readiness ATTACHED/VERIFIED 状态测试；tests/test_project_execution_lifecycle.py 覆盖 assembly_trial_handoffs 在交付放行前的串联；真实 ERP 排程、ERP 原生报告权限和业务现场验收仍需后续确认
 - 验收状态：NOT_VERIFIED
 
 ## 交付与物流
@@ -655,8 +655,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 对模具、零件及出厂件按要求进行质量检测和出厂验收，保存结果与确认人。满足组装、检验和验收条件后办理入库、出库及发货记录，不能将工序合格直接等同于整套模具交付合格。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 按项目、发货、物流、签收或验收线索核对交付计划节点、正式订单发货、仓库收货、入库检验、库存移动、试模结果、结项清单和工程联络异常上下文；analysis.derived_status 区分 has_supplier_shipment、has_goods_receipt、has_receipt_inspection、has_stock_out_movement、has_trial_passed、has_customer_signature、has_customer_acceptance，防止把工序合格、供应商发货或试模通过等同于整套模具交付合格；工具 limitations 明确采购发货、仓库收货、入库检验、出库、客户签收和客户验收是不同事实，不能相互替代；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖供应商发货、仓库收货、入库检验、出库移动、试模通过、客户验收清单和质量联络异常聚合；真实出厂件检测、ERP 出入库/发货执行和客户验收联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并
+- 实现证据：query_delivery_logistics_context 按项目、发货、物流、签收或验收线索核对交付计划节点、正式订单发货、仓库收货、入库检验、库存移动、试模结果、结项清单和工程联络异常上下文；analysis.derived_status 区分 has_supplier_shipment、has_goods_receipt、has_receipt_inspection、has_stock_out_movement、has_trial_passed、has_customer_signature、has_customer_acceptance，防止把工序合格、供应商发货或试模通过等同于整套模具交付合格；工具 limitations 明确采购发货、仓库收货、入库检验、出库、客户签收和客户验收是不同事实，不能相互替代；query_project_execution_context 从基线计划继续投影设计/BOM、采购或整套委外、制造质检、装配试模、交付签收和客户验收；阶段权限独立，后续事实不覆盖前序缺口，不新增 ERP 页面或复制执行数据；prepare_outbound_release 继续只登记 Agent 出厂自检/放行事实，不复制 ERP 出库或发货；当前任务中本人上传的放行报告可在人工确认后以 OutboundReleaseAttachment 不可变版本保存，query_delivery_logistics_context 返回原件元数据并将放行证据与 ERP 履约、客户签收分别投影。
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖供应商发货、仓库收货、入库检验、出库移动、试模通过、客户验收清单和质量联络异常聚合；真实出厂件检测、ERP 出入库/发货执行和客户验收联调尚未验收；tests/test_project_execution_lifecycle.py 覆盖协调器注册、空项目当前焦点、整套委外分支、内部制造/装配不重复执行、交付独立保留、阶段权限不泄漏及多项目候选不合并；tests/test_delivery_logistics_tools.py 覆盖试模前置、确认前零写入、放行原件关联、原件查询和交付门禁；真实 ERP 出厂检测报告权限、入库/出库放行和现场交付仍需业务环境验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-065
@@ -691,8 +691,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 发货后记录客户签收和客户验收结果，两者分别确认。验收结果作为适用的回款及归档依据；签收日期按移模业务规则维护，不自动认定质量验收通过。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 将客户签收 has_customer_signature 与客户验收 has_customer_acceptance 分开；当前无签收结构化模型时不自动认定签收；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仅作为客户验收依据之一展示，不把供应商发货、仓库收货或试模通过等同于客户验收
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖客户验收清单 DONE 可被识别，同时 has_customer_signature 仍为 false；真实签收日期、移模业务规则和回款归档联动尚未验收
+- 实现证据：query_delivery_logistics_context 将客户签收 has_customer_signature 与客户验收 has_customer_acceptance 分开；当前无签收结构化模型时不自动认定签收；项目关闭/结项清单中的 CUSTOMER_ACCEPTANCE 仅作为客户验收依据之一展示，不把供应商发货、仓库收货或试模通过等同于客户验收；客户复验通过 previous_acceptance_id 明确关联前次记录；项目锁与唯一约束阻止复验分叉，历史验收禁止 UPDATE/DELETE。独立初验或未关联的历史复验不能清除已有失败；正常关闭提交及生效均重新核对未解决验收失败。me0d0e000015 不猜测回填旧关联，存在确认链时拒绝丢失关联的降级。；客户签收与客户质量验收继续作为两类独立 Agent 事实；prepare_customer_acceptance 在人工确认后登记验收结果，新增 file_ids 对当前任务中本人上传的客户验收原件做边界校验，并以 CustomerAcceptanceAttachment 不可变版本保存原件哈希，查询交付物流和整套委外上下文均返回原件元数据，不把签收自动升级为验收或回款。；客户签收与客户质量验收继续作为两类独立 Agent 事实；prepare_customer_acceptance 在人工确认后登记验收结果，prepare_mold_transfer_receipt 对当前任务中本人上传的客户签收原件做同样边界校验；两类原件分别以 CustomerAcceptanceAttachment / CustomerDeliverySignatureAttachment 不可变版本保存哈希，查询交付、整套委外和财务上下文均返回原件元数据，不把签收自动升级为验收或回款。；客户签收与客户质量验收继续作为两类独立 Agent 事实；prepare_customer_acceptance 在人工确认后登记验收结果，prepare_customer_delivery_signature 登记发运后的 DELIVERY 签收，prepare_mold_transfer_receipt 对移模时间使用的签收原件做同样边界校验；两类原件分别以 CustomerAcceptanceAttachment / CustomerDeliverySignatureAttachment 不可变版本保存哈希，查询交付、整套委外和财务上下文均返回原件元数据，不把签收自动升级为验收或回款。
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖客户验收清单 DONE 可被识别，同时 has_customer_signature 仍为 false；真实签收日期、移模业务规则和回款归档联动尚未验收；tests/test_acceptance_lineage.py、test_delivery_logistics_tools.py、test_project_closure.py 验证独立初验/历史未关联复验不能覆盖失败、前次关联漂移、复验防重、不可变记录与关闭前新增失败；真实客户及 ERP 验收仍未通过。；tests/test_delivery_logistics_tools.py 覆盖签收与验收分离、人工确认前零写入、确认后客户原件关联、交付上下文原件投影和重复阻断；真实客户签字、ERP 物流和回款业务验收仍未完成。；tests/test_delivery_logistics_tools.py 与 tests/test_finance_context_tools.py 覆盖签收与验收分离、人工确认前零写入、确认后客户原件关联、交付/财务上下文原件投影和重复阻断；真实客户签字、ERP 物流和回款业务验收仍未完成。；tests/test_delivery_logistics_tools.py 与 tests/test_finance_context_tools.py 覆盖签收与验收分离、人工确认前零写入、确认后客户原件关联、DELIVERY 与 MOLD_TRANSFER 记录区分、交付/财务上下文原件投影和重复阻断；真实客户签字、ERP 物流和回款业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ### FR-069
@@ -700,8 +700,8 @@ Agent 开发发货车辆、物流信息维护、物流报价审批及验收协�
 客户验收不通过时记录问题、证据、责任判断和处理期限，关联工程联络单或供应商整改任务。整改后安排复验并记录最终结果，涉及费用、扣款、交期和合同变化时同步对应记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_delivery_logistics_context 汇总质量、交付、物流或验收相关工程联络事项，存在未关闭事项时 warnings 提醒不能认定整改闭环完成；收货检验不合格数量、试模未通过和客户验收/质量联络分别触发警示，要求关联退换货、扣款、整改或工程联络处理
-- 验证证据：tests/test_delivery_logistics_tools.py 覆盖收货检验不合格、客户验收质量联络和开放整改事项提示；客户验收不通过后的复验、费用扣款、交期与合同变化同步尚未完整联调
+- 实现证据：query_delivery_logistics_context 汇总质量、交付、物流或验收相关工程联络事项，存在未关闭事项时 warnings 提醒不能认定整改闭环完成；收货检验不合格数量、试模未通过和客户验收/质量联络分别触发警示，要求关联退换货、扣款、整改或工程联络处理；客户复验通过 previous_acceptance_id 明确关联前次记录；项目锁与唯一约束阻止复验分叉，历史验收禁止 UPDATE/DELETE。独立初验或未关联的历史复验不能清除已有失败；正常关闭提交及生效均重新核对未解决验收失败。me0d0e000015 不猜测回填旧关联，存在确认链时拒绝丢失关联的降级。；query_finance_context 复用交付验收和委外扣款读取方，分别返回客户验收影响、明确复验关联、供应商责任/结算状态和原记录引用；模型上下文保留这些可见事实。复验通过不抹去费用，未授权和截断明确标记，不自动对冲、抵扣或更改实收实付。；prepare_supplier_deduction_settlement 通过 previous_deduction_id 追加原责任记录的后续结算，冻结原供应商、合同、联络、责任及金额币种；可明确关联 customer_acceptance_id。本人确认时项目锁重检、唯一约束防分叉；历史记录不可覆盖，查询只沿有效关联消除原未结算状态，不自动对冲或写 ERP 实账。mf0d0e000016 不回填历史关联。；客户验收记录保留问题、责任、整改期限、工程联络单、供应商、扣款、交期影响和合同变化字段；复验通过 previous_acceptance_id 串联当前验收链，客户原件以不可变附件事实随验收记录保存，不自动执行扣款、改合同或关闭项目。
+- 验证证据：tests/test_delivery_logistics_tools.py 覆盖收货检验不合格、客户验收质量联络和开放整改事项提示；客户验收不通过后的复验、费用扣款、交期与合同变化同步尚未完整联调；tests/test_acceptance_lineage.py、test_delivery_logistics_tools.py、test_project_closure.py 验证独立初验/历史未关联复验不能覆盖失败、前次关联漂移、复验防重、不可变记录与关闭前新增失败；真实客户及 ERP 验收仍未通过。；tests/test_finance_quality_context.py 验证复验后历史影响、责任/结算/取消区别、项目及工具/数据权限隔离、历史截断及不改变收付款；独立合成库读取验证既有验收影响已进入财务上下文。真实 ERP 财务同步与模型/浏览器验收仍未完成。；tests/test_supplier_deduction_follow_up.py 验证本人确认、重复确认、防竞争、金额/责任/币种及来源核对、验收权限与同项目、原合同关闭后结算、无关联/异常关联不掩盖未结算和实收实付保持不变；test_split_migrations.py 验证旧事实保留及有确认关联时拒绝有损降级。独立库已升级，真实 ERP 结算、模型及 UI 验收仍未通过。；tests/test_delivery_logistics_tools.py 覆盖失败验收字段、整改复验链、原件哈希及附件回读；tests/test_finance_quality_context.py 与收尾回归继续验证费用/合同/计划影响只读投影，真实整改执行和现场复验仍需验收。
 - 验收状态：NOT_VERIFIED
 
 ## 整套委外协同
@@ -749,8 +749,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 客户设变关联原供应商、采购合同、当前进度及任务。小范围变化记录客户、我方和供应商沟通结果；需追加或变更合同的，保留原版本并完成相应确认审批。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 汇总 engineering_change 记录中的委外、质量、延期、合同、整改和复验影响，并标记未实施或未复验的影响项；工程联络/设变和整套委外合同、当前计划节点、订单执行跟踪在同一上下文中展示，便于核对客户设变对供应商、采购合同和进度的影响
-- 验证证据：tests/test_full_outsource_tools.py 覆盖工程联络质量延期扣款事项进入委外上下文；客户设变追加合同、原版本保留和完整审批链尚未验收
+- 实现证据：query_full_outsource_context 汇总 engineering_change 记录中的委外、质量、延期、合同、整改和复验影响，并标记未实施或未复验的影响项；工程联络/设变和整套委外合同、当前计划节点、订单执行跟踪在同一上下文中展示，便于核对客户设变对供应商、采购合同和进度的影响；新增 prepare_outsource_change_negotiation，基于真实项目版本、生效整套委外合同、供应商和工程联络单准备客户报价、供应商报价、最终协商金额、交期/任务影响及合同变更要求确认卡；本人确认后追加既有 OutsourceChangeNegotiation 事实，不自动改合同、计划、责任或 ERP 执行数据；AGREED 仍需独立合同版本或计划变更审批。
+- 验证证据：tests/test_full_outsource_tools.py 覆盖工程联络质量延期扣款事项进入委外上下文；客户设变追加合同、原版本保留和完整审批链尚未验收；tests/test_full_outsource_tools.py 覆盖确认前零写入、客户/供应商报价与议价金额、交期影响、工程联络关联、合同变更门禁、重复来源和查询上下文投影；真实客户设变、供应商议价回执、合同版本审批及 ERP/财务联调仍需业务环境验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-075
@@ -758,8 +758,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 设变后的委外进度沿用供应商上报、采购跟进、项目同步的机制；根据客户报价及供应商当前执行情况评估并议价，明确新增费用、交期及任务影响。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 将设变/整改影响项、供应商执行跟踪、委外计划节点和费用/扣款线索分开返回，避免把方案批准当作新增费用或交期影响已落实；analysis.warnings 对未执行/未复验影响项提示不能把方案批准等同于整改完成
-- 验证证据：tests/test_full_outsource_tools.py 覆盖质量延期与扣款线索提示；设变后的委外议价、交期重排、客户报价和供应商当前执行评估尚未完整联调验收
+- 实现证据：query_full_outsource_context 将设变/整改影响项、供应商执行跟踪、委外计划节点和费用/扣款线索分开返回，避免把方案批准当作新增费用或交期影响已落实；analysis.warnings 对未执行/未复验影响项提示不能把方案批准等同于整改完成；新增 prepare_outsource_change_negotiation，基于真实项目版本、生效整套委外合同、供应商和工程联络单准备客户报价、供应商报价、最终协商金额、交期/任务影响及合同变更要求确认卡；本人确认后追加既有 OutsourceChangeNegotiation 事实，不自动改合同、计划、责任或 ERP 执行数据；AGREED 仍需独立合同版本或计划变更审批。
+- 验证证据：tests/test_full_outsource_tools.py 覆盖质量延期与扣款线索提示；设变后的委外议价、交期重排、客户报价和供应商当前执行评估尚未完整联调验收；tests/test_full_outsource_tools.py 覆盖确认前零写入、客户/供应商报价与议价金额、交期影响、工程联络关联、合同变更门禁、重复来源和查询上下文投影；真实客户设变、供应商议价回执、合同版本审批及 ERP/财务联调仍需业务环境验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-076
@@ -767,8 +767,8 @@ Agent 开发加工方式控制、节点协同、审批、异常及结算衔接�
 质量或延期问题记录事实、责任确认、整改和复验。按适用合同及经确认的责任处理客户对我方、我方对供应商的扣款，不能在责任未确定时仅凭延期自动认定全部由供应商承担。扣款结果关联结算数据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索；prepare_supplier_deduction_settlement 基于真实项目版本、供应商、委外合同或工程联络线索准备供应商扣款责任/结算依据确认卡片，本人确认后才写入 SupplierDeductionSettlement，不执行收付款或自动抵扣；full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担
-- 验证证据：tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；tests/test_finance_context_tools.py 覆盖供应商扣款结算 proposal 不直接写库、本人确认后写入、重复来源阻断和已结算缺少依据阻断；真实复验关闭、客户对我方/我方对供应商扣款联动及 ERP/财务结算写入尚未验收
+- 实现证据：query_full_outsource_context 汇总质量/延期工程联络任务的预计金额、实际金额、交期影响、执行依据和状态，derived_status.has_deduction_or_cost_impact_signal 标记扣款或费用影响线索；prepare_supplier_deduction_settlement 基于真实项目版本、供应商、委外合同或工程联络线索准备供应商扣款责任/结算依据确认卡片，本人确认后才写入 SupplierDeductionSettlement，不执行收付款或自动抵扣；full_outsource_review Skill 要求质量或延期扣款必须结合合同、责任确认、整改/复验和结算依据，不能只凭延期自动认定全部由供应商承担；query_finance_context 复用交付验收和委外扣款读取方，分别返回客户验收影响、明确复验关联、供应商责任/结算状态和原记录引用；模型上下文保留这些可见事实。复验通过不抹去费用，未授权和截断明确标记，不自动对冲、抵扣或更改实收实付。；prepare_supplier_deduction_settlement 通过 previous_deduction_id 追加原责任记录的后续结算，冻结原供应商、合同、联络、责任及金额币种；可明确关联 customer_acceptance_id。本人确认时项目锁重检、唯一约束防分叉；历史记录不可覆盖，查询只沿有效关联消除原未结算状态，不自动对冲或写 ERP 实账。mf0d0e000016 不回填历史关联。
+- 验证证据：tests/test_full_outsource_tools.py 覆盖供应商质量延期扣款线索、合同依据和未关闭问题提示；tests/test_finance_context_tools.py 覆盖供应商扣款结算 proposal 不直接写库、本人确认后写入、重复来源阻断和已结算缺少依据阻断；真实复验关闭、客户对我方/我方对供应商扣款联动及 ERP/财务结算写入尚未验收；tests/test_finance_quality_context.py 验证复验后历史影响、责任/结算/取消区别、项目及工具/数据权限隔离、历史截断及不改变收付款；独立合成库读取验证既有验收影响已进入财务上下文。真实 ERP 财务同步与模型/浏览器验收仍未完成。；tests/test_supplier_deduction_follow_up.py 验证本人确认、重复确认、防竞争、金额/责任/币种及来源核对、验收权限与同项目、原合同关闭后结算、无关联/异常关联不掩盖未结算和实收实付保持不变；test_split_migrations.py 验证旧事实保留及有确认关联时拒绝有损降级。独立库已升级，真实 ERP 结算、模型及 UI 验收仍未通过。
 - 验收状态：NOT_VERIFIED
 
 ### FR-077
@@ -789,8 +789,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 设变包括客户设变、内部修模改模及委外设变；客户设变的执行方式可为内部或委外。收费与否、是否新增合同和具体执行范围分别记录，不以有无合同代替设变记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_change_intake_context 汇总客户设变、内部修模改模、委外设变分类，分别返回收费/金额线索、销售/委外合同、开工通知、执行范围和工程变更记录；change_intake_review Skill 明确设变记录、合同、收费、开工和执行范围不能相互替代
-- 验证证据：tests/test_change_intake_tools.py 覆盖客户设变、合同/开工、影响项和未闭环状态聚合
+- 实现证据：query_change_intake_context 汇总客户设变、内部修模改模、委外设变分类，分别返回收费/金额线索、销售/委外合同、开工通知、执行范围和工程变更记录；change_intake_review Skill 明确设变记录、合同、收费、开工和执行范围不能相互替代；原模再次设变通过 prepare_internal_start 的独立分支冻结原模具、客户新模号、收费/免费、销售合同方式和书面附件；客户收费与供应商费用分别保存；免费及无新增合同仍须开工审批；工程联络复验/关闭识别缺失开工通知
+- 验证证据：tests/test_change_intake_tools.py 覆盖客户设变、合同/开工、影响项和未闭环状态聚合；tests/test_change_start.py 使用 PostgreSQL、本人确认意图与真实 BPM 验证内部免费/委外收费、重复通知阻断、原模号变化阻断、晚到合同明确关联；本地浏览器部署仍受缺失历史迁移阻塞，真实业务未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-079
@@ -798,8 +798,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 小设变可能免费或无合同，仍沿用正常开工通知及审批规则，不能因无合同跳过开工条件。收费通过邮件或沟通确认时保留可核对记录；口头沟通应补充书面确认记录及相关聊天等证据。内部执行由相关人员与客户确认金额，委外由采购与供应商确认金额并上传依据。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_change_intake_context 在 derived_status 中区分 customer_written_evidence、effective_start_notice、charge_or_cost_impact 和 effective_contract；工具 warnings 对“无合同或免费小设变也不能跳过开工条件”和口头/客户确认依据缺口给出模型可用提示
-- 验证证据：tests/test_change_intake_tools.py 构造免费小改、客户邮件依据和正式开工通知，验证工具不把合同缺失等同为可跳过流程
+- 实现证据：query_change_intake_context 在 derived_status 中区分 customer_written_evidence、effective_start_notice、charge_or_cost_impact 和 effective_contract；工具 warnings 对“无合同或免费小设变也不能跳过开工条件”和口头/客户确认依据缺口给出模型可用提示；原模再次设变通过 prepare_internal_start 的独立分支冻结原模具、客户新模号、收费/免费、销售合同方式和书面附件；客户收费与供应商费用分别保存；免费及无新增合同仍须开工审批；工程联络复验/关闭识别缺失开工通知
+- 验证证据：tests/test_change_intake_tools.py 构造免费小改、客户邮件依据和正式开工通知，验证工具不把合同缺失等同为可跳过流程；tests/test_change_start.py 使用 PostgreSQL、本人确认意图与真实 BPM 验证内部免费/委外收费、重复通知阻断、原模号变化阻断、晚到合同明确关联；本地浏览器部署仍受缺失历史迁移阻塞，真实业务未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-080
@@ -807,8 +807,8 @@ Agent 开发设变分类、依据、报价与承接、原对象关联和版本�
 已有模具设变复用内部模具号，客户模号变化保留历史；可通过已确认的订单合同关系定位原模具，无新增合同时直接关联原模具及原项目。缺少海尔物料号时由人工按订单编号查询客户系统，查询不到时补录或上传依据并留痕。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_change_intake_context 通过 ProjectMold/Mold、工程联络 mold_number/product_ref/customer_ref 和销售合同线索反查原项目、原内部模具与客户料品/模号证据；工具 gaps 明确缺少内部模具档案或客户物料号/客户系统依据时不能重复建模具或凭猜测办理
-- 验证证据：tests/test_change_intake_tools.py 验证已有内部模具号 MOLD-INT-001 与客户模号变更线索同时返回
+- 实现证据：query_change_intake_context 通过 ProjectMold/Mold、工程联络 mold_number/product_ref/customer_ref 和销售合同线索反查原项目、原内部模具与客户料品/模号证据；工具 gaps 明确缺少内部模具档案或客户物料号/客户系统依据时不能重复建模具或凭猜测办理；原模再次设变通过 prepare_internal_start 的独立分支冻结原模具、客户新模号、收费/免费、销售合同方式和书面附件；客户收费与供应商费用分别保存；免费及无新增合同仍须开工审批；工程联络复验/关闭识别缺失开工通知
+- 验证证据：tests/test_change_intake_tools.py 验证已有内部模具号 MOLD-INT-001 与客户模号变更线索同时返回；tests/test_change_start.py 使用 PostgreSQL、本人确认意图与真实 BPM 验证内部免费/委外收费、重复通知阻断、原模号变化阻断、晚到合同明确关联；本地浏览器部署仍受缺失历史迁移阻塞，真实业务未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-081
@@ -847,8 +847,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 原件附件、操作记录和复检结果一并留存，关联设变单、维修或返工任务、项目节点和成本记录；额外工时及其计价关联财务，计价方式和审批权限后续适配。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；contact.attachment_added 事件按联络协作参与人生成站内通知；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调；tests/test_files.py 覆盖附件关联后只通知有业务读取权限的联络参与人且不通知操作人本人；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：附件版本、过程记录、独立复验以及事项实际工时/金额/证据；contact.attachment_added 事件按联络协作参与人生成站内通知；affected_type/ref 原生对象引用；query_change_intake_context 关联工程变更影响项、ContactTask affected_type/ref、计划任务、合同和成本金额线索，并提示财务/合同正式联动不得由方案交接直接替代；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭；contact_execution.py 将线上设变反馈追加关联到当前已批准方案及生效开工；未关联或旧版反馈不能用于当前方案复验 PASS/关闭，原反馈保留；设变查询逐单区分开工与执行证据，不替代 ERP 执行
+- 验证证据：结构化影响与执行单测；财务正式计价未联调；tests/test_change_intake_tools.py：影响项、执行依据和费用线索进入上下文；正式财务计价仍待联调；tests/test_files.py 覆盖附件关联后只通知有业务读取权限的联络参与人且不通知操作人本人；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断；tests/test_change_execution.py 验证 BPM 开工后反馈、独立复验和关闭、新版本不冒用旧反馈、未关联事实保留及历史重试兼容；tests/test_change_intake_tools.py 验证项目首次开工不能代替本次通知、客户引用/自由文本不冒充书面确认或分类；真实 ERP 联动仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-085
@@ -874,8 +874,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 设变审批后按确认方案更新正式版本、受影响任务、节点计划及生产安排，通知设计、采购、生产、装配、试模、品质和验收等相关部门。未受影响的任务按批准计划继续；新旧版本及已发生执行记录均保留。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具；query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调；tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：方案冻结结构化影响材料；RESOLUTION_EFFECTIVE 幂等交接、修订和责任人通知；ERP 执行留给权威工具；query_change_intake_context 返回 plan_tasks、engineering_change impacts、contact_resolutions 和执行/复验状态，用于区分未受影响任务继续与受影响任务调整；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭；contact_execution.py 将线上设变反馈追加关联到当前已批准方案及生效开工；未关联或旧版反馈不能用于当前方案复验 PASS/关闭，原反馈保留；设变查询逐单区分开工与执行证据，不替代 ERP 执行
+- 验证证据：生效交接幂等单测；真实 ERP 更新和全部门通知未联调；tests/test_change_intake_tools.py：已复验 KEEP 影响项和未执行 REWORK 影响项同时返回；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断；tests/test_change_execution.py 验证 BPM 开工后反馈、独立复验和关闭、新版本不冒用旧反馈、未关联事实保留及历史重试兼容；tests/test_change_intake_tools.py 验证项目首次开工不能代替本次通知、客户引用/自由文本不冒充书面确认或分类；真实 ERP 联动仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-088
@@ -901,8 +901,8 @@ Agent 完整开发问题、方案、影响、BPM 审批、整改、复验及关�
 异常处理须记录方案批准、执行结果及复检或复验结论，由适用责任角色确认关闭。工程联络单获批不表示整改完成；涉及节点、费用及合同事项未落实时应能识别未完成事项。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭
-- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断
+- 实现证据：方案审批、实际反馈、独立复验/整改及人工关闭分离；最新方案下全事项复验关闭门禁和追加式实际数据；query_change_intake_context 计算 has_open_execution_or_recheck_items/open_impact_count，并在 warnings 中强调工程联络单获批不代表整改完成；ContactCase/ContactTask 查询新增 progress_summary，按历史补录、待分派、待反馈、待复验、待方案审批、复验过期、可关闭等状态派生办理阻塞项和下一步动作；不把线下记录、反馈或方案审批误判为关闭；contact_execution.py 将线上设变反馈追加关联到当前已批准方案及生效开工；未关联或旧版反馈不能用于当前方案复验 PASS/关闭，原反馈保留；设变查询逐单区分开工与执行证据，不替代 ERP 执行
+- 验证证据：联络生命周期和 tests/test_contact_impact.py；节点/费用/合同实时阻断待联调；tests/test_change_intake_tools.py：存在有效方案但未完成执行/复验时仍返回 open 状态和告警；tests/test_contacts.py 覆盖历史补录不自动认定最终关闭，以及线上联络单 DRAFTING→WAITING_ASSIGNMENT→WAITING_FEEDBACK→WAITING_REVIEW 状态诊断；tests/test_change_execution.py 验证 BPM 开工后反馈、独立复验和关闭、新版本不冒用旧反馈、未关联事实保留及历史重试兼容；tests/test_change_intake_tools.py 验证项目首次开工不能代替本次通知、客户引用/自由文本不冒充书面确认或分类；真实 ERP 联动仍未验收
 - 验收状态：NOT_VERIFIED
 
 ## 暂停与恢复
@@ -932,8 +932,8 @@ Agent 开发依据、受影响动作限制、区间与顺延、防重复及客�
 顺延保留前后计划、暂停依据和确认记录，客户承诺交期按客户确认单独处理。必要的资料补录、沟通、保管和结算等操作按权限保留，不因暂停一概禁止。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认
-- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单
+- 实现证据：ProjectPauseDetail 保存暂停/恢复依据、原因、预计恢复日、客户承诺交期快照和冻结任务；PauseTaskShift 保存顺延前后日期与确认记录；query_project_control_context 返回 allowed_during_pause 与 blocked_during_pause，明确资料补录、沟通、合同结算核对、工程联络和恢复申请不因暂停一概禁止；恢复生效仅调整内部计划任务，ProjectProfile.customer_due_date 保持不变；客户承诺交期变更须另行客户确认；prepare_finance_correction 复用既有付款冲正 BPM；暂停项目允许有权限的财务更正提交与生效，其他业务门禁保留
+- 验证证据：tests/test_project_pause.py 覆盖客户承诺交期不随恢复顺延、查询返回 customer_due_date_is_independent 和允许/限制事项清单；tests/test_finance_correction_tools.py 覆盖 ACTIVE/PAUSED/TERMINATED/CLOSED 的本人确认与正式审批、金额及预留、驳回、重复/竞争、版本/流程校验及回执权限；最终相关集合 172 项通过；真实模型、UI、ERP 财务与完整本条需求未验收
 - 验收状态：NOT_VERIFIED
 
 ## 终止结算与正常关闭
@@ -972,8 +972,8 @@ Agent 开发不同关闭清单、处置协同、人工确认、归档及历史�
 正常交付项目须在交付、适用验收、发票、回款、供应商结算及异常事项处理完成后关闭。生产完工、发货、客户签收或单次回款均不单独代表项目已结束。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：正常关闭清单要求计划、交付、适用验收、发票、客户回款、供应商结算、异常处理及归档；最终审批生效前重新检查实时阻断项；query_project_completion_context 把交付与客户验收、发票与客户回款、供应商结算、异常关闭、全过程归档和最终关闭保持为独立阶段，并按正常关闭或终止结算清单投影当前焦点；只读协调现有能力，不复制 ERP 台账
-- 验证证据：tests/test_project_closure.py覆盖未完成计划和新联络事项阻断正常关闭；测试覆盖计划完成后的实时复核与系统修订归档；tests/test_project_completion_lifecycle.py 覆盖协调器注册、正常关闭逐阶段满足、终止项目交付/验收明确不适用、财务未完成不被推断、阶段能力不泄漏及多项目候选不合并
+- 实现证据：正常关闭清单要求计划、交付、适用验收、发票、客户回款、供应商结算、异常处理及归档；最终审批生效前重新检查实时阻断项；query_project_completion_context 把交付与客户验收、发票与客户回款、供应商结算、异常关闭、全过程归档和最终关闭保持为独立阶段，并按正常关闭或终止结算清单投影当前焦点；只读协调现有能力，不复制 ERP 台账；客户复验通过 previous_acceptance_id 明确关联前次记录；项目锁与唯一约束阻止复验分叉，历史验收禁止 UPDATE/DELETE。独立初验或未关联的历史复验不能清除已有失败；正常关闭提交及生效均重新核对未解决验收失败。me0d0e000015 不猜测回填旧关联，存在确认链时拒绝丢失关联的降级。
+- 验证证据：tests/test_project_closure.py覆盖未完成计划和新联络事项阻断正常关闭；测试覆盖计划完成后的实时复核与系统修订归档；tests/test_project_completion_lifecycle.py 覆盖协调器注册、正常关闭逐阶段满足、终止项目交付/验收明确不适用、财务未完成不被推断、阶段能力不泄漏及多项目候选不合并；tests/test_acceptance_lineage.py、test_delivery_logistics_tools.py、test_project_closure.py 验证独立初验/历史未关联复验不能覆盖失败、前次关联漂移、复验防重、不可变记录与关闭前新增失败；真实客户及 ERP 验收仍未通过。
 - 验收状态：NOT_VERIFIED
 
 ### FR-098
@@ -981,8 +981,8 @@ Agent 开发不同关闭清单、处置协同、人工确认、归档及历史�
 归档包括项目过程、设计版本、采购合同、质量、交付、验收、设变和财务记录。关闭确认人及检查明细在角色适配中确定；关闭后授权人员仍可查询全部适用历史数据，后续更正不得无痕覆盖原记录。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ProjectClosureItemRevision追加保存每次清单更正历史；关闭案例保留人员、版本、来源、依据、截至时间和检查明细；迁移f1a4d8c7e2b3建立关闭案例、清单、修订和数据库约束；query_project_completion_context 把交付与客户验收、发票与客户回款、供应商结算、异常关闭、全过程归档和最终关闭保持为独立阶段，并按正常关闭或终止结算清单投影当前焦点；只读协调现有能力，不复制 ERP 台账
-- 验证证据：5项终止/关闭规则测试通过；全部可运行的非PostgreSQL测试114 passed、103项专用PostgreSQL集成测试跳过；离线DDL和真实数据库验收另行登记；tests/test_project_completion_lifecycle.py 覆盖协调器注册、正常关闭逐阶段满足、终止项目交付/验收明确不适用、财务未完成不被推断、阶段能力不泄漏及多项目候选不合并
+- 实现证据：ProjectClosureItemRevision追加保存每次清单更正历史；关闭案例保留人员、版本、来源、依据、截至时间和检查明细；迁移f1a4d8c7e2b3建立关闭案例、清单、修订和数据库约束；query_project_completion_context 把交付与客户验收、发票与客户回款、供应商结算、异常关闭、全过程归档和最终关闭保持为独立阶段，并按正常关闭或终止结算清单投影当前焦点；只读协调现有能力，不复制 ERP 台账；客户复验通过 previous_acceptance_id 明确关联前次记录；项目锁与唯一约束阻止复验分叉，历史验收禁止 UPDATE/DELETE。独立初验或未关联的历史复验不能清除已有失败；正常关闭提交及生效均重新核对未解决验收失败。me0d0e000015 不猜测回填旧关联，存在确认链时拒绝丢失关联的降级。；关闭/终止项目允许授权供应商付款冲正，原付款保留并明确关联追加负向记录，不覆盖历史
+- 验证证据：5项终止/关闭规则测试通过；全部可运行的非PostgreSQL测试114 passed、103项专用PostgreSQL集成测试跳过；离线DDL和真实数据库验收另行登记；tests/test_project_completion_lifecycle.py 覆盖协调器注册、正常关闭逐阶段满足、终止项目交付/验收明确不适用、财务未完成不被推断、阶段能力不泄漏及多项目候选不合并；tests/test_acceptance_lineage.py、test_delivery_logistics_tools.py、test_project_closure.py 验证独立初验/历史未关联复验不能覆盖失败、前次关联漂移、复验防重、不可变记录与关闭前新增失败；真实客户及 ERP 验收仍未通过。；tests/test_finance_correction_tools.py 覆盖 ACTIVE/PAUSED/TERMINATED/CLOSED 的本人确认与正式审批、金额及预留、驳回、重复/竞争、版本/流程校验及回执权限；最终相关集合 172 项通过；真实模型、UI、ERP 财务与完整本条需求未验收
 - 验收状态：NOT_VERIFIED
 
 ## 财务节点与核对
@@ -1021,8 +1021,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 客户实际回款由财务人工确认，保存日期、金额、合同节点、凭证和对应项目关系。系统提醒或识别结果不替代实际回款确认；分次回款均留独立记录，并按确认关系汇总。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：query_finance_context 将客户付款节点、到期提醒与 CustomerReceiptConfirmation 实际回款台账明确分离，并按合同节点和币种汇总分次回款；prepare_customer_receipt_confirmation 只在财务本人确认后保存日期、金额、合同节点、凭证和项目关系；系统提醒不替代实际回款确认；finance_context_review Skill 要求没有实际回款确认时不得声称客户已回款
-- 验证证据：tests/test_finance_context_tools.py 覆盖无实际回款时保持 false、确认卡确认前不写库、确认后写入独立凭证、按节点汇总分次回款并参与未收金额计算
+- 实现证据：query_finance_context 将客户付款节点、到期提醒与 CustomerReceiptConfirmation 实际回款台账明确分离，并按合同节点和币种汇总分次回款；prepare_customer_receipt_confirmation 只在财务本人确认后保存日期、金额、合同节点、凭证和项目关系；系统提醒不替代实际回款确认；finance_context_review Skill 要求没有实际回款确认时不得声称客户已回款；validate_customer_receipt 将替代合同已确认历史实收分配同时纳入节点与合同额度校验，分次新回款仍追加独立原件，不以替代关系生成新实际回款
+- 验证证据：tests/test_finance_context_tools.py 覆盖无实际回款时保持 false、确认卡确认前不写库、确认后写入独立凭证、按节点汇总分次回款并参与未收金额计算；tests/test_replacement_finance_execution.py 覆盖替代后超额收/付款、旧授权阻断、追加冲正分配、再次替代、两种审批交错、历史快照及跨会话余额；合同/财务/领域集合 56 项及补充财务/收尾集合 32 项通过（重叠）；真实模型/UI/ERP 与完整需求仍未验收
 - 验收状态：NOT_VERIFIED
 
 ### FR-103
@@ -1030,8 +1030,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 付款流程为：申请→适用条件核验→审批→待支付及支付执行→实际付款确认。不符合适用条件时补充资料或特殊审批；审批通过仅代表允许支付，不计入已付款金额。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清；prepare_supplier_payment_confirmation 基于已审批供应商付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation
-- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警，并覆盖供应商实付确认卡片本人确认后才写库
+- 实现证据：supplier_payment 业务保存付款申请、关联付款节点、审批状态、授权占用 reservation；finance.condition 核验付款条件，finance.confirm 仅在申请生效后生成实际付款确认；query_finance_context 区分 APPROVED_FOR_PAYMENT、reservation、payment_confirmations 和 confirmed_totals，明确审批通过不等于已付款或全部付清；prepare_supplier_payment_confirmation 基于已审批供应商付款申请和授权余额准备对话内实付确认卡片，本人确认后才调用 finance.confirm 写入 PaymentConfirmation 并扣减 reservation；新增 prepare_supplier_payment_condition 与 prepare_supplier_payment_request，复用现有条件核验、节点占用、Agent BPM 和 finance.execute 确认卡；财务查询提供当前合同节点与可选流程。原申请明确 ID/版本/原因后可在草稿、退回、驳回或生效阻断状态修订并完整重审，保留旧快照，金额/节点变化重核条件和余额，不形成实际付款。；付款申请提交时按合同完整读取权限冻结 payment_basis（合同/供应商/节点/条件依据）供审批人核对；旧快照不回填。复用通用审批材料工作区。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。
+- 验证证据：tests/test_finance_context_tools.py 覆盖已审批付款申请、部分实付、未释放授权占用和审批/实付区分告警，并覆盖供应商实付确认卡片本人确认后才写库；供应商付款工具最终 9 项通过；相关财务、合同替代、目录、领域包和 MCP 集合 97 项通过（集合重叠）。覆盖条件→申请→审批→实付分离、幂等、竞争余额、完整权限/申请人、回滚、合同替代后的缓存刷新及阻断原申请转新节点完整重审。完整条件矩阵、特殊审批及真实 ERP 财务仍未验收。；审批依据补全后的相关集合43项通过。内置浏览器付款条件真实模型→确认通过；付款申请真实模型错误选流程后预算失败。非模型生成合成卡完成60申请→退回→原申请50重审生效，旧轮保留且实付0；恢复模型误称最终审批完成仍判失败，完整需求未验收。；tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ### FR-104
@@ -1039,8 +1039,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 实际支付完成并经财务确认后，生成或确认实际付款记录并计入供应商已付款，关联项目、合同、采购单、客户回款条件、费用和发票凭证。付款执行渠道另行适配，不默认为本系统自动操作银行转账。
 
 - 最新口径：不开发银行自动转账；保留付款流程、人工实际支付确认及凭证。
-- 实现证据：PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果；query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请；prepare_supplier_payment_confirmation 在准备和确认阶段重新校验项目版本、付款申请归属、生效状态、币种、授权余额和重复付款流水号，确认后通过 finance.confirm 登记实付
-- 验证证据：tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发；供应商实付确认卡片覆盖重复流水号和超额付款阻断
+- 实现证据：PaymentConfirmation 保存实际付款日期、金额、币种、付款引用、凭证和确认人；finance.confirm 不执行银行转账，仅登记财务确认结果；query_finance_context 将供应商实付按有符号付款确认汇总，并关联合同付款节点与申请；prepare_supplier_payment_confirmation 在准备和确认阶段重新校验项目版本、付款申请归属、生效状态、币种、授权余额和重复付款流水号，确认后通过 finance.confirm 登记实付；付款申请占用与实付节点额度计入历史实付分配；旧合同失效后禁止沿用旧付款授权，未完成审批不能绕过合同状态；节点锁后刷新当前预留余额；新增 prepare_supplier_payment_condition 与 prepare_supplier_payment_request，复用现有条件核验、节点占用、Agent BPM 和 finance.execute 确认卡；财务查询提供当前合同节点与可选流程。原申请明确 ID/版本/原因后可在草稿、退回、驳回或生效阻断状态修订并完整重审，保留旧快照，金额/节点变化重核条件和余额，不形成实际付款。；付款申请提交时按合同完整读取权限冻结 payment_basis（合同/供应商/节点/条件依据）供审批人核对；旧快照不回填。复用通用审批材料工作区。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。
+- 验证证据：tests/test_finance_context_tools.py 覆盖实际付款确认计入 confirmed_supplier_payment；银行转账渠道保持不开发；供应商实付确认卡片覆盖重复流水号和超额付款阻断；tests/test_replacement_finance_execution.py 覆盖替代后超额收/付款、旧授权阻断、追加冲正分配、再次替代、两种审批交错、历史快照及跨会话余额；合同/财务/领域集合 56 项及补充财务/收尾集合 32 项通过（重叠）；真实模型/UI/ERP 与完整需求仍未验收；供应商付款工具最终 9 项通过；相关财务、合同替代、目录、领域包和 MCP 集合 97 项通过（集合重叠）。覆盖条件→申请→审批→实付分离、幂等、竞争余额、完整权限/申请人、回滚、合同替代后的缓存刷新及阻断原申请转新节点完整重审。完整条件矩阵、特殊审批及真实 ERP 财务仍未验收。；审批依据补全后的相关集合43项通过。内置浏览器付款条件真实模型→确认通过；付款申请真实模型错误选流程后预算失败。非模型生成合成卡完成60申请→退回→原申请50重审生效，旧轮保留且实付0；恢复模型误称最终审批完成仍判失败，完整需求未验收。；tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ### FR-105
@@ -1048,8 +1048,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 未完成、失败或撤回的支付与已确认支付应区分，重复确认不得重复累计。涉及错误确认、退款、扣款及金额更正时保留原因、前后值、人员和依据，具体冲回及对账流程在财务适配中确定。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：finance_correction 业务保存原付款、原因、冲正依据、冲正日期和反向付款记录；重复冲正由 ALREADY_REVERSED 阻断；query_finance_context 返回 finance_corrections，并按正负 PaymentConfirmation 汇总供应商实付，避免覆盖原付款或重复累计
-- 验证证据：tests/test_manufacturing.py 覆盖财务冲正保留原付款并恢复占用；tests/test_finance_context_tools.py 覆盖冲正后净实付 8000.00 汇总
+- 实现证据：finance_correction 业务保存原付款、原因、冲正依据、冲正日期和反向付款记录；重复冲正由 ALREADY_REVERSED 阻断；query_finance_context 返回 finance_corrections，并按正负 PaymentConfirmation 汇总供应商实付，避免覆盖原付款或重复累计；新增 prepare_finance_correction 封装既有全额供应商付款冲正，原付款/原因/日期/依据/前后金额进入本人确认卡和 BPM；提交不是生效，重复及待办竞争被阻断，驳回不改变实际付款；供应商付款冲正同步追加当前有效合同的负向分配，保留原分配/付款并审计明确关联；确认和审批冻结目标依据，关联变化阻断生效；prepare_finance_correction 支持明确原申请/版本/修订原因的退回、驳回、草稿或生效阻断重提；保持原付款关联，原号不变，新 revision/round_no 完整重审，旧审批和冲正历史不覆盖；新增 prepare_supplier_payment_condition 与 prepare_supplier_payment_request，复用现有条件核验、节点占用、Agent BPM 和 finance.execute 确认卡；财务查询提供当前合同节点与可选流程。原申请明确 ID/版本/原因后可在草稿、退回、驳回或生效阻断状态修订并完整重审，保留旧快照，金额/节点变化重核条件和余额，不形成实际付款。；付款申请提交时按合同完整读取权限冻结 payment_basis（合同/供应商/节点/条件依据）供审批人核对；旧快照不回填。复用通用审批材料工作区。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。
+- 验证证据：tests/test_manufacturing.py 覆盖财务冲正保留原付款并恢复占用；tests/test_finance_context_tools.py 覆盖冲正后净实付 8000.00 汇总；tests/test_finance_correction_tools.py 覆盖 ACTIVE/PAUSED/TERMINATED/CLOSED 的本人确认与正式审批、金额及预留、驳回、重复/竞争、版本/流程校验及回执权限；最终相关集合 172 项通过；真实模型、UI、ERP 财务与完整本条需求未验收；tests/test_replacement_finance_execution.py 覆盖替代后超额收/付款、旧授权阻断、追加冲正分配、再次替代、两种审批交错、历史快照及跨会话余额；合同/财务/领域集合 56 项及补充财务/收尾集合 32 项通过（重叠）；真实模型/UI/ERP 与完整需求仍未验收；tests/test_finance_correction_revisions.py 与 tests/test_audit_projection.py 验证修订新轮、原件冻结、历史保留、重复/竞争、提交失败回滚、跨项目/字段/撤权审计读取；最终相关集合 75 项通过；真实模型/UI/ERP 与完整本条需求仍未验收；供应商付款工具最终 9 项通过；相关财务、合同替代、目录、领域包和 MCP 集合 97 项通过（集合重叠）。覆盖条件→申请→审批→实付分离、幂等、竞争余额、完整权限/申请人、回滚、合同替代后的缓存刷新及阻断原申请转新节点完整重审。完整条件矩阵、特殊审批及真实 ERP 财务仍未验收。；审批依据补全后的相关集合43项通过。内置浏览器付款条件真实模型→确认通过；付款申请真实模型错误选流程后预算失败。非模型生成合成卡完成60申请→退回→原申请50重审生效，旧轮保留且实付0；恢复模型误称最终审批完成仍判失败，完整需求未验收。；tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ### FR-106
@@ -1057,8 +1057,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 按项目和模具记录内部加工或整套委外属性；委外保存整套交期、合同号和金额。内部成本关联工时、材料、加工、外协及适用物流等费用，设变新增费用、额外工时、扣款和合同增减额分别可追溯。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：ProjectProfile 保存内部/整套委外属性；整套委外合同返回合同号、金额和预计交期；工程联络 ContactTask 保存额外工时、金额、扣款或成本影响线索；query_finance_context 汇总 execution_mode、full_outsource_contracts、cost_and_change_impacts，不把报价成本或回款金额直接当实际成本
-- 验证证据：tests/test_finance_context_tools.py 覆盖整套委外合同金额、供应商合同节点、设变扣款和额外工时线索聚合
+- 实现证据：ProjectProfile 保存内部/整套委外属性；整套委外合同返回合同号、金额和预计交期；工程联络 ContactTask 保存额外工时、金额、扣款或成本影响线索；query_finance_context 汇总 execution_mode、full_outsource_contracts、cost_and_change_impacts，不把报价成本或回款金额直接当实际成本；query_finance_context 复用交付验收和委外扣款读取方，分别返回客户验收影响、明确复验关联、供应商责任/结算状态和原记录引用；模型上下文保留这些可见事实。复验通过不抹去费用，未授权和截断明确标记，不自动对冲、抵扣或更改实收实付。；prepare_supplier_deduction_settlement 通过 previous_deduction_id 追加原责任记录的后续结算，冻结原供应商、合同、联络、责任及金额币种；可明确关联 customer_acceptance_id。本人确认时项目锁重检、唯一约束防分叉；历史记录不可覆盖，查询只沿有效关联消除原未结算状态，不自动对冲或写 ERP 实账。mf0d0e000016 不回填历史关联。
+- 验证证据：tests/test_finance_context_tools.py 覆盖整套委外合同金额、供应商合同节点、设变扣款和额外工时线索聚合；tests/test_finance_quality_context.py 验证复验后历史影响、责任/结算/取消区别、项目及工具/数据权限隔离、历史截断及不改变收付款；独立合成库读取验证既有验收影响已进入财务上下文。真实 ERP 财务同步与模型/浏览器验收仍未完成。；tests/test_supplier_deduction_follow_up.py 验证本人确认、重复确认、防竞争、金额/责任/币种及来源核对、验收权限与同项目、原合同关闭后结算、无关联/异常关联不掩盖未结算和实收实付保持不变；test_split_migrations.py 验证旧事实保留及有确认关联时拒绝有损降级。独立库已升级，真实 ERP 结算、模型及 UI 验收仍未通过。
 - 验收状态：NOT_VERIFIED
 
 ### FR-107
@@ -1075,8 +1075,8 @@ Agent 开发财务需求缺失能力、合同节点、审批、实际确认、�
 合同替代、追加或变更后，按确认的有效金额及历史收付款关系更新台账，不重复计算。财务更正应可审计；无金额或项目权限的人员不能查看或导出相应信息。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：替代合同审批生效时原子关闭前序版本；当前有效合同余额按确认合同金额、直接实收实付和不可变历史归属计算，追加合同保持独立，不重复累计；财务冲正继续以有符号追加记录保存前后关系；合同结算归属禁止 UPDATE/DELETE，冲正与替代都不覆盖原始财务事实；query_finance_context 在缺少销售合同、客户回款或供应商付款权限时不返回合同号、金额或付款明细
-- 验证证据：tests/test_contract_tools.py 覆盖替代前后当前有效应收金额、历史回款归属、原始凭证保留、节点未收金额及追加独立余额；tests/test_finance_context_tools.py 覆盖有符号财务冲正和无金额/合同权限用户无法看到合同号、金额、客户回款及供应商付款明细；tests/test_split_migrations.py 覆盖结算归属不可变触发器
+- 实现证据：替代合同审批生效时原子关闭前序版本；当前有效合同余额按确认合同金额、直接实收实付和不可变历史归属计算，追加合同保持独立，不重复累计；财务冲正继续以有符号追加记录保存前后关系；合同结算归属禁止 UPDATE/DELETE，冲正与替代都不覆盖原始财务事实；query_finance_context 在缺少销售合同、客户回款或供应商付款权限时不返回合同号、金额或付款明细；财务查询向模型保留有权限的原付款事实与审批选项；供应商付款冲正复用原权限和项目范围，审批生效后恢复原申请预留并保留审计关联；合同替代后查询金额与执行门禁使用同一有符号历史分配；原付款冲正、新替代审批交错时重新校验；历史冲正查询保留当轮审批目标而非后续版本；新增财务修订审计保存前后材料，并声明源业务读取权限、项目/责任域与字段要求；审计 API 按当前授权投影，不以 audit.read 绕过财务明细权限；未生效合同修订复用原 prepare_contract_record 与通用修订/BPM，材料版本追加保存条款、节点、接收依据和收付款分配；显式附件选择保留全部历史；查询与执行仅使用当前版本，不覆盖旧审批材料。mg0d0e000017 保留历史版本 1 并拒绝有损降级。
+- 验证证据：tests/test_contract_tools.py 覆盖替代前后当前有效应收金额、历史回款归属、原始凭证保留、节点未收金额及追加独立余额；tests/test_finance_context_tools.py 覆盖有符号财务冲正和无金额/合同权限用户无法看到合同号、金额、客户回款及供应商付款明细；tests/test_split_migrations.py 覆盖结算归属不可变触发器；tests/test_finance_correction_tools.py 覆盖 ACTIVE/PAUSED/TERMINATED/CLOSED 的本人确认与正式审批、金额及预留、驳回、重复/竞争、版本/流程校验及回执权限；最终相关集合 172 项通过；真实模型、UI、ERP 财务与完整本条需求未验收；tests/test_replacement_finance_execution.py 覆盖替代后超额收/付款、旧授权阻断、追加冲正分配、再次替代、两种审批交错、历史快照及跨会话余额；合同/财务/领域集合 56 项及补充财务/收尾集合 32 项通过（重叠）；真实模型/UI/ERP 与完整需求仍未验收；tests/test_finance_correction_revisions.py 与 tests/test_audit_projection.py 验证修订新轮、原件冻结、历史保留、重复/竞争、提交失败回滚、跨项目/字段/撤权审计读取；最终相关集合 75 项通过；真实模型/UI/ERP 与完整本条需求仍未验收；tests/test_contract_revisions.py/test_contract_tools.py/test_split_migrations.py/test_start_tools.py/test_change_start.py 最终 57 项通过：退回/驳回/生效阻断修订重审、冲正后补齐分配、不可变历史、竞争、旧节点执行拒绝和迁移保护。独立验收库升级与结构检查通过；真实合同修订 UI/模型与 ERP 未验收。
 - 验收状态：NOT_VERIFIED
 
 ### FR-109
@@ -1137,8 +1137,8 @@ Agent 开发管理员灵活授权、范围/字段/工具/Skill 隔离及全过�
 关键操作记录操作者、时间、前后状态、原因及依据，包括承接、开工、计划、合同版本、设变、暂停恢复、终止、实际收付款及金额更正。历史有效记录不以直接覆盖方式消除。
 
 - 最新口径：完整保留；具体既有动作复用不抵消本条需求。
-- 实现证据：AuditEvent/Outbox 在关键操作 record 时保留操作者、动作、资源、时间和 detail；query_governance_context 按可见项目资源汇总 audit_trail；工程联络附件、项目结项事项、付款更正、暂停恢复等业务模型保留版本、前后引用或修订记录，不通过直接覆盖消除历史；Agent 受托自动审批写入 ApprovalAction.user_snapshot.actor_type=AGENT_DELEGATED 与 delegation_id，approval.decided 审计事件同步记录 actor_type/delegation_id；启用和撤销自动审批授权分别记录 agent.approval_delegation.enabled/revoked
-- 验证证据：tests/test_governance_context_tools.py 覆盖审计事件按项目资源返回且包含状态前后和原因依据；tests/test_files.py 覆盖附件版本不可直接删除、旧版本仍可追溯；tests/test_project_closure_tools.py 与 tests/test_finance_context_tools.py 覆盖结项/财务更正上下文的历史依据；tests/test_agent_approval_delegation.py 覆盖 Agent 受托审批动作与审计事件均保留 actor_type/delegation_id
+- 实现证据：AuditEvent/Outbox 在关键操作 record 时保留操作者、动作、资源、时间和 detail；query_governance_context 按可见项目资源汇总 audit_trail；工程联络附件、项目结项事项、付款更正、暂停恢复等业务模型保留版本、前后引用或修订记录，不通过直接覆盖消除历史；Agent 受托自动审批写入 ApprovalAction.user_snapshot.actor_type=AGENT_DELEGATED 与 delegation_id，approval.decided 审计事件同步记录 actor_type/delegation_id；启用和撤销自动审批授权分别记录 agent.approval_delegation.enabled/revoked；付款冲正复用 human intent、原领域审计和 BPM，保留原付款、操作者、原因、证据、审批快照与负向记录关联；确认后回执支持恢复任务读取且不放宽未确认卡执行；business_revisions 保留修订前后材料、操作者、原因与前轮实例；确认、修订、新审批同一事务，旧审批快照/阻断原因保留，失败回滚、竞争卡阻断和重复确认回执可追溯；未生效合同修订复用原 prepare_contract_record 与通用修订/BPM，材料版本追加保存条款、节点、接收依据和收付款分配；显式附件选择保留全部历史；查询与执行仅使用当前版本，不覆盖旧审批材料。mg0d0e000017 保留历史版本 1 并拒绝有损降级。；新增 prepare_supplier_payment_condition 与 prepare_supplier_payment_request，复用现有条件核验、节点占用、Agent BPM 和 finance.execute 确认卡；财务查询提供当前合同节点与可选流程。原申请明确 ID/版本/原因后可在草稿、退回、驳回或生效阻断状态修订并完整重审，保留旧快照，金额/节点变化重核条件和余额，不形成实际付款。；付款申请提交时按合同完整读取权限冻结 payment_basis（合同/供应商/节点/条件依据）供审批人核对；旧快照不回填。复用通用审批材料工作区。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料。；PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。
+- 验证证据：tests/test_governance_context_tools.py 覆盖审计事件按项目资源返回且包含状态前后和原因依据；tests/test_files.py 覆盖附件版本不可直接删除、旧版本仍可追溯；tests/test_project_closure_tools.py 与 tests/test_finance_context_tools.py 覆盖结项/财务更正上下文的历史依据；tests/test_agent_approval_delegation.py 覆盖 Agent 受托审批动作与审计事件均保留 actor_type/delegation_id；tests/test_finance_correction_tools.py 覆盖 ACTIVE/PAUSED/TERMINATED/CLOSED 的本人确认与正式审批、金额及预留、驳回、重复/竞争、版本/流程校验及回执权限；最终相关集合 172 项通过；真实模型、UI、ERP 财务与完整本条需求未验收；tests/test_finance_correction_revisions.py 与 tests/test_audit_projection.py 验证修订新轮、原件冻结、历史保留、重复/竞争、提交失败回滚、跨项目/字段/撤权审计读取；最终相关集合 75 项通过；真实模型/UI/ERP 与完整本条需求仍未验收；tests/test_contract_revisions.py/test_contract_tools.py/test_split_migrations.py/test_start_tools.py/test_change_start.py 最终 57 项通过：退回/驳回/生效阻断修订重审、冲正后补齐分配、不可变历史、竞争、旧节点执行拒绝和迁移保护。独立验收库升级与结构检查通过；真实合同修订 UI/模型与 ERP 未验收。；供应商付款工具最终 9 项通过；相关财务、合同替代、目录、领域包和 MCP 集合 97 项通过（集合重叠）。覆盖条件→申请→审批→实付分离、幂等、竞争余额、完整权限/申请人、回滚、合同替代后的缓存刷新及阻断原申请转新节点完整重审。完整条件矩阵、特殊审批及真实 ERP 财务仍未验收。；审批依据补全后的相关集合43项通过。内置浏览器付款条件真实模型→确认通过；付款申请真实模型错误选流程后预算失败。非模型生成合成卡完成60申请→退回→原申请50重审生效，旧轮保留且实付0；恢复模型误称最终审批完成仍判失败，完整需求未验收。；tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。
 - 验收状态：NOT_VERIFIED
 
 ## 通知与附件

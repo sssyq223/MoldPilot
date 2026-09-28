@@ -43,6 +43,17 @@ class ContractSettlementAllocationInput(StrictModel):
 class ContractProposalInput(StrictModel):
     project_id: str = Field(min_length=1, max_length=36)
     project_version: int = Field(ge=1)
+    start_notice_subject_id: str | None = Field(
+        default=None,
+        max_length=36,
+        description='再次设变或补充合同明确关联本次已生效正式开工通知时填写；首次开工可留空。',
+    )
+    existing_subject_id: str | None = Field(
+        default=None, max_length=36,
+        description='修订并重新提交已有合同申请时填写查询返回的原申请 ID；新申请留空。',
+    )
+    subject_revision: int | None = Field(default=None, ge=1)
+    revision_reason: str | None = Field(default=None, min_length=1, max_length=4000)
     contract_kind: Literal['sales_contract', 'full_outsource_contract'] = Field(
         description='合同类型：销售合同或整套委外合同。')
     customer_id: str | None = Field(default=None, max_length=36)
@@ -88,6 +99,11 @@ class ContractProposalInput(StrictModel):
 
     @model_validator(mode='after')
     def validate_relation(self):
+        if self.existing_subject_id:
+            if self.subject_revision is None or not (self.revision_reason or '').strip():
+                raise ValueError('修订原申请必须填写 subject_revision 和 revision_reason')
+        elif self.subject_revision is not None or self.revision_reason is not None:
+            raise ValueError('新申请不能填写原申请版本或修订原因')
         record_ids=[item.source_record_id for item in self.settlement_allocations]
         if len(record_ids)!=len(set(record_ids)):
             raise ValueError('同一历史实收实付记录不能重复分配')
@@ -498,12 +514,14 @@ def _party_display(db,data):
     return {'客户':'不适用', '供应商':supplier.name if supplier else '未找到供应商'}
 
 
-def _duplicate_contract(db,project_id,kind,contract_number):
+def _duplicate_contract(db,project_id,kind,contract_number,exclude_id=None):
     return db.scalar(select(m.BusinessSubject).join(m.ContractDetail,m.ContractDetail.subject_id==m.BusinessSubject.id).where(
         m.BusinessSubject.project_id==project_id,
         m.BusinessSubject.kind==kind,
         m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','EFFECTIVE']),
-        m.ContractDetail.contract_number==contract_number).order_by(m.BusinessSubject.created_at.desc()).limit(1))
+        m.ContractDetail.contract_number==contract_number,
+        m.BusinessSubject.id != exclude_id if exclude_id else True).order_by(
+            m.BusinessSubject.created_at.desc()).limit(1))
 
 
 def _contract_detail(data):
@@ -533,7 +551,8 @@ def _preview_settlement_allocations(db,data,detail):
     sibling=db.scalar(select(m.BusinessSubject).join(m.ContractDetail,m.ContractDetail.subject_id==m.BusinessSubject.id).where(
         m.ContractDetail.replaces_id==predecessor.id,
         m.ContractDetail.relation_type=='REPLACEMENT',
-        m.BusinessSubject.status.in_(contract_relations.ACTIVE_REPLACEMENT_STATUSES)).limit(1))
+        m.BusinessSubject.status.in_(contract_relations.ACTIVE_REPLACEMENT_STATUSES),
+        m.BusinessSubject.id != data.existing_subject_id if data.existing_subject_id else True).limit(1))
     if sibling:raise DomainError('CONTRACT_REPLACEMENT_EXISTS','前序合同已有在途或生效替代版本，不能重复替代',409)
 
     actual=contract_relations.settlement_records(db,predecessor)
@@ -568,6 +587,13 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
     if project.status in {'CLOSED','TERMINATED'}:
         raise DomainError('PROJECT_BLOCKED','项目已关闭或终止，不能准备普通合同',409)
+    existing = None
+    if data.existing_subject_id:
+        existing = db.get(m.BusinessSubject, data.existing_subject_id)
+        if not existing or existing.project_id != project.id or existing.kind != data.contract_kind:
+            raise DomainError('NOT_FOUND','原合同申请不存在或不属于该项目',404)
+        from domain_packs.mold.erp.core import business_revisions
+        business_revisions.validate(db, user, existing, data.subject_revision)
     detail=_contract_detail(data)
     if data.contract_kind=='sales_contract':
         if not data.received_date:
@@ -585,11 +611,12 @@ def preview_contract(db,user,data:ContractProposalInput,run):
     if sum((stage.amount for stage in detail.stages),Decimal(0))>detail.amount:
         raise DomainError('STAGE_OVERFLOW','合同阶段金额合计超出合同金额')
     predecessor,allocation_cards=_preview_settlement_allocations(db,data,detail)
-    duplicate=_duplicate_contract(db,project.id,data.contract_kind,detail.contract_number)
+    duplicate=_duplicate_contract(db,project.id,data.contract_kind,detail.contract_number,
+                                  data.existing_subject_id)
     if duplicate:
         raise DomainError('CONTRACT_DUPLICATE','当前项目已有相同合同号的未关闭合同材料，请勿重复准备',409)
     blobs=contract_documents.validate_proposal_files(
-        db,user,data.file_ids,run,project.id,data.contract_kind)
+        db,user,data.file_ids,run,project.id,data.contract_kind,data.existing_subject_id)
     options=workflow_options(db,user,project,data.contract_kind)
     selected=next((item for item in options if item['id']==data.workflow_definition_id),None)
     if not selected:raise DomainError('WORKFLOW_MISMATCH','审批模板不可用，请重新查询流程选项',409)
@@ -643,6 +670,15 @@ def preview_contract(db,user,data:ContractProposalInput,run):
         '备注':data.remark or '无',
         '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
         '说明':'本人确认后仅创建合同材料并提交 Agent BPM；替代关系仅在审批生效时关闭前序版本，历史实收实付仍保留在原记录并按明确节点归属，不执行收付款或 ERP 合同操作。'}
+    if existing:
+        display.update({'操作':('修订并重新提交销售合同审批' if data.contract_kind=='sales_contract'
+                                else '修订并重新提交整套委外合同审批'),
+                        '原申请':existing.number,
+                        '原申请版本':existing.revision,
+                        '原申请状态':existing.status,
+                        '原申请材料':domains.typed_detail(db, existing),
+                        '修订原因':data.revision_reason,
+                        '说明':'本人确认后保存修订审计并建立新的审批轮；旧审批意见、阻断记录、合同条款和附件快照保留，新材料版本重新完整审核。'})
     return detail,display,blobs,allocation_cards,association_snapshot
 
 
@@ -721,11 +757,18 @@ def execute_contract_tool(db,user,key,arguments,run=None):
         'limitations':limitations}
 
 
-def source(db,user,step_id):
+def source(db,user,step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
     step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
     if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
-    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id==user.id,
+            m.HumanIntent.action=='contract.execute',
+            m.HumanIntent.resource_id==step_id,
+            m.HumanIntent.receipt.is_not(None)).limit(1))
+        if not resolved:
+            raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
@@ -760,18 +803,38 @@ def confirm(db,user,payload):
     step=db.get(m.Step,payload['step_id'])
     run=db.get(m.Run,step.run_id) if step else None
     detail,_,blobs,allocation_cards,association_snapshot=preview_contract(db,user,data,run)
-    subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
-        category='outsource' if data.contract_kind=='full_outsource_contract' else None,
-        remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
+    if data.existing_subject_id:
+        from domain_packs.mold.erp.core import business_revisions
+        subject = db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.id==data.existing_subject_id)
+                            .with_for_update().execution_options(populate_existing=True))
+        current = db.get(m.ContractDetail, subject.id, populate_existing=True)
+        next_material_version = current.material_version + 1
+        def update_detail():
+            for key, value in detail.model_dump().items():
+                setattr(current, key, value)
+            current.material_version = next_material_version
+            subject.remark = data.remark or data.contract_number
+        business_revisions.revise(db, user, subject, data.subject_revision, data.revision_reason, update_detail)
+    else:
+        subject=domains.create(db,user,s.SubjectInput(kind=data.contract_kind,project_id=data.project_id,
+            category='outsource' if data.contract_kind=='full_outsource_contract' else None,
+            remark=data.remark or data.contract_number,detail=detail.model_dump(mode='json')))
+        next_material_version = 1
     if data.contract_kind=='sales_contract':
         db.add(m.ContractReceiptEvidence(
-            material_version=1,
+            material_version=next_material_version,
             contract_subject_id=subject.id,
             received_date=data.received_date,
             recorded_by=user.id,
         ))
     contract_terms.create(db,user,subject,data,association_snapshot)
-    stages={row.name:row for row in db.scalars(select(m.PaymentStage).where(m.PaymentStage.contract_id==subject.id))}
+    if data.existing_subject_id:
+        for stage in detail.stages:
+            db.add(m.PaymentStage(contract_id=subject.id, material_version=next_material_version,
+                                  currency=detail.currency, **s.payment_stage_record(stage)))
+        db.flush()
+    stages={row.name:row for row in db.scalars(select(m.PaymentStage).where(
+        m.PaymentStage.contract_id==subject.id, m.PaymentStage.material_version==next_material_version))}
     for item in allocation_cards:
         target=stages[item['target_stage_name']]
         db.add(m.ContractSettlementAllocation(target_contract_id=subject.id,
@@ -779,13 +842,14 @@ def confirm(db,user,payload):
             record_type=item['record_type'],source_record_id=item['source_record_id'],
             amount=item['amount'],currency=item['currency'],
             evidence=data.settlement_allocation_evidence,recorded_by=user.id,
-            material_version=1))
+            material_version=next_material_version))
     db.flush()
     contract_documents.link_initial(db,user,subject,blobs,data.document_source)
     from domain_packs.mold.erp.core.business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
         data.material_review_id,agent_permission_mode=agent_permission_mode_from_proposal(proposal))
     return {'project_id':data.project_id,'subject_id':subject.id,'instance_id':submitted['instance_id'],
+        'subject_revision':subject.revision,'round_no':subject.round_no,
         'action':'contract_record','contract_kind':data.contract_kind,'status':'SUBMITTED'}
 
 
@@ -794,7 +858,7 @@ router=APIRouter()
 
 @router.get('/api/contract-proposals/{step_id}')
 def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
-    source(db,user,step_id)
+    source(db,user,step_id,for_read=True)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='contract.execute',m.HumanIntent.resource_id==step_id,
         m.HumanIntent.receipt.is_not(None)).order_by(m.HumanIntent.created_at.desc()))

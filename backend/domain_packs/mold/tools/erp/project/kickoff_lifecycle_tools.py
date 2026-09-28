@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from collections import defaultdict
 
 from pydantic import Field, ValidationError, model_validator
@@ -10,8 +11,24 @@ from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 
 
+KICKOFF_PROPOSAL_TOOLS = frozenset(
+    {
+        "prepare_quotation_version",
+        "prepare_quotation_feedback",
+        "prepare_quote_acceptance_decision",
+        "prepare_bid_intake_draft",
+        "prepare_contract_record",
+        "prepare_internal_start",
+        "prepare_project_mold_handoff",
+        "prepare_project_plan_draft",
+        "prepare_project_plan_baseline",
+        "prepare_project_plan_change",
+    }
+)
+
+
 class ProjectKickoffContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(
         default=None,
         min_length=1,
@@ -287,8 +304,12 @@ def _contract_stage(row, allowed_tools):
     else:
         state = "NOT_STARTED"
     blockers = []
+    follow_ups = []
     if state == "NOT_STARTED":
-        blockers.append("尚无有效销售合同或可用合同登记审批流程。")
+        # Sales contract is a parallel fact. Keep the missing/overdue item
+        # visible as follow-up work without presenting it as a prerequisite for
+        # an independently evidenced acceptance and formal start.
+        follow_ups.append("尚无有效销售合同或可用合同登记审批流程；合同可并行补齐。")
     return {
         "key": "contract",
         "name": "销售合同",
@@ -296,6 +317,7 @@ def _contract_stage(row, allowed_tools):
         "query_tool": "query_contract_context",
         "action_tool": "prepare_contract_record" if state == "READY" else None,
         "parallel": True,
+        "follow_ups": follow_ups,
         "facts": {
             "effective_contract": _subject_fact(effective[0]) if effective else None,
             "pending_count": len(pending),
@@ -315,13 +337,28 @@ def _start_stage(row, allowed_tools, acceptance_state):
     pending = row.get("open_start_requests") or []
     workflows = row.get("workflow_options") or []
     customer_conditions = row.get("customer_start_conditions") or {}
+    erp_handoff = row.get("erp_mold_handoff") or {}
+    handoff_state = erp_handoff.get("handoff_state")
     blockers = list(readiness.get("known_blockers") or [])
     if readiness.get("has_effective_internal_start") or latest:
         state = "COMPLETED"
     elif pending:
         state = "WAITING_APPROVAL"
+    elif (
+        handoff_state in {"ERP_CANDIDATE_REQUIRES_HANDOFF", "ERP_PROJECT_MAPPING_REQUIRED"}
+        and "prepare_project_mold_handoff" in allowed_tools
+    ):
+        state = "READY"
     elif readiness.get("can_prepare_start_from_known_facts") and workflows and "prepare_internal_start" in allowed_tools:
         state = "READY"
+    elif handoff_state in {
+        "ERP_NOT_CONFIGURED",
+        "ERP_LOGIN_REQUIRED",
+        "ERP_READ_FAILED",
+        "ERP_NO_UNIQUE_CANDIDATE",
+        "ERP_MULTIPLE_CANDIDATES",
+    } and customer_conditions.get("complete"):
+        state = "BLOCKED"
     elif acceptance_state in {"REJECTED", "DATA_CONFLICT"} or not readiness.get("has_effective_acceptance"):
         state = "BLOCKED"
         if not blockers:
@@ -333,7 +370,13 @@ def _start_stage(row, allowed_tools, acceptance_state):
         "name": "正式开工",
         "state": state,
         "query_tool": "query_internal_start_readiness",
-        "action_tool": "prepare_internal_start" if state == "READY" else None,
+        "action_tool": (
+            "prepare_project_mold_handoff"
+            if state == "READY"
+            and handoff_state in {"ERP_CANDIDATE_REQUIRES_HANDOFF", "ERP_PROJECT_MAPPING_REQUIRED"}
+            and "prepare_project_mold_handoff" in allowed_tools
+            else "prepare_internal_start" if state == "READY" else None
+        ),
         "remediation_tool": (
             "prepare_bid_intake_draft"
             if not customer_conditions.get("complete") and "prepare_bid_intake_draft" in allowed_tools
@@ -346,6 +389,14 @@ def _start_stage(row, allowed_tools, acceptance_state):
             "project_status": readiness.get("project_status"),
             "can_prepare": bool(readiness.get("can_prepare_start_from_known_facts")),
             "customer_start_conditions": customer_conditions,
+            "erp_mold_handoff": {
+                "handoff_state": handoff_state,
+                "project_mapping_state": erp_handoff.get("project_mapping_state"),
+                "erp_project_code": erp_handoff.get("erp_project_code"),
+                "records": erp_handoff.get("records") or [],
+                "exact_project_records": erp_handoff.get("exact_project_records") or [],
+                "local_internal_mold_numbers": erp_handoff.get("local_internal_mold_numbers") or [],
+            },
         },
         "blockers": blockers,
     }
@@ -357,15 +408,28 @@ def _plan_stage(row, allowed_tools, start_state, project_status):
     analysis = row.get("analysis") or {}
     derived = analysis.get("derived_status") or {}
     active = analysis.get("active_plan")
+    drafts = [item for item in (row.get("project_plans") or []) if item.get("status") == "DRAFT"]
     pending = [item for item in (row.get("project_plans") or []) if item.get("status") in {
-        "DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"
+        "SUBMITTED", "RETURNED", "APPLY_BLOCKED"
     }]
     workflows = row.get("baseline_workflow_options") or []
+    coverage = analysis.get("milestone_coverage") or {}
+    missing = coverage.get("missing") or []
+    erp_progress = row.get("erp_execution_progress") or {}
+    mapping_required = erp_progress.get("status") == "ERP_PROJECT_MAPPING_REQUIRED"
     blockers = []
-    if derived.get("has_effective_plan") or active:
+    if (derived.get("has_effective_plan") or active) and missing:
+        state = "NEEDS_ATTENTION"
+    elif derived.get("has_effective_plan") or active:
         state = "ACTIVE"
+    elif drafts:
+        state = "DRAFT_PREPARED"
+        blockers.append("已有开工前项目计划草案；正式开工完成后需重新核对并提交基线计划审批。")
     elif pending:
         state = "WAITING_APPROVAL"
+    elif mapping_required:
+        state = "BLOCKED"
+        blockers.append("ERP 项目与模具尚未完成人工映射，不能进入基线计划交接。")
     elif project_status == "ACTIVE" and workflows and "prepare_project_plan_baseline" in allowed_tools:
         state = "READY"
     elif start_state != "COMPLETED" or project_status != "ACTIVE":
@@ -374,18 +438,37 @@ def _plan_stage(row, allowed_tools, start_state, project_status):
     else:
         state = "NOT_STARTED"
         blockers.append("尚无有效基线计划或可用计划审批流程。")
+    if (derived.get("has_effective_plan") or active) and missing:
+        blockers.append(
+            "当前生效基线计划缺少项目大节点：" +
+            "、".join((coverage.get("missing_labels") or missing)) +
+            "；需通过计划变更补齐。"
+        )
     return {
         "key": "project_plan",
         "name": "项目基线计划",
         "state": state,
         "query_tool": "query_project_plan_context",
-        "action_tool": "prepare_project_plan_baseline" if state == "READY" else None,
+        "action_tool": (
+            "prepare_project_plan_change"
+            if state == "NEEDS_ATTENTION"
+            and "prepare_project_plan_change" in allowed_tools
+            and bool(row.get("workflow_options"))
+            else "prepare_project_plan_baseline"
+            if state == "READY"
+            else None
+        ),
         "facts": {
             "active_plan": _subject_fact(active),
+            "draft_plan_count": len(drafts),
             "pending_count": len(pending),
             "workflow_count": len(workflows),
             "task_count": len(analysis.get("tasks") or []),
-            "missing_milestones": (analysis.get("milestone_coverage") or {}).get("missing") or [],
+            "required_milestones": coverage.get("required") or [],
+            "missing_milestones": missing,
+            "baseline_readiness": analysis.get("baseline_readiness") or {},
+            "plan_change_workflow_count": len(row.get("workflow_options") or []),
+            "baseline_workflow_count": len(row.get("baseline_workflow_options") or []),
         },
         "blockers": blockers,
     }
@@ -455,6 +538,8 @@ def _recommendations(stages, allowed_tools):
                 "reason": (
                     "承接已生效，但客户工艺确认、外部订单/开工日期/交期或外部开工通知仍需在同一中标接收记录补齐。"
                     if tool == "prepare_bid_intake_draft"
+                    else "ERP 已返回唯一项目模具候选，先由本人核对并完成人工交接，建立 Agent 项目与内部模具的可追溯关联后再正式开工。"
+                    if tool == "prepare_project_mold_handoff"
                     else "承接已生效且客户开工条件已具备，下一主线是核对并正式下达内部开工。"
                 ),
                 "requires_user_confirmation": tool.startswith("prepare_"),
@@ -464,11 +549,19 @@ def _recommendations(stages, allowed_tools):
             "query_project_plan_context" if "query_project_plan_context" in allowed_tools else None
         )
         if tool:
+            plan_has_missing = bool(plan.get("facts", {}).get("missing_milestones"))
+            plan_has_active = bool(plan.get("facts", {}).get("active_plan"))
             result.append({
                 "kind": "PRIMARY",
                 "stage": "project_plan",
                 "tool": tool,
-                "reason": "正式开工已生效，下一主线是建立并审批项目基线计划。",
+                "reason": (
+                    "正式开工已生效，但当前计划缺少项目大节点；先核对完整计划并进入计划变更。"
+                    if plan_has_missing and plan_has_active
+                    else "正式开工已生效，但尚无完整基线计划；提交前必须补齐设计、采购、工序加工、装配、试模和最终交付六类大节点。"
+                    if plan_has_missing
+                    else "正式开工已生效，下一主线是建立并审批项目基线计划。"
+                ),
                 "requires_user_confirmation": tool.startswith("prepare_"),
             })
 
@@ -485,6 +578,31 @@ def _recommendations(stages, allowed_tools):
                 "requires_user_confirmation": tool.startswith("prepare_"),
             })
     return result
+
+
+def _boundary_read_tools(stages, recommendations, allowed_tools):
+    """Keep the next stage's authoritative reader available after handoff."""
+    by_key = {stage["key"]: stage for stage in stages}
+    readers = set()
+    for recommendation in recommendations:
+        stage = by_key.get(recommendation.get("stage"))
+        query_tool = stage.get("query_tool") if stage else None
+        if query_tool and query_tool in allowed_tools:
+            readers.add(query_tool)
+    return sorted(readers)
+
+
+def _model_context(project_card, lifecycle):
+    return {
+        "project": project_card,
+        "kickoff_lifecycle": {
+            "kind": lifecycle.get("kind"),
+            "phase": lifecycle.get("phase"),
+            "stages": lifecycle.get("stages") or [],
+            "recommended_next_steps": lifecycle.get("recommended_next_steps") or [],
+            "access_gaps": lifecycle.get("access_gaps") or [],
+        },
+    }
 
 
 def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
@@ -616,12 +734,26 @@ def query(db, user, data: ProjectKickoffContextInput, allowed_tools: set[str]):
     }
     if access_gaps:
         limitations.append("未读取以下未分配阶段能力：" + "、".join(access_gaps) + "。")
+    project_card = _project_card(db, user, project, alternatives or ("项目定位",))
+    recommendations = lifecycle["recommended_next_steps"]
+    scope_boundary = {
+        "complete": True,
+        "scope_key": "project_kickoff",
+        "write_tools": sorted(
+            tool for tool in KICKOFF_PROPOSAL_TOOLS if tool in allowed_tools
+        ),
+    }
+    read_tools = _boundary_read_tools(stages, recommendations, allowed_tools)
+    if read_tools:
+        scope_boundary["read_tools"] = read_tools
     return {
         "resolution": "RESOLVED",
         "data": [{
-            "project": _project_card(db, user, project, alternatives or ("项目定位",)),
+            "project": project_card,
             "analysis": {"kickoff_lifecycle": lifecycle},
         }],
+        "model_context": _model_context(project_card, lifecycle),
+        "scope_boundary": scope_boundary,
         "source": "agent_db",
         "as_of": now().isoformat(),
         "limitations": limitations,

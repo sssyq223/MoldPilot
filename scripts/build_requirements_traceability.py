@@ -72,6 +72,18 @@ COMPLETION_VERIFICATION = {
     for key in COMPLETION_IMPLEMENTATION
 }
 
+PAYMENT_CONDITION_MATRIX_IMPLEMENTATION = (
+    'PaymentStage.condition_profile 保存付款类型（PREPAYMENT/PROGRESS/ACCEPTANCE/FINAL）和结构化条件规则；'
+    'condition_evidence_map 保存逐项核验依据，适用条件、非适用条件和特殊审批引用由 finance.condition 与供应商付款准备工具共同校验。'
+    '非适用条件不阻断，适用条件缺失返回 PAYMENT_CONDITION_MISSING，声明特殊审批但没有引用返回 PAYMENT_SPECIAL_APPROVAL_REQUIRED；'
+    '通过 mh0d0e000018 与 mi0d0e000019 迁移增加字段，保留既有条件文本/证据字段并复用原确认卡、BPM 和审批材料；'
+    '条件存在特殊审批依据时，付款申请只能选择审批模板显式声明 supports_special_approval 的流程，未声明则在准备阶段阻断并返回授权候选。'
+)
+PAYMENT_CONDITION_MATRIX_VERIFICATION = (
+    'tests/test_supplier_payment_request_tools.py 覆盖付款类型、适用/非适用规则、逐项证据缺失、特殊审批引用、'
+    '确认后 evidence map 持久化及条件到申请的边界；相关供应商付款、财务上下文、合同、领域和迁移集合通过，完整真实模型/ERP/特殊审批业务验收仍未完成。'
+)
+
 QUOTATION_IMPLEMENTATION = {
     key: (
         '客户报价领域以 quote_inbound_record 保存来源标识、文件哈希和原始附件关联，以 quotation_detail 保存不可覆盖的版本化价格、'
@@ -89,6 +101,80 @@ QUOTATION_VERIFICATION = {
     )
     for key in QUOTATION_IMPLEMENTATION
 }
+
+ASSEMBLY_READINESS_IMPLEMENTATION = {
+    'FR-062': (
+        'query_assembly_trial_context 在权限隔离后投影可见设计 BOM、采购/收货/质检/库存事实，'
+        '按物料需求与已核验数量给出 assembly_readiness 和装配试模 handoffs；'
+        'prepare_assembly_execution 仅基于真实生效装配任务准备开工/完工回执确认卡，本人确认后复用既有 assembly.execute 命令写入 Agent 执行事实；'
+        '关键件清单、70%～80%阈值、机台/资源排程和原始试模报告附件未被推断，'
+        '分别明确返回 UNCONFIGURED、UNVERIFIED 或 UNAVAILABLE，不新增 ERP 页面或复制执行台账'
+    ),
+    'FR-063': (
+        'query_assembly_trial_context 在装配/试模上下文中返回 trial_resources、trial_report_evidence 和 assembly_trial_handoffs，'
+        '区分责任人/日期/地点等文本证据、资源可用性和试模报告附件状态；'
+        'prepare_trial_result 仅基于真实生效试模申请准备通过/未通过确认卡，未通过必须关联工程联络单，本人确认后复用既有 trial.confirm 命令；'
+        '确认试模结论时可在权限范围内关联当前用户上传的 FileObject 原件并保留不可变版本，'
+        '没有 Agent 报告附件时仍保持 UNAVAILABLE；没有 ERP 排程时资源保持 UNVERIFIED，并将后续交付放行作为独立 handoff'
+    ),
+}
+ASSEMBLY_READINESS_VERIFICATION = {
+    'FR-062': (
+        'tests/test_assembly_trial_tools.py 覆盖可见 BOM、采购/收货/库存数量投影、'
+        'READY/NO_EFFECTIVE_BOM 状态、权限隔离、关键件规则未配置和阈值不被猜测；'
+        '新增 prepare_assembly_execution 确认前零写入、确认后登记装配完工回执；'
+        'tests/test_project_execution_lifecycle.py 覆盖装配试模 handoff 与阶段事实隔离'
+    ),
+    'FR-063': (
+        'tests/test_assembly_trial_tools.py 覆盖试模资源字段、资源可用性未核验、报告文本证据和附件不可用状态；'
+        '新增 prepare_trial_result 确认前零写入、确认后登记试模结论及未通过边界；'
+        '新增试模结论→FileObject 报告原件关联及 assembly_readiness ATTACHED/VERIFIED 状态测试；'
+        'tests/test_project_execution_lifecycle.py 覆盖 assembly_trial_handoffs 在交付放行前的串联；'
+        '真实 ERP 排程、ERP 原生报告权限和业务现场验收仍需后续确认'
+    ),
+}
+
+CUSTOMER_ACCEPTANCE_EVIDENCE_IMPLEMENTATION = {
+    'FR-068': (
+        '客户签收与客户质量验收继续作为两类独立 Agent 事实；prepare_customer_acceptance 在人工确认后登记验收结果，'
+        'prepare_customer_delivery_signature 登记发运后的 DELIVERY 签收，prepare_mold_transfer_receipt 对移模时间使用的签收原件做同样边界校验；两类原件分别以 '
+        'CustomerAcceptanceAttachment / CustomerDeliverySignatureAttachment 不可变版本保存哈希，查询交付、整套委外和财务上下文均返回原件元数据，'
+        '不把签收自动升级为验收或回款。'
+    ),
+    'FR-069': (
+        '客户验收记录保留问题、责任、整改期限、工程联络单、供应商、扣款、交期影响和合同变化字段；'
+        '复验通过 previous_acceptance_id 串联当前验收链，客户原件以不可变附件事实随验收记录保存，不自动执行扣款、改合同或关闭项目。'
+    ),
+}
+CUSTOMER_ACCEPTANCE_EVIDENCE_VERIFICATION = {
+    'FR-068': (
+        'tests/test_delivery_logistics_tools.py 与 tests/test_finance_context_tools.py 覆盖签收与验收分离、人工确认前零写入、'
+        '确认后客户原件关联、DELIVERY 与 MOLD_TRANSFER 记录区分、交付/财务上下文原件投影和重复阻断；真实客户签字、ERP 物流和回款业务验收仍未完成。'
+    ),
+    'FR-069': (
+        'tests/test_delivery_logistics_tools.py 覆盖失败验收字段、整改复验链、原件哈希及附件回读；'
+        'tests/test_finance_quality_context.py 与收尾回归继续验证费用/合同/计划影响只读投影，真实整改执行和现场复验仍需验收。'
+    ),
+}
+
+OUTBOUND_RELEASE_EVIDENCE_IMPLEMENTATION = (
+    'prepare_outbound_release 继续只登记 Agent 出厂自检/放行事实，不复制 ERP 出库或发货；'
+    '当前任务中本人上传的放行报告可在人工确认后以 OutboundReleaseAttachment 不可变版本保存，'
+    'query_delivery_logistics_context 返回原件元数据并将放行证据与 ERP 履约、客户签收分别投影。'
+)
+OUTBOUND_RELEASE_EVIDENCE_VERIFICATION = (
+    'tests/test_delivery_logistics_tools.py 覆盖试模前置、确认前零写入、放行原件关联、原件查询和交付门禁；'
+    '真实 ERP 出厂检测报告权限、入库/出库放行和现场交付仍需业务环境验收。'
+)
+
+OUTSOURCE_CHANGE_NEGOTIATION_IMPLEMENTATION = (
+    '新增 prepare_outsource_change_negotiation，基于真实项目版本、生效整套委外合同、供应商和工程联络单准备客户报价、供应商报价、最终协商金额、交期/任务影响及合同变更要求确认卡；'
+    '本人确认后追加既有 OutsourceChangeNegotiation 事实，不自动改合同、计划、责任或 ERP 执行数据；AGREED 仍需独立合同版本或计划变更审批。'
+)
+OUTSOURCE_CHANGE_NEGOTIATION_VERIFICATION = (
+    'tests/test_full_outsource_tools.py 覆盖确认前零写入、客户/供应商报价与议价金额、交期影响、工程联络关联、合同变更门禁、重复来源和查询上下文投影；'
+    '真实客户设变、供应商议价回执、合同版本审批及 ERP/财务联调仍需业务环境验收。'
+)
 
 
 def parse_source(text):
@@ -143,6 +229,29 @@ def main():
             implementation_evidence.append(QUOTATION_IMPLEMENTATION[key])
         if key in QUOTATION_VERIFICATION and QUOTATION_VERIFICATION[key] not in verification_evidence:
             verification_evidence.append(QUOTATION_VERIFICATION[key])
+        if key in ASSEMBLY_READINESS_IMPLEMENTATION and ASSEMBLY_READINESS_IMPLEMENTATION[key] not in implementation_evidence:
+            implementation_evidence.append(ASSEMBLY_READINESS_IMPLEMENTATION[key])
+        if key in ASSEMBLY_READINESS_VERIFICATION and ASSEMBLY_READINESS_VERIFICATION[key] not in verification_evidence:
+            verification_evidence.append(ASSEMBLY_READINESS_VERIFICATION[key])
+        if key in CUSTOMER_ACCEPTANCE_EVIDENCE_IMPLEMENTATION and CUSTOMER_ACCEPTANCE_EVIDENCE_IMPLEMENTATION[key] not in implementation_evidence:
+            implementation_evidence.append(CUSTOMER_ACCEPTANCE_EVIDENCE_IMPLEMENTATION[key])
+        if key in CUSTOMER_ACCEPTANCE_EVIDENCE_VERIFICATION and CUSTOMER_ACCEPTANCE_EVIDENCE_VERIFICATION[key] not in verification_evidence:
+            verification_evidence.append(CUSTOMER_ACCEPTANCE_EVIDENCE_VERIFICATION[key])
+        if key == 'FR-064':
+            if OUTBOUND_RELEASE_EVIDENCE_IMPLEMENTATION not in implementation_evidence:
+                implementation_evidence.append(OUTBOUND_RELEASE_EVIDENCE_IMPLEMENTATION)
+            if OUTBOUND_RELEASE_EVIDENCE_VERIFICATION not in verification_evidence:
+                verification_evidence.append(OUTBOUND_RELEASE_EVIDENCE_VERIFICATION)
+        if key in {'FR-074', 'FR-075'}:
+            if OUTSOURCE_CHANGE_NEGOTIATION_IMPLEMENTATION not in implementation_evidence:
+                implementation_evidence.append(OUTSOURCE_CHANGE_NEGOTIATION_IMPLEMENTATION)
+            if OUTSOURCE_CHANGE_NEGOTIATION_VERIFICATION not in verification_evidence:
+                verification_evidence.append(OUTSOURCE_CHANGE_NEGOTIATION_VERIFICATION)
+        if key in {'FR-056', 'FR-103', 'FR-104', 'FR-105', 'FR-114'}:
+            if PAYMENT_CONDITION_MATRIX_IMPLEMENTATION not in implementation_evidence:
+                implementation_evidence.append(PAYMENT_CONDITION_MATRIX_IMPLEMENTATION)
+            if PAYMENT_CONDITION_MATRIX_VERIFICATION not in verification_evidence:
+                verification_evidence.append(PAYMENT_CONDITION_MATRIX_VERIFICATION)
         requirements.append({
             'id': key, 'source_text': content, 'module': module,
             'agent_responsibility': responsibility,

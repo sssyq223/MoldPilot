@@ -8,6 +8,7 @@ from importlib import import_module
 
 
 DELIVERY_LOGISTICS_MODULE = "domain_packs.mold.erp.procurement.delivery_logistics"
+ASSEMBLY_TRIAL_MODULE = "domain_packs.mold.tools.erp.manufacturing.assembly_trial_tools"
 
 
 @dataclass(frozen=True)
@@ -46,10 +47,11 @@ HANDLERS = (
         "prepare_project_settlement_close",
     })),
     ProposalHandler("project_plan.execute", "domain_packs.mold.tools.erp.project.plan_tools", frozenset({
-        "prepare_project_plan_baseline", "prepare_project_plan_change",
+        "prepare_project_plan_draft", "prepare_project_plan_baseline", "prepare_project_plan_change",
         "prepare_plan_department_confirmation",
     })),
     ProposalHandler("internal_start.execute", "domain_packs.mold.tools.erp.project.start_tools", frozenset({"prepare_internal_start"})),
+    ProposalHandler("mold_handoff.execute", "domain_packs.mold.tools.erp.project.mold_handoff_tools", frozenset({"prepare_project_mold_handoff"})),
     ProposalHandler("quote_acceptance.execute", "domain_packs.mold.tools.erp.commercial.quote_tools", frozenset({"prepare_quote_acceptance_decision"})),
     ProposalHandler("quotation.execute", "domain_packs.mold.tools.erp.commercial.quotation_tools", frozenset({
         "prepare_quotation_version", "prepare_quotation_feedback",
@@ -81,17 +83,23 @@ HANDLERS = (
     ProposalHandler("design_approval.execute", "domain_packs.mold.tools.erp.design.design_approval_tools", frozenset({
         "prepare_design_order_approval",
     })),
+    ProposalHandler("assembly_trial.execute", ASSEMBLY_TRIAL_MODULE, frozenset({
+        "prepare_assembly_execution", "prepare_trial_result",
+    })),
     ProposalHandler("full_outsource.execute", "domain_packs.mold.tools.erp.procurement.full_outsource_tools", frozenset({
         "prepare_supplier_material_handoff", "prepare_supplier_material_verification",
         "prepare_supplier_progress_policy",
         "prepare_supplier_progress_report",
+        "prepare_outsource_change_negotiation",
     })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
+        "prepare_finance_correction", "prepare_supplier_payment_condition", "prepare_supplier_payment_request",
         "prepare_customer_receivable_schedule", "prepare_customer_receipt_confirmation", "prepare_supplier_payment_confirmation",
         "prepare_supplier_deduction_settlement", "prepare_mold_transfer_receipt",
     })),
     ProposalHandler("delivery_logistics.execute", DELIVERY_LOGISTICS_MODULE, frozenset({
-        "prepare_logistics_route", "prepare_logistics_quote", "prepare_customer_acceptance",
+        "prepare_logistics_route", "prepare_logistics_quote", "prepare_customer_delivery_signature",
+        "prepare_customer_acceptance", "prepare_outbound_release",
     })),
 )
 

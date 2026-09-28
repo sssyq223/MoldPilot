@@ -100,7 +100,9 @@ TOOLS.update({
     'prepare_contract_signing_record':{'description':'准备整套委外合同签署文件或签署状态证据登记建议；必须使用真实项目版本、已生效整套委外合同和签署依据，本人确认后才写入签署记录，不发起电子签署。','permission':'full_outsource_contract.execute'},
     'query_internal_start_readiness':{'description':'按项目线索核对正式开工条件、承接依据、合同和计划上下文；只读，不创建开工通知或执行任务。','permission':'internal_start.read'},
     'prepare_internal_start':{'description':'准备正式内部开工通知审批建议；必须使用查询返回的真实项目、项目版本、已生效承接记录和流程 ID，本人确认后才提交 Agent BPM。','permission':'internal_start.create'},
+    'prepare_project_mold_handoff':{'description':'准备把 ERP 已精确核对的项目模具候选人工交接到 Agent；Agent 项目号与 ERP 项目号可以不同，但必须使用查询返回的显式项目映射、精确 mold_code 和 source_ref，本人确认后才建立 Agent Mold/ProjectMold 关联，不回写 ERP。','permission':'internal_start.create'},
     'query_project_plan_context':{'description':'按项目线索核对项目计划、节点进度、依赖、逾期和大节点覆盖；只读，不重排计划或下达任务。','permission':'project_plan.read'},
+    'prepare_project_plan_draft':{'description':'准备开工前项目计划草案；必须使用查询返回的真实项目、项目版本和节点清单，本人确认后仅在 Agent 保存 DRAFT，不提交 BPM、不生效基线计划。','permission':'project_plan.create'},
     'prepare_project_plan_baseline':{'description':'准备项目基线计划审批建议；必须使用查询返回的真实项目、项目版本、完整节点清单和流程 ID，本人确认后才提交 Agent BPM。','permission':'project_plan.create'},
     'prepare_project_plan_change':{'description':'准备项目计划变更审批建议；必须使用查询返回的真实项目、当前计划和节点清单，本人确认后才提交 Agent BPM。','permission':'plan_change.create'},
     'prepare_plan_department_confirmation':{'description':'准备计划变更生效后的部门影响确认；只能使用计划上下文返回的待确认项 ID 和版本，本人确认后仅记录本部门已核对。','permission':'plan_change.execute'},
@@ -108,17 +110,25 @@ TOOLS.update({
     'prepare_design_order_approval':{'description':'读取指定 ERP 设计订单的当前详情，冻结来源版本、证据快照及本轮附件，并准备提交 Agent 通用 BPM；不调用 ERP 设计审批。','permission':'design_route.create'},
     'query_manufacturing_quality_context':{'description':'按项目或工序线索核对制造计划任务、报工事实、设计路线、装配/试模、质检和整改上下文；只读，不登记报工或检验。','permission':'project_plan.read'},
     'query_assembly_trial_context':{'description':'按项目、装配任务或试模线索核对齐套前置、装配工单、完工确认、试模资源、试模报告和异常整改上下文；只读，不替代 ERP 装配/试模执行。','permission':'assembly_issue.read'},
+    'prepare_assembly_execution':{'description':'准备登记真实装配任务的开工或完工事实；必须使用查询返回的有效装配任务和项目版本，本人确认后才写入 Agent 回执，不替代 ERP 装配工单或现场执行。','permission':'assembly.execute'},
+    'prepare_trial_result':{'description':'准备登记真实试模申请的通过或未通过结论；必须使用查询返回的有效试模申请、项目版本和本轮试模依据，本人确认后才写入 Agent 结论，未通过必须关联工程联络单。','permission':'trial.confirm'},
     'query_delivery_logistics_context':{'description':'按项目、发货、物流、签收或验收线索核对供应商发货、仓库收货、检验、出库、客户签收、客户验收和异常整改上下文；只读，不确认交付或维护物流报价。','permission':'warehouse.read'},
     'prepare_logistics_route':{'description':'准备登记仓库已确认的固定物流路线或模具项目实际路线；包含地点、承运商、车型、重量、运输方式、计价单位、税制、有效期与来源依据，本人确认后才写入。','permission':'warehouse.configure'},
     'prepare_logistics_quote':{'description':'准备由采购价格审批人确认的物流有效报价或项目本次结算价格；包含有效期、询比议价方式、比较摘要、报价依据和对账依据，本人确认后才登记生效。','permission':'purchase_price.approve'},
     'prepare_customer_acceptance':{'description':'准备登记客户质量验收结果或整改复验；必须使用真实项目版本、签收/工程联络/责任依据和验收材料，本人确认后才写入；不自动扣款、改合同或关闭项目。','permission':'project_close.execute'},
+    'prepare_customer_delivery_signature':{'description':'准备登记发运后的 Agent 客户签收事实；必须使用真实项目版本、签收日期、交付单号、签收人和依据，本人确认后才写入，不回写 ERP、不代表质量验收、移模时间、回款或项目关闭。','permission':'project_close.execute'},
+    'prepare_outbound_release':{'description':'准备登记出厂自检或放行事实；必须引用真实试模结果和项目版本，本人确认后才写入 Agent，不回写 ERP，不把出厂放行解释为客户签收或质量验收。','permission':'project_close.execute'},
     'query_full_outsource_context':{'description':'按项目、合同、供应商、委外节点、质量延期或扣款线索核对整套委外加工方式、合同、供应商执行、验收、整改和结算上下文；只读，不创建供应商门户或重复 ERP 委外执行。','permission':'full_outsource_contract.read'},
+    'prepare_outsource_change_negotiation':{'description':'准备登记客户设变对委外供应商的报价、议价和交期影响事实；必须使用真实项目版本、有效委外合同、工程联络单和来源依据，本人确认后才写入 Agent，不自动改合同、计划或 ERP 执行数据。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_material_handoff':{'description':'准备向供应商提供客户资料、设计图纸或技术标准的交接证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和交接依据，本人确认后才写入资料交接记录。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_material_verification':{'description':'准备登记供应商对一条已批准资料交接的收到、接受、待澄清或退回核验结果；必须使用查询返回的真实交接记录，本人确认后才追加核验事实。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_progress_policy':{'description':'准备供应商阶段填报的版本化频率与必需证据规则；必须使用真实项目、供应商、已生效整套委外合同和可选计划节点，本人确认后才生效。','permission':'full_outsource_contract.execute'},
     'prepare_supplier_progress_report':{'description':'准备供应商设计、采购、生产、质检、装配、试模或验收节点上报证据登记建议；必须使用真实项目版本、供应商、已生效整套委外合同和可选计划节点，本人确认后才写入。','permission':'full_outsource_contract.execute'},
     'query_change_intake_context':{'description':'按项目、模具、客户设变、工程联络或合同线索核对设变承接、收费/合同/开工依据、原模具/原项目、影响任务、执行复验和关闭上下文；只读，不替代 ERP 执行。','permission':'engineering_change.read'},
     'query_finance_context':{'description':'按项目、合同、付款节点、供应商付款、回款、发票、费用或结项线索核对财务节点与收付款上下文；只读，不确认回款付款、不生成财务台账。','permission':'project.dossier.read'},
+    'prepare_finance_correction':{'description':'准备供应商付款冲正审批建议；必须使用查询返回的真实付款记录、项目版本和当前可用财务流程，本人确认后才提交 Agent BPM，不执行银行退款或 ERP 对账。','permission':'finance_correction.create'},
+    'prepare_supplier_payment_condition':{'description':'准备核验真实供应商付款节点的合同条件和分项依据；本人确认后才记录条件核验，不提交付款申请、不审批、不登记实付。','permission':'finance.condition'},
+    'prepare_supplier_payment_request':{'description':'准备真实供应商付款节点的付款申请审批建议；必须使用已核验条件、授权额度和当前可用付款流程，本人确认后才提交 Agent BPM，不执行银行付款或 ERP 对账。','permission':'supplier_payment.create'},
     'prepare_customer_receivable_schedule':{'description':'准备由财务确认客户收款节点的结构化触发事件、账期、预计到期日及特殊标记；不从条件文字猜测日期，本人确认后才更新节点。','permission':'customer_receipt.confirm'},
     'prepare_customer_receipt_confirmation':{'description':'准备客户实际回款确认登记建议；必须使用查询返回的真实项目版本、已生效销售合同和收款节点，本人确认后才写入回款确认台账。','permission':'customer_receipt.confirm'},
     'prepare_supplier_payment_confirmation':{'description':'准备供应商实际付款确认登记建议；必须使用查询返回的真实项目版本、已审批供应商付款申请和授权余额，本人确认后才写入付款确认记录。','permission':'finance.confirm'},
@@ -177,10 +187,16 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                        'query_project_completion_context','query_project_control_context'],
                    'activation_tools':['query_project_lifecycle_context'],
                    'activation_queries':['项目全生命周期','项目全流程','从接单到结项','从接单到关闭',
-                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度'],
+                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度','全生命周期'],
                    'auto_activation_queries':['项目全生命周期','项目全流程','从接单到结项','从接单到关闭',
-                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度'],
-                   'suppress_tool_search_on_auto_activation':True},
+                       '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度','全生命周期'],
+                   # The coordinator is a complete read-only boundary for a
+                   # status request. Finalize after its evidence instead of
+                   # letting the model fan out into every optional stage reader.
+                   'requires_tool_evidence':True,
+                   'suppress_tool_search_on_auto_activation':True,
+                   'priority_patterns':[r'项目全生命周期|项目全流程|从接单到结项|从接单到关闭',
+                                        r'从承接到收尾|整个项目到哪一步|合同开工计划执行收尾|全流程进度|全生命周期']},
                'quote_acceptance_review':{'name':'报价与承接上下文核对','tools':['query_quote_acceptance_context'],
                    'optional_tools':['query_quote_evaluation_context','prepare_quotation_version',
                        'prepare_quotation_feedback','prepare_quote_acceptance_decision'],
@@ -214,8 +230,8 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'activation_media_types':['application/pdf'],
                    'suppress_tool_search_on_trusted_activation':True,
                    'activation_queries':['合同识别','OCR合同','识别结果','合同PDF','文档类型确认','OCR重试','从识别记录登记合同']},
-               'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
-                   'optional_tools':['prepare_internal_start'],
+                'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
+                    'optional_tools':['prepare_internal_start','prepare_project_mold_handoff'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工'],
                    # A formal-start question has one authoritative read boundary.
                    # Activate it before the model sees other department terms such
@@ -224,22 +240,52 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    # so prepare_internal_start remains strictly on demand.
                    'auto_activation_queries':['正式开工','开工通知','开工条件','内部开工'],
                    'suppress_tool_search_on_auto_activation':True,
-                   'priority_patterns':['正式开工|开工通知|开工条件|内部开工']},
+                   'priority_patterns':['正式开工|开工通知|开工条件|内部开工'],
+                   # An explicit lifecycle/kickoff request owns the broader
+                   # read boundary even when it also names formal start.
+                   'priority_excludes':['项目全生命周期','项目全流程','从接单到结项','从接单到关闭',
+                                        '从承接到收尾','整个项目到哪一步','合同开工计划执行收尾','全流程进度',
+                                        '全生命周期',
+                                        '项目启动链路','接单到计划','合同开工计划','项目推进到哪一步',
+                                        '从承接到开工','从开工到计划','ERP项目映射','项目模具交接',
+                                        'ERP模具交接','模具交接确认']},
                'project_kickoff_orchestration':{'name':'项目启动链路协调','tools':['query_project_kickoff_context'],
                    'optional_tools':['query_bid_intake_context','prepare_bid_intake_draft',
                        'query_quote_evaluation_context','prepare_quotation_version',
                        'prepare_quotation_feedback','query_quote_acceptance_context','prepare_quote_acceptance_decision',
                        'query_contract_context','prepare_contract_record','query_internal_start_readiness',
-                       'prepare_internal_start','query_project_plan_context','prepare_project_plan_baseline'],
+                       'prepare_internal_start','prepare_project_mold_handoff','query_project_plan_context','prepare_project_plan_draft','prepare_project_plan_baseline','prepare_project_plan_change'],
                    'activation_tools':['query_project_kickoff_context'],
+                   'requires_tool_evidence':True,
                    'activation_queries':['项目启动链路','接单到计划','合同开工计划','项目推进到哪一步',
-                       '项目下一步','继续推进项目','从承接到开工','从开工到计划']},
-                'project_execution_orchestration':{'name':'项目执行链路协调','tools':['query_project_execution_context'],
-                   'optional_tools':['query_project_plan_context','query_design_route_context',
+                       '项目下一步','继续推进项目','从承接到开工','从开工到计划','ERP项目映射',
+                       '项目模具交接','ERP模具交接','模具交接确认','开工前计划草案','计划草案'],
+                   'auto_activation_queries':['项目启动链路','接单到计划','合同开工计划','项目推进到哪一步',
+                       '从承接到开工','从开工到计划','ERP项目映射','项目模具交接','ERP模具交接',
+                       '模具交接确认','开工前计划草案','计划草案'],
+                   'action_activation_queries':['准备 ERP 项目模具人工交接确认建议卡',
+                       '准备项目模具人工交接确认建议卡','准备模具人工交接确认卡',
+                       '生成模具人工交接确认卡','只生成确认卡'],
+                   'action_activation_tools':['prepare_project_mold_handoff'],
+                   'suppress_tool_search_on_action_activation':True,
+                   # A project-to-ERP mapping or mold-handoff request is still
+                   # part of the kickoff boundary.  Route it to the kickoff
+                   # coordinator before fuzzy search can select an unrelated
+                   # ERP design-upload capability that happens to mention a
+                   # project or mold code.
+                   'priority_patterns':[r'项目.{0,12}(?:ERP)?(?:项目)?映射',
+                                        r'(?:ERP\s*)?项目.{0,20}模具.{0,8}交接',
+                                        r'模具.{0,8}交接(?:确认|建议|卡)?',
+                                        r'(?:开工前|项目)?计划草案',
+                                        r'项目启动链路|接单到计划|合同开工计划|项目推进到哪一步',
+                                        r'从承接到开工|从开工到计划']},
+               'project_execution_orchestration':{'name':'项目执行链路协调','tools':['query_project_execution_context'],
+                    'optional_tools':['query_project_kickoff_context','query_project_plan_context','query_design_route_context',
                        'query_procurement_price_context','query_full_outsource_context',
                        'query_manufacturing_quality_context','query_assembly_trial_context',
                        'query_delivery_logistics_context'],
                    'activation_tools':['query_project_execution_context'],
+                   'requires_tool_evidence':True,
                    'activation_queries':['项目执行链路','计划之后各环节','设计采购制造装配交付',
                        '项目执行到哪里','项目执行卡在哪','继续推进项目执行','完整执行进度'],
                    # A full-chain question has one unambiguous read boundary. Expose
@@ -248,21 +294,23 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                     'auto_activation_queries':['项目执行链路','计划之后各环节','设计采购制造装配交付',
                         '项目执行到哪里','项目执行卡在哪','继续推进项目执行','完整执行进度'],
                     'suppress_tool_search_on_auto_activation':True},
-                'project_completion_orchestration':{'name':'项目收尾链路协调','tools':['query_project_completion_context'],
+               'project_completion_orchestration':{'name':'项目收尾链路协调','tools':['query_project_completion_context'],
                     'optional_tools':['query_delivery_logistics_context','query_finance_context',
-                        'query_project_closure_context','prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation',
+                        'query_project_closure_context','prepare_customer_delivery_signature','prepare_outbound_release','prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation',
                         'prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement',
                         'prepare_project_closure_checklist','prepare_project_closure_item',
                         'prepare_project_normal_close','prepare_project_settlement_close'],
-                    'activation_tools':['query_project_completion_context'],
+                   'activation_tools':['query_project_completion_context'],
+                   'requires_tool_evidence':True,
                     'activation_queries':['项目收尾链路','交付后结算关闭','项目收尾到哪里','能否关闭项目',
                         '客户验收后还有什么','终止结算完成了吗','结算到归档关闭'],
                     'auto_activation_queries':['项目收尾链路','交付后结算关闭','项目收尾到哪里','能否关闭项目',
                         '客户验收后还有什么','终止结算完成了吗','结算到归档关闭'],
                     'suppress_tool_search_on_auto_activation':True},
                'project_plan_context_review':{'name':'项目计划上下文核对','tools':['query_project_plan_context'],
-                   'optional_tools':['prepare_project_plan_baseline'],
-                   'activation_queries':['项目计划','大节点','基线计划','计划任务','节点进度','交期','客户交期','承诺交期','交付期','预计交期']},
+                   'optional_tools':['prepare_project_plan_draft','prepare_project_plan_baseline'],
+                   'requires_tool_evidence':True,
+                   'activation_queries':['项目计划','开工前计划草案','计划草案','大节点','基线计划','计划任务','节点进度','交期','客户交期','承诺交期','交付期','预计交期']},
                'project_plan_change':{'name':'项目计划变更','tools':['query_project_plan_context'],
                    'optional_tools':['prepare_project_plan_change','prepare_plan_department_confirmation'],
                    'activation_queries':['项目计划变更','计划变更','节点顺延','部门影响确认']},
@@ -272,18 +320,19 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                'manufacturing_quality_review':{'name':'制造工序与质检上下文核对','tools':['query_manufacturing_quality_context'],
                    'activation_queries':['制造工序','现场报工','质检报告','整改复检','生产进度']},
                'assembly_trial_review':{'name':'装配试模上下文核对','tools':['query_assembly_trial_context'],
+                   'optional_tools':['prepare_assembly_execution','prepare_trial_result'],
                    'activation_queries':['装配齐套','装配工单','试模安排','试模报告','装配试模']},
                'delivery_logistics_review':{'name':'交付物流路线与价格协同','tools':['query_delivery_logistics_context'],
-                   'optional_tools':['prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'],
+                   'optional_tools':['prepare_logistics_route','prepare_logistics_quote','prepare_customer_delivery_signature','prepare_customer_acceptance','prepare_outbound_release'],
                    'activation_queries':['出库发货','物流路线','固定路线','实际路线','物流报价','物流询价','物流比价','物流议价','本次物流结算价格','本次结算价格','物流对账','客户签收','客户验收','发货物流']},
                'full_outsource_review':{'name':'整套委外协同上下文核对','tools':['query_full_outsource_context'],
-                   'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_supplier_deduction_settlement'],
+                   'optional_tools':['prepare_contract_signing_record','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_outsource_change_negotiation','prepare_supplier_deduction_settlement'],
                    'activation_queries':['整套委外执行','整套委外加工','供应商节点上报','供应商上报规则','上报频率','证据模板','供应商节点','供应商上报','进度上报','委外验收','委外扣款','委外合同签署','签署扫描件','资料交接','资料核验','资料接受','资料退回','供应商资料']},
                'change_intake_review':{'name':'设变承接上下文核对','tools':['query_change_intake_context'],
                    'optional_tools':['query_project_plan_context','prepare_project_plan_change'],
                    'activation_queries':['客户设变','设变承接','工程设变','收费变更','原模具']},
                'finance_context_review':{'name':'财务节点与收付款核对','tools':['query_finance_context'],
-                   'optional_tools':['prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'],
+                   'optional_tools':['prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_condition','prepare_supplier_payment_request','prepare_supplier_payment_confirmation','prepare_finance_correction','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'],
                    'activation_queries':['财务节点','收付款','回款','付款','发票','结算','移模时间','移模签收']},
                'governance_context_review':{'name':'治理权限与来源核对','tools':['query_governance_context'],
                    'activation_queries':['治理上下文','权限矩阵','审计','附件版本','来源治理']},
@@ -325,6 +374,7 @@ SKILLS.update({
         # status/result tools remain discoverable later by exact ToolSearch,
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
+        'suspended_tools': ['erp_design_import_new_mold'],
         'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
@@ -691,7 +741,9 @@ CAPABILITY_NAMES = {
     'prepare_contract_signing_record': '准备合同签署记录',
     'query_internal_start_readiness': '核对正式开工条件',
     'prepare_internal_start': '准备正式开工通知',
+    'prepare_project_mold_handoff': '准备 ERP 项目模具交接',
     'query_project_plan_context': '读取项目计划上下文',
+    'prepare_project_plan_draft': '准备开工前项目计划草案',
     'prepare_project_plan_baseline': '准备项目基线计划',
     'prepare_project_plan_change': '准备项目计划变更',
     'prepare_plan_department_confirmation': '准备计划部门影响确认',
@@ -699,17 +751,25 @@ CAPABILITY_NAMES = {
     'prepare_design_order_approval': '准备设计订单 Agent 审批',
     'query_manufacturing_quality_context': '读取制造质检上下文',
     'query_assembly_trial_context': '读取装配试模上下文',
+    'prepare_assembly_execution': '准备登记装配执行',
+    'prepare_trial_result': '准备登记试模结论',
     'query_delivery_logistics_context': '读取交付物流上下文',
     'prepare_logistics_route': '准备物流路线确认',
     'prepare_logistics_quote': '准备物流报价/结算价确认',
     'prepare_customer_acceptance': '准备客户质量验收确认',
+    'prepare_customer_delivery_signature': '准备客户签收登记',
+    'prepare_outbound_release': '准备出厂放行登记',
     'query_full_outsource_context': '读取整套委外上下文',
+    'prepare_outsource_change_negotiation': '准备登记委外设变议价',
     'prepare_supplier_material_handoff': '准备供应商资料交接',
     'prepare_supplier_material_verification': '准备供应商资料核验',
     'prepare_supplier_progress_policy': '准备供应商上报规则',
     'prepare_supplier_progress_report': '准备供应商节点上报',
     'query_change_intake_context': '读取设变承接上下文',
     'query_finance_context': '读取财务节点上下文',
+    'prepare_finance_correction': '准备供应商付款冲正',
+    'prepare_supplier_payment_condition': '准备核验供应商付款条件',
+    'prepare_supplier_payment_request': '准备供应商付款申请',
     'prepare_customer_receivable_schedule': '准备客户收款节点账期确认',
     'prepare_customer_receipt_confirmation': '准备客户回款确认',
     'prepare_supplier_payment_confirmation': '准备供应商实付确认',
@@ -782,27 +842,32 @@ CAPABILITY_DEPARTMENTS = {
     'prepare_sales_contract_intake_review': 'sales',
     'sales_contract_intake': 'sales', 'prepare_contract_signing_record': 'finance',
     'contract_context_review': 'finance',
-    'query_finance_context': 'finance', 'prepare_customer_receivable_schedule': 'finance', 'prepare_supplier_deduction_settlement': 'finance',
+    'query_finance_context': 'finance', 'prepare_customer_receivable_schedule': 'finance',
+    'prepare_finance_correction': 'finance', 'prepare_supplier_payment_condition': 'finance',
+    'prepare_supplier_payment_request': 'finance', 'prepare_supplier_deduction_settlement': 'finance',
     'prepare_mold_transfer_receipt': 'finance',
     'finance_context_review': 'finance', 'query_governance_context': 'system',
     'governance_context_review': 'system', 'query_operations_readiness_context': 'system',
     'operations_readiness_review': 'system', 'query_internal_start_readiness': 'project',
-    'prepare_internal_start': 'project',
+    'prepare_internal_start': 'project', 'prepare_project_mold_handoff': 'project',
     'internal_start_readiness': 'project', 'query_project_plan_context': 'project',
-    'prepare_project_plan_baseline': 'project',
+    'prepare_project_plan_draft': 'project', 'prepare_project_plan_baseline': 'project',
     'prepare_project_plan_change': 'project', 'prepare_plan_department_confirmation': 'project',
     'project_plan_context_review': 'project', 'project_plan_change': 'project',
     'query_design_route_context': 'design', 'prepare_design_order_approval': 'design',
     'design_route_context_review': 'design', 'query_manufacturing_quality_context': 'project',
     'manufacturing_quality_review': 'project', 'query_assembly_trial_context': 'assembly',
+    'prepare_assembly_execution': 'assembly', 'prepare_trial_result': 'trial',
     'assembly_trial_review': 'assembly', 'query_delivery_logistics_context': 'warehouse',
     'prepare_logistics_route': 'warehouse', 'prepare_logistics_quote': 'purchase',
     'prepare_customer_acceptance': 'warehouse',
+    'prepare_customer_delivery_signature': 'warehouse',
+    'prepare_outbound_release': 'warehouse',
     'delivery_logistics_review': 'warehouse', 'query_full_outsource_context': 'purchase',
     'prepare_supplier_material_handoff': 'purchase', 'prepare_supplier_material_verification': 'purchase',
     'prepare_supplier_progress_policy': 'purchase',
     'prepare_supplier_progress_report': 'purchase',
-    'full_outsource_review': 'purchase', 'query_change_intake_context': 'engineering',
+    'full_outsource_review': 'purchase', 'prepare_outsource_change_negotiation': 'purchase', 'query_change_intake_context': 'engineering',
     'change_intake_review': 'engineering', 'query_procurement_price_context': 'purchase',
     'procurement_price_context_review': 'purchase', 'query_purchase_requests': 'purchase',
     'purchase_request_review': 'purchase', 'query_purchase_orders': 'purchase', 'analyze_delivery_risk': 'purchase',
@@ -851,18 +916,21 @@ CAPABILITY_TYPES = {
     'prepare_admin_start_notice_decision': 'approval', 'prepare_admin_start_department_dispatch': 'operation', 'prepare_admin_start_department_ack': 'operation', 'prepare_contract_match_confirmation': 'approval',
     'quote_evaluation_review': 'review', 'bid_intake_review': 'review', 'contract_context_review': 'review',
     'prepare_contract_record': 'approval', 'prepare_contract_signing_record': 'operation',
-    'finance_context_review': 'review', 'governance_context_review': 'review',
+    'finance_context_review': 'review', 'prepare_finance_correction': 'approval',
+    'prepare_supplier_payment_condition': 'operation', 'prepare_supplier_payment_request': 'approval',
+    'governance_context_review': 'review',
     'operations_readiness_review': 'review', 'internal_start_readiness': 'review',
     'project_kickoff_orchestration': 'review', 'project_execution_orchestration': 'review',
     'project_completion_orchestration': 'review',
-    'prepare_internal_start': 'approval',
+    'prepare_internal_start': 'approval', 'prepare_project_mold_handoff': 'operation',
     'project_plan_context_review': 'review', 'project_plan_change': 'approval',
-    'prepare_project_plan_baseline': 'approval',
+    'prepare_project_plan_draft': 'operation', 'prepare_project_plan_baseline': 'approval',
     'design_route_context_review': 'review', 'prepare_design_order_approval': 'approval',
     'manufacturing_quality_review': 'review', 'assembly_trial_review': 'review',
+    'prepare_assembly_execution': 'operation', 'prepare_trial_result': 'operation',
     'delivery_logistics_review': 'review', 'prepare_logistics_route': 'operation',
-    'prepare_logistics_quote': 'approval', 'prepare_customer_acceptance': 'operation',
-    'full_outsource_review': 'review',
+    'prepare_logistics_quote': 'approval', 'prepare_customer_delivery_signature': 'operation', 'prepare_outbound_release': 'operation', 'prepare_customer_acceptance': 'operation',
+    'full_outsource_review': 'review', 'prepare_outsource_change_negotiation': 'operation',
     'prepare_supplier_material_handoff': 'operation', 'prepare_supplier_material_verification': 'operation',
     'prepare_supplier_progress_policy': 'operation',
     'prepare_supplier_progress_report': 'operation',
@@ -926,6 +994,7 @@ def capability_descriptor(kind, key, spec):
         'dependencies': spec.get('tools', []),
         'optional_dependencies': spec.get('optional_tools', []),
         'activation_dependencies': spec.get('activation_tools', spec.get('tools', []) + spec.get('optional_tools', [])),
+        'suspended_dependencies': spec.get('suspended_tools', []),
     }
 
 
@@ -1084,12 +1153,16 @@ def tool_schema(key):
         from domain_packs.mold.tools.erp.project.start_tools import StartReadinessInput, start_schema
         parameters=start_schema() if key=='prepare_internal_start' else StartReadinessInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key=='prepare_project_mold_handoff':
+        from domain_packs.mold.tools.erp.project.mold_handoff_tools import schema
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':schema()}}
     if key=='query_project_plan_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
-        from domain_packs.mold.tools.erp.project.plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema
+    if key in {'prepare_project_plan_draft','prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
+        from domain_packs.mold.tools.erp.project.plan_tools import department_confirmation_schema, plan_baseline_schema, plan_change_schema, plan_draft_schema
         parameters=department_confirmation_schema() if key=='prepare_plan_department_confirmation' else (
-            plan_baseline_schema() if key=='prepare_project_plan_baseline' else plan_change_schema())
+            plan_draft_schema() if key=='prepare_project_plan_draft' else (
+                plan_baseline_schema() if key=='prepare_project_plan_baseline' else plan_change_schema()))
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
     if key=='query_design_route_context':
         from domain_packs.mold.tools.erp.design.design_tools import DesignRouteContextInput
@@ -1101,20 +1174,30 @@ def tool_schema(key):
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
     if key=='query_assembly_trial_context':
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectPlanContextInput.model_json_schema()}}
-    if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'}:
+    if key in {'prepare_assembly_execution','prepare_trial_result'}:
+        from domain_packs.mold.tools.erp.manufacturing.assembly_trial_tools import assembly_execution_schema, trial_result_schema
+        parameters = assembly_execution_schema() if key == 'prepare_assembly_execution' else trial_result_schema()
+        return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+    if key in {'query_delivery_logistics_context','prepare_logistics_route','prepare_logistics_quote','prepare_customer_delivery_signature','prepare_outbound_release','prepare_customer_acceptance'}:
         if key == 'prepare_logistics_route':
             from domain_packs.mold.erp.procurement.delivery_logistics import logistics_route_schema
             parameters = logistics_route_schema()
         elif key == 'prepare_logistics_quote':
             from domain_packs.mold.erp.procurement.delivery_logistics import logistics_quote_schema
             parameters = logistics_quote_schema()
+        elif key == 'prepare_customer_delivery_signature':
+            from domain_packs.mold.erp.procurement.delivery_logistics import customer_delivery_signature_schema
+            parameters = customer_delivery_signature_schema()
+        elif key == 'prepare_outbound_release':
+            from domain_packs.mold.erp.procurement.delivery_logistics import outbound_release_schema
+            parameters = outbound_release_schema()
         elif key == 'prepare_customer_acceptance':
             from domain_packs.mold.erp.procurement.delivery_logistics import customer_acceptance_schema
             parameters = customer_acceptance_schema()
         else:
             parameters = ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
-    if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
+    if key in {'query_full_outsource_context','prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_outsource_change_negotiation'}:
         if key=='prepare_supplier_material_handoff':
             from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_material_handoff_schema
             parameters=supplier_material_handoff_schema()
@@ -1127,6 +1210,9 @@ def tool_schema(key):
         elif key=='prepare_supplier_progress_policy':
             from domain_packs.mold.tools.erp.procurement.full_outsource_tools import supplier_progress_policy_schema
             parameters=supplier_progress_policy_schema()
+        elif key=='prepare_outsource_change_negotiation':
+            from domain_packs.mold.tools.erp.procurement.full_outsource_tools import outsource_change_negotiation_schema
+            parameters=outsource_change_negotiation_schema()
         else:
             parameters=ProjectPlanContextInput.model_json_schema()
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
@@ -1135,7 +1221,15 @@ def tool_schema(key):
     if key=='query_finance_context':
         from domain_packs.mold.erp.project.project_dossier import ProjectDossierInput
         return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':ProjectDossierInput.model_json_schema()}}
-    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
+    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_finance_correction','prepare_supplier_payment_condition','prepare_supplier_payment_request','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
+        if key == 'prepare_finance_correction':
+            from domain_packs.mold.tools.erp.finance.finance_correction_tools import CorrectionProposalInput
+            parameters = CorrectionProposalInput.model_json_schema()
+            return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
+        if key in {'prepare_supplier_payment_condition','prepare_supplier_payment_request'}:
+            from domain_packs.mold.tools.erp.finance.supplier_payment_tools import ConditionInput, RequestInput
+            parameters = (ConditionInput if key == 'prepare_supplier_payment_condition' else RequestInput).model_json_schema()
+            return {'type':'function','function':{'name':key,'description':TOOLS[key]['description'],'parameters':parameters}}
         from domain_packs.mold.tools.erp.finance.finance_context_tools import customer_receivable_schedule_schema, customer_receipt_schema, mold_transfer_receipt_schema, supplier_deduction_settlement_schema, supplier_payment_confirmation_schema
         parameters=customer_receivable_schedule_schema() if key=='prepare_customer_receivable_schedule' else (
             customer_receipt_schema() if key=='prepare_customer_receipt_confirmation' else (
@@ -1197,9 +1291,15 @@ def skill_context(db, user):
             result.append({"key": key, "version": "1.0.0", "hash": content_hash(content), "instructions": content,
                            "agent_description": skill_agent_description(content),
                            "tools": spec["tools"], "optional_tools": spec.get("optional_tools", []),
+                           "suspended_tools": spec.get("suspended_tools", []),
                            "activation_tools": spec.get("activation_tools"),
                            "activation_queries": spec.get("activation_queries", []),
                            "auto_activation_queries": spec.get("auto_activation_queries", []),
+                           "action_activation_queries": spec.get("action_activation_queries", []),
+                           "action_activation_tools": spec.get("action_activation_tools", []),
+                           "suppress_tool_search_on_action_activation": bool(
+                               spec.get("suppress_tool_search_on_action_activation", False)
+                           ),
                            "suppress_tool_search_on_auto_activation": bool(
                                spec.get("suppress_tool_search_on_auto_activation", False)
                            ),
@@ -1282,12 +1382,15 @@ def execute(db, user, key, arguments, run=None):
     if key in {'prepare_project_pause','prepare_project_resume','query_project_control_context'}:
         from domain_packs.mold.tools.erp.project.project_control_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
+    if key in {'prepare_project_plan_draft','prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}:
         from domain_packs.mold.tools.erp.project.plan_tools import execute_plan_tool
         return execute_plan_tool(db,user,key,arguments,run=run)
     if key=='prepare_internal_start':
         from domain_packs.mold.tools.erp.project.start_tools import execute_start_tool
         return execute_start_tool(db,user,key,arguments,run=run)
+    if key=='prepare_project_mold_handoff':
+        from domain_packs.mold.tools.erp.project.mold_handoff_tools import execute_tool
+        return execute_tool(db,user,key,arguments,run=run)
     if key=='prepare_quote_acceptance_decision':
         from domain_packs.mold.tools.erp.commercial.quote_tools import execute_quote_tool
         return execute_quote_tool(db,user,key,arguments,run=run)
@@ -1320,13 +1423,16 @@ def execute(db, user, key, arguments, run=None):
     if key=='prepare_design_order_approval':
         from domain_packs.mold.tools.erp.design.design_approval_tools import execute_tool
         return execute_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
+    if key in {'prepare_assembly_execution','prepare_trial_result'}:
+        from domain_packs.mold.tools.erp.manufacturing.assembly_trial_tools import execute_assembly_trial_tool
+        return execute_assembly_trial_tool(db,user,key,arguments,run=run)
+    if key in {'prepare_finance_correction','prepare_supplier_payment_condition','prepare_supplier_payment_request','prepare_customer_receivable_schedule','prepare_customer_receipt_confirmation','prepare_supplier_payment_confirmation','prepare_supplier_deduction_settlement','prepare_mold_transfer_receipt'}:
         from domain_packs.mold.tools.erp.finance.finance_context_tools import execute_finance_tool
         return execute_finance_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report'}:
+    if key in {'prepare_supplier_material_handoff','prepare_supplier_material_verification','prepare_supplier_progress_policy','prepare_supplier_progress_report','prepare_outsource_change_negotiation'}:
         from domain_packs.mold.tools.erp.procurement.full_outsource_tools import execute_full_outsource_tool
         return execute_full_outsource_tool(db,user,key,arguments,run=run)
-    if key in {'prepare_logistics_route','prepare_logistics_quote','prepare_customer_acceptance'}:
+    if key in {'prepare_logistics_route','prepare_logistics_quote','prepare_customer_delivery_signature','prepare_outbound_release','prepare_customer_acceptance'}:
         from domain_packs.mold.erp.procurement.delivery_logistics import execute_delivery_logistics_tool
         return execute_delivery_logistics_tool(db,user,key,arguments,run=run)
     if key=='query_project_dossier':

@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from pydantic import Field, ValidationError, model_validator
 
 from domain_packs.mold.ports.db import now
@@ -10,8 +11,26 @@ from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import (
 )
 
 
+COMPLETION_PROPOSAL_TOOLS = frozenset(
+    {
+        "prepare_customer_delivery_signature",
+        "prepare_customer_acceptance",
+        "prepare_customer_receivable_schedule",
+        "prepare_customer_receipt_confirmation",
+        "prepare_supplier_payment_confirmation",
+        "prepare_supplier_deduction_settlement",
+        "prepare_mold_transfer_receipt",
+        "prepare_project_closure_checklist",
+        "prepare_project_termination",
+        "prepare_project_closure_item",
+        "prepare_project_normal_close",
+        "prepare_project_settlement_close",
+    }
+)
+
+
 class ProjectCompletionContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(
         default=None,
         min_length=1,
@@ -89,6 +108,11 @@ def _delivery_stage(row, closure_row, mode):
             "delivery_acceptance", "交付 / 签收 / 客户验收", "query_delivery_logistics_context"
         )
     derived = _derived(row)
+    delivery_handoffs = (
+        _analysis(row).get("delivery_handoffs")
+        if isinstance(_analysis(row).get("delivery_handoffs"), list)
+        else []
+    )
     items = _closure_items(_closure_case(closure_row))
     if mode == "TERMINATION":
         delivery_status = _item_status(items, "DELIVERY_DISPOSITION")
@@ -97,18 +121,31 @@ def _delivery_stage(row, closure_row, mode):
         delivery_status = _item_status(items, "DELIVERY")
         acceptance_status = _item_status(items, "CUSTOMER_ACCEPTANCE")
     blockers = []
+    unresolved_acceptance = derived.get("has_unresolved_customer_acceptance_failure")
+    if unresolved_acceptance is None:
+        unresolved_acceptance = (
+            derived.get("has_failed_customer_acceptance")
+            and not derived.get("has_customer_recheck_passed")
+        )
     rejected = bool(
         derived.get("has_rejected_receipt")
         or derived.get("has_trial_failed")
+        or derived.get("has_outbound_release_failure")
         or derived.get("has_open_delivery_or_quality_issue")
-        or (derived.get("has_failed_customer_acceptance") and not derived.get("has_customer_recheck_passed"))
+        or unresolved_acceptance
     )
     if delivery_status == "NOT_APPLICABLE" and acceptance_status == "NOT_APPLICABLE":
         state = "NOT_APPLICABLE"
-    elif delivery_status and acceptance_status and _done(delivery_status) and _done(acceptance_status):
-        state = "COMPLETED"
     elif rejected:
         state = "NEEDS_ATTENTION"
+    elif delivery_status and acceptance_status and _done(delivery_status) and _done(acceptance_status):
+        state = "COMPLETED"
+    elif (
+        derived.get("has_trial_passed")
+        and derived.get("has_outbound_release_evidence") is not None
+        and not derived.get("has_outbound_self_inspection_passed")
+    ):
+        state = "BLOCKED"
     elif derived.get("has_customer_signature") and derived.get("has_customer_acceptance"):
         state = "COMPLETED"
     elif (
@@ -125,8 +162,16 @@ def _delivery_stage(row, closure_row, mode):
         state = "NOT_STARTED"
     if derived.get("has_open_delivery_or_quality_issue"):
         blockers.append("仍有未关闭的质量、交付、物流或验收问题。")
-    if derived.get("has_failed_customer_acceptance") and not derived.get("has_customer_recheck_passed"):
-        blockers.append("客户验收未通过且未见复验通过。")
+    if unresolved_acceptance:
+        blockers.append("当前客户验收链仍有未解决的失败结果，不能以历史通过或结项清单完成代替复验通过。")
+    if (
+        derived.get("has_trial_passed")
+        and derived.get("has_outbound_release_evidence") is not None
+        and not derived.get("has_outbound_self_inspection_passed")
+    ):
+        blockers.append("试模已通过但未见出厂自检/放行合格依据，不能推进出库发运。")
+    if derived.get("has_outbound_release_failure"):
+        blockers.append("最新出厂自检/放行未通过，需完成整改复验。")
     if mode == "TERMINATION" and state == "BLOCKED":
         blockers.append("终止清单中的交付和验收处置尚未完成或说明不适用。")
     return {
@@ -140,9 +185,19 @@ def _delivery_stage(row, closure_row, mode):
             "has_customer_signature": bool(derived.get("has_customer_signature")),
             "has_customer_acceptance": bool(derived.get("has_customer_acceptance")),
             "has_customer_recheck_passed": bool(derived.get("has_customer_recheck_passed")),
+            "has_outbound_release_evidence": derived.get("has_outbound_release_evidence"),
+            "has_outbound_self_inspection_passed": derived.get("has_outbound_self_inspection_passed"),
+            "has_outbound_release_failure": derived.get("has_outbound_release_failure"),
+            "has_unresolved_customer_acceptance_failure": bool(unresolved_acceptance),
             "delivery_item_status": delivery_status,
             "acceptance_item_status": acceptance_status,
+            "handoff_states": {
+                item.get("key"): item.get("state")
+                for item in delivery_handoffs
+                if isinstance(item, dict) and item.get("key")
+            },
         },
+        "handoffs": delivery_handoffs,
         "blockers": blockers,
     }
 
@@ -162,7 +217,13 @@ def _customer_finance_stage(row, closure_row, mode):
         state = "COMPLETED"
     elif derived.get("has_finance_correction") or derived.get("has_cost_or_deduction_signal"):
         state = "NEEDS_ATTENTION"
-    elif derived.get("has_customer_actual_receipt_ledger") or any(status == "DONE" for status in statuses.values()):
+    elif (
+        derived.get("has_customer_actual_receipt_ledger")
+        or derived.get("has_erp_fulfillment_record")
+        or derived.get("has_erp_customer_payment_plan")
+        or derived.get("has_erp_customer_payment_record")
+        or any(status == "DONE" for status in statuses.values())
+    ):
         state = "ACTIVE"
     elif any(status == "PENDING" for status in statuses.values()):
         state = "BLOCKED"
@@ -180,7 +241,7 @@ def _customer_finance_stage(row, closure_row, mode):
     if derived.get("has_finance_correction"):
         blockers.append("存在财务冲正或更正记录，须按有符号金额和原始依据复核。")
     if derived.get("has_cost_or_deduction_signal"):
-        blockers.append("存在设变、异常、扣款或额外费用线索，尚需财务核对。")
+        blockers.append("存在设变、验收影响或扣款记录；须结合各自责任、结算与收付款依据核对，记录存在不等于尚未结算。")
     return {
         "key": "customer_finance",
         "name": "客户终止结算 / 收付款" if mode == "TERMINATION" else "发票 / 客户回款",
@@ -189,8 +250,14 @@ def _customer_finance_stage(row, closure_row, mode):
         "action_tool": None,
         "facts": {
             "has_customer_actual_receipt_ledger": bool(derived.get("has_customer_actual_receipt_ledger")),
+            "has_erp_fulfillment_record": bool(derived.get("has_erp_fulfillment_record")),
+            "has_erp_customer_payment_plan": bool(derived.get("has_erp_customer_payment_plan")),
+            "has_erp_customer_payment_record": bool(derived.get("has_erp_customer_payment_record")),
             "has_finance_correction": bool(derived.get("has_finance_correction")),
             "has_cost_or_deduction_signal": bool(derived.get("has_cost_or_deduction_signal")),
+            "has_customer_acceptance_financial_impact": derived.get("has_customer_acceptance_financial_impact"),
+            "has_supplier_deduction_record": derived.get("has_supplier_deduction_record"),
+            "has_unsettled_supplier_deduction": derived.get("has_unsettled_supplier_deduction"),
             **{key.lower() + "_status": value for key, value in statuses.items()},
         },
         "blockers": blockers,
@@ -209,7 +276,12 @@ def _supplier_settlement_stage(row, closure_row):
     elif derived.get("has_open_supplier_payment_reservation"):
         state = "NEEDS_ATTENTION"
         blockers.append("仍有未释放的供应商付款授权占用。")
-    elif derived.get("has_confirmed_supplier_payment") or derived.get("has_supplier_payment_request"):
+    elif (
+        derived.get("has_confirmed_supplier_payment")
+        or derived.get("has_supplier_payment_request")
+        or derived.get("has_erp_supplier_payment_plan")
+        or derived.get("has_erp_supplier_payment_record")
+    ):
         state = "ACTIVE"
     elif status == "PENDING":
         state = "BLOCKED"
@@ -225,6 +297,8 @@ def _supplier_settlement_stage(row, closure_row):
         "facts": {
             "has_supplier_payment_request": bool(derived.get("has_supplier_payment_request")),
             "has_confirmed_supplier_payment": bool(derived.get("has_confirmed_supplier_payment")),
+            "has_erp_supplier_payment_plan": bool(derived.get("has_erp_supplier_payment_plan")),
+            "has_erp_supplier_payment_record": bool(derived.get("has_erp_supplier_payment_record")),
             "has_open_supplier_payment_reservation": bool(derived.get("has_open_supplier_payment_reservation")),
             "supplier_settlement_item_status": status,
         },
@@ -391,6 +465,148 @@ def _recommendations(focus, stages, allowed_tools):
     }]
 
 
+def _completion_handoffs(stages):
+    """Show which completion responsibilities have evidence of handoff.
+
+    Completion stages are intentionally parallel in the domain model.  This
+    projection therefore only describes evidence boundaries; it never turns a
+    completed delivery or payment into a close decision by itself.
+    """
+    by_key = {stage["key"]: stage for stage in stages}
+
+    def row(key, source, target, state, reason, next_tool):
+        return {
+            "key": key,
+            "from": source,
+            "to": target,
+            "state": state,
+            "reason": reason,
+            "next_query_tool": next_tool,
+        }
+
+    def unavailable(*keys):
+        return any(by_key[key]["state"] == "UNAVAILABLE" for key in keys)
+
+    delivery = by_key["delivery_acceptance"]
+    customer = by_key["customer_finance"]
+    supplier = by_key["supplier_settlement"]
+    issues = by_key["issue_resolution"]
+    archive = by_key["archive"]
+    final_close = by_key["final_close"]
+    result = []
+
+    if unavailable("delivery_acceptance", "customer_finance"):
+        result.append(row(
+            "delivery_to_customer_finance",
+            "delivery_acceptance",
+            "customer_finance",
+            "UNAVAILABLE",
+            "交付或财务能力不可见，不能判断客户验收结果是否已交给回款/结算核对。",
+            "query_finance_context",
+        ))
+    elif delivery["state"] == "NOT_APPLICABLE":
+        result.append(row(
+            "delivery_to_customer_finance",
+            "delivery_acceptance",
+            "customer_finance",
+            "NOT_APPLICABLE",
+            "当前收尾分支已明确交付/验收不适用，仍需独立完成结算依据。",
+            "query_finance_context",
+        ))
+    elif delivery["state"] == "COMPLETED" and customer["state"] == "COMPLETED":
+        result.append(row(
+            "delivery_to_customer_finance",
+            "delivery_acceptance",
+            "customer_finance",
+            "CONNECTED",
+            "交付/验收与客户发票回款或终止收付款均已有完成事实。",
+            "query_finance_context",
+        ))
+    elif delivery["state"] == "COMPLETED":
+        result.append(row(
+            "delivery_to_customer_finance",
+            "delivery_acceptance",
+            "customer_finance",
+            "READY",
+            "交付/验收已完成，但客户财务核对尚未完成。",
+            "query_finance_context",
+        ))
+    else:
+        result.append(row(
+            "delivery_to_customer_finance",
+            "delivery_acceptance",
+            "customer_finance",
+            "BLOCKED",
+            "交付/验收尚未完成，不能把发货或签收直接当作财务结算依据。",
+            "query_delivery_logistics_context",
+        ))
+
+    if unavailable("customer_finance", "supplier_settlement"):
+        settlement_state = "UNAVAILABLE"
+        settlement_reason = "财务或供应商结算能力不可见，不能判断两类收付款是否都已核对。"
+    elif customer["state"] in {"NEEDS_ATTENTION", "BLOCKED"} or supplier["state"] in {"NEEDS_ATTENTION", "BLOCKED"}:
+        settlement_state = "BLOCKED"
+        settlement_reason = "客户财务或供应商结算存在未完成、冲正、扣款或付款占用问题。"
+    elif customer["state"] == "COMPLETED" and supplier["state"] in {"COMPLETED", "NOT_STARTED", "NOT_APPLICABLE"}:
+        settlement_state = "READY"
+        settlement_reason = "客户财务已完成；供应商结算需确认不适用或继续完成后才能进入归档。"
+    else:
+        settlement_state = "WAITING"
+        settlement_reason = "客户与供应商两条结算责任线尚未同时形成可归档依据。"
+    result.append(row(
+        "finance_to_settlement_archive",
+        "customer_finance",
+        "archive",
+        settlement_state,
+        settlement_reason,
+        "query_finance_context",
+    ))
+
+    required = (delivery, customer, supplier, issues)
+    if unavailable("archive", "final_close"):
+        archive_state = "UNAVAILABLE"
+        archive_reason = "归档或最终关闭能力不可见，不能判断收尾资料是否已接入关闭。"
+    elif all(stage["state"] in {"COMPLETED", "NOT_APPLICABLE"} for stage in required) and archive["state"] == "COMPLETED":
+        archive_state = "CONNECTED"
+        archive_reason = "交付、财务、供应商结算、异常及归档均已形成完成事实，具备进入最终关闭核对的证据链。"
+    elif all(stage["state"] in {"COMPLETED", "NOT_APPLICABLE"} for stage in required):
+        archive_state = "READY"
+        archive_reason = "业务收尾阶段已完成，但归档尚未完成。"
+    else:
+        archive_state = "BLOCKED"
+        archive_reason = "仍有交付、财务、供应商结算或异常事项未完成，不能把局部收尾结果当作归档完成。"
+    result.append(row(
+        "completion_to_archive",
+        "completion_stages",
+        "archive",
+        archive_state,
+        archive_reason,
+        "query_project_closure_context",
+    ))
+
+    if final_close["state"] == "COMPLETED" and archive["state"] == "COMPLETED":
+        close_state = "CONNECTED"
+        close_reason = "归档完成且项目最终关闭事实已存在。"
+    elif archive["state"] == "COMPLETED" and final_close["state"] == "READY":
+        close_state = "READY"
+        close_reason = "归档已完成，最终关闭仍需对应关闭准备和正式回执。"
+    elif final_close["state"] == "UNAVAILABLE":
+        close_state = "UNAVAILABLE"
+        close_reason = "最终关闭能力不可见，不能判断项目是否已关闭。"
+    else:
+        close_state = "BLOCKED"
+        close_reason = "归档或最终关闭仍有阻塞，不能声称项目已完成。"
+    result.append(row(
+        "archive_to_final_close",
+        "archive",
+        "final_close",
+        close_state,
+        close_reason,
+        "query_project_closure_context",
+    ))
+    return result
+
+
 def query(db, user, data: ProjectCompletionContextInput, allowed_tools: set[str]):
     project, alternatives, truncated = _resolve(db, user, data)
     limitations = [
@@ -457,6 +673,7 @@ def query(db, user, data: ProjectCompletionContextInput, allowed_tools: set[str]
         _archive_stage(contexts.get("closure"), mode),
         _final_close_stage(project, contexts.get("closure"), mode, allowed_tools),
     ]
+    handoffs = _completion_handoffs(stages)
     focus = _current_focus(stages)
     lifecycle = {
         "kind": "project_completion_lifecycle_v1",
@@ -464,11 +681,13 @@ def query(db, user, data: ProjectCompletionContextInput, allowed_tools: set[str]
         "closure_mode": mode,
         "current_focus": focus,
         "stages": stages,
+        "handoffs": handoffs,
         "recommended_next_steps": _recommendations(focus, stages, allowed_tools),
         "access_gaps": access_gaps,
         "guardrails": [
             "阶段能力缺失时显示 UNAVAILABLE，不根据项目状态、相邻阶段或历史对话推断隐藏事实。",
             "正常关闭要求交付、适用验收、财务、供应商结算、异常和归档分别满足；局部完成不能替代最终关闭。",
+            "handoffs 只表示并行收尾责任之间的当前证据边界；READY、WAITING 和 BLOCKED 都不是结算或关闭生效。",
             "终止结算按终止清单核对，可说明交付或验收不适用，但必须保留原因、处置、结算和归档依据。",
             "协调器只读；prepare_* 仍只生成待确认建议，审批通过并成功应用领域命令后项目状态才生效。",
         ],
@@ -481,6 +700,13 @@ def query(db, user, data: ProjectCompletionContextInput, allowed_tools: set[str]
             "project": _project_card(db, user, project, alternatives or ("项目定位",)),
             "analysis": {"completion_lifecycle": lifecycle},
         }],
+        "scope_boundary": {
+            "complete": True,
+            "scope_key": "project_completion",
+            "write_tools": sorted(
+                tool for tool in COMPLETION_PROPOSAL_TOOLS if tool in allowed_tools
+            ),
+        },
         "source": "agent_db",
         "as_of": now().isoformat(),
         "limitations": limitations,

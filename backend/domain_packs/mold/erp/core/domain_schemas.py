@@ -7,6 +7,17 @@ from domain_packs.mold.ports.schemas import StrictModel
 Amount = Decimal
 
 
+PAYMENT_CONDITION_KEYS = Literal['DELIVERY','ACCEPTANCE','INVOICE','CUSTOMER_RECEIPT','CUMULATIVE_PAID']
+PAYMENT_TYPES = Literal['PREPAYMENT','PROGRESS','ACCEPTANCE','FINAL']
+
+
+class PaymentConditionRuleInput(StrictModel):
+    key: PAYMENT_CONDITION_KEYS
+    requirement: str = Field(min_length=1, max_length=2000)
+    applicable: bool = True
+    special_approval_required: bool = False
+
+
 class StageInput(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     sequence: int = Field(default=1, ge=1)
@@ -14,6 +25,8 @@ class StageInput(StrictModel):
     ratio: Decimal | None = Field(default=None, gt=0, le=1, max_digits=9, decimal_places=6)
     condition: str = Field(min_length=1, max_length=2000)
     term_days: int | None = Field(default=None, ge=0)
+    payment_type: PAYMENT_TYPES = 'PROGRESS'
+    condition_rules: list[PaymentConditionRuleInput] = Field(default_factory=list, max_length=5)
     ratio_percent: Decimal | None = Field(default=None, gt=0, le=100, max_digits=7, decimal_places=4)
     trigger_event: str | None = Field(default=None, min_length=1, max_length=120)
     trigger_date: date | None = None
@@ -25,6 +38,9 @@ class StageInput(StrictModel):
 
     @model_validator(mode='after')
     def validate_schedule(self):
+        keys = [rule.key for rule in self.condition_rules]
+        if len(keys) != len(set(keys)):
+            raise ValueError('付款条件明细不能重复使用同一条件类型')
         if self.trigger_date and not self.trigger_evidence:
             raise ValueError('填写触发日期时必须同时填写触发依据')
         if self.trigger_date and self.expected_due_date and self.expected_due_date < self.trigger_date:
@@ -35,6 +51,19 @@ class StageInput(StrictModel):
                 raise ValueError('预计到期日期必须与触发日期加账期天数一致')
             self.expected_due_date = derived
         return self
+
+
+def payment_stage_record(stage: StageInput) -> dict:
+    """Map the typed contract input to the persistent stage plus its matrix."""
+    data = stage.model_dump()
+    rules = data.pop('condition_rules', [])
+    payment_type = data.pop('payment_type', 'PROGRESS')
+    data['condition_profile'] = {
+        'payment_type': payment_type,
+        'rules': rules,
+    }
+    data['condition_evidence_map'] = {}
+    return data
 
 
 class ContractInput(StrictModel):

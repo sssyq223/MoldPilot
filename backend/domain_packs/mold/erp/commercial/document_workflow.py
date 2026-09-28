@@ -108,10 +108,8 @@ def confirm(db, user, payload):
 
 def _trigger_engineering_contact_skill(db, user, intake, contact_file, operation_id):
     """分类确认后创建受信任 Agent Run，由 Skill/Tool 继续生成 Proposal。"""
-    from app.config import model_settings
-    from app.files import bind_run_files
-    from app.run_model_selection import select_model
     from sqlalchemy import select
+    ports = host_ports()
 
     existing = db.scalar(select(m.Run).where(
         m.Run.conversation_id == intake.conversation_id,
@@ -120,7 +118,7 @@ def _trigger_engineering_contact_skill(db, user, intake, contact_file, operation
     ).order_by(m.Run.created_at.desc(), m.Run.id.desc()).limit(1)) if operation_id else None
     if existing:
         return existing
-    selection = select_model(user, default_enabled=model_settings().llm_enabled)
+    selection = ports.select_model(user, default_enabled=ports.model_settings().llm_enabled)
     run = m.Run(
         user_id=user.id,
         conversation_id=intake.conversation_id,
@@ -137,7 +135,7 @@ def _trigger_engineering_contact_skill(db, user, intake, contact_file, operation
     )
     db.add(run)
     db.flush()
-    bind_run_files(db, user, run, [contact_file.file_id])
+    ports.bind_run_files(db, user, run, [contact_file.file_id])
     host_ports().record(db, user, "agent.run.created", run.id, {
         "run_trigger": "DOCUMENT_CLASSIFICATION_CONFIRMED",
         "source": "engineering_contact.document.confirmed",

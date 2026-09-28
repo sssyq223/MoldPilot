@@ -290,7 +290,7 @@ def execute_quotation_tool(db, user, key, arguments, run=None):
             "proposal": proposal, "limitations": limitations}
 
 
-def source(db, user, step_id):
+def source(db, user, step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
 
     step = db.get(m.Step, step_id)
@@ -298,7 +298,14 @@ def source(db, user, step_id):
     if not run or run.user_id != user.id:
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
     if run.status not in {"RUNNING", "RUNNING_SCOPED", "SUCCEEDED"}:
-        raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id == user.id,
+            m.HumanIntent.action == "quotation.execute",
+            m.HumanIntent.resource_id == step_id,
+            m.HumanIntent.receipt.is_not(None),
+        ).limit(1))
+        if not resolved:
+            raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
     proposal = step.result.get("proposal")
@@ -387,7 +394,7 @@ router = APIRouter()
 
 @router.get("/api/quotation-proposals/{step_id}")
 def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)):
-    source(db, user, step_id)
+    source(db, user, step_id, for_read=True)
     intent = db.scalar(select(m.HumanIntent).where(
         m.HumanIntent.user_id == user.id,
         m.HumanIntent.action == "quotation.execute",

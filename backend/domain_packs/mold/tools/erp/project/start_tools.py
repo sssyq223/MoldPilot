@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from collections import defaultdict
 from datetime import date
 from typing import Literal
@@ -11,10 +12,11 @@ from domain_packs.mold.ports.db import get_db, now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.security import current_user
 from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.erp.project.change_start import ChangeStartInput
 
 
 class StartReadinessInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(default=None, min_length=1, max_length=200,
         description='项目编号/名称、承接单号、开工通知单号、合同号、模具号等。')
 
@@ -34,9 +36,13 @@ class StartProposalInput(StrictModel):
     project_version: int = Field(ge=1,
         description='query_internal_start_readiness 返回的项目 row_version。')
     source_subject_id: str = Field(min_length=1, max_length=36,
-        description='query_internal_start_readiness 返回的已生效承接记录 ID。')
-    bid_intake_revision_id: str = Field(min_length=1, max_length=36,
+        description='首次开工的生效承接记录 ID；已有模具再次设变则为当前已批准工程联络处理方案 ID。')
+    bid_intake_revision_id: str | None = Field(default=None, min_length=1, max_length=36,
         description='query_internal_start_readiness 返回的当前中标接收版本 ID。')
+    processing_kind: Literal['NEW_MOLD','FIRST_EXTERNAL_CHANGE','EXISTING_MOLD_CHANGE'] = Field(
+        description='明确选择新模、首次承接外部模具设变、原项目原模具再次设变；不能从历史参考模号猜测。')
+    change: ChangeStartInput | None = Field(default=None,
+        description='已有模具再次设变必须填写；首次开工不填写。')
     execution_mode: Literal['INTERNAL','FULL_OUTSOURCE'] | None = Field(default=None,
         description='最终加工方式；未填时沿用承接记录中的 execution_mode。')
     effective_date: date = Field(description='正式内部开工生效日期。')
@@ -46,6 +52,15 @@ class StartProposalInput(StrictModel):
         description='销售合同尚未到达时必须填写的预计到达日期；合同晚到不阻塞已满足条件的开工。')
     workflow_definition_id: str = Field(min_length=1, max_length=36,
         description='query_internal_start_readiness 返回或管理员配置的正式开工审批流程 ID。')
+
+    @model_validator(mode='after')
+    def branch_materials(self):
+        if self.processing_kind == 'EXISTING_MOLD_CHANGE':
+            if self.bid_intake_revision_id or not self.change or not self.execution_mode:
+                raise ValueError('原模再次设变须提供 change 及明确执行方式，不重复办理中标接收')
+        elif not self.bid_intake_revision_id or self.change:
+            raise ValueError('首次开工须引用当前中标接收版本，不填写再次设变资料')
+        return self
 
 
 def _strength(value,needle):
@@ -70,9 +85,20 @@ def _visible_projects(db,user):
 
 
 def _visible_subjects(db,user,project_ids,kind,allowed_tools):
-    if kind=='internal_start':
-        if 'query_internal_start_readiness' not in allowed_tools and 'query_internal_start' not in allowed_tools:return []
-    elif 'query_'+kind not in allowed_tools:return []
+    # The kickoff coordinator exposes context-oriented read tools while older
+    # stage skills still use the shorter names.  Treat both as the same
+    # read-only capability; otherwise the formal-start projection can report a
+    # false missing acceptance/plan simply because the coordinator was used.
+    aliases = {
+        'quote_acceptance': {'query_quote_acceptance', 'query_quote_acceptance_context'},
+        'internal_start': {'query_internal_start_readiness', 'query_internal_start'},
+        'sales_contract': {'query_sales_contract', 'query_contract_context'},
+        'full_outsource_contract': {'query_full_outsource_contract', 'query_contract_context'},
+        'project_plan': {'query_project_plan', 'query_project_plan_context'},
+        'plan_change': {'query_plan_change', 'query_project_plan_context'},
+    }
+    if not (aliases.get(kind, {f'query_{kind}'} ) & set(allowed_tools)):
+        return []
     from domain_packs.mold.erp.core.domains import data as subject_data
     result=[]
     for subject in db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id.in_(project_ids),
@@ -165,7 +191,7 @@ def _open_records(records,kind):
     return [row for row in records.get(kind,[]) if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','REJECTED','APPLY_BLOCKED'}]
 
 
-def _readiness(project,records,allowed_tools,start_conditions):
+def _readiness(project,records,allowed_tools,start_conditions,erp_mold_handoff=None):
     blockers=[];warnings=[];hints=[]
     latest_accept=_latest_effective(records,'quote_acceptance','ACCEPT')
     latest_reject=_latest_effective(records,'quote_acceptance','REJECT')
@@ -191,12 +217,73 @@ def _readiness(project,records,allowed_tools,start_conditions):
         hints.append('已存在计划记录；计划审批与正式开工仍须分别核对。')
     else:
         warnings.append('当前可见范围未见项目计划；正式开工后仍需按项目计划审批结果执行。')
+    erp_mold_handoff = erp_mold_handoff if isinstance(erp_mold_handoff, dict) else {}
+    handoff_state = erp_mold_handoff.get('handoff_state')
+    local_mold_numbers = erp_mold_handoff.get('local_internal_mold_numbers') or []
+    if not local_mold_numbers:
+        if handoff_state == 'ERP_CANDIDATE_REQUIRES_HANDOFF':
+            warnings.append('ERP 已返回唯一项目模具候选，但 Agent 尚未完成人工交接；不能直接把候选当作正式开工冻结对象。')
+        elif handoff_state == 'ERP_PROJECT_MAPPING_REQUIRED':
+            blockers.append('ERP 已返回候选，但 Agent 项目与 ERP 项目号尚未完成人工映射；必须先核对 ERP 项目号，再确认模具交接。')
+        elif handoff_state == 'ERP_MULTIPLE_CANDIDATES':
+            blockers.append('ERP 返回多个项目模具候选，必须在 ERP/业务档案中确认唯一内部模具号后才能开工。')
+        elif handoff_state in {'ERP_NOT_CONFIGURED', 'ERP_LOGIN_REQUIRED', 'ERP_READ_FAILED', 'ERP_NO_UNIQUE_CANDIDATE'}:
+            blockers.append('当前未形成可冻结的唯一内部模具关联；需先在 ERP 确认并完成人工交接。')
     return {'known_blockers':blockers,'warnings':warnings,'hints':hints,
-        'can_prepare_start_from_known_facts':bool(latest_accept) and bool(start_conditions.get('complete')) and not blockers and not latest_start and project.status=='DRAFT',
+        'can_prepare_start_from_known_facts':bool(latest_accept) and bool(start_conditions.get('complete')) and bool(local_mold_numbers) and not blockers and not latest_start and project.status=='DRAFT',
         'has_effective_acceptance':bool(latest_accept),
         'has_effective_rejection':bool(latest_reject),
         'has_effective_internal_start':bool(latest_start),
         'project_status':project.status}
+
+
+_BASELINE_MILESTONE_LABELS = {
+    'design': '设计工艺分析/结构设计及出图',
+    'purchase': '原材料/五金/委外采购',
+    'machining': '工序加工',
+    'assembly': '装配',
+    'trial': '试模/调试',
+    'delivery': '最终交付/出库/验收',
+}
+
+
+def _baseline_plan_projection(records):
+    """Expose the plan gate when a start-readiness query is the only read.
+
+    A formal-start read is allowed to mention the next plan handoff, but it
+    must carry the same typed submission gate as the dedicated plan reader.
+    This prevents a model from using a stale kickoff sentence to turn
+    ``can_submit=false`` into a submission recommendation.
+    """
+    rows = records.get('project_plan') or []
+    active = next((row for row in rows if row.get('status') == 'EFFECTIVE'), None)
+    tasks = ((active or {}).get('detail') or {}).get('tasks', []) if isinstance((active or {}).get('detail'), dict) else []
+    text_by_task = [
+        f"{task.get('key', '')} {task.get('name', '')}".casefold()
+        for task in tasks if isinstance(task, dict)
+    ]
+    keywords = {
+        'design': ('设计', '工艺', '结构', '出图', 'drawing'),
+        'purchase': ('采购', '原材料', '五金', '委外', 'purchase'),
+        'machining': ('加工', '工序', '生产', 'manufactur', 'machin'),
+        'assembly': ('装配', 'assembly'),
+        'trial': ('试模', '调试', 'trial', 'debug'),
+        'delivery': ('交付', '出库', '验收', 'delivery', 'shipment'),
+    }
+    present = {
+        key for key, terms in keywords.items()
+        if any(any(term.casefold() in text for term in terms) for text in text_by_task)
+    }
+    missing = [key for key in _BASELINE_MILESTONE_LABELS if key not in present]
+    return {
+        'exists': bool(active),
+        'status': active.get('status') if active else None,
+        'task_count': len(tasks),
+        'required_milestones': list(_BASELINE_MILESTONE_LABELS),
+        'missing_milestones': missing,
+        'missing_labels': [_BASELINE_MILESTONE_LABELS[key] for key in missing],
+        'can_submit': bool(active) and not missing,
+    }
 
 
 START_STATE_SEQUENCE = (
@@ -285,7 +372,7 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
     if project:
         records=_records(db,user,project.id,allowed_tools)
         from domain_packs.mold.tools.erp.commercial.bid_intake_tools import start_condition_snapshot
-        from domain_packs.mold.erp.project import start_dispatches, start_materials
+        from domain_packs.mold.erp.project import mold_handoff, start_dispatches, start_materials
         start_conditions=start_condition_snapshot(db,user,project.id)
         latest_start=_latest_effective(records,'internal_start','START')
         skipped=[]
@@ -297,10 +384,11 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
         if 'prepare_internal_start' in allowed_tools:
             try:workflows=workflow_options(db,user,project)
             except DomainError as error:limitations.append('当前人员缺少正式开工提交权限，未返回可选开工审批流程：'+error.message)
-        start_material = (
-            start_materials.card(db, latest_start.get('id'))
-            if latest_start and start_conditions.get('visible') else None
-        )
+        start_material = ((latest_start.get('detail') or {}).get('formal_start_material')
+                          if latest_start else None)
+        if (start_material and not start_conditions.get('visible')
+                and start_material['linked_business'].get('processing_kind')!='EXISTING_MOLD_CHANGE'):
+            start_material=None
         contract_visible = 'query_sales_contract' in allowed_tools
         contract_follow_up = start_materials.contract_follow_up(
             db, project.id, latest_start.get('id') if latest_start else None,
@@ -309,12 +397,31 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
         department_handoffs = start_dispatches.summary(
             db, latest_start.get('id') if latest_start else None
         )
+        erp_mold_handoff = mold_handoff.query(db, user, project)
+        readiness = _readiness(
+            project, records, allowed_tools, start_conditions, erp_mold_handoff
+        )
+        baseline_plan = _baseline_plan_projection(records)
         finance_handoff = next(
             (item for item in department_handoffs.get('items', [])
              if item.get('role_key') == 'FINANCE_OWNER'),
             None,
         )
+        from domain_packs.mold.erp.project import change_start
+        repeated_start = change_start.context(db,user,project)
+        processing_guidance = {
+            'existing_mold_change_available': bool(repeated_start.get('available')),
+            'initial_processing_kinds': ['NEW_MOLD', 'FIRST_EXTERNAL_CHANGE'],
+            'selection_rule': (
+                '当前项目不是执行中的原模设变项目，正式开工只能先选择 NEW_MOLD 或 '
+                'FIRST_EXTERNAL_CHANGE；没有明确的已批准设变方案时禁止选择 EXISTING_MOLD_CHANGE。'
+                if not repeated_start.get('available') else
+                '当前项目具备原模设变条件；只有在本人确认已批准设变方案、原模具和收费/合同资料后，才可选择 EXISTING_MOLD_CHANGE。'
+            ),
+        }
         model_context = {
+            'existing_mold_change_start': repeated_start,
+            'processing_kind_guidance': processing_guidance,
             'project': {
                 'code': project.code,
                 'name': project.name,
@@ -329,6 +436,21 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
                     if latest_start else None
                 ),
             },
+            'readiness': {
+                'known_blockers': readiness.get('known_blockers') or [],
+                'warnings': readiness.get('warnings') or [],
+                'hints': readiness.get('hints') or [],
+                'has_effective_acceptance': bool(readiness.get('has_effective_acceptance')),
+                'has_effective_internal_start': bool(readiness.get('has_effective_internal_start')),
+                'can_prepare_start_from_known_facts': bool(
+                    readiness.get('can_prepare_start_from_known_facts')
+                ),
+            },
+            'baseline_plan': baseline_plan,
+            # Keep the customer start-condition evidence separate from the
+            # sales-contract follow-up.  The latter may be parallel and must
+            # not be inferred as a missing customer start notice.
+            'customer_start_conditions': start_conditions,
             'frozen_start_material': start_materials.frozen_material_model_context(
                 start_material
             ),
@@ -348,6 +470,18 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
                 'recipient_count': finance_handoff.get('recipient_count') if finance_handoff else 0,
                 'gaps': department_handoffs.get('gaps', []),
             },
+            'erp_mold_handoff': {
+                'status': erp_mold_handoff.get('status'),
+                'handoff_state': erp_mold_handoff.get('handoff_state'),
+                'local_internal_mold_numbers': erp_mold_handoff.get('local_internal_mold_numbers') or [],
+                # Keep the bounded ERP candidate feed in the read-only model
+                # projection.  When an Agent project code differs from ERP,
+                # exact_project_records is intentionally empty while the
+                # candidate still proves a human mapping can be prepared.
+                'candidate_records': (erp_mold_handoff.get('records') or [])[:20],
+                'exact_project_records': erp_mold_handoff.get('exact_project_records') or [],
+                'limitations': erp_mold_handoff.get('limitations') or [],
+            },
         }
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':_project_profile(db,user,project.id),
@@ -361,7 +495,11 @@ def query(db,user,data:StartReadinessInput,allowed_tools:set[str]):
             'full_outsource_contracts':records['full_outsource_contract'],
             'plans':records['project_plan']+records['plan_change'],
             'customer_start_conditions':start_conditions,
-            'readiness':_readiness(project,records,allowed_tools,start_conditions),
+            'existing_mold_change_start':repeated_start,
+            'processing_kind_guidance':processing_guidance,
+            'readiness': readiness,
+            'baseline_plan': baseline_plan,
+            'erp_mold_handoff':erp_mold_handoff,
             'business_state':_business_state(project,records,start_conditions),
             'formal_start_material':start_material,
             'contract_follow_up':contract_follow_up,
@@ -398,13 +536,15 @@ def preview_start(db,user,data:StartProposalInput):
     if not project:raise DomainError('NOT_FOUND','项目不存在',404)
     scope={'project_id':project.id}
     require(db,user,'project.read',scope)
-    require(db,user,'quote_acceptance.read',scope)
     require(db,user,'project.dossier.read',scope)
     require(db,user,'internal_start.read',scope)
     require(db,user,'internal_start.create',scope)
     require(db,user,'internal_start.submit',scope)
     if project.row_version!=data.project_version:
         raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    if data.processing_kind=='EXISTING_MOLD_CHANGE':
+        return preview_change_start(db,user,project,data)
+    require(db,user,'quote_acceptance.read',scope)
     if project.status!='DRAFT':
         raise DomainError('START_STATE','只有未开工项目可准备正式开工',409)
     if _effective_start_exists(db,project.id):
@@ -440,7 +580,7 @@ def preview_start(db,user,data:StartProposalInput):
     from domain_packs.mold.erp.project import start_materials
     material=start_materials.build(
         db,project,data.bid_intake_revision_id,data.effective_date,
-        data.expected_contract_date,contract_visibility=sales_contract_visible,
+        data.expected_contract_date,contract_visibility=sales_contract_visible,processing_kind=data.processing_kind,
     )
     plans=[];plan_visible=True
     try:
@@ -469,9 +609,13 @@ def preview_start(db,user,data:StartProposalInput):
         '客户外部订单':start_conditions['external_order_number'],
         '客户及联系人':material['customer'],
         '客户模具号':material['customer_mold_number'] or '未填写',
-        '机型或物料号':material['customer_model_or_material'] or '未填写',
+        '客户机型':material['customer_model_number'] or '未填写',
+        '客户物料号':material['customer_material_number'] or '未填写',
+        '历史机型/物料原文（未分类）':material['customer_model_or_material'] or '无',
         '内部模具号':[row['internal_number'] for row in material['internal_molds']],
-        '业务类型':'已有模具设变' if material['processing_kind']=='MOLD_CHANGE' else '新模',
+        '业务类型':start_materials.INITIAL_PROCESSING_KINDS[material['processing_kind']],
+        '历史模具参考':({'模号':material['historical_mold_number'],'关系':material['historical_relation_kind']}
+                      if material['historical_mold_number'] else '未引用'),
         '客户开工日期':start_conditions['external_start_date'],
         '客户交期':start_conditions['customer_due_date'],
         '客户开工通知附件':'已核对',
@@ -487,6 +631,27 @@ def preview_start(db,user,data:StartProposalInput):
     return detail,display
 
 
+def preview_change_start(db,user,project,data):
+    from domain_packs.mold.erp.project import change_start
+    material=change_start.build(db,user,project,data)
+    selected=next((item for item in workflow_options(db,user,project)
+                   if item['id']==data.workflow_definition_id),None)
+    if not selected:raise DomainError('WORKFLOW_MISMATCH','请选择可用的正式开工审批流程',409)
+    detail=s.DecisionInput(source_subject_id=data.source_subject_id,decision='START',
+        execution_mode=data.execution_mode,effective_date=data.effective_date,evidence=data.evidence)
+    display={'操作':'原模再次设变正式开工','项目':project.code+' · '+project.name,
+        '项目版本':project.row_version,'业务类型':'原项目原模具再次设变',
+        '原内部模具号':[row['internal_number'] for row in material['internal_molds']],
+        '已批准方案':material['change_source'],'收费与合同核对':material['change_terms'],
+        '供应商及原采购合同':material['supplier_mapping'],
+        '沿用销售合同':material['sales_contracts_at_issue'],
+        '最终加工方式':data.execution_mode,'正式开工日期':data.effective_date.isoformat(),
+        '开工依据':data.evidence,'新增合同预计到达':material['expected_contract_date'],
+        '审批流程':selected['name']+' · 第'+str(selected['version'])+'版',
+        '说明':'免费、无新增合同也须本人确认并完成正式开工审批；沿用原项目与原内部模号，保留旧记录。审批只下达本次开工及部门交接，不自动改计划、合同或执行 ERP 任务。'}
+    return detail,display
+
+
 def execute_start_tool(db,user,key,arguments,run=None):
     if key!='prepare_internal_start':raise DomainError('TOOL_UNKNOWN','工具未实现',403)
     data=parse_start(arguments)
@@ -499,11 +664,17 @@ def execute_start_tool(db,user,key,arguments,run=None):
         'limitations':['仅准备正式开工通知建议；本人确认后才创建业务材料并提交审批，审批生效前不改变项目状态或执行任务。']}
 
 
-def source(db,user,step_id):
+def source(db,user,step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
     step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
     if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
-    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id==user.id,
+            m.HumanIntent.action=='internal_start.execute',
+            m.HumanIntent.resource_id==step_id,
+            m.HumanIntent.receipt.is_not(None)).limit(1))
+        if not resolved:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
@@ -524,6 +695,10 @@ def validate_intent(db,user,payload):
 
 def confirm(db,user,payload):
     from domain_packs.mold.ports.confirmation_policy import agent_permission_mode_from_proposal
+    proposal=source(db,user,payload['step_id'])
+    data=parse_start(proposal['input'])
+    db.scalar(select(m.Project).where(m.Project.id==data.project_id)
+              .with_for_update().execution_options(populate_existing=True))
     proposal,data=validate_intent(db,user,payload)
     detail,_=preview_start(db,user,data)
     subject=domains.create(db,user,s.SubjectInput(kind='internal_start',project_id=data.project_id,
@@ -535,18 +710,23 @@ def confirm(db,user,payload):
     except DomainError:
         contract_visibility=False
     from domain_packs.mold.erp.project import start_materials
-    material=start_materials.build(
-        db,project,data.bid_intake_revision_id,data.effective_date,
-        data.expected_contract_date,contract_visibility=contract_visibility,
-    )
+    if data.processing_kind=='EXISTING_MOLD_CHANGE':
+        from domain_packs.mold.erp.project import change_start
+        material=change_start.build(db,user,project,data,exclude_id=subject.id)
+    else:
+        material=start_materials.build(
+            db,project,data.bid_intake_revision_id,data.effective_date,
+            data.expected_contract_date,contract_visibility=contract_visibility,processing_kind=data.processing_kind,
+        )
     start_materials.create(
         db,user,subject,data.bid_intake_revision_id,material,data.expected_contract_date,
     )
     from domain_packs.mold.tools.erp.commercial.bid_intake_tools import link_lifecycle_subject
-    link_lifecycle_subject(
-        db,user,data.project_id,subject,'INTERNAL_START',
-        source_revision_id=data.bid_intake_revision_id,
-    )
+    if data.bid_intake_revision_id:
+        link_lifecycle_subject(
+            db,user,data.project_id,subject,'INTERNAL_START',
+            source_revision_id=data.bid_intake_revision_id,
+        )
     from domain_packs.mold.erp.core.business import submit_subject
     submitted=submit_subject(db,user,subject.id,subject.revision,data.workflow_definition_id,
         agent_permission_mode=agent_permission_mode_from_proposal(proposal))
@@ -559,7 +739,7 @@ router=APIRouter()
 
 @router.get('/api/internal-start-proposals/{step_id}')
 def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
-    source(db,user,step_id)
+    source(db,user,step_id,for_read=True)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='internal_start.execute',m.HumanIntent.resource_id==step_id,
         m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))

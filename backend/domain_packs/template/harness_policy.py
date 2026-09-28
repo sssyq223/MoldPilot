@@ -1,25 +1,19 @@
 """Business-neutral language policy for the empty starter pack."""
 
+# Keep the template pack compatible with the generic Harness contract while
+# intentionally exposing no business vocabulary.
 ACTION_INTENT_TERMS = ()
 FORMAL_ACTION_TERMS = ()
-FORMAL_ACTION_NEGATED_PHRASES = ()
-READ_ONLY_INTENT_TERMS = ()
-UNAMBIGUOUS_FORMAL_ACTION_TERMS = ()
-WORKBENCH_SUPPORT_HINTS = (
-    "harness", "tool", "skill", "模型", "model", "配置", "接口", "api", "错误", "调试",
-)
+WORKBENCH_SUPPORT_HINTS = ()
 BUSINESS_OBJECT_HINTS = ()
 BUSINESS_ACTION_HINTS = ()
-PURE_CONVERSATION_TERMS = (
-    "你好", "您好", "hello", "hi", "谢谢", "好的", "收到", "ok",
-)
+PURE_CONVERSATION_TERMS = ("hello", "hi", "thanks")
 ELLIPTICAL_ACTION_TERMS = ()
 
 TOOL_SEARCH_SCHEMA_DESCRIPTION = "Activate one registered on-demand capability; this only exposes its schema and does not execute it."
 TOOL_SEARCH_QUERY_DESCRIPTION = "Exact tool name or short capability description."
-TOOL_SEARCH_DOMAIN_TERMS = ()
 TOOL_SEARCH_PROMPT_INTRO = (
-    "Each entry is a ToolSearch example, not a callable function name. Search only when the current request needs an installed capability. "
+    "The tool index lists exact authorized tool names and purposes; skill identifiers refer to searchable instructions, not functions. Search only when the current request needs an installed capability. "
     "An exact tool name activates one tool; a capability description may activate a small related set."
 )
 PERMISSION_MODE_INSTRUCTIONS = {

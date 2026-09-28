@@ -6,7 +6,7 @@ param(
 
 $resolvedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
 $rootToken = $resolvedRoot.ToLowerInvariant()
-$serviceNames = @('python.exe', 'node.exe', 'esbuild.exe', 'cmd.exe')
+$serviceNames = @('python.exe', 'node.exe', 'esbuild.exe', 'cmd.exe', 'powershell.exe')
 $selfProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
 $excludedProcessIds = @([int]$PID)
 if ($selfProcess -and $selfProcess.ParentProcessId) {

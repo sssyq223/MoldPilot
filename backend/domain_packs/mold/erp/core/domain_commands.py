@@ -18,6 +18,11 @@ class Evidence(StrictModel):
     evidence: str = Field(min_length=1,max_length=4000)
 
 
+class PaymentConditionEvidence(Evidence):
+    evidence_by_rule: dict[str, str] = Field(default_factory=dict)
+    special_approval_reference: str | None = Field(default=None, min_length=1, max_length=160)
+
+
 class OrderIssue(Evidence):
     version: int
 
@@ -80,6 +85,7 @@ class TrialConclusion(Evidence):
     actual_date: date
     findings: str = Field(min_length=1,max_length=4000)
     change_id: str | None = None
+    file_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 COMMANDS={
@@ -93,7 +99,7 @@ COMMANDS={
     'inspection.confirm':(m.GoodsReceipt,Inspection,'inspection.confirm'),
     'stock.issue':(m.StockBalance,QuantityEvidence,'stock.issue'),
     'warehouse.configure':(m.Warehouse,WarehouseScope,'warehouse.configure'),
-    'finance.condition':(m.PaymentStage,Evidence,'finance.condition'),
+    'finance.condition':(m.PaymentStage,PaymentConditionEvidence,'finance.condition'),
     'finance.confirm':(m.BusinessSubject,Payment,'finance.confirm'),
     'customer_receipt.confirm':(m.BusinessSubject,CustomerReceipt,'customer_receipt.confirm'),
     'plan.execute':(m.PlanTask,TaskExecution,'plan.execute'),
@@ -136,6 +142,7 @@ def validate_command(db,user,key,resource_id,payload,lock=False):
 
 
 def validate_customer_receipt(db, resource, data: CustomerReceipt):
+    from domain_packs.mold.erp.commercial.contract_relations import allocated_total
     if resource.kind!='sales_contract' or resource.status!='EFFECTIVE':
         raise DomainError('CONTRACT_NOT_EFFECTIVE','客户回款只能登记到已生效销售合同')
     detail=db.get(m.ContractDetail,resource.id)
@@ -150,14 +157,18 @@ def validate_customer_receipt(db, resource, data: CustomerReceipt):
         stage=db.get(m.PaymentStage,data.stage_id)
         if not stage or stage.contract_id!=resource.id:
             raise DomainError('STAGE_NOT_FOUND','回款节点不属于该销售合同',404)
+        from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+        require_current_stage(db,stage)
         if stage.currency!=data.currency:
             raise DomainError('CURRENCY_MISMATCH','回款币种必须与收款节点币种一致')
         stage_received=db.scalar(select(func.coalesce(func.sum(m.CustomerReceiptConfirmation.amount),0)).where(
             m.CustomerReceiptConfirmation.stage_id==stage.id))
+        stage_received+=allocated_total(db,resource.id,'CUSTOMER_RECEIPT',stage_id=stage.id)
         if stage_received+data.amount>stage.amount:
             raise DomainError('RECEIPT_STAGE_OVERFLOW','累计回款超过该合同收款节点金额',409)
     contract_received=db.scalar(select(func.coalesce(func.sum(m.CustomerReceiptConfirmation.amount),0)).where(
         m.CustomerReceiptConfirmation.contract_subject_id==resource.id))
+    contract_received+=allocated_total(db,resource.id,'CUSTOMER_RECEIPT')
     if contract_received+data.amount>detail.amount:
         raise DomainError('RECEIPT_CONTRACT_OVERFLOW','累计回款超过销售合同金额',409)
     return detail,stage
@@ -169,11 +180,30 @@ def validate_supplier_payment(db, resource, data: Payment):
     detail=db.get(m.PaymentRequestDetail,resource.id)
     if not detail:
         raise DomainError('PAYMENT_DETAIL_MISSING','付款申请明细不存在',404)
+    stage=db.get(m.PaymentStage,detail.stage_id)
+    if not stage:
+        raise DomainError('PAYMENT_STAGE_MISSING','付款申请节点不存在',404)
+    # Contract replacement locks its predecessor before checking cash history.
+    # Use that same lock before the stage so a final old-contract payment cannot
+    # race the replacement's frozen allocations.
+    db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.id==stage.contract_id)
+        .with_for_update().execution_options(populate_existing=True))
+    require_source(db,stage.contract_id,resource.project_id,{'full_outsource_contract'})
+    from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+    require_current_stage(db,stage)
     stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())
     if not stage:
         raise DomainError('PAYMENT_STAGE_MISSING','付款申请节点不存在',404)
+    db.refresh(detail)
     if detail.currency!=data.currency or data.amount>detail.reservation:
         raise DomainError('PAYMENT_OVERFLOW','币种不一致或实付超出本次授权余额',409)
+    from domain_packs.mold.erp.commercial.contract_relations import allocated_total
+    paid=db.scalar(select(func.coalesce(func.sum(m.PaymentConfirmation.amount),0))
+        .join(m.PaymentRequestDetail,m.PaymentRequestDetail.subject_id==m.PaymentConfirmation.request_id)
+        .where(m.PaymentRequestDetail.stage_id==stage.id))
+    paid+=allocated_total(db,stage.contract_id,'SUPPLIER_PAYMENT',stage_id=stage.id)
+    if paid+data.amount>stage.amount:
+        raise DomainError('PAYMENT_OVERFLOW','累计实付与历史分配超过合同付款节点金额',409)
     if db.scalar(select(m.PaymentConfirmation.id).where(m.PaymentConfirmation.reference==data.reference)):
         raise DomainError('PAYMENT_DUPLICATE','该付款流水号已登记',409)
     return detail
@@ -231,7 +261,22 @@ def execute_command(db,user,key,resource_id,payload):
         resource.scope_confirmed=True;resource.start_date=data.start_date;resource.opening_evidence=data.evidence
     elif key=='finance.condition':
         require_source(db,resource.contract_id,context['project_id'],{'full_outsource_contract'})
+        from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+        require_current_stage(db,resource)
+        profile = resource.condition_profile or {}
+        rules = profile.get('rules') or []
+        applicable = [row for row in rules if row.get('applicable', True)]
+        missing = [row.get('key') for row in applicable if not data.evidence_by_rule.get(row.get('key'))]
+        if missing:
+            raise DomainError('PAYMENT_CONDITION_MISSING', '仍缺少适用付款条件依据：'+ '、'.join(missing), 409)
+        special = [row.get('key') for row in applicable if row.get('special_approval_required')]
+        if special and not data.special_approval_reference:
+            raise DomainError('PAYMENT_SPECIAL_APPROVAL_REQUIRED', '付款条件偏离约定，须提供特殊审批引用：'+ '、'.join(special), 409)
+        if data.special_approval_reference and not special:
+            raise DomainError('PAYMENT_SPECIAL_APPROVAL_NOT_APPLICABLE', '当前付款条件没有声明需要特殊审批，不能挂接特殊审批引用', 409)
         resource.condition_confirmed=True;resource.condition_evidence=data.evidence
+        resource.condition_evidence_map=dict(data.evidence_by_rule)
+        resource.special_approval_reference=data.special_approval_reference
     elif key=='finance.confirm':
         detail=validate_supplier_payment(db,resource,data)
         confirmation=m.PaymentConfirmation(request_id=resource.id,confirmed_by=user.id,**data.model_dump());db.add(confirmation);db.flush()
@@ -276,7 +321,33 @@ def execute_command(db,user,key,resource_id,payload):
         if not data.passed:
             require_source(db,data.change_id,resource.project_id,{'engineering_change'},('DRAFT','SUBMITTED','EFFECTIVE','CLOSED','APPLY_BLOCKED'))
         elif data.change_id:require_source(db,data.change_id,resource.project_id,{'engineering_change'},('CLOSED',))
-        outcome=m.TrialResult(trial_id=resource.id,confirmed_by=user.id,**data.model_dump());db.add(outcome);db.flush();result['trial_result_id']=outcome.id
+        file_ids = list(data.file_ids or [])
+        if len(file_ids) != len(set(file_ids)):
+            raise DomainError('FILE_CONTEXT_INVALID', '试模报告附件不能重复', 409)
+        blobs = []
+        if file_ids:
+            from domain_packs.mold.ports.files import uploaded_file
+            for file_id in file_ids:
+                blobs.append(uploaded_file(db, user, file_id))
+        payload = data.model_dump()
+        payload.pop('file_ids', None)
+        outcome=m.TrialResult(trial_id=resource.id,confirmed_by=user.id,**payload)
+        db.add(outcome);db.flush();result['trial_result_id']=outcome.id
+        if blobs:
+            for version, blob in enumerate(blobs, start=1):
+                attachment = m.TrialResultAttachment(
+                    trial_result_id=outcome.id,
+                    file_id=blob.id,
+                    role='TRIAL_REPORT',
+                    version=version,
+                    title=blob.filename,
+                    content_sha256=blob.sha256,
+                    linked_by=user.id,
+                )
+                db.add(attachment)
+                db.flush()
+                result.setdefault('trial_report_attachment_ids', []).append(attachment.id)
+            result['trial_report_attachment_count'] = len(blobs)
     elif key=='change.implement':
         require_source(db,resource.change_id,context['project_id'],{'engineering_change'})
         if resource.implemented_by:raise DomainError('ALREADY_CONFIRMED','影响项已实施')

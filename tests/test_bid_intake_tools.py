@@ -8,6 +8,7 @@ from app import bpm, business, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tools.erp.commercial.bid_intake_tools import _intake_fingerprint, parse_bid_intake
 
 
 def factory():
@@ -138,6 +139,23 @@ def bid_intake_args(project_row, files, *, version=1, previous_revision_id=None,
             {"file_id": files[1].id, "role": "MOLD_IMAGE"},
         ],
     }
+
+
+def test_absent_separate_identifiers_preserve_legacy_source_fingerprint():
+    from types import SimpleNamespace
+    p = SimpleNamespace(id='synthetic-project', row_version=1, name='原始资料')
+    files = [SimpleNamespace(id=str(index), sha256=str(index) * 64) for index in range(4)]
+    data = parse_bid_intake(bid_intake_args(p, files))
+    old_payload = data.model_dump(mode='json', exclude={
+        'project_version', 'previous_revision_id', 'version', 'attachments',
+        'customer_model_number', 'customer_material_number',
+    })
+    old_payload['files'] = [{'sha256': files[index].sha256, 'role': role}
+                            for index, role in ((0, 'BID_NOTICE'), (1, 'MOLD_IMAGE'))]
+    blobs = {item.id: item for item in files}
+    assert _intake_fingerprint(data, blobs) == bpm.content_hash(old_payload)
+    classified = data.model_copy(update={'customer_model_number': 'MODEL-001'})
+    assert _intake_fingerprint(classified, blobs) != _intake_fingerprint(data, blobs)
 
 
 def customer_profile(db, project, owner, customer_code="HISENSE", rule_key="hisense"):
@@ -318,6 +336,9 @@ def test_bid_intake_draft_versions_continue_one_case_and_backfill_acceptance():
             revision = db.get(m.BidIntakeRevision, first["revision_id"])
             assert case.project_id == p.id
             assert revision.version == 1
+            assert revision.customer_model_or_material == 'MODEL-001'
+            assert revision.customer_model_number is None
+            assert revision.customer_material_number is None
             assert len(list(db.scalars(select(m.BidIntakeAttachment).where(
                 m.BidIntakeAttachment.revision_id == revision.id
             )))) == 2
@@ -339,13 +360,17 @@ def test_bid_intake_draft_versions_continue_one_case_and_backfill_acceptance():
             )
             second_args.update({
                 "external_order_number": "EXT-ORDER-001",
+                "customer_model_number": "MODEL-CONFIRMED-002",
+                "customer_material_number": "PART-CONFIRMED-003",
                 "external_start_date": date.today().isoformat(),
                 "customer_due_date": date.today().isoformat(),
                 "customer_process_confirmed": True,
                 "customer_process_confirmation_evidence": "客户工艺方案已由项目负责人和客户人工确认",
                 "attachments": [{"file_id": files[2].id, "role": "EXTERNAL_START_NOTICE"}],
             })
-            _, second = confirm_bid_intake(db, admin, run, second_args, 1)
+            evidence, second = confirm_bid_intake(db, admin, run, second_args, 1)
+            assert evidence['proposal']['display']['客户机型'] == 'MODEL-CONFIRMED-002'
+            assert evidence['proposal']['display']['客户物料号'] == 'PART-CONFIRMED-003'
             assert second["case_id"] == ids["case"]
             assert second["version"] == 2
             assert db.scalar(select(m.BidIntakeCase).where(
@@ -357,6 +382,11 @@ def test_bid_intake_draft_versions_continue_one_case_and_backfill_acceptance():
             assert row["bid_intake"]["id"] == ids["case"]
             assert row["bid_intake"]["current_revision"]["external_order_number"] == "EXT-ORDER-001"
             assert row["bid_intake"]["current_revision"]["customer_process_confirmed"] is True
+            assert row['bid_intake']['current_revision']['customer_model_number'] == 'MODEL-CONFIRMED-002'
+            assert row['bid_intake']['current_revision']['customer_material_number'] == 'PART-CONFIRMED-003'
+            old = db.get(m.BidIntakeRevision, ids['first_revision'])
+            assert old.customer_model_or_material == 'MODEL-001'
+            assert old.customer_model_number is None and old.customer_material_number is None
             assert [item["version"] for item in row["bid_intake"]["revisions"]] == [2, 1]
             assert row["analysis"]["derived_status"]["bid_intake_lifecycle_state"] == "ACCEPTED_AWAITING_FORMAL_START"
             assert row["analysis"]["derived_status"]["has_source_document_record"] is True

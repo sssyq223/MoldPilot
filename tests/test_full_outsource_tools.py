@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text
@@ -9,6 +10,7 @@ from app import bpm, business, models as m
 from app.authorization import PERMISSIONS, fingerprint
 from app.models import Base
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tools.erp.procurement.full_outsource_tools import _analysis
 
 
 @pytest.fixture
@@ -460,6 +462,15 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         admin = db.query(m.User).filter_by(username="admin").one()
         result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-M001"})
         assert result["resolution"] == "RESOLVED"
+        assert result["scope_boundary"]["complete"] is True
+        assert "prepare_outsource_change_negotiation" in result["scope_boundary"]["write_tools"]
+        assert result["model_context"]["project"]["id"] == p.id
+        assert result["model_context"]["full_outsource_contracts"][0]["supplier_id"] == sup.id
+        assert result["model_context"]["outsource_change_negotiations"][0]["contract_subject_id"] == contract.id
+        assert result["model_context"]["supplier_progress_reports"][0]["plan_task_id"] == task.id
+        # The provider projection keeps identifiers and status but omits the
+        # full attachment-heavy acceptance payload kept in the durable receipt.
+        assert "attachments" not in result["model_context"]["analysis"]["customer_delivery_acceptance"]
         analysis = result["data"][0]["analysis"]
         status = analysis["derived_status"]
         assert status["has_full_outsource_mode"] is True
@@ -522,6 +533,72 @@ def test_full_outsource_schema_and_context_summary(pg_session_factory):
         assert "客户验收记录涉及扣款" in warnings
         assert "要求合同变化" in warnings
         assert "交期影响天数" in warnings
+
+
+def test_full_outsource_erp_quality_failure_blocks_outsource_issue_state():
+    customer_status = {
+        "has_customer_signature": False,
+        "has_customer_acceptance": False,
+        "has_failed_customer_acceptance": False,
+        "has_unresolved_failure": False,
+        "has_recheck_passed": False,
+        "has_acceptance_deduction": False,
+        "has_contract_change_required": False,
+        "unlinked_recheck_ids": [],
+        "schedule_impact_days_total": 0,
+    }
+    result = _analysis(
+        project=SimpleNamespace(status="ACTIVE"),
+        profile={},
+        quote_acceptance=None,
+        contracts=[],
+        signing_records=[],
+        active_plan=None,
+        plan_tasks=[],
+        supplier_progress_policies=[],
+        supplier_progress_reports=[],
+        material_handoffs=[],
+        material_verifications=[],
+        deduction_settlements=[],
+        change_negotiations=[],
+        order_tracking={"totals": {}},
+        engineering_changes=[],
+        contacts=[],
+        payments={"requests": []},
+        closure_items=[],
+        customer_delivery_acceptance={"derived_status": customer_status},
+        erp_execution_context={
+            "status": "RESOLVED",
+            "records": {
+                "quality_inspection_records": [{
+                    "inspection_no": "QI-OUT-1",
+                    "status": "partial",
+                    "result": "partial",
+                    "source_ref": "quality/inspection/list:QI-OUT-1",
+                }],
+                "quality_totals": {
+                    "inspections": 1,
+                    "open_inspections": 0,
+                    "completed_inspections": 1,
+                    "failed_inspections": 1,
+                    "qualified_inspections": 0,
+                },
+                "product_shipment_records": [{
+                    "shipment_no": "PS-OUT-1",
+                    "tracking_no": "TRACK-OUT-1",
+                    "source_ref": "entrust/fulfillment/product-shipment/list:PS-OUT-1",
+                }],
+                "totals": {"quality_inspections": 1},
+                "exception_records": [],
+            },
+        },
+    )
+    assert result["derived_status"]["has_erp_quality_failure"] is True
+    assert result["derived_status"]["has_erp_product_shipment"] is True
+    assert result["derived_status"]["has_open_outsource_issue"] is True
+    assert result["erp_quality_inspections"][0]["source_ref"].endswith("QI-OUT-1")
+    assert result["erp_product_shipments"][0]["tracking_no"] == "TRACK-OUT-1"
+    assert "不合格或部分合格质量任务" in "".join(result["warnings"])
 
 
 def test_prepare_supplier_material_handoff_requires_confirmation_then_records(pg_session_factory):
@@ -839,6 +916,158 @@ def test_prepare_supplier_progress_report_rejects_inconsistent_risk_and_duplicat
         with pytest.raises(Exception) as invalid:
             execute(db, admin, "prepare_supplier_progress_report", inconsistent, run=run)
         assert getattr(invalid.value, "code", None) == "INVALID_TOOL_INPUT"
+
+
+def test_prepare_outsource_change_negotiation_requires_confirmation_then_records(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-CHANGE-NEGOTIATION", "委外设变议价项目")
+        full_outsource_profile(db, p, admin)
+        sup = supplier(db, "S-CHANGE-NEG")
+        contract = outsource_contract(db, p, admin, sup)
+        case = m.ContactCase(
+            project_id=p.id,
+            category="outsource",
+            title="客户设变影响供应商试模",
+            description="客户要求追加纹理，需与供应商核价并重排交期",
+            mode="ONLINE",
+            created_by=admin.id,
+            request_key="contact-change-neg",
+            request_hash="contact-change-neg-hash",
+            problem_source="CUSTOMER_CHANGE",
+            change_type="CHANGE",
+            urgency="NORMAL",
+        )
+        db.add(case)
+        db.flush()
+        conversation = m.Conversation(user_id=admin.id, title="委外设变议价")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(
+            conversation_id=conversation.id,
+            user_id=admin.id,
+            security_version=admin.security_version,
+            prompt="登记委外设变议价",
+            status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"},
+        )
+        db.add(run)
+        db.flush()
+        args = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "contact_case_id": case.id,
+            "customer_quote_amount": "3000.00",
+            "supplier_quote_amount": "1800.00",
+            "negotiated_amount": "1500.00",
+            "currency": "CNY",
+            "schedule_impact_days": 3,
+            "task_impact_summary": "供应商试模节点顺延 3 天，采购同步项目计划变更。",
+            "requires_contract_change": True,
+            "status": "AGREED",
+            "customer_evidence": "客户报价邮件与变更说明",
+            "supplier_evidence": "供应商报价单",
+            "negotiation_evidence": "采购、项目与供应商电话会议确认最终 1500 元，交期顺延 3 天。",
+            "source_system": "MANUAL",
+            "source_ref": "CHANGE-NEG-001",
+        }
+    schema = tool_schema("prepare_outsource_change_negotiation")["function"]["parameters"]
+    assert {"contact_case_id", "customer_quote_amount", "supplier_quote_amount", "negotiated_amount"} <= set(schema["properties"])
+    with Session.begin() as db:
+        admin = db.query(m.User).filter_by(username="admin").one()
+        run = db.scalar(select(m.Run).where(m.Run.user_id == admin.id))
+        evidence = execute(db, admin, "prepare_outsource_change_negotiation", args, run=run)
+        assert evidence["proposal"]["kind"] == "outsource_change_negotiation"
+        assert evidence["proposal"]["display"]["最终协商金额"] == "1500.00 CNY"
+        assert evidence["proposal"]["display"]["是否需要合同变更"] == "是"
+        assert db.scalar(select(m.OutsourceChangeNegotiation).where(m.OutsourceChangeNegotiation.source_ref == args["source_ref"])) is None
+        step = m.Step(run_id=run.id, sequence=0, tool="prepare_outsource_change_negotiation", request_hash="hash", result=evidence)
+        db.add(step)
+        db.flush()
+        intent = business.create_intent(db, admin, "full_outsource.execute", step.id,
+            {"step_id": step.id, "proposal_hash": bpm.content_hash(evidence["proposal"])})
+        receipt = business.confirm_intent(db, admin, intent["id"], intent["challenge"])
+        row = db.get(m.OutsourceChangeNegotiation, receipt["outsource_change_negotiation_id"])
+        assert row.contract_subject_id == args["contract_subject_id"]
+        assert row.contact_case_id == args["contact_case_id"]
+        assert row.status == "AGREED"
+        assert row.requires_contract_change is True
+        assert row.negotiated_amount == Decimal("1500.00")
+        result = execute(db, admin, "query_full_outsource_context", {"identifier": "OUT-CHANGE-NEGOTIATION"})
+        analysis = result["data"][0]["analysis"]
+        assert analysis["derived_status"]["has_contract_change_negotiation"] is True
+        assert analysis["outsource_change_negotiations"][0]["source_ref"] == args["source_ref"]
+
+
+def test_prepare_outsource_change_negotiation_rejects_unagreed_contract_change_and_duplicate_source(pg_session_factory):
+    Session = pg_session_factory
+    with Session.begin() as db:
+        admin = user(db, "admin", True)
+        p = project(db, "OUT-CHANGE-NEG-BLOCK", "委外设变议价阻断项目")
+        sup = supplier(db, "S-CHANGE-NEG-BLOCK")
+        contract = outsource_contract(db, p, admin, sup)
+        case = m.ContactCase(
+            project_id=p.id,
+            category="outsource",
+            title="客户设变需供应商议价",
+            description="客户要求追加加工范围",
+            mode="ONLINE",
+            created_by=admin.id,
+            request_key="contact-change-neg-block",
+            request_hash="contact-change-neg-block-hash",
+        )
+        db.add(case)
+        db.add(m.OutsourceChangeNegotiation(
+            project_id=p.id,
+            supplier_id=sup.id,
+            contract_subject_id=contract.id,
+            contact_case_id=case.id,
+            customer_quote_amount=Decimal("1000.00"),
+            supplier_quote_amount=Decimal("800.00"),
+            negotiated_amount=Decimal("700.00"),
+            currency="CNY",
+            schedule_impact_days=1,
+            task_impact_summary="已登记来源",
+            requires_contract_change=False,
+            status="AGREED",
+            customer_evidence="客户依据",
+            supplier_evidence="供应商依据",
+            negotiation_evidence="议价依据",
+            source_system="MANUAL",
+            source_ref="CHANGE-NEG-DUP",
+        ))
+        conversation = m.Conversation(user_id=admin.id, title="委外设变议价阻断")
+        db.add(conversation)
+        db.flush()
+        run = m.Run(conversation_id=conversation.id, user_id=admin.id, security_version=admin.security_version,
+            prompt="登记委外设变议价", status="SUCCEEDED",
+            checkpoint={"authorization_hash": fingerprint(db, admin), "agent_permission_mode": "ask"})
+        db.add(run)
+        db.flush()
+        base = {
+            "project_id": p.id,
+            "project_version": p.row_version,
+            "supplier_id": sup.id,
+            "contract_subject_id": contract.id,
+            "contact_case_id": case.id,
+            "negotiated_amount": "900.00",
+            "currency": "CNY",
+            "task_impact_summary": "供应商重排试模节点",
+            "status": "AGREED",
+            "negotiation_evidence": "议价纪要",
+            "source_system": "MANUAL",
+            "source_ref": "CHANGE-NEG-DUP",
+        }
+        with pytest.raises(Exception) as duplicate:
+            execute(db, admin, "prepare_outsource_change_negotiation", base, run=run)
+        assert getattr(duplicate.value, "code", None) == "OUTSOURCE_CHANGE_NEGOTIATION_DUPLICATE"
+        invalid = {**base, "source_ref": "CHANGE-NEG-INVALID", "requires_contract_change": True, "status": "NEGOTIATING"}
+        with pytest.raises(Exception) as bad_status:
+            execute(db, admin, "prepare_outsource_change_negotiation", invalid, run=run)
+        assert getattr(bad_status.value, "code", None) == "INVALID_TOOL_INPUT"
 
 
 def test_supplier_progress_policy_requires_confirmation_and_enforces_evidence(pg_session_factory):

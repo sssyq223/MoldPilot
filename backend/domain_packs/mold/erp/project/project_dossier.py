@@ -8,10 +8,11 @@ from domain_packs.mold.authorization import access, predicate, select_fields
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
+from domain_packs.mold.erp.core.project_locator import ProjectId
 
 
 class ProjectDossierInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = None
     identifier: str | None = Field(default=None, min_length=1, max_length=200,
         description='项目编号/名称、模具号、联络单、订单、合同或业务单据编号。')
 

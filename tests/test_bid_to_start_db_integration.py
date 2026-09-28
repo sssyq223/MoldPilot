@@ -132,19 +132,17 @@ def test_project_match_intake_confirmation_and_start_notice_are_separate_gates(b
     )
     assert binding["target_id"] == contract.id
 
-    monkeypatch.setattr(
-        "domain_packs.mold.erp.commercial.checklist_binding.resolve_reference",
-        lambda *args, **kwargs: {
-            "kind": "accounting_checklist", "id": "42", "project_id": None,
-            "revision": 1, "fingerprint": "c" * 64, "mold_no": mold.internal_number,
-            "line_count": 1, "source_system": "ERP", "source_type": "production_cost_sheet_file",
-        },
+    local_checklist = m.BusinessSubject(
+        kind="local_cost_sheet", number="CS-" + uuid4().hex,
+        project_id=context.project.id, category="finance", created_by=context.owner.id,
+        status="EFFECTIVE", revision=1, remark="合成本地核算清单",
     )
+    db.add(local_checklist); db.flush()
     checklist_binding = bind_post_start(
         db, context.owner, decision_id=decision["decision_id"],
         start_notice_id=notice_result["start_notice_id"], target_type="ACCOUNTING_CHECKLIST",
-        target_id="erp:production_cost_sheet_file:42", target_version=1,
+        target_id=local_checklist.id, target_version=1,
         mold_rows=[{"mold_id": mold.id, "line_no": 1}], operation_id="binding-op-checklist-1",
     )
     assert checklist_binding["target_type"] == "ACCOUNTING_CHECKLIST"
-    assert checklist_binding["target_fingerprint"] == "c" * 64
+    assert checklist_binding["target_fingerprint"]

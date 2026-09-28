@@ -14,7 +14,7 @@ const actionNames:Record<string,string>={CONTINUE:'继续执行',PAUSE:'暂停',
 const urgencyNames:Record<string,string>={NORMAL:'普通',URGENT:'紧急',CRITICAL:'重大紧急'}
 const affectedNames:Record<string,string>={DRAWING:'图纸',MATERIAL:'物料',PURCHASE_ORDER:'采购单',WIP_TASK:'在制任务',SUPPLIER_TASK:'供应商任务',PLAN_NODE:'计划节点',CONTRACT:'合同',FINANCE:'财务事项',LOGISTICS:'物流',OTHER:'其他'}
 const changeNames:Record<string,string>={CHANGE:'设变',EXCEPTION:'异常',IMPROVEMENT:'改善'}
-const progressNames:Record<string,string>={CLOSED:'已关闭',HISTORY_RECORD:'历史补录',DRAFTING:'待明确责任事项',WAITING_ASSIGNMENT:'待分派处理人',WAITING_FEEDBACK:'待处理反馈',WAITING_REVIEW:'待独立复验',WAITING_RESOLUTION:'待处理方案审批',REVIEW_STALE:'复验需按最新方案重做',READY_TO_CLOSE:'可准备关闭'}
+const progressNames:Record<string,string>={CLOSED:'已关闭',HISTORY_RECORD:'历史补录',DRAFTING:'待明确责任事项',WAITING_ASSIGNMENT:'待分派处理人',WAITING_FEEDBACK:'待处理反馈',WAITING_REVIEW:'待独立复验',WAITING_RESOLUTION:'待处理方案审批',REVIEW_STALE:'复验需按最新方案重做',EXECUTION_BASIS_REQUIRED:'待核对本次执行依据',READY_TO_CLOSE:'可准备关闭'}
 async function load(){
  const token=++request;selected.value=null;failed.value=false
  if(!props.initialId){loading.value=false;return}
@@ -52,6 +52,7 @@ watch(()=>props.initialId,load,{immediate:true})
   <small class="muted">预计交期影响 {{t.delivery_impact_days}} 天<span v-if="t.estimated_amount"> · 预计金额 {{t.estimated_amount}} {{t.currency}}</span> · 来源 {{t.source_system}}<span v-if="t.source_ref"> / {{t.source_ref}}</span></small>
   <p v-if="!t.department_active" class="muted">责任部门已停用。</p><p v-if="t.response" class="preserve">{{t.response}}</p>
   <small v-if="t.actual_completed_at" class="muted">实际完成 {{shanghai(t.actual_completed_at)}} · 工时 {{t.actual_hours}}<span v-if="t.actual_amount"> · 金额 {{t.actual_amount}} {{t.actual_currency}}</span> · {{t.execution_evidence}}</small>
+  <p v-if="t.response && selected.change_type==='CHANGE'" class="muted">{{t.execution_basis?.status==='LINKED' ? '反馈依据：方案 '+numberText(t.execution_basis.plan_number)+' · 开工 '+numberText(t.execution_basis.start_number) : '此反馈尚未关联执行方案与正式开工，不能据此认定本次设变已完成。'}}</p>
  </article>
  <p class="muted">协作反馈与正式审批分别记录；已反馈不表示批准或关闭。</p>
  <h3>过程记录</h3><p v-if="!selected.records.length" class="muted">暂无过程记录。</p>

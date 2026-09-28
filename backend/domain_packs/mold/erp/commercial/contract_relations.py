@@ -2,15 +2,28 @@
 from collections import defaultdict
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from domain_packs.mold import models as m
 from domain_packs.mold.ports.errors import DomainError
+from .contract_materials import current_allocation
 
 
 ACTIVE_REPLACEMENT_STATUSES = {
     "DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED", "EFFECTIVE",
 }
+
+
+def allocated_total(db, contract_id, record_type, *, stage_id=None):
+    """Signed cash already assigned to this contract, not another cash payment."""
+    query = select(func.coalesce(func.sum(m.ContractSettlementAllocation.amount), 0)).where(
+        m.ContractSettlementAllocation.target_contract_id == contract_id,
+        m.ContractSettlementAllocation.record_type == record_type,
+        current_allocation(),
+    )
+    if stage_id is not None:
+        query = query.where(m.ContractSettlementAllocation.target_stage_id == stage_id)
+    return Decimal(db.scalar(query))
 
 
 def lineage_ids(db, predecessor):
@@ -83,7 +96,7 @@ def settlement_records(db, predecessor):
 def allocation_cards(db, contract_id):
     rows = db.scalars(
         select(m.ContractSettlementAllocation)
-        .where(m.ContractSettlementAllocation.target_contract_id == contract_id)
+        .where(m.ContractSettlementAllocation.target_contract_id == contract_id, current_allocation())
         .order_by(m.ContractSettlementAllocation.created_at, m.ContractSettlementAllocation.id)
     )
     return [{
@@ -132,7 +145,7 @@ def validate_relation(db, subject, *, lock=False):
     if not detail:
         raise DomainError("CONTRACT_DETAIL_MISSING", "合同明细不存在", 404)
     allocations = list(db.scalars(select(m.ContractSettlementAllocation).where(
-        m.ContractSettlementAllocation.target_contract_id == subject.id
+        m.ContractSettlementAllocation.target_contract_id == subject.id, current_allocation()
     )))
     if detail.relation_type == "ORIGINAL":
         if detail.replaces_id or detail.settlement_allocation_evidence or allocations:
@@ -182,7 +195,7 @@ def validate_relation(db, subject, *, lock=False):
         ):
             raise DomainError("CONTRACT_SETTLEMENT_CHANGED", "历史收付款金额、币种或分配依据已变化，请重新准备", 409)
         stage = db.get(m.PaymentStage, allocation.target_stage_id)
-        if not stage or stage.contract_id != subject.id or stage.currency != allocation.currency:
+        if not stage or stage.contract_id != subject.id or stage.material_version != detail.material_version or stage.currency != allocation.currency:
             raise DomainError("CONTRACT_TARGET_STAGE_INVALID", "历史收付款目标节点不存在或币种不符", 409)
         stage_totals[stage.id] += Decimal(allocation.amount)
         allocation_total += Decimal(allocation.amount)
@@ -192,6 +205,7 @@ def validate_relation(db, subject, *, lock=False):
             .join(m.BusinessSubject, m.BusinessSubject.id == m.ContractSettlementAllocation.target_contract_id)
             .where(
                 m.ContractSettlementAllocation.record_type == allocation.record_type,
+                current_allocation(),
                 m.ContractSettlementAllocation.source_record_id == allocation.source_record_id,
                 m.ContractSettlementAllocation.target_contract_id != subject.id,
                 m.BusinessSubject.status.in_(ACTIVE_REPLACEMENT_STATUSES),

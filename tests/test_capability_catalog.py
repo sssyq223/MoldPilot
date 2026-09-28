@@ -2,6 +2,20 @@ from domain_packs.mold.tools.erp.design.erp_design_mcp import TOOL_NAMES
 from app.tool_gateway import SKILLS, TOOLS, capability_descriptor
 
 
+def test_model_schema_preserves_registered_display_identity_and_full_contract():
+    from agent_core.tool_gateway import tool_schema, _gateway
+    for key, spec in TOOLS.items():
+        original = _gateway.tool_schema(key)
+        exposed = tool_schema(key)
+        name = capability_descriptor('TOOL', key, spec)['name']
+        assert name in exposed['function']['description'] or name == key
+        assert original['function']['description'] in exposed['function']['description']
+        assert exposed['function']['name'] == key
+        assert exposed['function']['parameters'] == original['function']['parameters']
+        # Describing the capability must not mutate the domain/provider schema.
+        assert original == _gateway.tool_schema(key)
+
+
 def test_tool_descriptor_carries_backend_catalog_metadata():
     item = capability_descriptor("TOOL", "query_purchase_requests", TOOLS["query_purchase_requests"])
     assert item["name"] == "查询采购申请"
@@ -110,9 +124,24 @@ def test_delivery_logistics_skill_exposes_separate_route_and_price_authorities()
     assert quote["department"] == "purchase"
     assert quote["type"] == "approval"
     assert quote["mode"] == "human_confirmed_proposal"
+    signature = capability_descriptor(
+        "TOOL",
+        "prepare_customer_delivery_signature",
+        TOOLS["prepare_customer_delivery_signature"],
+    )
+    assert signature["name"] == "准备客户签收登记"
+    assert signature["department"] == "warehouse"
+    assert signature["type"] == "operation"
+    assert signature["mode"] == "human_confirmed_proposal"
     skill = capability_descriptor("SKILL", "delivery_logistics_review", SKILLS["delivery_logistics_review"])
     assert skill["dependencies"] == ["query_delivery_logistics_context"]
-    assert skill["optional_dependencies"] == ["prepare_logistics_route", "prepare_logistics_quote"]
+    assert skill["optional_dependencies"] == [
+        "prepare_logistics_route",
+        "prepare_logistics_quote",
+        "prepare_customer_delivery_signature",
+        "prepare_customer_acceptance",
+        "prepare_outbound_release",
+    ]
 
 
 def test_contact_collaboration_skill_has_curated_activation_pack():
@@ -153,11 +182,16 @@ def test_project_kickoff_skill_starts_with_one_coordinator_and_keeps_stage_tools
         "prepare_quote_acceptance_decision",
         "query_contract_context",
         "prepare_contract_record",
-        "query_internal_start_readiness",
-        "prepare_internal_start",
-        "query_project_plan_context",
-        "prepare_project_plan_baseline",
+            "query_internal_start_readiness",
+            "prepare_internal_start",
+            "prepare_project_mold_handoff",
+            "query_project_plan_context",
+            "prepare_project_plan_draft",
+            "prepare_project_plan_baseline",
+            "prepare_project_plan_change",
     } == set(skill["optional_dependencies"])
+    skill_spec = SKILLS["project_kickoff_orchestration"]
+    assert skill_spec["requires_tool_evidence"] is True
 
 
 def test_project_execution_skill_starts_with_one_coordinator_and_keeps_stage_reads_optional():
@@ -174,6 +208,7 @@ def test_project_execution_skill_starts_with_one_coordinator_and_keeps_stage_rea
     assert skill["dependencies"] == ["query_project_execution_context"]
     assert skill["activation_dependencies"] == ["query_project_execution_context"]
     assert {
+        "query_project_kickoff_context",
         "query_project_plan_context",
         "query_design_route_context",
         "query_procurement_price_context",
@@ -182,6 +217,7 @@ def test_project_execution_skill_starts_with_one_coordinator_and_keeps_stage_rea
         "query_assembly_trial_context",
         "query_delivery_logistics_context",
     } == set(skill["optional_dependencies"])
+    assert SKILLS["project_execution_orchestration"]["requires_tool_evidence"] is True
 
 
 def test_project_completion_skill_starts_with_one_coordinator_and_keeps_stage_actions_optional():
@@ -198,9 +234,11 @@ def test_project_completion_skill_starts_with_one_coordinator_and_keeps_stage_ac
     assert skill["dependencies"] == ["query_project_completion_context"]
     assert skill["activation_dependencies"] == ["query_project_completion_context"]
     assert {
-        "query_delivery_logistics_context",
-        "query_finance_context",
-            "query_project_closure_context",
+            "query_delivery_logistics_context",
+            "query_finance_context",
+            "prepare_customer_delivery_signature",
+            "prepare_outbound_release",
+                "query_project_closure_context",
             "prepare_customer_receivable_schedule",
             "prepare_customer_receipt_confirmation",
         "prepare_supplier_payment_confirmation",
@@ -210,6 +248,11 @@ def test_project_completion_skill_starts_with_one_coordinator_and_keeps_stage_ac
         "prepare_project_normal_close",
         "prepare_project_settlement_close",
     } == set(skill["optional_dependencies"])
+    assert SKILLS["project_completion_orchestration"]["requires_tool_evidence"] is True
+
+
+def test_project_lifecycle_coordinator_finalizes_after_its_authoritative_read():
+    assert SKILLS["project_lifecycle_orchestration"]["requires_tool_evidence"] is True
 
 
 def test_erp_design_tools_expose_curated_chinese_titles():
@@ -247,6 +290,13 @@ def test_new_mold_attachment_upload_activates_only_the_parser_initially():
     item = capability_descriptor("SKILL", "erp_new_mold_design_upload",
                                  SKILLS["erp_new_mold_design_upload"])
     assert item["activation_dependencies"] == ["erp_design_parse_new_mold_upload"]
+    assert "erp_design_import_new_mold" in item["suspended_dependencies"]
+
+
+def test_design_query_skill_has_no_suspended_writes():
+    item = capability_descriptor("SKILL", "erp_design_drawing_version_review",
+                                 SKILLS["erp_design_drawing_version_review"])
+    assert item["suspended_dependencies"] == []
 
 
 def test_modify_mold_upload_skill_is_separate_from_dxf_mold_repair():

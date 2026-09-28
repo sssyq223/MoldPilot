@@ -6,7 +6,7 @@ description: 只读核对一个项目从承接、合同、正式开工和基线�
 # 项目全生命周期协调
 
 1. 先调用 `query_project_lifecycle_context`，只用本轮项目 ID、编号或名称定位唯一项目；多候选时要求用户选择，不能合并项目事实。
-2. 先说明 `analysis.project_lifecycle.current_segment`、三个分段摘要、资料矛盾和权限缺口。总览只决定当前应展开哪一段，不替代分段或专用工具的正式证据。
+2. 先说明 `analysis.project_lifecycle.current_segment`、三个分段摘要、`business_chain` 中的跨段交接状态、资料矛盾和权限缺口。`CONNECTED` 只表示已有可见证据把两个协调器接上，`READY` 表示前段已完成但后段尚未见业务事实，`WAITING` 表示前段仍有缺口，`UNAVAILABLE` 表示能力或权限不可见；这些状态不能替代分段或专用工具的正式证据。分段中的 `stage_statuses` 是各阶段的权威状态，必须按其中的 `state` 描述承接和正式开工，不能从 `progress` 计数推断某阶段未启动。启动分段的 `baseline_coverage.required_for_baseline` 是没有生效基线计划时提交前必须补齐的节点清单，不能把它改写成正式开工缺失或已经完成的节点；只有 `missing_from_active_plan` 才表示已存在基线计划的覆盖缺口。
 3. 用户继续核对时，只调用总览返回的一个分段协调器：启动用 `query_project_kickoff_context`，执行用 `query_project_execution_context`，收尾用 `query_project_completion_context`；项目暂停时先用 `query_project_control_context`。
 4. 分段协调器返回下一阶段能力后，才按需继续一轮工具调用。不要一次搜索、启用或调用全部业务工具，也不要把不同阶段的摘要拼成写入参数。
 5. `UNAVAILABLE` 代表能力或权限不可见，不能当成“未发生”；后续事实不能倒推承接、开工、计划或前序审批已经完成。状态与证据冲突时如实说明并请求核对。

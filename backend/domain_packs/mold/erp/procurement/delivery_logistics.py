@@ -11,7 +11,9 @@ from agent_core.host_ports import host_ports
 from agent_core.schemas import StrictModel
 from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput, match_strength as _strength
 from domain_packs.mold.erp.core.legacy_read_ports import business_subject_data, contact_case_permitted, purchase_order_data
+from domain_packs.mold.erp.procurement.customer_acceptance_status import summarize_customer_acceptance
 from domain_packs.mold.config import settings as mold_settings
+from domain_packs.mold.ports.files import uploaded_file
 
 
 _host = host_ports()
@@ -31,6 +33,7 @@ DELIVERY_KEYWORDS = ("交付", "出库", "发货", "物流", "签收", "验收",
 QUALITY_SOURCES = {"QUALITY_ISSUE", "TRIAL_ISSUE", "ASSEMBLY_ISSUE", "SUPPLIER_QUALITY"}
 DELIVERY_LOGISTICS_PROPOSAL_TOOLS = {
     "prepare_logistics_route", "prepare_logistics_quote", "prepare_customer_acceptance",
+    "prepare_outbound_release", "prepare_customer_delivery_signature",
 }
 
 
@@ -76,6 +79,8 @@ class CustomerAcceptanceProposalInput(StrictModel):
     project_version: int = Field(ge=1)
     signature_id: str | None = Field(default=None, max_length=36)
     acceptance_type: Literal["INITIAL", "RECHECK"] = "INITIAL"
+    previous_acceptance_id: str | None = Field(default=None, max_length=36,
+        description='整改复验须引用查询返回的同一验收链当前末条记录 ID；初次验收不填写。')
     result: Literal["PASSED", "FAILED", "CONDITIONALLY_PASSED"]
     accepted_date: date
     issue_description: str = Field(default="", max_length=4000)
@@ -88,6 +93,45 @@ class CustomerAcceptanceProposalInput(StrictModel):
     schedule_impact_days: int = Field(default=0, ge=0, le=3650)
     contract_change_required: bool = False
     evidence: str = Field(min_length=1, max_length=4000)
+    file_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description='当前任务中已上传的客户验收原件文件 ID；只关联本人确认过的原件。',
+    )
+
+
+class OutboundReleaseProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    inspection_type: Literal["SELF_INSPECTION", "OUTBOUND_ACCEPTANCE"] = "SELF_INSPECTION"
+    trial_request_id: str | None = Field(default=None, max_length=36)
+    previous_record_id: str | None = Field(default=None, max_length=36)
+    result: Literal["PASSED", "FAILED", "CONDITIONALLY_PASSED"]
+    inspected_date: date
+    issue_description: str = Field(default="", max_length=4000)
+    corrective_due_date: date | None = None
+    evidence: str = Field(min_length=1, max_length=4000)
+    source_ref: str = Field(min_length=1, max_length=120)
+    file_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description='当前任务中已上传的出厂检验/放行原件文件 ID。',
+    )
+
+
+class CustomerDeliverySignatureProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    signed_date: date
+    shipment_reference: str = Field(min_length=1, max_length=120)
+    signer_name: str = Field(min_length=1, max_length=120)
+    logistics_route_id: str | None = Field(default=None, max_length=36)
+    evidence: str = Field(min_length=1, max_length=4000)
+    file_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description='当前任务中已上传的客户签收原件文件 ID。',
+    )
 
 
 def customer_acceptance_schema():
@@ -100,6 +144,14 @@ def logistics_route_schema():
 
 def logistics_quote_schema():
     return LogisticsQuoteProposalInput.model_json_schema()
+
+
+def outbound_release_schema():
+    return OutboundReleaseProposalInput.model_json_schema()
+
+
+def customer_delivery_signature_schema():
+    return CustomerDeliverySignatureProposalInput.model_json_schema()
 
 
 def parse_logistics_route(arguments):
@@ -153,6 +205,71 @@ def parse_customer_acceptance(arguments):
         raise DomainError("RESPONSIBILITY_REQUIRED", "验收扣款必须明确责任归属")
     if data.responsibility == "SUPPLIER" and not data.supplier_id:
         raise DomainError("SUPPLIER_REQUIRED", "供应商责任必须关联供应商")
+    return data
+
+
+def _acceptance_files(db, user, file_ids, *, run=None, step_id=None):
+    """Resolve acceptance originals against the exact current task boundary."""
+    requested = [str(value) for value in (file_ids or [])]
+    if len(requested) != len(set(requested)):
+        raise DomainError("FILE_CONTEXT_INVALID", "客户验收附件不能重复", 409)
+    if not requested:
+        return []
+    if run is None and step_id:
+        step = db.get(m.Step, step_id)
+        run = db.get(m.Run, step.run_id) if step else None
+    if not run or run.user_id != user.id:
+        raise DomainError("FILE_CONTEXT_INVALID", "客户验收附件须绑定当前本人任务", 403)
+    blobs = []
+    for file_id in requested:
+        blob = uploaded_file(db, user, file_id)
+        if blob.conversation_id != run.conversation_id:
+            raise DomainError("FILE_CONTEXT_INVALID", "只能关联当前会话中的客户验收原件", 403)
+        if not db.scalar(select(m.RunFile).where(
+            m.RunFile.run_id == run.id,
+            m.RunFile.file_id == blob.id,
+        )):
+            raise DomainError("FILE_CONTEXT_INVALID", "客户验收附件尚未绑定当前任务", 403)
+        blobs.append(blob)
+    return blobs
+
+
+def _acceptance_display_files(display, blobs, *, label="客户验收原件"):
+    if not blobs:
+        return display
+    return {
+        **display,
+        label: [
+            {"id": blob.id, "filename": blob.filename, "sha256": blob.sha256}
+            for blob in blobs
+        ],
+        "说明": display["说明"] + " 原件只作为不可变 Agent 附件登记，不替代业务事实。",
+    }
+
+
+def parse_outbound_release(arguments):
+    try:
+        data = OutboundReleaseProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "出厂自检/放行参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.inspected_date > now().date():
+        raise DomainError("DATE_INVALID", "出厂自检/放行日期不能在未来")
+    if data.result in {"FAILED", "CONDITIONALLY_PASSED"} and not data.issue_description.strip():
+        raise DomainError("RELEASE_ISSUE_REQUIRED", "未通过或有条件通过时必须填写问题描述")
+    if data.corrective_due_date and data.corrective_due_date < data.inspected_date:
+        raise DomainError("DATE_INVALID", "整改期限不能早于出厂自检/放行日期")
+    if data.previous_record_id and data.inspection_type != "SELF_INSPECTION":
+        raise DomainError("INVALID_TOOL_INPUT", "当前只允许对出厂自检记录进行整改复验")
+    return data
+
+
+def parse_customer_delivery_signature(arguments):
+    try:
+        data = CustomerDeliverySignatureProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "客户签收参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    if data.signed_date > now().date():
+        raise DomainError("DATE_INVALID", "客户签收日期不能在未来")
     return data
 
 
@@ -656,22 +773,75 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
                 "move_type": row.move_type,
                 "evidence": row.evidence,
                 "recorded_by": row.recorded_by,
+                "attachments": [
+                    {
+                        "id": attachment.id,
+                        "file_id": attachment.file_id,
+                        "role": attachment.role,
+                        "version": attachment.version,
+                        "title": attachment.title,
+                        "content_sha256": attachment.content_sha256,
+                        "filename": blob.filename,
+                        "media_type": blob.media_type,
+                        "size": blob.size,
+                    }
+                    for attachment, blob in db.execute(
+                        select(m.CustomerDeliverySignatureAttachment, m.FileObject)
+                        .join(
+                            m.FileObject,
+                            m.FileObject.id == m.CustomerDeliverySignatureAttachment.file_id,
+                        )
+                        .where(
+                            m.CustomerDeliverySignatureAttachment.signature_id == row.id
+                        )
+                        .order_by(
+                            m.CustomerDeliverySignatureAttachment.version,
+                            m.CustomerDeliverySignatureAttachment.id,
+                        )
+                    )
+                ],
             }
         )
 
     can_read_acceptance = "query_project_closure_context" in allowed_tools and access(db, user, "project_close.read", {"project_id": project_id}).allowed
     acceptance_records = []
+    acceptance_rows = []
     if can_read_acceptance:
-        for row in db.scalars(
+        acceptance_rows = list(db.scalars(
             select(m.CustomerAcceptanceRecord)
             .where(m.CustomerAcceptanceRecord.project_id == project_id)
             .order_by(m.CustomerAcceptanceRecord.accepted_date.desc(), m.CustomerAcceptanceRecord.created_at.desc(), m.CustomerAcceptanceRecord.id)
-            .limit(50)
-        ):
+        ))
+        for row in acceptance_rows[:50]:
+            attachments = [
+                {
+                    "id": attachment.id,
+                    "file_id": attachment.file_id,
+                    "role": attachment.role,
+                    "version": attachment.version,
+                    "title": attachment.title,
+                    "content_sha256": attachment.content_sha256,
+                    "filename": blob.filename,
+                    "media_type": blob.media_type,
+                    "size": blob.size,
+                }
+                for attachment, blob in db.execute(
+                    select(m.CustomerAcceptanceAttachment, m.FileObject)
+                    .join(m.FileObject, m.FileObject.id == m.CustomerAcceptanceAttachment.file_id)
+                    .where(
+                        m.CustomerAcceptanceAttachment.customer_acceptance_id == row.id
+                    )
+                    .order_by(
+                        m.CustomerAcceptanceAttachment.version,
+                        m.CustomerAcceptanceAttachment.id,
+                    )
+                )
+            ]
             acceptance_records.append(
                 {
                     "id": row.id,
                     "signature_id": row.signature_id,
+                    "previous_acceptance_id": row.previous_acceptance_id,
                     "acceptance_type": row.acceptance_type,
                     "result": row.result,
                     "accepted_date": row.accepted_date.isoformat(),
@@ -686,36 +856,264 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
                     "contract_change_required": row.contract_change_required,
                     "evidence": row.evidence,
                     "confirmed_by": row.confirmed_by,
+                    "attachments": attachments,
                 }
             )
 
     signed = [row for row in signatures if row["sign_status"] == "SIGNED"]
-    passed = [row for row in acceptance_records if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
-    failed = [row for row in acceptance_records if row["result"] == "FAILED"]
-    rechecks = [row for row in acceptance_records if row["acceptance_type"] == "RECHECK"]
-    recheck_passed = [row for row in rechecks if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
-    deductions = [row for row in acceptance_records if row["deduction_amount"] is not None]
+    acceptance_status = summarize_customer_acceptance(acceptance_rows)
     return {
         "signatures": signatures,
         "acceptance_records": acceptance_records,
+        "acceptance_record_count": len(acceptance_rows) if can_read_acceptance else None,
+        "acceptance_records_truncated": len(acceptance_rows) > len(acceptance_records) if can_read_acceptance else None,
         "visibility": {
             "signature_records_visible": True,
             "acceptance_records_visible": can_read_acceptance,
         },
         "derived_status": {
             "has_customer_signature": bool(signed),
-            "has_customer_acceptance": bool(passed),
-            "has_failed_customer_acceptance": bool(failed),
-            "has_recheck_record": bool(rechecks),
-            "has_recheck_passed": bool(recheck_passed),
-            "has_acceptance_deduction": bool(deductions),
-            "has_contract_change_required": any(row["contract_change_required"] for row in acceptance_records),
-            "schedule_impact_days_total": sum(int(row["schedule_impact_days"] or 0) for row in acceptance_records),
+            **acceptance_status,
         },
     }
 
 
-def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing, customer_delivery_acceptance):
+def _outbound_release_records(db, user, project_id, allowed_tools):
+    can_read = (
+        "query_project_closure_context" in allowed_tools
+        and access(db, user, "project_close.read", {"project_id": project_id}).allowed
+    )
+    if not can_read:
+        return {
+            "records": [],
+            "visibility": {"records_visible": False},
+            "derived_status": {
+                "has_outbound_release_evidence": None,
+                "has_outbound_self_inspection_passed": None,
+                "has_outbound_release_failure": None,
+            },
+        }
+    rows = list(
+        db.scalars(
+            select(m.OutboundReleaseRecord)
+            .where(m.OutboundReleaseRecord.project_id == project_id)
+            .order_by(
+                m.OutboundReleaseRecord.inspected_date.desc(),
+                m.OutboundReleaseRecord.created_at.desc(),
+                m.OutboundReleaseRecord.id,
+            )
+            .limit(100)
+        )
+    )
+    records = []
+    for row in rows:
+        attachments = [
+            {
+                "id": attachment.id,
+                "file_id": attachment.file_id,
+                "role": attachment.role,
+                "version": attachment.version,
+                "title": attachment.title,
+                "content_sha256": attachment.content_sha256,
+                "filename": blob.filename,
+                "media_type": blob.media_type,
+                "size": blob.size,
+            }
+            for attachment, blob in db.execute(
+                select(m.OutboundReleaseAttachment, m.FileObject)
+                .join(m.FileObject, m.FileObject.id == m.OutboundReleaseAttachment.file_id)
+                .where(m.OutboundReleaseAttachment.outbound_release_id == row.id)
+                .order_by(
+                    m.OutboundReleaseAttachment.version,
+                    m.OutboundReleaseAttachment.id,
+                )
+            )
+        ]
+        records.append({
+            "id": row.id,
+            "project_version": row.project_version,
+            "trial_request_id": row.trial_request_id,
+            "previous_record_id": row.previous_record_id,
+            "inspection_type": row.inspection_type,
+            "result": row.result,
+            "inspected_date": row.inspected_date.isoformat(),
+            "issue_description": row.issue_description,
+            "corrective_due_date": row.corrective_due_date.isoformat() if row.corrective_due_date else None,
+            "evidence": row.evidence,
+            "source_ref": row.source_ref,
+            "confirmed_by": row.confirmed_by,
+            "attachments": attachments,
+        })
+    latest = records[0] if records else None
+    latest_self = next((row for row in records if row["inspection_type"] == "SELF_INSPECTION"), None)
+    return {
+        "records": records,
+        "visibility": {"records_visible": True},
+        "derived_status": {
+            "has_outbound_release_evidence": bool(records),
+            "has_outbound_self_inspection_passed": bool(
+                latest_self and latest_self["result"] in {"PASSED", "CONDITIONALLY_PASSED"}
+            ),
+            "has_outbound_release_failure": bool(
+                latest and latest["result"] == "FAILED"
+            ),
+            "latest_record": latest,
+            "latest_self_inspection": latest_self,
+        },
+    }
+
+
+def _delivery_handoffs(
+    *,
+    release_status,
+    shipment_tracking,
+    stock_movements,
+    erp_product_shipments,
+    customer_status,
+    has_customer_acceptance,
+):
+    """Project the delivery responsibility boundaries without creating facts.
+
+    Each row is an evidence boundary between two independently confirmed
+    events.  A state such as READY or WAITING only says which next fact is
+    missing; it never upgrades an ERP shipment into a signature or acceptance.
+    """
+    totals = shipment_tracking["totals"]
+    has_local_shipment = bool(totals.get("supplier_shipments"))
+    has_local_outbound = any(
+        Decimal(str(row.get("quantity") or "0")) < 0 for row in stock_movements
+    )
+    has_erp_shipment = bool(erp_product_shipments)
+    has_shipment = has_local_shipment or has_local_outbound or has_erp_shipment
+    has_tracking = bool(
+        any(
+            str(row.get("tracking_no") or row.get("trackingNo") or "").strip()
+            for row in erp_product_shipments
+        )
+    )
+    release_visible = release_status.get("has_outbound_release_evidence") is not None
+    release_passed = release_status.get("has_outbound_self_inspection_passed")
+    release_failed = release_status.get("has_outbound_release_failure")
+    has_signature = bool(customer_status.get("has_customer_signature"))
+    unresolved_acceptance = bool(customer_status.get("has_unresolved_failure"))
+
+    if not release_visible:
+        release_to_shipment = {
+            "state": "UNAVAILABLE",
+            "reason": "出厂放行记录不可见，不能判断是否具备发运前置依据。",
+        }
+    elif release_failed or not release_passed:
+        release_to_shipment = {
+            "state": "BLOCKED",
+            "reason": "出厂自检/放行尚未形成合格依据，不能把出库或发货记录当作已放行。",
+        }
+    elif has_shipment:
+        release_to_shipment = {
+            "state": "CONNECTED",
+            "reason": "已形成出厂放行合格依据，并存在本地或 ERP 发运/出库事实。",
+        }
+    else:
+        release_to_shipment = {
+            "state": "READY",
+            "reason": "出厂放行已通过，等待出库或发运事实回执。",
+        }
+
+    if not has_shipment:
+        shipment_to_signature = {
+            "state": "BLOCKED",
+            "reason": "尚未见出库、供应商发货或 ERP 成品发货事实，不能进入客户签收核对。",
+        }
+    elif has_signature:
+        shipment_to_signature = {
+            "state": "CONNECTED",
+            "reason": "发运/出库事实已与客户签收记录形成可核对交接。",
+        }
+    elif has_erp_shipment and not has_tracking:
+        shipment_to_signature = {
+            "state": "WAITING",
+            "reason": "ERP 已有成品发货，但缺少物流单号或客户签收回执。",
+        }
+    else:
+        shipment_to_signature = {
+            "state": "READY",
+            "reason": "已见发运/出库事实，等待客户签收回执。",
+        }
+
+    if not has_signature:
+        signature_to_acceptance = {
+            "state": "BLOCKED",
+            "reason": "未见客户签收，不能进入客户质量验收结论。",
+        }
+    elif unresolved_acceptance:
+        signature_to_acceptance = {
+            "state": "NEEDS_ATTENTION",
+            "reason": "客户验收链存在未解决失败或关联冲突，需整改复验。",
+        }
+    elif has_customer_acceptance:
+        signature_to_acceptance = {
+            "state": "CONNECTED",
+            "reason": "客户签收已与客户质量验收通过或有条件通过依据关联。",
+        }
+    else:
+        signature_to_acceptance = {
+            "state": "READY",
+            "reason": "已见客户签收，等待客户质量验收结果。",
+        }
+
+    has_impact = bool(
+        customer_status.get("has_acceptance_deduction")
+        or customer_status.get("has_contract_change_required")
+        or customer_status.get("schedule_impact_days_total")
+    )
+    if not has_customer_acceptance:
+        acceptance_to_follow_up = {
+            "state": "BLOCKED",
+            "reason": "客户验收尚未形成通过依据，不能进入财务、合同或计划影响核对。",
+        }
+    elif has_impact:
+        acceptance_to_follow_up = {
+            "state": "READY",
+            "reason": "客户验收已形成结果，但存在扣款、合同变化或交期影响，需要交给对应责任线核对。",
+        }
+    else:
+        acceptance_to_follow_up = {
+            "state": "CONNECTED",
+            "reason": "客户验收结果未产生待处理扣款、合同变化或交期影响信号。",
+        }
+
+    return [
+        {
+            "key": "outbound_release_to_shipment",
+            "from": "outbound_release",
+            "to": "shipment",
+            **release_to_shipment,
+            "next_query_tool": "query_delivery_logistics_context",
+        },
+        {
+            "key": "shipment_to_customer_signature",
+            "from": "shipment",
+            "to": "customer_signature",
+            **shipment_to_signature,
+            "next_query_tool": "query_delivery_logistics_context",
+        },
+        {
+            "key": "customer_signature_to_acceptance",
+            "from": "customer_signature",
+            "to": "customer_acceptance",
+            **signature_to_acceptance,
+            "next_query_tool": "query_delivery_logistics_context",
+        },
+        {
+            "key": "customer_acceptance_to_follow_up",
+            "from": "customer_acceptance",
+            "to": "finance_contract_plan",
+            **acceptance_to_follow_up,
+            "next_query_tool": "query_finance_context" if has_impact else "query_project_completion_context",
+        },
+    ]
+
+
+def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing, customer_delivery_acceptance, outbound_release, erp_delivery_execution):
     totals = shipment_tracking["totals"]
     trial_passed = [row for row in trials if row.get("passed") is True]
     trial_failed = [row for row in trials if row.get("passed") is False]
@@ -724,7 +1122,52 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
     open_contacts = [row for row in contacts if row.get("collaboration_status") != "CLOSED"]
     stock_out = [row for row in stock_movements if Decimal(str(row.get("quantity") or "0")) < 0]
     customer_status = customer_delivery_acceptance["derived_status"]
-    has_customer_acceptance = bool(customer_acceptance_done) or customer_status["has_customer_acceptance"]
+    release_status = outbound_release["derived_status"]
+    has_customer_acceptance = (bool(customer_acceptance_done) or customer_status["has_customer_acceptance"]) and not customer_status["has_unresolved_failure"]
+    erp_records = (erp_delivery_execution or {}).get("records") or {}
+    erp_fulfillment_records = erp_records.get("fulfillment_records") or []
+    erp_product_shipments = erp_records.get("product_shipment_records") or []
+    erp_exception_records = erp_records.get("exception_records") or []
+    erp_quality_records = (
+        erp_records.get("quality_inspection_records")
+        or erp_records.get("quality_inspections")
+        or []
+    )
+    erp_quality_totals = erp_records.get("quality_totals") or {}
+    open_erp_exception_records = [
+        row for row in erp_exception_records
+        if str(row.get("status") or "").strip().lower() not in {"closed", "resolved", "done", "completed", "cancelled"}
+    ]
+    open_erp_quality_records = [
+        row for row in erp_quality_records
+        if str(row.get("status") or "").strip().lower() in {"pending", "inspecting"}
+    ]
+    failed_erp_quality_records = [
+        row for row in erp_quality_records
+        if (
+            str(row.get("result") or "").strip().lower() in {"unqualified", "partial"}
+            or str(row.get("status") or "").strip().lower() in {"partial", "reject_return"}
+        )
+    ]
+    delivery_handoffs = _delivery_handoffs(
+        release_status=release_status,
+        shipment_tracking=shipment_tracking,
+        stock_movements=stock_movements,
+        erp_product_shipments=erp_product_shipments,
+        customer_status=customer_status,
+        has_customer_acceptance=has_customer_acceptance,
+    )
+    has_erp_fulfillment = bool(erp_fulfillment_records)
+    has_erp_product_shipment = bool(erp_product_shipments)
+    erp_tracking_rows = [
+        row for row in erp_product_shipments
+        if str(row.get("tracking_no") or row.get("trackingNo") or "").strip()
+    ]
+    erp_pending_receipt_shipments = [
+        row for row in erp_product_shipments
+        if str(row.get("arrival_status") or "").strip().lower()
+        not in {"received", "completed", "confirmed", "done"}
+    ]
 
     gaps = []
     warnings = []
@@ -734,6 +1177,14 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         gaps.append("未见明确的交付、出库、发货、客户签收或验收计划节点。")
     if not totals.get("supplier_shipments"):
         gaps.append("未见当前可见正式订单的供应商发货记录；不能据此判断实物已交付。")
+    if has_erp_fulfillment and not totals.get("supplier_shipments"):
+        warnings.append("ERP 原系统已有履约记录，但 Agent 未见本地供应商发货明细；需按 ERP 原单据核对发货、物流和客户签收。")
+    if has_erp_product_shipment and not totals.get("supplier_shipments"):
+        warnings.append("ERP 原系统已有成品发货单；当前只作为出厂运输事实引用，仍需核对出库放行、物流单号、我方/客户收货和签收。")
+    if has_erp_product_shipment and not erp_tracking_rows:
+        warnings.append("ERP 原系统已有成品发货单但未见物流单号；不能把发货单存在当作运输已可追踪。")
+    if erp_pending_receipt_shipments:
+        warnings.append("ERP 原系统成品发货单仍有未确认到货状态；客户签收和验收不能由发货单自动推断。")
     if totals.get("supplier_shipments") and not totals.get("goods_receipts"):
         gaps.append("已有供应商发货记录，但未见仓库签收/收货回执。")
     if totals.get("goods_receipts") and not totals.get("receipt_inspections"):
@@ -744,6 +1195,10 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         warnings.append("存在试模未通过结果，不能进入出厂验收或客户验收结论。")
     if trial_passed:
         warnings.append("试模通过只代表试模结论，不等于客户签收、客户验收或项目关闭。")
+        if outbound_release["visibility"]["records_visible"] and not release_status["has_outbound_self_inspection_passed"]:
+            gaps.append("试模已通过，但未见 Agent 出厂自检/放行合格依据；不能据此推进出库发运。")
+    if release_status.get("has_outbound_release_failure"):
+        warnings.append("最新出厂自检/放行记录未通过，需完成整改并登记复验后再继续交付。")
     if stock_out:
         warnings.append("存在库存出库类移动记录；仍需核对对应发货物流单、客户签收和客户验收材料。")
     if open_contacts:
@@ -756,8 +1211,10 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         gaps.append("已有客户签收记录，但未见客户质量验收通过或有条件通过依据。")
     if not has_customer_acceptance:
         gaps.append("未见客户签收与客户质量验收分别确认的正式依据。")
-    if customer_status["has_failed_customer_acceptance"] and not customer_status["has_recheck_passed"]:
-        warnings.append("存在客户验收未通过记录，未见复验通过；需继续跟踪问题、责任、整改期限和复验结果。")
+    if customer_status["has_unresolved_failure"]:
+        warnings.append("当前客户验收未通过，尚未见对应验收链的后续复验通过；需继续跟踪问题、责任、整改期限和复验结果。")
+    if customer_status["unlinked_recheck_ids"]:
+        warnings.append("存在未关联前次验收的历史复验记录；未猜测其处理对象，不能据此消除其他验收失败。")
     if customer_status["has_acceptance_deduction"]:
         warnings.append("客户验收记录涉及费用扣款，需同步财务/合同/供应商结算依据。")
     if customer_status["has_contract_change_required"]:
@@ -773,6 +1230,12 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         warnings.append("存在有效物流报价，但尚未明确本项目本次结算价格；费用对账仍需按项目确认。")
     if pricing_status["has_open_price_review"]:
         warnings.append("存在未完成的物流报价审批，正式结算价格可能即将变化。")
+    if open_erp_exception_records:
+        warnings.append("ERP 原系统存在未关闭的交付履约异常；需在原系统责任流程中处理并保留可核对回执。")
+    if open_erp_quality_records:
+        warnings.append("ERP 原系统存在待检或检验中的质量任务；在形成合格结论前不能认定交付具备放行依据。")
+    if failed_erp_quality_records:
+        warnings.append("ERP 原系统存在不合格或部分合格质量任务；需在原系统完成整改、复检或放行处置后再继续交付。")
 
     return {
         "active_plan": (
@@ -793,6 +1256,12 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
         "delivery_quality_contacts": contacts,
         "logistics_pricing": logistics_pricing,
         "customer_delivery_acceptance": customer_delivery_acceptance,
+        "outbound_release": outbound_release,
+        "delivery_handoffs": delivery_handoffs,
+        "erp_delivery_execution": erp_delivery_execution,
+        "erp_product_shipments": erp_product_shipments[:200],
+        "erp_quality_inspections": erp_quality_records[:200],
+        "erp_quality_totals": erp_quality_totals,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -807,15 +1276,35 @@ def _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, 
             "has_stock_out_movement": bool(stock_out),
             "has_trial_passed": bool(trial_passed),
             "has_trial_failed": bool(trial_failed),
+            "has_outbound_release_evidence": release_status.get("has_outbound_release_evidence"),
+            "has_outbound_self_inspection_passed": release_status.get("has_outbound_self_inspection_passed"),
+            "has_outbound_release_failure": release_status.get("has_outbound_release_failure"),
             "has_customer_signature": customer_status["has_customer_signature"],
             "has_customer_acceptance": has_customer_acceptance,
             "has_failed_customer_acceptance": customer_status["has_failed_customer_acceptance"],
+            "has_unresolved_customer_acceptance_failure": customer_status["has_unresolved_failure"],
             "has_customer_recheck_passed": customer_status["has_recheck_passed"],
             "has_customer_acceptance_deduction": customer_status["has_acceptance_deduction"],
             "has_customer_acceptance_contract_change": customer_status["has_contract_change_required"],
-            "has_open_delivery_or_quality_issue": bool(open_contacts),
+            "has_open_delivery_or_quality_issue": bool(
+                open_contacts
+                or open_erp_exception_records
+                or open_erp_quality_records
+                or failed_erp_quality_records
+            ),
             "has_structured_logistics_price": pricing_status["has_effective_quote"],
             "has_project_logistics_settlement_price": pricing_status["has_project_settlement_price"],
+            "has_erp_fulfillment_record": has_erp_fulfillment,
+            "has_erp_product_shipment": has_erp_product_shipment,
+            "has_erp_tracking_no": bool(erp_tracking_rows),
+            "has_erp_pending_receipt": bool(erp_pending_receipt_shipments),
+            "has_erp_delivery_exception": bool(open_erp_exception_records),
+            "has_erp_quality_inspection": bool(erp_quality_records),
+            "has_erp_quality_open": bool(open_erp_quality_records),
+            "has_erp_quality_failure": bool(failed_erp_quality_records),
+            "delivery_handoff_states": {
+                row["key"]: row["state"] for row in delivery_handoffs
+            },
         },
     }
 
@@ -825,7 +1314,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
     limitations = [
         "只读取当前用户可见项目；订单、仓库、试模、结项和工程联络材料分别受对应工具与权限约束。",
         "本工具只核对交付、物流、质量、签收和验收上下文，不创建物流路线、不维护报价、不确认发货、不确认客户签收或验收。",
-        "采购发货、仓库收货、入库检验、试模通过、客户签收和客户验收是不同事实，不能相互替代。",
+        "采购发货、仓库收货、入库检验、试模通过、Agent 出厂放行、客户签收和客户验收是不同事实，不能相互替代。",
     ]
     if truncated:
         limitations.append("最多检查前500个可见项目，结果可能未覆盖全部可见范围。")
@@ -844,7 +1333,10 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         logistics_pricing = _logistics_pricing(db, project.id)
         customer_delivery_acceptance = _customer_delivery_acceptance(db, user, project.id, allowed_tools)
+        outbound_release = _outbound_release_records(db, user, project.id, allowed_tools)
         profile = _profile(db, user, project.id)
+        from domain_packs.mold.erp.design.erp_progress import query_project_delivery_execution
+        erp_delivery_execution = query_project_delivery_execution(db, user, project)
         skipped = []
         if not records["project_plan"] and not records["plan_change"]:
             skipped.append("项目计划/计划变更")
@@ -854,6 +1346,8 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             skipped.append("试模结果")
         if not customer_delivery_acceptance["visibility"]["acceptance_records_visible"]:
             skipped.append("客户验收/复验/扣款记录")
+        if not outbound_release["visibility"]["records_visible"]:
+            skipped.append("Agent 出厂自检/放行记录")
         if "query_project_closure_context" not in allowed_tools:
             skipped.append("项目结项/交付验收清单")
         if "query_contact_cases" not in allowed_tools:
@@ -869,7 +1363,21 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
                     "project_plans": _plan_headers(records)["project_plan"],
                     "plan_changes": _plan_headers(records)["plan_change"],
                     "purchase_orders": _order_headers(orders),
-                    "analysis": _analysis(project, profile, active_plan, delivery_tasks, shipment_tracking, stock_movements, trials, closure_items, contacts, logistics_pricing, customer_delivery_acceptance),
+                    "analysis": _analysis(
+                        project,
+                        profile,
+                        active_plan,
+                        delivery_tasks,
+                        shipment_tracking,
+                        stock_movements,
+                        trials,
+                        closure_items,
+                        contacts,
+                        logistics_pricing,
+                        customer_delivery_acceptance,
+                        outbound_release,
+                        erp_delivery_execution,
+                    ),
                 }
             ],
             "source": "agent_db",
@@ -1057,6 +1565,100 @@ def create_logistics_quote(db, user, data: LogisticsQuoteProposalInput):
     return row
 
 
+def preview_customer_delivery_signature(db, user, data: CustomerDeliverySignatureProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "project_close.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备客户签收", 409)
+    if project.status == "CLOSED":
+        raise DomainError("PROJECT_CLOSED", "项目已关闭，不能追加客户签收记录", 409)
+    route = None
+    if data.logistics_route_id:
+        route = db.get(m.LogisticsRoute, data.logistics_route_id)
+        if not route or not route.active:
+            raise DomainError("LOGISTICS_ROUTE_NOT_FOUND", "物流路线不存在或已停用", 404)
+        if route.project_id and route.project_id != project.id:
+            raise DomainError("LOGISTICS_ROUTE_PROJECT_MISMATCH", "物流路线不属于本次交付项目", 409)
+    duplicate = db.scalar(
+        select(m.CustomerDeliverySignature.id).where(
+            m.CustomerDeliverySignature.project_id == project.id,
+            m.CustomerDeliverySignature.shipment_reference == data.shipment_reference,
+            m.CustomerDeliverySignature.signed_date == data.signed_date,
+        )
+    )
+    if duplicate:
+        raise DomainError("CUSTOMER_SIGNATURE_DUPLICATE", "该项目的客户签收依据已经登记", 409)
+    display = {
+        "操作": "登记客户签收事实",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "客户签收日期": data.signed_date.isoformat(),
+        "签收或交付单号": data.shipment_reference,
+        "客户签收人": data.signer_name,
+        "物流路线": (
+            f"{route.route_code} · {route.origin} → {route.destination}"
+            if route
+            else "未关联 Agent 物流路线"
+        ),
+        "签收依据": data.evidence,
+        "说明": "本人确认后仅登记发运后的 Agent 客户签收事实；不写回 ERP、不代表质量验收通过、移模时间、回款或项目关闭。",
+    }
+    return project, route, display
+
+
+def create_customer_delivery_signature(db, user, data: CustomerDeliverySignatureProposalInput):
+    return create_customer_delivery_signature_with_context(db, user, data)
+
+
+def create_customer_delivery_signature_with_context(
+    db,
+    user,
+    data: CustomerDeliverySignatureProposalInput,
+    *,
+    run=None,
+    step_id=None,
+):
+    db.scalar(
+        select(m.Project)
+        .where(m.Project.id == data.project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    blobs = _acceptance_files(db, user, data.file_ids, run=run, step_id=step_id)
+    project, route, _ = preview_customer_delivery_signature(db, user, data)
+    row = m.CustomerDeliverySignature(
+        project_id=project.id,
+        logistics_route_id=route.id if route else None,
+        shipment_reference=data.shipment_reference,
+        signed_date=data.signed_date,
+        signer_name=data.signer_name,
+        sign_status="SIGNED",
+        move_type="DELIVERY",
+        evidence=data.evidence,
+        recorded_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    for version, blob in enumerate(blobs, start=1):
+        db.add(
+            m.CustomerDeliverySignatureAttachment(
+                signature_id=row.id,
+                file_id=blob.id,
+                role="SIGNATURE_EVIDENCE",
+                version=version,
+                title=blob.filename,
+                content_sha256=blob.sha256,
+                linked_by=user.id,
+            )
+        )
+    db.flush()
+    return row
+
+
 def preview_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput):
     project = db.get(m.Project, data.project_id)
     if not project:
@@ -1066,6 +1668,8 @@ def preview_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput)
     require(db, user, "project_close.execute", scope)
     if project.row_version != data.project_version:
         raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备客户验收", 409)
+    if project.status == 'CLOSED':
+        raise DomainError('PROJECT_CLOSED', '项目已关闭，不能直接追加验收；请按关闭后更正流程核对', 409)
 
     signature = None
     if data.signature_id:
@@ -1075,13 +1679,26 @@ def preview_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput)
         if signature.sign_status != "SIGNED":
             raise DomainError("SIGNATURE_NOT_CONFIRMED", "客户签收记录尚未确认，不能作为验收依据", 409)
 
+    previous = None
     if data.acceptance_type == "RECHECK":
-        failed = db.scalar(select(m.CustomerAcceptanceRecord.id).where(
-            m.CustomerAcceptanceRecord.project_id == project.id,
-            m.CustomerAcceptanceRecord.result == "FAILED",
-        ))
-        if not failed:
-            raise DomainError("RECHECK_WITHOUT_FAILURE", "没有已登记的客户验收未通过记录，不能直接登记复验")
+        previous = db.get(m.CustomerAcceptanceRecord, data.previous_acceptance_id) if data.previous_acceptance_id else None
+        if not previous or previous.project_id != project.id or previous.signature_id != data.signature_id:
+            raise DomainError("RECHECK_WITHOUT_FAILURE", "复验须明确引用同一项目及签收依据下的验收链当前记录")
+        if previous.accepted_date > data.accepted_date:
+            raise DomainError("DATE_INVALID", "复验日期不能早于所引用的验收记录")
+        if db.scalar(select(m.CustomerAcceptanceRecord.id).where(m.CustomerAcceptanceRecord.previous_acceptance_id == previous.id)):
+            raise DomainError("RECHECK_SOURCE_CHANGED", "所引用验收记录已有后续复验，请重新查询当前记录", 409)
+        current, seen, has_failure = previous, set(), False
+        while current:
+            if current.id in seen or current.project_id != project.id or current.signature_id != data.signature_id:
+                raise DomainError("ACCEPTANCE_CHAIN_INVALID", "验收链关联不一致，请先核对", 409)
+            seen.add(current.id)
+            has_failure |= current.result == 'FAILED'
+            current = db.get(m.CustomerAcceptanceRecord, current.previous_acceptance_id) if current.previous_acceptance_id else None
+        if not has_failure:
+            raise DomainError("RECHECK_WITHOUT_FAILURE", "所引用验收链没有未通过记录，不能登记整改复验")
+    elif data.previous_acceptance_id:
+        raise DomainError("INVALID_TOOL_INPUT", "初次验收不能引用前次验收；整改后核对请选择复验")
     duplicate = db.scalar(select(m.CustomerAcceptanceRecord.id).where(
         m.CustomerAcceptanceRecord.project_id == project.id,
         m.CustomerAcceptanceRecord.acceptance_type == data.acceptance_type,
@@ -1120,15 +1737,30 @@ def preview_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput)
         "验收依据": data.evidence,
         "说明": "本人确认后仅登记客户质量验收事实；不自动关闭项目、不自动扣款、不替代整改复验或合同变更审批。",
     }
+    if previous:
+        display['前次验收记录'] = previous.id
+        display['前次验收结果'] = previous.result
+        display['前次验收依据'] = previous.evidence
     return project, display
 
 
-def create_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput):
+def create_customer_acceptance(
+    db,
+    user,
+    data: CustomerAcceptanceProposalInput,
+    *,
+    run=None,
+    step_id=None,
+):
+    # Serialize confirmation with other rechecks and final project close.
+    db.scalar(select(m.Project).where(m.Project.id == data.project_id).with_for_update().execution_options(populate_existing=True))
+    blobs = _acceptance_files(db, user, data.file_ids, run=run, step_id=step_id)
     project, _ = preview_customer_acceptance(db, user, data)
     row = m.CustomerAcceptanceRecord(
         project_id=project.id,
         signature_id=data.signature_id,
         acceptance_type=data.acceptance_type,
+        previous_acceptance_id=data.previous_acceptance_id,
         result=data.result,
         accepted_date=data.accepted_date,
         issue_description=data.issue_description,
@@ -1144,6 +1776,188 @@ def create_customer_acceptance(db, user, data: CustomerAcceptanceProposalInput):
         confirmed_by=user.id,
     )
     db.add(row)
+    db.flush()
+    for version, blob in enumerate(blobs, start=1):
+        db.add(
+            m.CustomerAcceptanceAttachment(
+                customer_acceptance_id=row.id,
+                file_id=blob.id,
+                role="ACCEPTANCE_EVIDENCE",
+                version=version,
+                title=blob.filename,
+                content_sha256=blob.sha256,
+                linked_by=user.id,
+            )
+        )
+    db.flush()
+    return row
+
+
+def _resolve_release_trial(db, project, data):
+    if data.trial_request_id:
+        trial = db.get(m.BusinessSubject, data.trial_request_id)
+        if not trial or trial.project_id != project.id or trial.kind != "trial_request":
+            raise DomainError("TRIAL_NOT_FOUND", "指定试模记录不存在或不属于该项目", 404)
+        result = db.scalar(select(m.TrialResult).where(m.TrialResult.trial_id == trial.id))
+        if not result or result.passed is not True:
+            raise DomainError("TRIAL_PREREQUISITE", "指定试模记录尚未形成通过结果，不能登记出厂放行", 409)
+        return trial, result
+    candidates = list(
+        db.execute(
+            select(m.BusinessSubject, m.TrialResult)
+            .join(m.TrialResult, m.TrialResult.trial_id == m.BusinessSubject.id)
+            .where(
+                m.BusinessSubject.project_id == project.id,
+                m.BusinessSubject.kind == "trial_request",
+                m.TrialResult.passed.is_(True),
+            )
+            .order_by(m.TrialResult.actual_date.desc(), m.TrialResult.created_at.desc())
+            .limit(20)
+        )
+    )
+    if not candidates:
+        raise DomainError("TRIAL_PREREQUISITE", "未见试模通过结果，不能登记出厂放行", 409)
+    if len(candidates) > 1:
+        raise DomainError("TRIAL_SOURCE_REQUIRED", "项目存在多个试模通过结果，请明确引用试模记录", 409)
+    return candidates[0]
+
+
+def preview_outbound_release(db, user, data: OutboundReleaseProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id}
+    require(db, user, "project.read", scope)
+    require(db, user, "project_close.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备出厂自检/放行", 409)
+    if project.status == "CLOSED":
+        raise DomainError("PROJECT_CLOSED", "项目已关闭，不能追加出厂放行记录", 409)
+
+    trial, trial_result = _resolve_release_trial(db, project, data)
+    previous = None
+    if data.previous_record_id:
+        previous = db.get(m.OutboundReleaseRecord, data.previous_record_id)
+        if (
+            not previous
+            or previous.project_id != project.id
+            or previous.inspection_type != "SELF_INSPECTION"
+            or previous.result not in {"FAILED", "CONDITIONALLY_PASSED"}
+        ):
+            raise DomainError("RELEASE_RECHECK_INVALID", "整改复验必须引用本项目当前未闭环的出厂自检记录", 409)
+        if previous.inspected_date > data.inspected_date:
+            raise DomainError("DATE_INVALID", "整改复验日期不能早于前次出厂自检日期")
+        if db.scalar(select(m.OutboundReleaseRecord.id).where(
+            m.OutboundReleaseRecord.previous_record_id == previous.id
+        )):
+            raise DomainError("RELEASE_RECHECK_SOURCE_CHANGED", "所引用的出厂自检记录已有后续复验，请重新查询当前记录", 409)
+        if previous.trial_request_id and previous.trial_request_id != trial.id:
+            raise DomainError("RELEASE_TRIAL_MISMATCH", "整改复验必须继续引用同一试模记录", 409)
+    elif data.inspection_type == "SELF_INSPECTION":
+        # Any new self-inspection must close the current open failure through
+        # an explicit successor; otherwise a second sibling would hide it.
+        latest = db.scalar(
+            select(m.OutboundReleaseRecord)
+            .where(
+                m.OutboundReleaseRecord.project_id == project.id,
+                m.OutboundReleaseRecord.inspection_type == "SELF_INSPECTION",
+            )
+            .order_by(
+                m.OutboundReleaseRecord.inspected_date.desc(),
+                m.OutboundReleaseRecord.created_at.desc(),
+            )
+            .limit(1)
+        )
+        if latest and latest.result in {"FAILED", "CONDITIONALLY_PASSED"}:
+            raise DomainError("RELEASE_RECHECK_REQUIRED", "已有未闭环的出厂自检问题，必须引用前次记录登记整改复验", 409)
+
+    if data.inspection_type == "OUTBOUND_ACCEPTANCE":
+        has_self_pass = db.scalar(
+            select(m.OutboundReleaseRecord.id).where(
+                m.OutboundReleaseRecord.project_id == project.id,
+                m.OutboundReleaseRecord.inspection_type == "SELF_INSPECTION",
+                m.OutboundReleaseRecord.result.in_(("PASSED", "CONDITIONALLY_PASSED")),
+            )
+        )
+        if not has_self_pass:
+            raise DomainError("OUTBOUND_SELF_INSPECTION_REQUIRED", "出厂验收前必须先登记出厂自检合格或有条件通过依据", 409)
+
+    if db.scalar(select(m.OutboundReleaseRecord.id).where(
+        m.OutboundReleaseRecord.project_id == project.id,
+        m.OutboundReleaseRecord.source_ref == data.source_ref,
+    )):
+        raise DomainError("RELEASE_SOURCE_DUPLICATE", "该出厂自检/放行依据已经登记", 409)
+
+    display = {
+        "操作": "登记出厂自检/放行结果",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "检查类型": "出厂自检" if data.inspection_type == "SELF_INSPECTION" else "出厂验收",
+        "试模记录": trial.number,
+        "试模日期": trial_result.actual_date.isoformat(),
+        "检查结果": data.result,
+        "检查日期": data.inspected_date.isoformat(),
+        "问题描述": data.issue_description or "无",
+        "整改期限": data.corrective_due_date.isoformat() if data.corrective_due_date else "不适用",
+        "前次记录": previous.id if previous else "无",
+        "来源引用": data.source_ref,
+        "检查依据": data.evidence,
+        "说明": "本人确认后仅登记 Agent 出厂自检/放行事实；不写回 ERP、不自动出库、不自动发货或关闭项目。",
+    }
+    if previous:
+        display["前次结果"] = previous.result
+        display["前次依据"] = previous.evidence
+    return project, trial, display
+
+
+def create_outbound_release(db, user, data: OutboundReleaseProposalInput):
+    return create_outbound_release_with_context(db, user, data)
+
+
+def create_outbound_release_with_context(
+    db,
+    user,
+    data: OutboundReleaseProposalInput,
+    *,
+    run=None,
+    step_id=None,
+):
+    db.scalar(
+        select(m.Project)
+        .where(m.Project.id == data.project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    blobs = _acceptance_files(db, user, data.file_ids, run=run, step_id=step_id)
+    project, trial, _ = preview_outbound_release(db, user, data)
+    row = m.OutboundReleaseRecord(
+        project_id=project.id,
+        project_version=project.row_version,
+        trial_request_id=trial.id,
+        previous_record_id=data.previous_record_id,
+        inspection_type=data.inspection_type,
+        result=data.result,
+        inspected_date=data.inspected_date,
+        issue_description=data.issue_description,
+        corrective_due_date=data.corrective_due_date,
+        evidence=data.evidence,
+        source_ref=data.source_ref,
+        confirmed_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    for version, blob in enumerate(blobs, start=1):
+        db.add(
+            m.OutboundReleaseAttachment(
+                outbound_release_id=row.id,
+                file_id=blob.id,
+                role="RELEASE_EVIDENCE",
+                version=version,
+                title=blob.filename,
+                content_sha256=blob.sha256,
+                linked_by=user.id,
+            )
+        )
     db.flush()
     return row
 
@@ -1163,10 +1977,28 @@ def execute_delivery_logistics_tool(db, user, key, arguments, run=None):
         limitation = "仅准备物流报价或项目结算价格确认；本人确认后才登记生效价格，不执行发货、付款或财务对账。"
     elif key == "prepare_customer_acceptance":
         data = parse_customer_acceptance(arguments)
+        blobs = _acceptance_files(db, user, data.file_ids, run=run)
         _, display = preview_customer_acceptance(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="客户验收原件")
         kind = "customer_acceptance"
         action = "confirm_customer_acceptance"
         limitation = "仅准备客户质量验收登记建议；本人确认后才写入验收事实，不自动扣款、整改、改合同或关闭项目。"
+    elif key == "prepare_outbound_release":
+        data = parse_outbound_release(arguments)
+        blobs = _acceptance_files(db, user, data.file_ids, run=run)
+        _, _, display = preview_outbound_release(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="出厂放行原件")
+        kind = "outbound_release"
+        action = "confirm_outbound_release"
+        limitation = "仅准备出厂自检/放行事实登记建议；本人确认后才写入 Agent 证据，不写回 ERP、不自动出库或发货。"
+    elif key == "prepare_customer_delivery_signature":
+        data = parse_customer_delivery_signature(arguments)
+        blobs = _acceptance_files(db, user, data.file_ids, run=run)
+        _, _, display = preview_customer_delivery_signature(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="客户签收原件")
+        kind = "customer_delivery_signature"
+        action = "confirm_customer_delivery_signature"
+        limitation = "仅准备发运后的 Agent 客户签收事实登记建议；本人确认后才写入，不写回 ERP、不替代移模时间登记或客户质量验收。"
     else:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
     proposal = {
@@ -1214,7 +2046,19 @@ def validate_intent(db, user, payload):
         _, _, _, _, display = preview_logistics_quote(db, user, data)
     elif proposal.get("kind") == "customer_acceptance":
         data = parse_customer_acceptance(proposal["input"])
+        blobs = _acceptance_files(db, user, data.file_ids, step_id=payload["step_id"])
         _, display = preview_customer_acceptance(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="客户验收原件")
+    elif proposal.get("kind") == "outbound_release":
+        data = parse_outbound_release(proposal["input"])
+        blobs = _acceptance_files(db, user, data.file_ids, step_id=payload["step_id"])
+        _, _, display = preview_outbound_release(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="出厂放行原件")
+    elif proposal.get("kind") == "customer_delivery_signature":
+        data = parse_customer_delivery_signature(proposal["input"])
+        blobs = _acceptance_files(db, user, data.file_ids, step_id=payload["step_id"])
+        _, _, display = preview_customer_delivery_signature(db, user, data)
+        display = _acceptance_display_files(display, blobs, label="客户签收原件")
     else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
@@ -1233,11 +2077,27 @@ def confirm(db, user, payload):
             "status": "CONFIRMED",
         }
     if proposal["kind"] == "customer_acceptance":
-        row = create_customer_acceptance(db, user, data)
+        row = create_customer_acceptance(db, user, data, step_id=payload["step_id"])
         return {
             "project_id": row.project_id,
             "customer_acceptance_record_id": row.id,
             "action": "customer_acceptance",
+            "status": "CONFIRMED",
+        }
+    if proposal["kind"] == "outbound_release":
+        row = create_outbound_release_with_context(db, user, data, step_id=payload["step_id"])
+        return {
+            "project_id": row.project_id,
+            "outbound_release_record_id": row.id,
+            "action": "outbound_release",
+            "status": "CONFIRMED",
+        }
+    if proposal["kind"] == "customer_delivery_signature":
+        row = create_customer_delivery_signature_with_context(db, user, data, step_id=payload["step_id"])
+        return {
+            "project_id": row.project_id,
+            "customer_delivery_signature_id": row.id,
+            "action": "customer_delivery_signature",
             "status": "CONFIRMED",
         }
     row = create_logistics_quote(db, user, data)

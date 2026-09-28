@@ -6,9 +6,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_local_launcher_starts_document_worker():
     launcher = (ROOT / "一键启动.bat").read_text(encoding="utf-8")
+    detached = (ROOT / "scripts" / "start_services.ps1").read_text(encoding="utf-8")
 
-    assert "import app.document_worker" in launcher
-    assert '"%PYTHON_EXE%" -m app.document_worker' in launcher
+    # The launcher deliberately starts independent hidden processes instead of
+    # keeping service commands attached to visible cmd windows.
+    assert "start_services.ps1" in launcher
+    assert "-IncludeDocument" in launcher
+    assert "'-m', 'app.document_worker'" in detached
+    assert "-WindowStyle Hidden" in detached
+    assert "RedirectStandardError" in detached
 
 
 def test_sales_contract_skill_keeps_tool_choice_with_the_model():

@@ -1,0 +1,369 @@
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from domain_packs.mold import erp_adapter
+from domain_packs.mold.ports.errors import DomainError
+
+
+def test_outsource_execution_context_reads_registered_erp_facts_without_sensitive_fields(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path, dict(request.url.params)))
+        path = request.url.path
+        if path.endswith('/entrust/project/list'):
+            return httpx.Response(200, json={'code': 200, 'data': {'rows': [
+                {'id': 7, 'project_no': 'P-001', 'name': '整套委外', 'status': 'active', 'secret': 'hidden'},
+            ]}})
+        if path.endswith('/entrust/production/list'):
+            return httpx.Response(200, json={'code': 200, 'data': [{
+                'order_id': 11, 'order_no': 'EO-11', 'project_no': 'P-001', 'stage': 'producing',
+                'overall_pct': 40, 'parts': [], 'internal_cost': 'hidden',
+            }]})
+        if path.endswith('/entrust/fulfillment/orders'):
+            return httpx.Response(200, json={'code': 200, 'data': [
+                {'id': 11, 'order_no': 'EO-11', 'stage': 'shipping', 'project_name': '整套委外', 'secret': 'hidden'},
+                {'id': 99, 'order_no': 'EO-OTHER', 'stage': 'shipping'},
+            ]})
+        if path.endswith('/entrust/fulfillment/product-shipment/list'):
+            return httpx.Response(200, json={'code': 200, 'data': [{
+                'id': 21, 'order_id': 11, 'order_no': 'EO-11', 'shipment_no': 'PS-11',
+                'logistics_company': '顺达物流', 'tracking_no': 'TRACK-11',
+                'arrival_status': 'pending',
+                'lines': [{
+                    'id': 31, 'part_no': 'P-1', 'mold_no': 'M-001',
+                    'receipt_status': 'pending', 'private': 'hidden',
+                }],
+                'qr_token': 'hidden',
+            }]})
+        if path.endswith('/entrust/exception/list'):
+            return httpx.Response(200, json={'code': 200, 'data': {'rows': [
+                {'id': 5, 'order_id': 11, 'order_no': 'EO-11', 'status': 'open', 'description': '待处理', 'token': 'hidden'},
+            ]}})
+        return httpx.Response(404, json={'code': 404})
+
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        result = client.outsource_execution_context(mold_no='M-001', project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals'] == {
+        'projects': 1, 'production_orders': 1, 'fulfillment_orders': 1,
+        'product_shipments': 1, 'exceptions': 1,
+    }
+    assert result['production_records'][0]['source_ref'] == 'entrust/production/list:11'
+    assert result['fulfillment_records'][0]['order_no'] == 'EO-11'
+    assert result['product_shipment_records'][0]['shipment_no'] == 'PS-11'
+    assert result['product_shipment_records'][0]['tracking_no'] == 'TRACK-11'
+    assert result['product_shipment_records'][0]['lines'][0]['part_no'] == 'P-1'
+    assert result['exception_records'][0]['status'] == 'open'
+    assert 'secret' not in str(result)
+    assert 'internal_cost' not in str(result)
+    assert 'qr_token' not in str(result)
+    assert 'private' not in str(result)
+    assert [path for _, path, _ in calls] == [
+        '/entrust/project/list', '/entrust/production/list', '/entrust/fulfillment/orders',
+        '/entrust/fulfillment/product-shipment/list', '/entrust/exception/list',
+    ]
+
+
+def test_business_molds_reads_unwrapped_project_mold_candidates_without_sensitive_fields(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.url.path, dict(request.url.params)))
+        return httpx.Response(200, json={'molds': [
+            {'project_code': 'P-001', 'mold_code': 'M-001', 'overall_progress': 40,
+             'private': 'hidden'},
+            {'project_code': 'P-OTHER', 'mold_code': 'M-OTHER'},
+        ]})
+
+    client = erp_adapter.ERPClient(
+        token='erp-token',
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = client.business_molds(project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals'] == {'molds': 2}
+    assert result['records'][0]['project_code'] == 'P-001'
+    assert result['records'][0]['source_ref'].endswith(':P-001:M-001')
+    assert 'private' not in str(result)
+    assert calls == [('/scheduling/api/business/molds/', {'project': 'P-001', 'mold': ''})]
+
+
+def test_manufacturing_execution_context_accepts_unwrapped_scheduling_read_payloads(monkeypatch):
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+    def handler(request: httpx.Request):
+        if request.url.path.endswith('/scheduling/api/manufacturing-orders/'):
+            return httpx.Response(200, json={'rows': [{
+                'reference': 'MO-1', 'project_id': 'P-001', 'operation_id': '装配',
+                'status': 'running', 'quantity_completed': 2, 'secret': 'hidden',
+            }]})
+        if request.url.path.endswith('/scheduling/api/work-reports/'):
+            return httpx.Response(200, json={'success': True, 'rows': [{
+                'id': 3, 'order_ref': 'MO-1', 'operation_name': '装配',
+                'work_hours': 4, 'worker_name': '张三', 'private': 'hidden',
+            }]})
+        if request.url.path.endswith('/scheduling/api/work-order-reports/'):
+            return httpx.Response(200, json={'success': True, 'rows': [{
+                'id': 4, 'order_no': 'MO-1', 'report_type': 'FINISH',
+                'progress': 100, 'private': 'hidden',
+            }]})
+        if request.url.path.endswith('/quality/inspection/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{
+                'id': 5, 'inspectionNo': 'QC-1', 'moldNo': 'M-1', 'projectNo': 'P-001',
+                'status': 'completed', 'result': 'qualified',
+                'details': [{'id': 6, 'materialNo': 'P-1', 'token': 'hidden'}],
+            }]})
+        return httpx.Response(404, json={'detail': 'not found'})
+
+    client = erp_adapter.ERPClient(
+        token='erp-token',
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = client.manufacturing_execution_context(project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals'] == {
+        'manufacturing_orders': 1, 'work_reports': 1, 'work_order_reports': 1,
+        'quality_inspections': 1,
+    }
+    assert result['manufacturing_orders'][0]['source_ref'] == 'scheduling/api/manufacturing-orders/:MO-1'
+    assert result['work_reports'][0]['work_hours'] == 4
+    assert result['quality_inspections'][0]['inspectionNo'] == 'QC-1'
+    assert result['quality_inspections'][0]['details'][0]['materialNo'] == 'P-1'
+    assert 'secret' not in str(result)
+    assert 'private' not in str(result)
+    assert 'token' not in str(result)
+
+
+def test_quality_permission_gap_does_not_hide_manufacturing_facts(monkeypatch):
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith('/scheduling/api/manufacturing-orders/'):
+            return httpx.Response(200, json={'rows': [{'reference': 'MO-1', 'project_id': 'P-001'}]})
+        if request.url.path.endswith('/scheduling/api/work-reports/'):
+            return httpx.Response(200, json={'rows': []})
+        if request.url.path.endswith('/scheduling/api/work-order-reports/'):
+            return httpx.Response(200, json={'rows': []})
+        if request.url.path.endswith('/quality/inspection/list'):
+            return httpx.Response(403, json={'code': 403})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        result = client.manufacturing_execution_context(project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals']['manufacturing_orders'] == 1
+    assert result['totals']['quality_inspections'] == 0
+    assert result['quality_status'] == 'ERP_FORBIDDEN'
+    assert '质检查询未完成' in ''.join(result['limitations'])
+
+
+def test_contract_finance_context_reads_payment_plans_and_records_by_contract_number(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append(request.url.path)
+        path = request.url.path
+        if path.endswith('/system/contract/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{
+                'id': 31, 'contractNo': 'SC-001', 'contractName': '销售合同',
+                'contractAmount': '1000.00', 'secret': 'hidden',
+            }]})
+        if path.endswith('/system/contract/paymentPlan/list/31'):
+            return httpx.Response(200, json={'code': 200, 'data': [{
+                'id': 41, 'contractId': 31, 'contractNo': 'SC-001',
+                'paymentStage': '验收款', 'paymentAmount': '300.00',
+                'private': 'hidden',
+            }]})
+        if path.endswith('/system/contract/paymentRecord/list/31'):
+            return httpx.Response(200, json={'code': 200, 'data': [{
+                'id': 51, 'paymentNo': 'PAY-001', 'contractId': 31,
+                'contractNo': 'SC-001', 'paymentAmount': '300.00',
+                'paymentDate': '2026-09-23', 'token': 'hidden',
+                'invoiceStatus': '已开票', 'invoiceNo': 'INV-001',
+            }]})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(
+        token='erp-token',
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = client.contract_finance_context(['SC-001', 'MISSING'])
+    finally:
+        client.close()
+
+    assert result['totals'] == {'contracts': 1, 'payment_plans': 1, 'payment_records': 1}
+    assert result['contract_records'][0]['source_ref'] == 'system/contract/list:31'
+    assert result['payment_plan_records'][0]['paymentStage'] == '验收款'
+    assert result['payment_records'][0]['paymentNo'] == 'PAY-001'
+    assert result['payment_records'][0]['invoiceStatus'] == '已开票'
+    assert result['payment_records'][0]['invoiceNo'] == 'INV-001'
+    assert 'secret' not in str(result)
+    assert 'private' not in str(result)
+    assert 'token' not in str(result)
+    assert calls == [
+        '/system/contract/list',
+        '/system/contract/list',
+        '/system/contract/paymentPlan/list/31',
+        '/system/contract/paymentRecord/list/31',
+    ]
+
+
+def test_procurement_execution_context_reads_project_scoped_erp_facts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append(request.url.path)
+        path = request.url.path
+        if path.endswith('/purchase/order/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 61, 'orderNo': 'PO-1', 'projectNo': 'P-001', 'moldNo': 'M-1',
+                 'status': 3, 'pendingDeliveryQuantity': 2, 'private': 'hidden'},
+                {'id': 62, 'orderNo': 'PO-OTHER', 'projectNo': 'P-OTHER', 'moldNo': 'M-X'},
+            ]})
+        if path.endswith('/purchase/supplier-delivery/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 71, 'deliveryNo': 'SD-1', 'purchaseOrderNo': 'PO-1',
+                 'moldNo': 'M-1', 'deliveryQty': 2, 'secret': 'hidden'},
+                {'id': 72, 'deliveryNo': 'SD-X', 'purchaseOrderNo': 'PO-OTHER', 'moldNo': 'M-X'},
+            ]})
+        if path.endswith('/material/inbound/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 81, 'inboundNo': 'IN-1', 'orderNo': 'PO-1', 'moldNo': 'M-1',
+                 'inspectResult': 1, 'token': 'hidden'},
+                {'id': 82, 'inboundNo': 'IN-X', 'orderNo': 'PO-OTHER', 'moldNo': 'M-X'},
+            ]})
+        if path.endswith('/material/stock-flow/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 91, 'flowNo': 'SF-1', 'orderNo': 'PO-1', 'moldNo': 'M-1',
+                 'quantity': -2, 'private': 'hidden'},
+                {'id': 92, 'flowNo': 'SF-X', 'orderNo': 'PO-OTHER', 'moldNo': 'M-X'},
+            ]})
+        if path.endswith('/quality/inspection/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 101, 'inspectionNo': 'QC-1', 'inboundNo': 'IN-1',
+                 'moldNo': 'M-1', 'status': 'completed', 'result': 'qualified'},
+                {'id': 102, 'inspectionNo': 'QC-X', 'inboundNo': 'IN-X',
+                 'moldNo': 'M-X', 'status': 'completed', 'result': 'qualified'},
+            ]})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        result = client.procurement_execution_context(mold_no='M-1', project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals'] == {
+        'purchase_orders': 1, 'supplier_deliveries': 1, 'inbounds': 1, 'stock_flows': 1,
+        'quality_inspections': 1,
+    }
+    assert result['purchase_order_records'][0]['orderNo'] == 'PO-1'
+    assert result['supplier_delivery_records'][0]['source_ref'].endswith(':71')
+    assert result['supplier_delivery_records'][0]['deliveryNo'] == 'SD-1'
+    assert result['inbound_records'][0]['inboundNo'] == 'IN-1'
+    assert result['stock_flow_records'][0]['quantity'] == -2
+    assert result['quality_inspection_records'][0]['inspectionNo'] == 'QC-1'
+    assert 'private' not in str(result)
+    assert 'secret' not in str(result)
+    assert 'token' not in str(result)
+    assert calls == [
+        '/purchase/order/list',
+        '/purchase/supplier-delivery/list',
+        '/material/inbound/list',
+        '/material/stock-flow/list',
+        '/quality/inspection/list',
+    ]
+
+
+def test_plan_progress_rejects_success_payload_without_data_instead_of_raising_keyerror(monkeypatch):
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={'code': 200, 'msg': '暂无项目节点'})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(DomainError) as error:
+            client.project_nodes(mold_no='M-001', project_no='P-001')
+    finally:
+        client.close()
+
+    assert error.value.code == 'ERP_PROTOCOL_ERROR'
+    assert '缺少 data' in error.value.message
+
+
+def test_plan_progress_uses_project_id_endpoint_and_accepts_erp_rows_envelopes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.url.path, dict(request.url.params)))
+        if request.url.path.endswith('/system/project/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 22, 'projectNo': 'P-001', 'projectName': '模具项目'},
+            ]})
+        if request.url.path.endswith('/system/projectNode/project/22'):
+            return httpx.Response(200, json={'code': 200, 'rows': [
+                {'id': 127, 'projectId': 22, 'nodeCode': 'DESIGN', 'nodeName': '设计', 'status': 0},
+            ]})
+        if request.url.path.endswith('/system/productionSchedule/list'):
+            return httpx.Response(200, json={'code': 200, 'rows': []})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        result = client.plan_execution_progress(project_no='P-001')
+    finally:
+        client.close()
+
+    assert result['totals'] == {'project_nodes': 1, 'production_schedules': 0}
+    assert result['project_nodes'][0]['nodeName'] == '设计'
+    assert calls == [
+        ('/system/project/list', {'projectNo': 'P-001', 'pageNum': '1', 'pageSize': '50'}),
+        ('/system/projectNode/project/22', {}),
+        ('/system/productionSchedule/list', {'projectNo': 'P-001'}),
+    ]

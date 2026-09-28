@@ -17,6 +17,21 @@ depends_on = None
 JSON_TYPE = sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
 
 
+def _has_column(table: str, column: str) -> bool:
+    return bool(op.get_bind().execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = :table "
+        "AND column_name = :column"
+    ), {"table": table, "column": column}).first())
+
+
+def _has_constraint(table: str, name: str) -> bool:
+    return bool(op.get_bind().execute(sa.text(
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conrelid = to_regclass(current_schema() || '.' || :table) AND conname = :name"
+    ), {"table": table, "name": name}).first())
+
+
 def _identity_columns():
     return (
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -25,16 +40,29 @@ def _identity_columns():
 
 
 def upgrade():
-    op.add_column("contract_detail", sa.Column("signed_date", sa.Date(), nullable=True))
-    op.add_column("contract_detail", sa.Column("external_order_number", sa.String(length=120), nullable=True))
-    op.add_column("payment_stage", sa.Column("sequence", sa.Integer(), nullable=False, server_default="1"))
-    op.add_column("payment_stage", sa.Column("ratio", sa.Numeric(precision=9, scale=6), nullable=True))
-    op.add_column("payment_stage", sa.Column("term_days", sa.Integer(), nullable=True))
-    op.create_check_constraint("payment_stage_sequence", "payment_stage", "sequence >= 1")
-    op.drop_constraint("payment_stage_amount_check", "payment_stage", type_="check")
-    op.create_check_constraint("payment_stage_amount_positive", "payment_stage", "amount > 0")
-    op.create_check_constraint("payment_stage_ratio", "payment_stage", "ratio IS NULL OR (ratio > 0 AND ratio <= 1)")
-    op.create_check_constraint("payment_stage_term_days", "payment_stage", "term_days IS NULL OR term_days >= 0")
+    # The split baseline already owns contract_detail.signed_date.  Keep this
+    # migration safe for both fresh and legacy schemas instead of attempting a
+    # duplicate ALTER TABLE.
+    if not _has_column("contract_detail", "signed_date"):
+        op.add_column("contract_detail", sa.Column("signed_date", sa.Date(), nullable=True))
+    if not _has_column("contract_detail", "external_order_number"):
+        op.add_column("contract_detail", sa.Column("external_order_number", sa.String(length=120), nullable=True))
+    if not _has_column("payment_stage", "sequence"):
+        op.add_column("payment_stage", sa.Column("sequence", sa.Integer(), nullable=False, server_default="1"))
+    if not _has_column("payment_stage", "ratio"):
+        op.add_column("payment_stage", sa.Column("ratio", sa.Numeric(precision=9, scale=6), nullable=True))
+    if not _has_column("payment_stage", "term_days"):
+        op.add_column("payment_stage", sa.Column("term_days", sa.Integer(), nullable=True))
+    if not _has_constraint("payment_stage", "payment_stage_sequence"):
+        op.create_check_constraint("payment_stage_sequence", "payment_stage", "sequence >= 1")
+    if _has_constraint("payment_stage", "payment_stage_amount_check"):
+        op.drop_constraint("payment_stage_amount_check", "payment_stage", type_="check")
+    if not _has_constraint("payment_stage", "payment_stage_amount_positive"):
+        op.create_check_constraint("payment_stage_amount_positive", "payment_stage", "amount > 0")
+    if not _has_constraint("payment_stage", "payment_stage_ratio"):
+        op.create_check_constraint("payment_stage_ratio", "payment_stage", "ratio IS NULL OR (ratio > 0 AND ratio <= 1)")
+    if not _has_constraint("payment_stage", "payment_stage_term_days"):
+        op.create_check_constraint("payment_stage_term_days", "payment_stage", "term_days IS NULL OR term_days >= 0")
 
     op.create_table(
         "document_intake",
@@ -248,19 +276,24 @@ def upgrade():
     op.create_index("ix_contract_intake_mold_match_group_id", "contract_intake_mold_match", ["group_id"])
     op.create_index("ix_contract_intake_mold_match_mold_id", "contract_intake_mold_match", ["mold_id"])
 
-    op.add_column("contract_attachment", sa.Column("intake_file_id", sa.String(length=36), nullable=True))
-    op.add_column("contract_attachment", sa.Column("role", sa.String(length=30), nullable=True))
-    op.create_foreign_key(
-        "fk_contract_attachment_intake_file",
-        "contract_attachment", "document_intake_file", ["intake_file_id"], ["id"],
-    )
-    op.create_unique_constraint(
-        "uq_contract_attachment_intake_file", "contract_attachment", ["intake_file_id"],
-    )
-    op.create_check_constraint(
-        "contract_attachment_intake_role", "contract_attachment",
-        "role IS NULL OR role IN ('MAIN','ATTACHMENT','STAMP_PAGE','PAYMENT_TERMS','OTHER')",
-    )
+    if not _has_column("contract_attachment", "intake_file_id"):
+        op.add_column("contract_attachment", sa.Column("intake_file_id", sa.String(length=36), nullable=True))
+    if not _has_column("contract_attachment", "role"):
+        op.add_column("contract_attachment", sa.Column("role", sa.String(length=30), nullable=True))
+    if not _has_constraint("contract_attachment", "fk_contract_attachment_intake_file"):
+        op.create_foreign_key(
+            "fk_contract_attachment_intake_file",
+            "contract_attachment", "document_intake_file", ["intake_file_id"], ["id"],
+        )
+    if not _has_constraint("contract_attachment", "uq_contract_attachment_intake_file"):
+        op.create_unique_constraint(
+            "uq_contract_attachment_intake_file", "contract_attachment", ["intake_file_id"],
+        )
+    if not _has_constraint("contract_attachment", "contract_attachment_intake_role"):
+        op.create_check_constraint(
+            "contract_attachment_intake_role", "contract_attachment",
+            "role IS NULL OR role IN ('MAIN','ATTACHMENT','STAMP_PAGE','PAYMENT_TERMS','OTHER')",
+        )
 
     op.create_table(
         "contract_mold_line",
@@ -348,5 +381,5 @@ def downgrade():
     op.drop_column("payment_stage", "term_days")
     op.drop_column("payment_stage", "ratio")
     op.drop_column("payment_stage", "sequence")
-    op.drop_column("contract_detail", "external_order_number")
-    op.drop_column("contract_detail", "signed_date")
+    if _has_column("contract_detail", "external_order_number"):
+        op.drop_column("contract_detail", "external_order_number")

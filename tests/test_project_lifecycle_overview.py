@@ -81,15 +81,30 @@ def baseline(db, project_row, creator):
     db.add(subject)
     db.flush()
     db.add(m.PlanDetail(subject_id=subject.id, reason="全生命周期测试基线"))
-    db.add(m.PlanTask(
-        plan_id=subject.id,
-        key="design",
-        name="结构设计",
-        owner_user_id=creator.id,
-        planned_start=date.today(),
-        planned_end=date.today() + timedelta(days=3),
-        status="PLANNED",
-    ))
+    names = [
+        ("design", "结构设计及出图"),
+        ("purchase", "五金采购"),
+        ("machining", "工序加工"),
+        ("assembly", "装配"),
+        ("trial", "试模"),
+        ("delivery", "最终交付"),
+    ]
+    previous = None
+    for index, (key, name) in enumerate(names):
+        row = m.PlanTask(
+            plan_id=subject.id,
+            key=key,
+            name=name,
+            owner_user_id=creator.id,
+            planned_start=date.today() + timedelta(days=index * 3),
+            planned_end=date.today() + timedelta(days=index * 3 + 2),
+            status="PLANNED",
+        )
+        db.add(row)
+        db.flush()
+        if previous:
+            db.add(m.TaskDependency(task_id=row.id, prerequisite_id=previous.id))
+        previous = row
     return subject
 
 
@@ -121,6 +136,7 @@ def test_lifecycle_schema_skill_and_fresh_project_use_one_hierarchical_coordinat
             "query_project_control_context",
         }
         assert "项目全生命周期" in skill["auto_activation_queries"]
+        assert "全生命周期" in skill["auto_activation_queries"]
         assert skill["suppress_tool_search_on_auto_activation"] is True
 
         with Session() as db:
@@ -136,11 +152,24 @@ def test_lifecycle_schema_skill_and_fresh_project_use_one_hierarchical_coordinat
             result = execute(db, admin, "query_project_lifecycle_context", {"identifier": "LIFECYCLE-FRESH"})
             data = lifecycle(result)
             assert result["resolution"] == "RESOLVED"
+            assert result["scope_boundary"]["complete"] is True
+            assert result["scope_boundary"]["scope_key"] == "project_lifecycle"
+            assert "prepare_quotation_version" in result["scope_boundary"]["write_tools"]
+            assert "prepare_internal_start" in result["scope_boundary"]["write_tools"]
+            assert "prepare_project_plan_baseline" in result["scope_boundary"]["write_tools"]
+            assert "prepare_project_normal_close" not in result["scope_boundary"]["write_tools"]
+            assert result["model_context"]["project"]["code"] == "LIFECYCLE-FRESH"
+            assert result["model_context"]["project_lifecycle"]["current_segment"]["key"] == "kickoff"
             assert data["kind"] == "project_lifecycle_overview_v1"
             assert [row["key"] for row in data["segments"]] == ["kickoff", "execution", "completion"]
             assert data["current_segment"]["key"] == "kickoff"
             assert data["current_segment"]["focus"]["key"] == "quotation"
             assert data["recommended_next_steps"][0]["tool"] == "query_project_kickoff_context"
+            chain = {row["key"]: row for row in data["business_chain"]}
+            assert chain["kickoff_to_execution"]["state"] == "WAITING"
+            assert chain["kickoff_to_execution"]["next_query_tool"] == "query_project_execution_context"
+            assert chain["execution_to_completion"]["state"] == "WAITING"
+            assert chain["completion_to_close"]["state"] == "WAITING"
     finally:
         engine.dispose()
 
@@ -161,12 +190,53 @@ def test_lifecycle_enters_execution_after_core_kickoff_without_hiding_parallel_c
             data = lifecycle(result)
             by_key = segments(result)
             assert data["current_segment"]["key"] == "execution"
+            assert "prepare_project_plan_change" in result["scope_boundary"]["write_tools"]
+            assert "prepare_internal_start" not in result["scope_boundary"]["write_tools"]
+            assert "prepare_project_normal_close" not in result["scope_boundary"]["write_tools"]
             assert data["recommended_next_steps"][0]["tool"] == "query_project_execution_context"
             assert by_key["kickoff"]["state"] == "COMPLETED"
             assert by_key["kickoff"]["progress"]["completed_count"] == 3
             assert by_key["kickoff"]["progress"]["stage_count"] == 6
             assert by_key["kickoff"]["progress"]["not_applicable_count"] == 2
             assert by_key["execution"]["focus"]["key"] == "design_route"
+            chain = {row["key"]: row for row in data["business_chain"]}
+            assert chain["kickoff_to_execution"]["state"] == "CONNECTED"
+            assert chain["execution_to_completion"]["state"] == "WAITING"
+            assert chain["completion_to_close"]["state"] == "WAITING"
+    finally:
+        engine.dispose()
+
+
+def test_active_project_stays_in_kickoff_until_baseline_handoff_is_complete():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            project_row = project(db, "LIFECYCLE-ACTIVE-NO-BASELINE", "ACTIVE")
+            acceptance = decision(
+                db, project_row, admin, "quote_acceptance", "QA-NO-BASELINE", "ACCEPT"
+            )
+            decision(
+                db, project_row, admin, "internal_start", "START-NO-BASELINE", "START", acceptance.id
+            )
+
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            result = execute(
+                db,
+                admin,
+                "query_project_lifecycle_context",
+                {"identifier": "LIFECYCLE-ACTIVE-NO-BASELINE"},
+            )
+            data = lifecycle(result)
+            by_segment = segments(result)
+            assert data["current_segment"]["key"] == "kickoff"
+            assert data["current_segment"]["focus"]["key"] == "project_plan"
+            assert by_segment["kickoff"]["phase"] == "PLAN_APPROVAL"
+            assert by_segment["kickoff"]["state"] != "COMPLETED"
+            assert data["recommended_next_steps"][0]["tool"] == "query_project_kickoff_context"
+            assert by_segment["execution"]["focus"]["key"] == "baseline_plan"
+            assert "prepare_project_plan_change" in result["scope_boundary"]["write_tools"]
     finally:
         engine.dispose()
 
@@ -188,7 +258,7 @@ def test_lifecycle_paused_project_routes_to_project_control_before_normal_execut
         engine.dispose()
 
 
-def test_lifecycle_marks_active_project_with_missing_kickoff_evidence_as_consistency_gap():
+def test_lifecycle_routes_active_project_with_missing_kickoff_evidence_back_to_kickoff():
     engine, Session = factory()
     try:
         with Session.begin() as db:
@@ -198,7 +268,8 @@ def test_lifecycle_marks_active_project_with_missing_kickoff_evidence_as_consist
             admin = db.query(m.User).filter_by(username="admin").one()
             result = execute(db, admin, "query_project_lifecycle_context", {"identifier": "LIFECYCLE-CONFLICT"})
             data = lifecycle(result)
-            assert data["current_segment"]["key"] == "execution"
+            assert data["current_segment"]["key"] == "kickoff"
+            assert data["current_segment"]["focus"]["key"] == "quotation"
             assert any("启动链路尚未证明" in item for item in data["consistency_warnings"])
             assert segments(result)["kickoff"]["state"] != "COMPLETED"
     finally:
@@ -230,6 +301,12 @@ def test_lifecycle_keeps_unassigned_segment_capabilities_unread_and_secret_facts
             operator = db.query(m.User).filter_by(username="operator").one()
             result = execute(db, operator, "query_project_lifecycle_context", {"identifier": "LIFECYCLE-LIMITED"})
             data = lifecycle(result)
+            assert result["scope_boundary"] == {
+                "complete": True,
+                "scope_key": "project_lifecycle",
+                "write_tools": [],
+            }
+            assert result["model_context"]["project_lifecycle"]["current_segment"]["key"] == "kickoff"
             assert {row["state"] for row in data["segments"]} == {"UNAVAILABLE"}
             assert data["current_segment"]["key"] == "kickoff"
             assert data["recommended_next_steps"] == []

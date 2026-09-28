@@ -11,6 +11,7 @@ from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.security import current_user
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.erp.core.contracts import ProjectPlanContextInput, match_strength as _strength
+from domain_packs.mold.config import settings as mold_settings
 
 class PlanChangeProposalInput(StrictModel):
     project_id: str = Field(min_length=1, max_length=36)
@@ -32,6 +33,13 @@ class PlanBaselineProposalInput(StrictModel):
     workflow_definition_id: str = Field(min_length=1, max_length=36)
     material_review_id: str | None = Field(default=None, min_length=1, max_length=36,
         description='当审批流程绑定资料模板时，填写本人已确认的资料核对包 ID；无资料模板流程保持 null。')
+
+
+class PlanDraftProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4000)
+    tasks: list[s.TaskInput] = Field(min_length=1, max_length=200)
 
 
 class PlanDepartmentConfirmationProposalInput(StrictModel):
@@ -126,6 +134,51 @@ def _profile(db,user,project_id):
         'execution_mode':profile.execution_mode,'settlement_status':profile.settlement_status},fields | {'customer_due_date','execution_mode','settlement_status'})
 
 
+def _effective_formal_start(db, project_id):
+    """Return the latest valid formal-start subject, if one is actually effective.
+
+    Project.status is only a coarse projection and can be ACTIVE for imported or
+    legacy records.  Workflow choices must therefore use the same protected
+    evidence as baseline-plan preparation instead of exposing a submit path that
+    will inevitably fail at preview time.
+    """
+    subject = db.scalar(select(m.BusinessSubject).where(
+        m.BusinessSubject.project_id == project_id,
+        m.BusinessSubject.kind == 'internal_start',
+        m.BusinessSubject.status == 'EFFECTIVE',
+    ).order_by(m.BusinessSubject.created_at.desc(), m.BusinessSubject.id).limit(1))
+    if not subject:
+        return None
+    detail = db.get(m.BusinessDecisionDetail, subject.id)
+    return subject if detail and detail.decision == 'START' else None
+
+
+def _erp_mapping_gate(db, user, project_id):
+    """Require a confirmed Agent-side ERP mapping when ERP execution is enabled.
+
+    Projects that run without ERP integration remain valid local workflows and
+    keep the existing plan tests/behavior. When the ERP adapter is configured
+    and the current user has a stored ERP identity, a baseline plan must not
+    be submitted before the human handoff has established the project mapping.
+    """
+    if not mold_settings().erp_base_url:
+        return None
+    identity = db.get(m.ERPIdentity, user.id)
+    if not identity or not identity.token_ciphertext:
+        return None
+    mapping = db.scalar(select(m.ProjectERPMapping).where(
+        m.ProjectERPMapping.project_id == project_id,
+        m.ProjectERPMapping.status == 'CONFIRMED',
+    ))
+    if mapping:
+        return None
+    return DomainError(
+        'ERP_PROJECT_MAPPING_REQUIRED',
+        'ERP 项目与模具尚未完成人工映射，确认交接后才能准备基线计划',
+        409,
+    )
+
+
 MILESTONES={
     'design':['设计','工艺','结构','出图','drawing','design'],
     'purchase':['采购','原材料','五金','委外','purchase','material','outsource'],
@@ -133,6 +186,15 @@ MILESTONES={
     'assembly':['装配','assembly'],
     'trial':['试模','调试','trial','debug'],
     'delivery':['交付','出库','验收','delivery','shipment','acceptance'],
+}
+
+MILESTONE_LABELS = {
+    'design': '设计工艺分析/结构设计及出图',
+    'purchase': '原材料/五金/委外采购',
+    'machining': '工序加工',
+    'assembly': '装配',
+    'trial': '试模/调试',
+    'delivery': '最终交付/出库/验收',
 }
 
 
@@ -143,9 +205,15 @@ def _milestone_coverage(tasks):
         for group,keywords in MILESTONES.items():
             if any(keyword.casefold() in text for keyword in keywords):
                 matched[group].append({'id':task.get('id'),'key':task.get('key'),'name':task.get('name')})
-    return {'covered':dict(matched),
-        'missing':[group for group in MILESTONES if group not in matched],
-        'note':'大节点覆盖按任务名称/标识作辅助核对，不能替代项目负责人按实际模具类型确认。'}
+    missing=[group for group in MILESTONES if group not in matched]
+    return {
+        'required': list(MILESTONES),
+        'covered':dict(matched),
+        'missing':missing,
+        'missing_labels':[MILESTONE_LABELS[group] for group in missing],
+        'complete': not missing,
+        'note':'大节点覆盖按任务名称/标识作辅助核对，不能替代项目负责人按实际模具类型确认；缺少任一类时不得提交新的项目基线计划。',
+    }
 
 
 def _parse_date(value):
@@ -217,8 +285,11 @@ def _analysis(project,profile,records):
     today=now().date().isoformat()
     plans=records['project_plan']+records['plan_change']
     effective=[row for row in plans if row.get('status')=='EFFECTIVE']
+    drafts=[row for row in records['project_plan'] if row.get('status')=='DRAFT']
     open_changes=[row for row in records['plan_change'] if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED'}]
     active=max(effective,key=lambda row:row.get('created_at','')) if effective else None
+    draft=max(drafts,key=lambda row:row.get('created_at','')) if drafts else None
+    draft_tasks=(draft.get('detail') or {}).get('tasks',[]) if draft and isinstance(draft.get('detail'),dict) else []
     tasks=(active.get('detail') or {}).get('tasks',[]) if active and isinstance(active.get('detail'),dict) else []
     by_key={task.get('key'):task for task in tasks}
     running=[task for task in tasks if task.get('status')=='RUNNING']
@@ -235,13 +306,31 @@ def _analysis(project,profile,records):
     warnings=[]
     if len(effective)>1:warnings.append('当前可见范围存在多个有效计划/变更记录，请先核对唯一有效版本。')
     if not active:warnings.append('当前可见范围未见有效项目计划，不能判断实际节点进度。')
+    if draft:warnings.append('存在未生效的开工前项目计划草案；正式开工后需重新核对并提交基线计划审批。')
     if open_changes:warnings.append('存在未完成的计划变更申请，当前计划可能即将变化。')
     if due_risk:warnings.append('存在计划结束晚于客户承诺日期的未完成节点，需项目负责人核对交期风险。')
-    analysis={'active_plan':active,'tasks':tasks,'running_tasks':running[:20],'overdue_tasks':overdue[:20],
+    milestone_coverage=_milestone_coverage(tasks)
+    if active and milestone_coverage['missing']:
+        warnings.append(
+            '生效基线计划缺少项目大节点：' +
+            '、'.join(milestone_coverage['missing_labels']) +
+            '；需通过计划变更补齐后才能认定执行链路完整。'
+        )
+    analysis={'active_plan':active,'draft_plan':draft,'draft_tasks':draft_tasks,
+        'draft_milestone_coverage':_milestone_coverage(draft_tasks),
+        'tasks':tasks,'running_tasks':running[:20],'overdue_tasks':overdue[:20],
         'dependency_blocked_tasks':blocked[:20],'open_plan_changes':open_changes[:20],
-        'customer_due_risk_tasks':due_risk[:20],'milestone_coverage':_milestone_coverage(tasks),
+        'customer_due_risk_tasks':due_risk[:20],'milestone_coverage':milestone_coverage,
+        'baseline_readiness':{
+            'required_milestones':milestone_coverage['required'],
+            'missing_milestones':milestone_coverage['missing'],
+            'missing_labels':milestone_coverage['missing_labels'],
+            'complete':milestone_coverage['complete'],
+            'can_submit':bool(active) and milestone_coverage['complete'],
+        },
         'warnings':warnings,'derived_status':{
             'has_effective_plan':bool(active),
+            'has_plan_draft':bool(draft),
             'has_open_plan_change':bool(open_changes),
             'has_overdue_task':bool(overdue),
             'has_customer_due_risk':bool(due_risk),
@@ -263,12 +352,18 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         if 'query_plan_change' not in allowed_tools and 'prepare_project_plan_change' not in allowed_tools:skipped.append('计划变更')
         if skipped:limitations.append('未分配对应查询工具，未返回：'+'、'.join(skipped))
         workflows=[];baseline_workflows=[]
-        if 'prepare_project_plan_change' in allowed_tools:
+        if 'prepare_project_plan_change' in allowed_tools and (
+            records['project_plan'] or records['plan_change']
+        ):
             try:workflows=workflow_options(db,user,project,'plan_change')
             except DomainError as error:limitations.append('当前人员缺少计划变更读取或提交权限，未返回可选计划变更审批流程：'+error.message)
-        if 'prepare_project_plan_baseline' in allowed_tools:
+        elif 'prepare_project_plan_change' in allowed_tools:
+            limitations.append('当前项目尚无可变更的项目计划，未返回计划变更审批流程。')
+        if 'prepare_project_plan_baseline' in allowed_tools and project.status == 'ACTIVE' and _effective_formal_start(db, project.id):
             try:baseline_workflows=workflow_options(db,user,project,'project_plan')
             except DomainError as error:limitations.append('当前人员缺少项目计划读取或提交权限，未返回可选基线计划审批流程：'+error.message)
+        elif 'prepare_project_plan_baseline' in allowed_tools:
+            limitations.append('项目尚未具备生效正式开工依据，未返回基线计划审批流程。')
         analysis=_analysis(project,profile,records)
         from domain_packs.mold import plan_confirmations
         confirmations=[]
@@ -276,6 +371,23 @@ def query(db,user,data:ProjectPlanContextInput,allowed_tools:set[str]):
         except DomainError as error:limitations.append('当前人员缺少计划变更读取权限，未返回部门确认状态：'+error.message)
         from domain_packs.mold import erp_progress
         erp_execution_progress=erp_progress.query_project_progress(db,user,project)
+        # Keep the plan gate authoritative when ERP execution is enabled.  A
+        # local plan may cover every milestone and still be unable to enter
+        # the baseline handoff until the human-confirmed Agent↔ERP mapping is
+        # present.  Expose that fact in the same typed readiness object used
+        # by the lifecycle coordinator and Harness, rather than requiring
+        # consumers to infer it from a separate ERP receipt.
+        readiness=analysis.get('baseline_readiness') or {}
+        mapping_required=erp_execution_progress.get('status') == 'ERP_PROJECT_MAPPING_REQUIRED'
+        readiness['erp_mapping_required']=mapping_required
+        readiness['erp_mapping_status']=erp_execution_progress.get('status')
+        readiness.setdefault('blockers', [])
+        if mapping_required:
+            readiness['can_submit']=False
+            blocker='ERP 项目与模具尚未完成人工映射，不能进入基线计划交接。'
+            if blocker not in readiness['blockers']:
+                readiness['blockers'].append(blocker)
+        analysis['baseline_readiness']=readiness
         analysis['visualization']=_plan_visualization(analysis,erp_execution_progress)
         limitations.extend(erp_execution_progress.get('limitations',[]))
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
@@ -299,6 +411,7 @@ def workflow_options(db,user,project,business_type='plan_change'):
     if business_type=='project_plan':
         require(db,user,'project_plan.read',scope)
         require(db,user,'project_plan.submit',scope)
+        require(db,user,'internal_start.read',scope)
     else:
         require(db,user,'plan_change.read',scope)
         require(db,user,'plan_change.submit',scope)
@@ -325,6 +438,10 @@ def plan_baseline_schema():
     return PlanBaselineProposalInput.model_json_schema()
 
 
+def plan_draft_schema():
+    return PlanDraftProposalInput.model_json_schema()
+
+
 def department_confirmation_schema():
     return PlanDepartmentConfirmationProposalInput.model_json_schema()
 
@@ -332,6 +449,11 @@ def department_confirmation_schema():
 def parse_plan_baseline(arguments):
     try:return PlanBaselineProposalInput.model_validate(arguments or {})
     except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','基线计划参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
+
+
+def parse_plan_draft(arguments):
+    try:return PlanDraftProposalInput.model_validate(arguments or {})
+    except ValidationError as error:raise DomainError('INVALID_TOOL_INPUT','计划草案参数不完整或不符合要求：'+error.errors()[0]['msg']) from None
 
 
 def parse_plan_change(arguments):
@@ -356,10 +478,35 @@ def preview_plan_baseline(db,user,data:PlanBaselineProposalInput):
     require(db,user,'project_plan.read',scope)
     require(db,user,'project_plan.create',scope)
     require(db,user,'project_plan.submit',scope)
+    # Verifying the upstream formal-start handoff is itself a protected read.
+    # Do not let a plan-only user infer or submit against a hidden start notice.
+    require(db,user,'internal_start.read',scope)
     if project.row_version!=data.project_version:
         raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
     if project.status!='ACTIVE':
         raise DomainError('START_REQUIRED','项目正式开工后才能准备基线计划',409)
+    # Project.status is a coarse lifecycle projection and may be ACTIVE because
+    # of an imported/legacy record.  A baseline plan is only allowed after the
+    # local formal-start notice itself is effective; otherwise the kickoff to
+    # execution handoff is still a real business break.  Do not infer the
+    # notice from the project status or from an ERP progress record.
+    effective_start = _effective_formal_start(db, project.id)
+    if not effective_start:
+        raise DomainError(
+            'START_REQUIRED',
+            '未见生效正式开工通知，必须先完成正式开工审批后才能准备基线计划',
+            409,
+        )
+    start_detail=db.get(m.BusinessDecisionDetail,effective_start.id)
+    if not start_detail or start_detail.decision!='START':
+        raise DomainError(
+            'START_REQUIRED',
+            '当前正式开工依据不是有效的 START 决定，不能准备基线计划',
+            409,
+        )
+    mapping_error = _erp_mapping_gate(db, user, project.id)
+    if mapping_error:
+        raise mapping_error
     existing=db.scalar(select(m.BusinessSubject.id).where(m.BusinessSubject.project_id==project.id,
         m.BusinessSubject.kind.in_(['project_plan','plan_change']),
         m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','EFFECTIVE'])).limit(1))
@@ -373,6 +520,13 @@ def preview_plan_baseline(db,user,data:PlanBaselineProposalInput):
     definition=db.get(m.WorkflowDefinition,data.workflow_definition_id)
     review=workflow_selection.validate_material_review(db,user,definition,data.material_review_id)
     coverage=_milestone_coverage([task.model_dump(mode='json') for task in data.tasks])
+    if coverage['missing']:
+        raise DomainError(
+            'MILESTONE_COVERAGE_INCOMPLETE',
+            '基线计划缺少项目大节点：' + '、'.join(coverage['missing_labels']) +
+            '；请补齐后再提交基线计划审批',
+            409,
+        )
     display={'操作':'项目基线计划','项目':project.code+' · '+project.name,'项目版本':project.row_version,
         '计划原因':data.reason,'计划任务数':len(data.tasks),
         '计划节点':[_task_label(task) for task in data.tasks],
@@ -381,6 +535,32 @@ def preview_plan_baseline(db,user,data:PlanBaselineProposalInput):
         '说明':'本人确认后仅创建基线计划材料并提交 Agent BPM；审批生效前不会下达 ERP 执行任务，也不会把内部计划变更为客户承诺交期。'}
     if selected.get('material_required'):
         display['资料核对包']='已确认 · '+review.review_hash[:12] if review else '未绑定'
+    return detail,display
+
+
+def preview_plan_draft(db,user,data:PlanDraftProposalInput):
+    project=db.get(m.Project,data.project_id)
+    if not project:raise DomainError('NOT_FOUND','项目不存在',404)
+    scope={'project_id':project.id}
+    require(db,user,'project.read',scope)
+    require(db,user,'project_plan.read',scope)
+    require(db,user,'project_plan.create',scope)
+    if project.row_version!=data.project_version:
+        raise DomainError('VERSION_CONFLICT','项目状态已变化，请重新查询后准备',409)
+    existing=db.scalar(select(m.BusinessSubject.id).where(
+        m.BusinessSubject.project_id==project.id,
+        m.BusinessSubject.kind.in_(['project_plan','plan_change']),
+        m.BusinessSubject.status.in_(['DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED','EFFECTIVE'])).limit(1))
+    if existing:
+        raise DomainError('PLAN_EXISTS','项目已有计划或待处理计划申请，请通过计划变更或处理原申请',409)
+    detail=s.PlanInput(previous_id=None,reason=data.reason,tasks=data.tasks)
+    domains.validate_plan(db,project.id,detail)
+    coverage=_milestone_coverage([task.model_dump(mode='json') for task in data.tasks])
+    display={'操作':'开工前项目计划草案','项目':project.code+' · '+project.name,'项目版本':project.row_version,
+        '计划原因':data.reason,'计划任务数':len(data.tasks),
+        '计划节点':[_task_label(task) for task in data.tasks],
+        '大节点覆盖':'已覆盖：'+('、'.join(coverage['covered'].keys()) or '无')+'；缺少：'+('、'.join(coverage['missing_labels']) or '无'),
+        '说明':'本人确认后仅在 Agent 保存项目计划草案（DRAFT）及节点，不提交 BPM、不生效基线计划，也不下达 ERP 执行任务；正式开工后仍需重新核对并提交基线计划审批。'}
     return detail,display
 
 
@@ -448,6 +628,14 @@ def preview_department_confirmation(db,user,data:PlanDepartmentConfirmationPropo
 
 def execute_plan_tool(db,user,key,arguments,run=None):
     from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_policy
+    if key=='prepare_project_plan_draft':
+        data=parse_plan_draft(arguments)
+        _,display=preview_plan_draft(db,user,data)
+        proposal={'kind':'project_plan_draft','action':'project_plan_draft','requires_approval':False,
+            'input':data.model_dump(mode='json'),'display':display,
+            'confirmation_policy':proposal_confirmation_policy(run,requires_approval=False)}
+        return {'data':[],'source':'agent_proposal','as_of':now().isoformat(),'proposal':proposal,
+            'limitations':['仅准备开工前项目计划草案；本人确认后才在 Agent 保存 DRAFT，不提交 BPM、不替代正式基线计划审批。']}
     if key=='prepare_project_plan_baseline':
         data=parse_plan_baseline(arguments)
         _,display=preview_plan_baseline(db,user,data)
@@ -475,15 +663,21 @@ def execute_plan_tool(db,user,key,arguments,run=None):
     raise DomainError('TOOL_UNKNOWN','工具未实现',403)
 
 
-def source(db,user,step_id):
+def source(db,user,step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
     step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
     if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
-    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id==user.id,
+            m.HumanIntent.action=='project_plan.execute',
+            m.HumanIntent.resource_id==step_id,
+            m.HumanIntent.receipt.is_not(None)).limit(1))
+        if not resolved:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
-    allowed={'prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}
+    allowed={'prepare_project_plan_draft','prepare_project_plan_baseline','prepare_project_plan_change','prepare_plan_department_confirmation'}
     if step.tool not in available_tools(db,user) or step.tool not in allowed or not proposal:
         raise DomainError('TOOL_FORBIDDEN','操作能力不可用',403)
     return proposal
@@ -492,7 +686,10 @@ def source(db,user,step_id):
 def validate_intent(db,user,payload):
     proposal=source(db,user,payload['step_id'])
     if content_hash(proposal)!=payload['proposal_hash']:raise DomainError('CONFIRMATION_INVALID','操作建议内容已变化',409)
-    if proposal.get('action')=='department_confirmation':
+    if proposal.get('action')=='project_plan_draft':
+        data=parse_plan_draft(proposal['input'])
+        _,display=preview_plan_draft(db,user,data)
+    elif proposal.get('action')=='department_confirmation':
         data=parse_department_confirmation(proposal['input'])
         display=preview_department_confirmation(db,user,data)
     elif proposal.get('action')=='project_plan':
@@ -509,6 +706,12 @@ def validate_intent(db,user,payload):
 def confirm(db,user,payload):
     from domain_packs.mold.ports.confirmation_policy import agent_permission_mode_from_proposal
     proposal,data=validate_intent(db,user,payload)
+    if proposal.get('action')=='project_plan_draft':
+        subject=domains.create(db,user,s.SubjectInput(kind='project_plan',project_id=data.project_id,
+            remark=data.reason,detail={'previous_id':None,'reason':data.reason,
+                'tasks':[task.model_dump(mode='json') for task in data.tasks]}))
+        return {'project_id':data.project_id,'subject_id':subject.id,
+            'action':'project_plan_draft','status':'DRAFT'}
     if proposal.get('action')=='department_confirmation':
         from domain_packs.mold import plan_confirmations
         result=plan_confirmations.confirm(db,user,data.confirmation_id,data.expected_version,data.note)
@@ -541,7 +744,7 @@ router=APIRouter()
 
 @router.get('/api/project-plan-proposals/{step_id}')
 def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
-    source(db,user,step_id)
+    source(db,user,step_id,for_read=True)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='project_plan.execute',m.HumanIntent.resource_id==step_id,
         m.HumanIntent.receipt.is_not(None)).order_by(m.HumanIntent.created_at.desc()))

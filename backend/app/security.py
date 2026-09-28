@@ -6,7 +6,7 @@ from sqlalchemy import select
 from .db import get_db, now
 from .models import User, LoginSession
 from .errors import DomainError
-from .config import settings
+from .config import settings, trusted_origin_set
 from agent_core.security import digest, hasher, normalize_username
 
 def login(db, username, password):
@@ -29,7 +29,7 @@ def current_user(request: Request, db=Depends(get_db)):
     if not user or not user.active: raise DomainError("UNAUTHENTICATED", "账号已停用", 401)
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin = request.headers.get("origin")
-        if origin and origin != settings().origin:
+        if origin and origin not in trusted_origin_set():
             raise DomainError("ORIGIN_DENIED", "请求来源不受信任", 403)
         csrf = request.headers.get("x-csrf-token", "")
         if not secrets.compare_digest(digest(csrf), session.csrf_hash):

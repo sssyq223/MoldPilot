@@ -1,17 +1,32 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from pydantic import Field, ValidationError, model_validator
 
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import (
+    KICKOFF_PROPOSAL_TOOLS,
     _first_row,
     _project_card,
     _resolve,
 )
+from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import COMPLETION_PROPOSAL_TOOLS
+from domain_packs.mold.tools.erp.project.execution_lifecycle_tools import EXECUTION_PROPOSAL_TOOLS
+from domain_packs.mold.tools.erp.project.project_control_tools import PROJECT_CONTROL_PROPOSAL_TOOLS
+
+
+_BASELINE_MILESTONE_LABELS = {
+    "design": "设计工艺分析/结构设计及出图",
+    "purchase": "原材料/五金/委外采购",
+    "machining": "工序加工",
+    "assembly": "装配",
+    "trial": "试模/调试",
+    "delivery": "最终交付/出库/验收",
+}
 
 
 class ProjectLifecycleContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(
         default=None,
         min_length=1,
@@ -94,6 +109,26 @@ def _segment_summary(segment_key, name, query_tool, lifecycle):
 
     focus_stage = next((item for item in stages if item.get("key") == focus.get("key")), None)
     blockers = list((focus_stage or {}).get("blockers") or [])
+    baseline_stage = next((item for item in stages if item.get("key") == "baseline_plan"), None)
+    baseline_facts = (baseline_stage or {}).get("facts") or {}
+    required_milestones = list(baseline_facts.get("required_milestones") or [])
+    missing_milestones = list(baseline_facts.get("missing_milestones") or [])
+    baseline_coverage = {
+        "baseline_exists": bool(baseline_facts.get("active_plan")),
+        "required_for_baseline": [
+            {"key": key, "label": _BASELINE_MILESTONE_LABELS.get(key, key)}
+            for key in required_milestones
+        ],
+        "missing_from_active_plan": [
+            {"key": key, "label": _BASELINE_MILESTONE_LABELS.get(key, key)}
+            for key in missing_milestones
+        ],
+        "note": (
+            "没有生效基线计划时，required_for_baseline 是提交前必须补齐的六类大节点；"
+            "不要把它改写成已存在计划的缺失节点。"
+        ),
+    }
+    parallel_follow_ups = []
     for item in stages:
         if item is focus_stage or item.get("state") not in {"DATA_CONFLICT", "NEEDS_ATTENTION"}:
             continue
@@ -104,9 +139,14 @@ def _segment_summary(segment_key, name, query_tool, lifecycle):
         for item in stages:
             if not item.get("parallel") or item.get("state") in {"COMPLETED", "UNAVAILABLE"}:
                 continue
-            note = f"并行事项“{item.get('name') or item.get('key')}”尚未完成。"
-            if note not in blockers:
-                blockers.append(note)
+            reasons = item.get("follow_ups") or [
+                f"并行事项“{item.get('name') or item.get('key')}”尚未完成。"
+            ]
+            parallel_follow_ups.extend({
+                "stage": item.get("key"),
+                "name": item.get("name") or item.get("key"),
+                "reason": reason,
+            } for reason in reasons if isinstance(reason, str) and reason.strip())
 
     completed_states = {"COMPLETED"}
     if segment_key == "kickoff":
@@ -124,8 +164,19 @@ def _segment_summary(segment_key, name, query_tool, lifecycle):
             "not_applicable_count": sum(item.get("state") == "NOT_APPLICABLE" for item in stages),
             "unavailable_count": sum(item.get("state") == "UNAVAILABLE" for item in stages),
         },
+        "stage_statuses": [
+            {
+                "key": item.get("key"),
+                "name": item.get("name"),
+                "state": item.get("state"),
+            }
+            for item in stages
+            if item.get("key") and item.get("name")
+        ],
         "blockers": blockers,
+        "baseline_coverage": baseline_coverage,
         "access_gaps": list(lifecycle.get("access_gaps") or []),
+        "parallel_follow_ups": parallel_follow_ups,
     }
 
 
@@ -155,7 +206,12 @@ def _current_segment(project, summaries, lifecycles):
         }
     if _completion_started(project, lifecycles["completion"]):
         return by_key["completion"]
-    if project.status == "ACTIVE" or lifecycles["kickoff"].get("phase") == "EXECUTION":
+    # ACTIVE is only a coarse project projection.  Keep the user in the
+    # kickoff segment until the kickoff coordinator has evidence that the
+    # formal-start and baseline-plan handoff is complete; otherwise the
+    # execution segment hides the actual plan handoff gap.
+    kickoff_phase = lifecycles["kickoff"].get("phase")
+    if kickoff_phase == "EXECUTION":
         return by_key["execution"]
     return by_key["kickoff"]
 
@@ -187,6 +243,127 @@ def _recommendation(current, allowed_tools):
         "reason": "先展开当前生命周期分段的真实阶段事实与阻塞项，再进入对应专用业务能力。",
         "requires_user_confirmation": False,
     }]
+
+
+def _business_chain(project, summaries, lifecycles, allowed_tools):
+    """Expose cross-coordinator handoffs without inventing a business state.
+
+    The lifecycle coordinators deliberately keep their own domain rules.  This
+    projection only answers whether the next coordinator can be entered from
+    the facts already returned by those coordinators.  It never writes a
+    subject, advances a project, or treats an unavailable read as a failure.
+    """
+    by_key = {item["key"]: item for item in summaries}
+    kickoff = lifecycles["kickoff"]
+    execution = lifecycles["execution"]
+    completion = lifecycles["completion"]
+
+    kickoff_state = by_key["kickoff"]["state"]
+    if kickoff_state == "UNAVAILABLE":
+        kickoff_to_execution = "UNAVAILABLE"
+        kickoff_reason = "启动分段未分配或无权读取，不能判断是否已交接到执行。"
+    elif kickoff_state == "COMPLETED":
+        kickoff_to_execution = "CONNECTED"
+        kickoff_reason = "启动分段已完成，执行分段可以继续核对。"
+    else:
+        kickoff_to_execution = "WAITING"
+        kickoff_reason = "承接、正式开工或基线计划尚未形成完成证据。"
+
+    execution_state = by_key["execution"]["state"]
+    completion_started = _completion_started(project, completion)
+    if execution_state == "UNAVAILABLE":
+        execution_to_completion = "UNAVAILABLE"
+        execution_reason = "执行分段未分配或无权读取，不能判断交付与结算是否已接入。"
+    elif completion_started:
+        execution_to_completion = "CONNECTED"
+        execution_reason = "已见交付、验收、财务、供应商结算或关闭分支事实，收尾分段已接入。"
+    elif execution_state == "COMPLETED":
+        execution_to_completion = "READY"
+        execution_reason = "执行分段已完成，尚未见收尾事实；可进入交付与结算核对。"
+    else:
+        execution_to_completion = "WAITING"
+        execution_reason = "执行分段尚未完成，不能把局部制造或采购事实当作交付结算完成。"
+
+    completion_state = by_key["completion"]["state"]
+    final_stage = next(
+        (stage for stage in completion.get("stages") or [] if stage.get("key") == "final_close"),
+        None,
+    )
+    if completion_state == "UNAVAILABLE":
+        completion_to_close = "UNAVAILABLE"
+        completion_reason = "收尾分段未分配或无权读取，不能判断最终关闭条件。"
+    elif final_stage and final_stage.get("state") == "COMPLETED":
+        completion_to_close = "CONNECTED"
+        completion_reason = "收尾分段已提供最终关闭完成证据。"
+    else:
+        completion_to_close = "WAITING"
+        completion_reason = "交付、客户结算、供应商结算、异常和归档仍需分别核对，不能由单项完成代替关闭。"
+
+    def handoff(key, source, target, state, reason, tool):
+        return {
+            "key": key,
+            "from": source,
+            "to": target,
+            "state": state,
+            "reason": reason,
+            "next_query_tool": tool if tool in allowed_tools else None,
+            "query_available": tool in allowed_tools,
+        }
+
+    return [
+        handoff(
+            "kickoff_to_execution",
+            "kickoff",
+            "execution",
+            kickoff_to_execution,
+            kickoff_reason,
+            "query_project_execution_context",
+        ),
+        handoff(
+            "execution_to_completion",
+            "execution",
+            "completion",
+            execution_to_completion,
+            execution_reason,
+            "query_project_completion_context",
+        ),
+        handoff(
+            "completion_to_close",
+            "completion",
+            "closed",
+            completion_to_close,
+            completion_reason,
+            "query_project_closure_context",
+        ),
+    ]
+
+
+def _model_context(project_card, overview):
+    return {
+        "project": project_card,
+        "project_lifecycle": {
+            "kind": overview.get("kind"),
+            "project_status": overview.get("project_status"),
+            "current_segment": overview.get("current_segment"),
+            "segments": overview.get("segments") or [],
+            "recommended_next_steps": overview.get("recommended_next_steps") or [],
+            "business_chain": overview.get("business_chain") or [],
+            "consistency_warnings": overview.get("consistency_warnings") or [],
+            "access_gaps": overview.get("access_gaps") or [],
+        },
+    }
+
+
+def _boundary_write_tools(current):
+    if current.get("key") == "kickoff":
+        return KICKOFF_PROPOSAL_TOOLS
+    if current.get("key") == "execution":
+        return EXECUTION_PROPOSAL_TOOLS
+    if current.get("key") == "completion":
+        return COMPLETION_PROPOSAL_TOOLS
+    if current.get("key") == "project_control":
+        return PROJECT_CONTROL_PROPOSAL_TOOLS
+    return frozenset()
 
 
 def query(db, user, data: ProjectLifecycleContextInput, allowed_tools: set[str]):
@@ -248,6 +425,7 @@ def query(db, user, data: ProjectLifecycleContextInput, allowed_tools: set[str])
         for segment_key, name, query_tool, _ in SEGMENTS
     ]
     current = _current_segment(project, summaries, lifecycles)
+    business_chain = _business_chain(project, summaries, lifecycles, allowed_tools)
     access_gaps = [
         {"segment": item["key"], "items": item["access_gaps"]}
         for item in summaries if item["access_gaps"]
@@ -258,6 +436,7 @@ def query(db, user, data: ProjectLifecycleContextInput, allowed_tools: set[str])
         "current_segment": current,
         "segments": summaries,
         "recommended_next_steps": _recommendation(current, allowed_tools),
+        "business_chain": business_chain,
         "consistency_warnings": _consistency_warnings(project, summaries, lifecycles),
         "access_gaps": access_gaps,
         "guardrails": [
@@ -269,12 +448,31 @@ def query(db, user, data: ProjectLifecycleContextInput, allowed_tools: set[str])
     }
     if access_gaps:
         limitations.append("部分分段存在未分配能力，已在 access_gaps 中逐段列出，未据此推断隐藏事实。")
+    project_card = _project_card(db, user, project, alternatives or ("项目定位",))
+    recommendations = overview["recommended_next_steps"]
+    scope_boundary = {
+        "complete": True,
+        "scope_key": "project_lifecycle",
+        "write_tools": sorted(
+            tool for tool in _boundary_write_tools(current) if tool in allowed_tools
+        ),
+    }
+    continuation_read_tools = sorted({
+        recommendation["tool"]
+        for recommendation in recommendations
+        if recommendation.get("tool") in allowed_tools
+        and not recommendation.get("tool", "").startswith("prepare_")
+    })
+    if continuation_read_tools:
+        scope_boundary["read_tools"] = continuation_read_tools
     return {
         "resolution": "RESOLVED",
         "data": [{
-            "project": _project_card(db, user, project, alternatives or ("项目定位",)),
+            "project": project_card,
             "analysis": {"project_lifecycle": overview},
         }],
+        "model_context": _model_context(project_card, overview),
+        "scope_boundary": scope_boundary,
         "source": "agent_db",
         "as_of": now().isoformat(),
         "limitations": limitations,

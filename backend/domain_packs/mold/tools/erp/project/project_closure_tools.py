@@ -13,10 +13,11 @@ from domain_packs.mold.ports.db import get_db,now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.ports.security import current_user
+from domain_packs.mold.erp.core.project_locator import ResolvedProjectId, RESOLVED_PROJECT_ID_GUIDANCE
 
 
 class ClosureContextInput(StrictModel):
-    project_id:str=Field(min_length=1,max_length=36)
+    project_id:ResolvedProjectId
 
 
 class ChecklistProposalInput(ClosureContextInput):
@@ -64,6 +65,7 @@ SCHEMAS={'checklist':ChecklistProposalInput,'termination':TerminationProposalInp
 ACTION_BY_TOOL={'prepare_project_closure_checklist':'checklist','prepare_project_termination':'termination',
     'prepare_project_closure_item':'item','prepare_project_normal_close':'normal_close',
     'prepare_project_settlement_close':'settlement_close'}
+CLOSURE_PROPOSAL_TOOLS = frozenset(ACTION_BY_TOOL)
 
 
 def schema(action):return SCHEMAS[action].model_json_schema()
@@ -166,11 +168,39 @@ def preview(db,user,action,data):
 
 def execute_tool(db,user,key,arguments,run=None):
     if key=='query_project_closure_context':
+        from domain_packs.mold.tool_gateway import available_tools
         try:data=ClosureContextInput.model_validate(arguments)
-        except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效项目标识') from None
+        except ValidationError:raise DomainError('INVALID_TOOL_INPUT',RESOLVED_PROJECT_ID_GUIDANCE) from None
         project=_project(db,user,data.project_id)
         result=closure.context(db,user,project.id);result['workflow_options']=workflow_options(db,user,project)
-        return jsonable_encoder({'data':[result],'source':'agent_db','as_of':now(),
+        model_context = {
+            'project': {
+                'id': result.get('project_id'),
+                'code': result.get('project_code'),
+                'name': result.get('project_name'),
+                'status': result.get('project_status'),
+                'row_version': result.get('project_version'),
+            },
+            'closure': {
+                'case': result.get('closure_case'),
+                'system_facts': result.get('system_facts') or {},
+                'workflow_options': [
+                    {'id': item.get('id'), 'name': item.get('name'), 'version': item.get('version')}
+                    for item in (result.get('workflow_options') or [])
+                ],
+            },
+        }
+        return jsonable_encoder({
+            'data':[result],
+            'model_context': model_context,
+            'scope_boundary': {
+                'complete': True,
+                'scope_key': 'project_closure',
+                'write_tools': sorted(
+                    tool for tool in CLOSURE_PROPOSAL_TOOLS if tool in available_tools(db,user)
+                ),
+            },
+            'source':'agent_db','as_of':now(),
             'limitations':['清单引用 ERP 原生记录及核对时点，不复制 ERP 财务或执行台账',
                 '系统事实仅覆盖 Agent 本地对象；未联调的 ERP 事项必须人工关联原记录后才能完成清单',
                 '终止、清单事项完成、BPM 批准和最终关闭是不同事实']})

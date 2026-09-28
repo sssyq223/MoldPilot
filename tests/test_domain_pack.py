@@ -17,7 +17,7 @@ from agent_core.domain_pack import (
 from agent_core.host_ports import HostPorts, host_ports
 from agent_core.migration_runtime import resolve_migration_url
 from agent_core import tool_gateway as core_gateway
-from agent_core.harness import _route_skill_groups
+from agent_core.harness import _optional_tools_prompt, _skill_tool_groups
 from app import tool_gateway as host_gateway
 from domain_packs.mold import tool_gateway as mold_gateway
 
@@ -54,7 +54,7 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert product.PUBLIC_METADATA["id"] == "mold"
     assert product.PUBLIC_METADATA["product_name"] == "MoldPilot"
     assert product.PUBLIC_METADATA["attachment_run"] == {
-        "enabled": False, "media_types": ["application/pdf"],
+        "enabled": False, "media_types": ["application/pdf", "image/png", "image/jpeg"],
     }
     assert product.PUBLIC_METADATA['attachment_processing']['batch_upload'] is True
     assert 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in product.PUBLIC_METADATA['attachment_processing']['media_types']
@@ -114,7 +114,7 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
         assert any(name.startswith('prepare_') for name in skill['optional_tools'])
 
 
-def test_skill_directory_hierarchy_is_a_retrieval_boundary():
+def test_skill_directory_hierarchy_organizes_catalog_without_hiding_other_domains():
     paths = mold_gateway.skill_paths()
     design = paths["erp_design_workspace_review"]
     procurement = paths["purchase_request_review"]
@@ -122,15 +122,16 @@ def test_skill_directory_hierarchy_is_a_retrieval_boundary():
     assert (design["layer"], design["domain"]) == ("erp", "design")
     assert (procurement["layer"], procurement["domain"]) == ("erp", "procurement")
 
-    groups = [
-        {"key": "design", "skill_layer": "erp", "skill_domain": "design",
-         "route_terms": design["route_terms"]},
-        {"key": "procurement", "skill_layer": "erp", "skill_domain": "procurement",
-         "route_terms": procurement["route_terms"]},
-    ]
-    assert [group["key"] for group in _route_skill_groups("帮我检查设计图纸", groups)] == ["design"]
-    assert [group["key"] for group in _route_skill_groups("查询采购订单", groups)] == ["procurement"]
-    assert _route_skill_groups("继续处理", groups) == groups
+    tools = {name: {"type": "function", "function": {"name": name}}
+             for name in ("query_design", "query_procurement")}
+    groups = _skill_tool_groups([
+        {"key": "design", "tools": ["query_design"], "route_terms": design["route_terms"]},
+        {"key": "procurement", "tools": ["query_procurement"], "route_terms": procurement["route_terms"]},
+    ], tools)
+    prompts = [_optional_tools_prompt(tools, groups, prompt)
+               for prompt in ("帮我检查设计图纸", "查询采购订单", "继续处理")]
+    assert prompts[0] == prompts[1] == prompts[2]
+    assert all(key in prompts[0] for key in ("design", "procurement"))
 
 
 def test_formal_start_conversation_title_wins_over_generic_notification_word():

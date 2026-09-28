@@ -11,7 +11,7 @@ from sqlalchemy import select, func, text, delete, literal, and_, or_, exists
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from .db import get_db, SessionLocal, now, aware
-from .config import (settings, model_settings, public_model_config, save_model_config,
+from .config import (settings, trusted_origin_set, model_settings, public_model_config, save_model_config,
                      create_model_profile, update_model_profile, activate_model_profile,
                      delete_model_profile)
 from . import models as m, schemas as s, authorization as auth
@@ -89,6 +89,8 @@ def run_trace(run, steps, decisions=None):
     The chain is derived from persisted model messages and tool observations;
     it intentionally does not invent hidden reasoning.
     """
+    from agent_core.context_budget import HISTORICAL_ASSISTANT_PREFIX
+
     step_by_id = {step.id: step for step in steps}
     decisions = decisions or {}
     messages = run.checkpoint.get("messages", []) if isinstance(run.checkpoint, dict) else []
@@ -113,6 +115,11 @@ def run_trace(run, steps, decisions=None):
     for msg in messages:
         role = msg.get("role")
         if role == "assistant":
+            # Host-injected earlier conversation turns provide model context,
+            # not progress or evidence produced by the current run. Older
+            # checkpoints already encode this boundary using the host prefix.
+            if (msg.get("content") or "").startswith(HISTORICAL_ASSISTANT_PREFIX):
+                continue
             message_key = f"assistant:{assistant_turn}"
             assistant_turn += 1
             text = (msg.get("content") or "").strip()
@@ -140,10 +147,13 @@ def run_trace(run, steps, decisions=None):
                               "proposal_decision": decisions.get(step.id)})
             elif isinstance(payload.get("tool_error"), dict):
                 error = payload["tool_error"]
-                trace.append({"type": "tool_error",
+                activity = {"type": "tool_error",
                               "tool": tool_names_by_call.get(msg.get("tool_call_id"), "业务工具"),
                               "code": error.get("code") or "TOOL_REJECTED",
-                              "message": error.get("message") or "工具未接受本次请求"})
+                              "message": error.get("message") or "工具未接受本次请求"}
+                if "details" in error:
+                    activity["details"] = error["details"]
+                trace.append(activity)
             elif payload.get("source") == "harness" and isinstance(payload.get("activated"), list):
                 trace.append({"type": "tool_search", "tool": "ToolSearch", "query": payload.get("query", ""),
                               "activated": payload.get("activated", []), "matches": payload.get("matches", []),
@@ -262,7 +272,7 @@ def _sse_event(name: str, data) -> str:
 
 @app.exception_handler(DomainError)
 async def domain_error(request, error):
-    return JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=error.status)
+    return JSONResponse({"error": error.as_dict()}, status_code=error.status)
 
 
 @app.exception_handler(IntegrityError)
@@ -292,7 +302,7 @@ def product_metadata():
 
 @app.post("/api/auth/login")
 def sign_in(data: s.LoginInput, request: Request, response: Response, db=Depends(get_db)):
-    if request.headers.get("origin") not in {None, settings().origin}:
+    if request.headers.get("origin") not in {None, *trusted_origin_set()}:
         raise DomainError("ORIGIN_DENIED", "请求来源不受信任", 403)
     user, token, csrf = login(db, data.username, data.password)
     record(db, user, "auth.login", user.id)
@@ -1123,23 +1133,26 @@ def audit(offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50), user
     events = list(db.scalars(select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).offset(offset).limit(limit)))
     user_ids = {value for event in events for value in (event.user_id, event.resource_id) if value}
     users_by_id = {row.id: row for row in db.scalars(select(m.User).where(m.User.id.in_(user_ids)))} if user_ids else {}
-    def summary(event):
+    def summary(event, detail):
         actor = users_by_id.get(event.user_id)
         target = users_by_id.get(event.resource_id)
         if event.action == "auth.login":
             return f"{(actor or target).display_name if (actor or target) else '用户'} 登录工作台"
         if event.action in {"user.created", "permission.changed", "permission.revoked", "capability.changed", "user.avatar.updated"} and target:
             return f"目标用户：{target.display_name}（{target.username}）"
-        detail = event.detail or {}
         if "reason" in detail:
             return f"原因：{detail['reason']}"
         if "kind" in detail:
             return f"类型：{detail['kind']}"
         return ""
-    items = [{"id": a.id, "action": a.action, "resource_id": a.resource_id, "created_at": a.created_at.isoformat(),
-              "detail": a.detail, "actor_name": users_by_id[a.user_id].display_name if a.user_id in users_by_id else "系统",
-              "summary": summary(a)}
-             for a in events]
+    from agent_core.audit_projection import visible_detail
+    items = []
+    for event in events:
+        detail, redacted = visible_detail(event.detail, lambda permission, scope: auth.access(db,user,permission,scope))
+        items.append({"id":event.id, "action":event.action, "resource_id":event.resource_id,
+            "created_at":event.created_at.isoformat(), "detail":detail, "detail_redacted":redacted,
+            "actor_name":users_by_id[event.user_id].display_name if event.user_id in users_by_id else "系统",
+            "summary":"业务明细超出当前读取权限" if redacted else summary(event,detail)})
     return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
@@ -1308,7 +1321,12 @@ def capabilities(user=Depends(current_user), db=Depends(get_db)):
     from .tool_gateway import TOOLS, SKILLS, available_tools, capability_descriptor, skill_context
     return {
         "tools": [capability_descriptor("TOOL", k, TOOLS[k]) for k in available_tools(db, user)],
-        "skills": [{**capability_descriptor("SKILL", s["key"], SKILLS[s["key"]]), "version": s["version"], "agent_description": s["agent_description"]} for s in skill_context(db, user)],
+        "skills": [{**capability_descriptor("SKILL", s["key"], SKILLS[s["key"]]),
+                    "optional_dependencies": s["optional_tools"],
+                    "activation_dependencies": (s["activation_tools"] if s["activation_tools"] is not None
+                                                else s["tools"] + s["optional_tools"]),
+                    "version": s["version"], "agent_description": s["agent_description"]}
+                   for s in skill_context(db, user)],
     }
 
 

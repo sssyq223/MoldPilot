@@ -16,15 +16,19 @@ from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.tools.erp.project.plan_tools import ProjectPlanContextInput, _strength
 from domain_packs.mold.ports.schemas import StrictModel
 from domain_packs.mold.ports.security import current_user
+from domain_packs.mold.erp.procurement.customer_acceptance_status import summarize_customer_acceptance
 
 
 OUTSOURCE_KEYWORDS = ("委外", "供应商", "外协", "外包", "outsource", "supplier")
 ISSUE_KEYWORDS = ("质量", "延期", "整改", "复验", "扣款", "索赔", "验收", "交付", "合同", "结算")
 FULL_OUTSOURCE_PROPOSAL_TOOLS = {
+    "prepare_contract_signing_record",
     "prepare_supplier_material_handoff",
     "prepare_supplier_material_verification",
     "prepare_supplier_progress_policy",
     "prepare_supplier_progress_report",
+    "prepare_outsource_change_negotiation",
+    "prepare_supplier_deduction_settlement",
 }
 PROGRESS_EVIDENCE_KINDS = Literal[
     "PHOTO", "DOCUMENT", "QUALITY_REPORT", "SCHEDULE", "ISSUE_LIST", "DELIVERY_PROOF", "OTHER"
@@ -104,6 +108,28 @@ class SupplierProgressPolicyProposalInput(StrictModel):
     replaces_policy_id: str | None = Field(default=None, max_length=36)
 
 
+class OutsourceChangeNegotiationProposalInput(StrictModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    project_version: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=36)
+    contract_subject_id: str = Field(min_length=1, max_length=36)
+    contact_case_id: str = Field(min_length=1, max_length=36)
+    contact_task_id: str | None = Field(default=None, max_length=36)
+    customer_quote_amount: Decimal | None = Field(default=None, ge=0)
+    supplier_quote_amount: Decimal | None = Field(default=None, ge=0)
+    negotiated_amount: Decimal | None = Field(default=None, ge=0)
+    currency: str = Field(default="CNY", min_length=3, max_length=3)
+    schedule_impact_days: int = Field(default=0, ge=0, le=3650)
+    task_impact_summary: str = Field(default="", max_length=4000)
+    requires_contract_change: bool = False
+    status: Literal["DRAFT", "NEGOTIATING", "AGREED"] = "NEGOTIATING"
+    customer_evidence: str = Field(default="", max_length=4000)
+    supplier_evidence: str = Field(default="", max_length=4000)
+    negotiation_evidence: str = Field(min_length=1, max_length=4000)
+    source_system: Literal["MANUAL", "IMPORT", "ERP"] = "MANUAL"
+    source_ref: str = Field(min_length=1, max_length=120)
+
+
 def supplier_material_handoff_schema():
     return SupplierMaterialHandoffProposalInput.model_json_schema()
 
@@ -118,6 +144,10 @@ def supplier_progress_report_schema():
 
 def supplier_progress_policy_schema():
     return SupplierProgressPolicyProposalInput.model_json_schema()
+
+
+def outsource_change_negotiation_schema():
+    return OutsourceChangeNegotiationProposalInput.model_json_schema()
 
 
 def parse_supplier_material_handoff(arguments):
@@ -180,6 +210,27 @@ def parse_supplier_progress_policy(arguments):
         raise DomainError("INVALID_TOOL_INPUT", "首次上报日期不能早于规则生效日期")
     if len(set(data.evidence_requirements)) != len(data.evidence_requirements):
         raise DomainError("INVALID_TOOL_INPUT", "供应商上报规则的证据类型不能重复")
+    return data
+
+
+def parse_outsource_change_negotiation(arguments):
+    try:
+        data = OutsourceChangeNegotiationProposalInput.model_validate(arguments or {})
+    except ValidationError as error:
+        raise DomainError("INVALID_TOOL_INPUT", "整套委外设变议价参数不完整或不符合要求：" + error.errors()[0]["msg"]) from None
+    data.currency = data.currency.upper()
+    if len(data.currency) != 3 or not data.currency.isalpha():
+        raise DomainError("INVALID_TOOL_INPUT", "币种必须是三位字母代码")
+    if data.requires_contract_change and data.status != "AGREED":
+        raise DomainError("INVALID_TOOL_INPUT", "需要变更委外合同时，议价状态必须先达到已协商")
+    if data.status == "AGREED" and data.negotiated_amount is None:
+        raise DomainError("INVALID_TOOL_INPUT", "议价已协商时必须填写最终协商金额")
+    if data.schedule_impact_days > 0 and not data.task_impact_summary.strip():
+        raise DomainError("INVALID_TOOL_INPUT", "存在交期影响时必须填写受影响任务说明")
+    if not data.customer_evidence.strip() and data.customer_quote_amount is not None:
+        raise DomainError("INVALID_TOOL_INPUT", "填写客户报价金额时必须保留客户报价依据")
+    if not data.supplier_evidence.strip() and data.supplier_quote_amount is not None:
+        raise DomainError("INVALID_TOOL_INPUT", "填写供应商报价金额时必须保留供应商报价依据")
     return data
 
 
@@ -280,6 +331,95 @@ def create_supplier_progress_policy(db, user, data: SupplierProgressPolicyPropos
         active=True,
         supersedes_id=current.id if current else None,
         created_by=user.id,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def preview_outsource_change_negotiation(db, user, data: OutsourceChangeNegotiationProposalInput):
+    project = db.get(m.Project, data.project_id)
+    if not project:
+        raise DomainError("NOT_FOUND", "项目不存在", 404)
+    scope = {"project_id": project.id, "category": "outsource"}
+    require(db, user, "project.read", {"project_id": project.id})
+    require(db, user, "full_outsource_contract.read", scope)
+    require(db, user, "full_outsource_contract.execute", scope)
+    if project.row_version != data.project_version:
+        raise DomainError("VERSION_CONFLICT", "项目状态已变化，请重新查询后准备", 409)
+    if project.status not in {"ACTIVE", "PAUSED"}:
+        raise DomainError("PROJECT_NOT_EXECUTABLE", "项目尚未进入可办理的执行状态", 409)
+    supplier = db.get(m.Supplier, data.supplier_id)
+    if not supplier or not supplier.active:
+        raise DomainError("SUPPLIER_INVALID", "设变议价必须关联有效委外供应商", 409)
+    contract = db.get(m.BusinessSubject, data.contract_subject_id)
+    contract_detail = db.get(m.ContractDetail, data.contract_subject_id) if contract else None
+    if not contract or contract.project_id != project.id or contract.kind != "full_outsource_contract" or not contract_detail:
+        raise DomainError("CONTRACT_NOT_FOUND", "整套委外合同不存在或不属于该项目", 404)
+    if contract_detail.supplier_id != supplier.id:
+        raise DomainError("CONTRACT_SUPPLIER_MISMATCH", "委外合同供应商与议价供应商不一致", 409)
+    if contract.status != "EFFECTIVE":
+        raise DomainError("CONTRACT_NOT_EFFECTIVE", "委外设变议价必须关联当前生效合同", 409)
+    case = db.get(m.ContactCase, data.contact_case_id)
+    if not case or case.project_id != project.id:
+        raise DomainError("CONTACT_CASE_NOT_FOUND", "工程联络单不存在或不属于该项目", 404)
+    if case.closed_at is not None:
+        raise DomainError("CONTACT_CASE_CLOSED", "工程联络单已关闭，不能继续登记新的供应商议价", 409)
+    task = None
+    if data.contact_task_id:
+        task = db.get(m.ContactTask, data.contact_task_id)
+        if not task or task.case_id != case.id:
+            raise DomainError("CONTACT_TASK_NOT_FOUND", "工程联络事项不存在或不属于该工程联络单", 404)
+    existing = db.scalar(select(m.OutsourceChangeNegotiation).where(
+        m.OutsourceChangeNegotiation.project_id == project.id,
+        m.OutsourceChangeNegotiation.supplier_id == supplier.id,
+        m.OutsourceChangeNegotiation.source_ref == data.source_ref,
+    ))
+    if existing:
+        raise DomainError("OUTSOURCE_CHANGE_NEGOTIATION_DUPLICATE", "该委外设变议价来源已登记", 409)
+    display = {
+        "操作": "登记委外设变议价与交期影响",
+        "项目": project.code + " · " + project.name,
+        "项目版本": project.row_version,
+        "供应商": supplier.name,
+        "整套委外合同": contract_detail.contract_number,
+        "工程联络单": case.title,
+        "工程联络事项": task.title if task else "未指定具体事项",
+        "客户报价": f"{data.customer_quote_amount} {data.currency}" if data.customer_quote_amount is not None else "未提供",
+        "供应商报价": f"{data.supplier_quote_amount} {data.currency}" if data.supplier_quote_amount is not None else "未提供",
+        "最终协商金额": f"{data.negotiated_amount} {data.currency}" if data.negotiated_amount is not None else "尚未协商完成",
+        "交期影响天数": data.schedule_impact_days,
+        "受影响任务": data.task_impact_summary or "未填写",
+        "是否需要合同变更": "是" if data.requires_contract_change else "否",
+        "议价状态": data.status,
+        "来源系统": data.source_system,
+        "来源引用": data.source_ref,
+        "说明": "本人确认后仅登记委外设变协同事实；不自动改合同、改计划、改报价或认定责任，合同变更仍须走独立版本审批。",
+    }
+    return project, supplier, contract, case, task, display
+
+
+def create_outsource_change_negotiation(db, user, data: OutsourceChangeNegotiationProposalInput):
+    project, supplier, contract, case, task, _ = preview_outsource_change_negotiation(db, user, data)
+    row = m.OutsourceChangeNegotiation(
+        project_id=project.id,
+        supplier_id=supplier.id,
+        contract_subject_id=contract.id,
+        contact_case_id=case.id,
+        contact_task_id=task.id if task else None,
+        customer_quote_amount=data.customer_quote_amount,
+        supplier_quote_amount=data.supplier_quote_amount,
+        negotiated_amount=data.negotiated_amount,
+        currency=data.currency,
+        schedule_impact_days=data.schedule_impact_days,
+        task_impact_summary=data.task_impact_summary,
+        requires_contract_change=data.requires_contract_change,
+        status=data.status,
+        customer_evidence=data.customer_evidence,
+        supplier_evidence=data.supplier_evidence,
+        negotiation_evidence=data.negotiation_evidence,
+        source_system=data.source_system,
+        source_ref=data.source_ref,
     )
     db.add(row)
     db.flush()
@@ -549,6 +689,12 @@ def execute_full_outsource_tool(db, user, key, arguments, run=None):
         kind = "supplier_progress_report"
         action = "confirm_supplier_progress_report"
         limitation = "仅准备供应商节点上报证据登记建议；本人确认后才写入，不代表收货、质检、客户验收或 ERP 节点完成。"
+    elif key == "prepare_outsource_change_negotiation":
+        data = parse_outsource_change_negotiation(arguments)
+        _, _, _, _, _, display = preview_outsource_change_negotiation(db, user, data)
+        kind = "outsource_change_negotiation"
+        action = "confirm_outsource_change_negotiation"
+        limitation = "仅准备登记客户设变对委外供应商的报价、议价和交期影响事实；本人确认后才写入，不自动改合同、计划、责任或 ERP 执行数据。"
     else:
         raise DomainError("TOOL_UNKNOWN", "工具未实现", 403)
     proposal = {"kind": kind, "action": action,
@@ -1034,10 +1180,13 @@ def _material_verifications(db, user, project_id, allowed_tools):
     return rows
 
 
+def can_read_deduction_settlements(db, user, project_id, allowed_tools):
+    return _can_read_kind("full_outsource_contract", allowed_tools) and access(
+        db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed
+
+
 def _deduction_settlements(db, user, project_id, allowed_tools):
-    if not _can_read_kind("full_outsource_contract", allowed_tools):
-        return []
-    if not access(db, user, "full_outsource_contract.read", {"project_id": project_id, "category": "outsource"}).allowed:
+    if not can_read_deduction_settlements(db, user, project_id, allowed_tools):
         return []
     rows = []
     q = (
@@ -1045,12 +1194,19 @@ def _deduction_settlements(db, user, project_id, allowed_tools):
         .join(m.Supplier, m.SupplierDeductionSettlement.supplier_id == m.Supplier.id)
         .where(m.SupplierDeductionSettlement.project_id == project_id)
         .order_by(m.SupplierDeductionSettlement.created_at.desc(), m.SupplierDeductionSettlement.id)
-        .limit(100)
     )
-    for settlement, supplier in db.execute(q):
+    records = list(db.execute(q))
+    from domain_packs.mold.erp.finance.deduction_status import lineage
+    successors, invalid = lineage([row for row, _ in records])
+    for settlement, supplier in records[:100]:
         rows.append(
             {
                 "id": settlement.id,
+                "previous_deduction_id": settlement.previous_deduction_id,
+                "customer_acceptance_id": settlement.customer_acceptance_id,
+                "superseded_by_id": successors.get(settlement.id),
+                "is_current": settlement.id not in successors,
+                "lineage_valid": settlement.id not in invalid,
                 "supplier_id": supplier.id,
                 "supplier_name": supplier.name,
                 "contract_subject_id": settlement.contract_subject_id,
@@ -1252,23 +1408,76 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
                 "move_type": row.move_type,
                 "evidence": row.evidence,
                 "recorded_by": row.recorded_by,
+                "attachments": [
+                    {
+                        "id": attachment.id,
+                        "file_id": attachment.file_id,
+                        "role": attachment.role,
+                        "version": attachment.version,
+                        "title": attachment.title,
+                        "content_sha256": attachment.content_sha256,
+                        "filename": blob.filename,
+                        "media_type": blob.media_type,
+                        "size": blob.size,
+                    }
+                    for attachment, blob in db.execute(
+                        select(m.CustomerDeliverySignatureAttachment, m.FileObject)
+                        .join(
+                            m.FileObject,
+                            m.FileObject.id == m.CustomerDeliverySignatureAttachment.file_id,
+                        )
+                        .where(
+                            m.CustomerDeliverySignatureAttachment.signature_id == row.id
+                        )
+                        .order_by(
+                            m.CustomerDeliverySignatureAttachment.version,
+                            m.CustomerDeliverySignatureAttachment.id,
+                        )
+                    )
+                ],
             }
         )
 
     can_read_acceptance = "query_project_closure_context" in allowed_tools and access(db, user, "project_close.read", {"project_id": project_id}).allowed
     acceptance_records = []
+    acceptance_rows = []
     if can_read_acceptance:
-        for row in db.scalars(
+        acceptance_rows = list(db.scalars(
             select(m.CustomerAcceptanceRecord)
             .where(m.CustomerAcceptanceRecord.project_id == project_id)
             .order_by(m.CustomerAcceptanceRecord.accepted_date.desc(), m.CustomerAcceptanceRecord.created_at.desc(), m.CustomerAcceptanceRecord.id)
-            .limit(50)
-        ):
+        ))
+        for row in acceptance_rows[:50]:
+            attachments = [
+                {
+                    "id": attachment.id,
+                    "file_id": attachment.file_id,
+                    "role": attachment.role,
+                    "version": attachment.version,
+                    "title": attachment.title,
+                    "content_sha256": attachment.content_sha256,
+                    "filename": blob.filename,
+                    "media_type": blob.media_type,
+                    "size": blob.size,
+                }
+                for attachment, blob in db.execute(
+                    select(m.CustomerAcceptanceAttachment, m.FileObject)
+                    .join(m.FileObject, m.FileObject.id == m.CustomerAcceptanceAttachment.file_id)
+                    .where(
+                        m.CustomerAcceptanceAttachment.customer_acceptance_id == row.id
+                    )
+                    .order_by(
+                        m.CustomerAcceptanceAttachment.version,
+                        m.CustomerAcceptanceAttachment.id,
+                    )
+                )
+            ]
             acceptance_records.append(
                 {
                     "id": row.id,
                     "signature_id": row.signature_id,
                     "acceptance_type": row.acceptance_type,
+                    "previous_acceptance_id": row.previous_acceptance_id,
                     "result": row.result,
                     "accepted_date": row.accepted_date.isoformat(),
                     "issue_description": row.issue_description,
@@ -1282,15 +1491,12 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
                     "contract_change_required": row.contract_change_required,
                     "evidence": row.evidence,
                     "confirmed_by": row.confirmed_by,
+                    "attachments": attachments,
                 }
             )
 
     signed = [row for row in signatures if row["sign_status"] == "SIGNED"]
-    passed = [row for row in acceptance_records if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
-    failed = [row for row in acceptance_records if row["result"] == "FAILED"]
-    rechecks = [row for row in acceptance_records if row["acceptance_type"] == "RECHECK"]
-    recheck_passed = [row for row in rechecks if row["result"] in {"PASSED", "CONDITIONALLY_PASSED"}]
-    deductions = [row for row in acceptance_records if row["deduction_amount"] is not None]
+    acceptance_status = summarize_customer_acceptance(acceptance_rows)
     return {
         "signatures": signatures,
         "acceptance_records": acceptance_records,
@@ -1300,18 +1506,12 @@ def _customer_delivery_acceptance(db, user, project_id, allowed_tools):
         },
         "derived_status": {
             "has_customer_signature": bool(signed),
-            "has_customer_acceptance": bool(passed),
-            "has_failed_customer_acceptance": bool(failed),
-            "has_recheck_record": bool(rechecks),
-            "has_recheck_passed": bool(recheck_passed),
-            "has_acceptance_deduction": bool(deductions),
-            "has_contract_change_required": any(row["contract_change_required"] for row in acceptance_records),
-            "schedule_impact_days_total": sum(int(row["schedule_impact_days"] or 0) for row in acceptance_records),
+            **acceptance_status,
         },
     }
 
 
-def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, material_verifications, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance):
+def _analysis(project, profile, quote_acceptance, contracts, signing_records, active_plan, plan_tasks, supplier_progress_policies, supplier_progress_reports, material_handoffs, material_verifications, deduction_settlements, change_negotiations, order_tracking, engineering_changes, contacts, payments, closure_items, customer_delivery_acceptance, erp_execution_context):
     contract_effective = [row for row in contracts if row.get("status") == "EFFECTIVE"]
     signed_contracts = [row for row in signing_records if row.get("status") == "SIGNED"]
     non_signed_contracts = [row for row in signing_records if row.get("status") != "SIGNED"]
@@ -1330,9 +1530,10 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     open_material_verifications = [row for row in latest_material_verifications if row.get("result") in {"NEEDS_CLARIFICATION", "REJECTED"}]
     accepted_handoff_ids = {row["handoff_id"] for row in accepted_material_verifications}
     unverified_handoffs = [row for row in approved_handoffs if row.get("id") not in accepted_handoff_ids]
-    confirmed_deductions = [row for row in deduction_settlements if row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
-    settled_deductions = [row for row in deduction_settlements if row.get("status") == "SETTLED"]
-    pending_deductions = [row for row in deduction_settlements if row.get("status") == "PROPOSED" or row.get("responsibility") == "UNKNOWN"]
+    current_deductions = [row for row in deduction_settlements if row.get('is_current', True)]
+    confirmed_deductions = [row for row in current_deductions if row.get('lineage_valid', True) and row.get("responsibility") != "UNKNOWN" and row.get("status") in {"RESPONSIBILITY_CONFIRMED", "SETTLED"}]
+    settled_deductions = [row for row in confirmed_deductions if row.get("status") == "SETTLED"]
+    pending_deductions = [row for row in current_deductions if row.get('status') != 'CANCELLED' and (row.get("status") in {"PROPOSED", "RESPONSIBILITY_CONFIRMED"} or row.get("responsibility") == "UNKNOWN" or not row.get('lineage_valid', True))]
     approved_change_negotiations = [row for row in change_negotiations if row.get("status") == "APPROVED"]
     open_change_negotiations = [row for row in change_negotiations if row.get("status") in {"DRAFT", "NEGOTIATING", "AGREED"}]
     contract_change_negotiations = [row for row in change_negotiations if row.get("requires_contract_change")]
@@ -1345,7 +1546,24 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     acceptance_done = [item for item in closure_items if "ACCEPTANCE" in item.get("item_key", "") and item.get("status") == "DONE"]
     close_done = [item for item in closure_items if item.get("status") == "DONE" and any(keyword in item.get("item_key", "") for keyword in ("CLOSE", "SETTLEMENT", "PAYMENT"))]
     customer_status = customer_delivery_acceptance["derived_status"]
-    has_customer_acceptance = bool(acceptance_done) or customer_status["has_customer_acceptance"]
+    has_customer_acceptance = (bool(acceptance_done) or customer_status["has_customer_acceptance"]) and not customer_status["has_unresolved_failure"]
+    erp_records = (erp_execution_context or {}).get("records") or {}
+    erp_totals = erp_records.get("totals") or {}
+    erp_exceptions = erp_records.get("exception_records") or []
+    erp_product_shipments = erp_records.get("product_shipment_records") or []
+    erp_quality_records = erp_records.get("quality_inspection_records") or []
+    erp_quality_totals = erp_records.get("quality_totals") or {}
+    open_erp_quality_records = [
+        row for row in erp_quality_records
+        if str(row.get("status") or "").strip().lower() in {"pending", "inspecting"}
+    ]
+    failed_erp_quality_records = [
+        row for row in erp_quality_records
+        if (
+            str(row.get("result") or "").strip().lower() in {"unqualified", "partial"}
+            or str(row.get("status") or "").strip().lower() in {"partial", "reject_return"}
+        )
+    ]
 
     gaps = []
     warnings = []
@@ -1411,15 +1629,17 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
     if confirmed_deductions and not settled_deductions:
         warnings.append("存在责任已确认的供应商扣款，但未见已结算记录；需同步供应商结算或财务依据。")
     if pending_deductions:
-        warnings.append("存在待确认责任或拟议状态的供应商扣款记录，不能作为正式结算结果。")
+        warnings.append("存在待确认责任、已确认但未结算或关联不一致的供应商扣款记录，不能视为全部结算完成。")
     if not customer_status["has_customer_signature"]:
         gaps.append("未见客户签收记录；不能用供应商发货、我方收货或库存移动推断客户已签收。")
     if customer_status["has_customer_signature"] and not has_customer_acceptance:
         gaps.append("已有客户签收记录，但未见客户质量验收通过或有条件通过依据；客户签收不等于客户验收。")
     if not has_customer_acceptance:
         gaps.append("未见委外项目客户验收完成、回款或关闭清单中的正式依据。")
-    if customer_status["has_failed_customer_acceptance"] and not customer_status["has_recheck_passed"]:
-        warnings.append("存在客户验收未通过记录，未见复验通过；不能认定委外交付闭环或进入关闭。")
+    if customer_status["unlinked_recheck_ids"]:
+        warnings.append("存在未关联前次验收的历史复验记录；未猜测其处理对象，不能据此消除其他验收失败。")
+    if customer_status["has_unresolved_failure"]:
+        warnings.append("当前客户验收未通过，尚未见对应验收链的后续复验通过；不能认定委外交付闭环或进入关闭。")
     if customer_status["has_acceptance_deduction"] and not settled_deductions:
         warnings.append("客户验收记录涉及扣款，但未见已结算供应商扣款；需核对客户扣款与供应商结算联动。")
     if customer_status["has_acceptance_deduction"] and settled_deductions:
@@ -1430,6 +1650,14 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         warnings.append("客户验收记录存在交期影响天数，需与计划变更或客户交期确认联动。")
     if has_customer_acceptance and payments["requests"] and not close_done:
         warnings.append("已有客户验收或供应商付款申请，但未见关闭/结算清单完成；不能把付款申请等同于项目关闭。")
+    if erp_execution_context and erp_execution_context.get("status") == "RESOLVED" and erp_exceptions:
+        warnings.append("ERP 原系统存在委外异常记录；已引用其事实，仍需在 ERP 责任流程中处理并回写可核对证据。")
+    if erp_product_shipments:
+        warnings.append("ERP 原系统已有委外关联成品发货单；该事实可核对发货单号、承运商和运单，但不等于我方收货、客户签收或验收完成。")
+    if open_erp_quality_records:
+        warnings.append("ERP 原系统存在委外关联待检或检验中的质量任务；未形成合格结论前不能认定供应商交付可放行。")
+    if failed_erp_quality_records:
+        warnings.append("ERP 原系统存在委外关联不合格或部分合格质量任务；需完成整改、复检或放行处置后再推进交付和结算。")
     gaps.append("当前未接入供应商门户和供应商在线签署；规则与上报仅代表已授权本地/导入事实，不代表 ERP 执行节点完成。")
 
     return {
@@ -1453,6 +1681,10 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
         "supplier_payment_summary": payments,
         "closure_and_settlement_items": closure_items,
         "customer_delivery_acceptance": customer_delivery_acceptance,
+        "erp_outsource_execution": erp_execution_context,
+        "erp_product_shipments": erp_product_shipments[:200],
+        "erp_quality_inspections": erp_quality_records[:200],
+        "erp_quality_totals": erp_quality_totals,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -1478,22 +1710,141 @@ def _analysis(project, profile, quote_acceptance, contracts, signing_records, ac
             "has_confirmed_supplier_deduction": bool(confirmed_deductions),
             "has_settled_supplier_deduction": bool(settled_deductions),
             "has_pending_supplier_deduction": bool(pending_deductions),
+            "has_deduction_link_conflict": any(not row.get('lineage_valid', True) for row in deduction_settlements),
             "has_approved_outsource_change_negotiation": bool(approved_change_negotiations),
             "has_open_outsource_change_negotiation": bool(open_change_negotiations),
             "has_contract_change_negotiation": bool(contract_change_negotiations),
             "has_supplier_shipment_or_receipt": bool(totals.get("supplier_shipments") or totals.get("goods_receipts")),
             "has_rejected_receipt": bool(totals.get("rejected_receipt_lines")),
-            "has_open_outsource_issue": bool(open_contacts or open_change_impacts),
+            "has_open_outsource_issue": bool(
+                open_contacts
+                or open_change_impacts
+                or open_erp_quality_records
+                or failed_erp_quality_records
+            ),
             "has_deduction_or_cost_impact_signal": bool(deduction_tasks),
             "has_supplier_payment_request": bool(payments["requests"]),
             "has_customer_signature": customer_status["has_customer_signature"],
             "has_customer_acceptance_record": customer_status["has_customer_acceptance"],
             "has_failed_customer_acceptance": customer_status["has_failed_customer_acceptance"],
+            "has_unresolved_customer_acceptance_failure": customer_status["has_unresolved_failure"],
             "has_customer_recheck_passed": customer_status["has_recheck_passed"],
             "has_customer_acceptance_deduction": customer_status["has_acceptance_deduction"],
             "has_customer_acceptance_contract_change": customer_status["has_contract_change_required"],
             "has_customer_acceptance_or_close_evidence": has_customer_acceptance,
+            "has_erp_project_record": bool(erp_totals.get("projects")),
+            "has_erp_outsource_order": bool(erp_totals.get("production_orders")),
+            "has_erp_fulfillment_record": bool(erp_totals.get("fulfillment_orders")),
+            "has_erp_product_shipment": bool(erp_product_shipments),
+            "has_erp_outsource_exception": bool(erp_exceptions),
+            "has_erp_quality_inspection": bool(erp_quality_records),
+            "has_erp_quality_open": bool(open_erp_quality_records),
+            "has_erp_quality_failure": bool(failed_erp_quality_records),
         },
+    }
+
+
+def _model_context(project_card, profile, contract_rows, analysis):
+    """Keep the provider transcript focused while preserving the full receipt.
+
+    The durable result intentionally contains every visible outsource record for
+    audit and UI drill-down.  The model only needs stable identifiers,
+    actionable summaries, and the current gaps to answer a read-only request or
+    prepare the next explicitly requested proposal.  Returning this projection
+    avoids making nested ERP/attachment records compete with the user's scope.
+    """
+    outsource_contracts = _contract_summary(contract_rows)
+    compact_analysis = {
+        "latest_full_outsource_acceptance": analysis.get("latest_full_outsource_acceptance"),
+        "active_plan": analysis.get("active_plan"),
+        "derived_status": analysis.get("derived_status", {}),
+        "gaps": analysis.get("gaps", []),
+        "warnings": analysis.get("warnings", []),
+        "supplier_execution_tracking": analysis.get("supplier_execution_tracking", {}),
+        "customer_delivery_acceptance": {
+            "derived_status": (analysis.get("customer_delivery_acceptance") or {}).get("derived_status", {}),
+        },
+        "erp_quality_totals": analysis.get("erp_quality_totals", {}),
+    }
+
+    def rows(items, fields, limit=50):
+        result = []
+        for item in (items or [])[:limit]:
+            if not isinstance(item, dict):
+                continue
+            result.append({field: item.get(field) for field in fields if field in item})
+        return result
+
+    contact_rows = []
+    for contact in (analysis.get("outsource_quality_delay_contacts") or [])[:30]:
+        if not isinstance(contact, dict):
+            continue
+        tasks = rows(
+            contact.get("tasks"),
+            (
+                "id", "title", "status", "affected_type", "affected_ref",
+                "planned_action", "delivery_impact_days", "estimated_amount",
+                "currency", "actual_completed_at", "actual_amount",
+                "actual_currency", "execution_evidence_present",
+            ),
+            limit=30,
+        )
+        contact_rows.append({
+            field: contact.get(field)
+            for field in (
+                "id", "title", "collaboration_status", "problem_source",
+                "current_stage", "change_type", "urgency",
+            )
+            if field in contact
+        } | {"tasks": tasks})
+
+    return {
+        "project": project_card,
+        "profile": profile,
+        "full_outsource_contracts": outsource_contracts,
+        "analysis": compact_analysis,
+        "supplier_progress_policies": rows(
+            analysis.get("supplier_progress_policies"),
+            ("id", "supplier_id", "contract_subject_id", "plan_task_id", "stage_key",
+             "frequency_days", "first_due_date", "evidence_requirements", "active"),
+        ),
+        "supplier_progress_reports": rows(
+            analysis.get("supplier_progress_reports"),
+            ("id", "supplier_id", "contract_subject_id", "plan_task_id", "stage_key",
+             "status", "reported_at", "next_followup_date", "issue_summary",
+             "evidence_items", "overdue_followup"),
+        ),
+        "supplier_material_handoffs": rows(
+            analysis.get("supplier_material_handoffs"),
+            ("id", "supplier_id", "contract_subject_id", "file_id", "document_title",
+             "document_type", "approval_status", "provided_date", "provided_to",
+             "handoff_channel", "verified_by"),
+        ),
+        "supplier_material_verifications": rows(
+            analysis.get("supplier_material_verifications"),
+            ("id", "handoff_id", "supplier_id", "result", "response_date",
+             "reason", "is_latest_for_handoff"),
+        ),
+        "outsource_change_negotiations": rows(
+            analysis.get("outsource_change_negotiations"),
+            ("id", "supplier_id", "supplier_name", "contract_subject_id",
+             "contact_case_id", "contact_task_id", "customer_quote_amount",
+             "supplier_quote_amount", "negotiated_amount", "currency",
+             "schedule_impact_days", "task_impact_summary",
+             "requires_contract_change", "status", "customer_evidence_present",
+             "supplier_evidence_present", "approved_by", "source_ref"),
+        ),
+        "outsource_quality_delay_contacts": contact_rows,
+        "engineering_changes": rows(
+            analysis.get("engineering_changes"),
+            ("id", "number", "status", "problem", "solution",
+             "customer_due_affected", "impact_count", "unimplemented_impacts"),
+        ),
+        "supplier_deduction_settlements": rows(
+            analysis.get("supplier_deduction_settlements"),
+            ("id", "supplier_id", "contract_subject_id", "contact_case_id",
+             "status", "responsibility", "amount", "currency", "lineage_valid"),
+        ),
     }
 
 
@@ -1525,6 +1876,8 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         closure_items = _closure_items(db, user, project.id, allowed_tools)
         customer_delivery_acceptance = _customer_delivery_acceptance(db, user, project.id, allowed_tools)
         order_tracking = _order_tracking(db, user, project.id, allowed_tools)
+        from domain_packs.mold.erp.design.erp_progress import query_project_outsource_execution
+        erp_execution_context = query_project_outsource_execution(db, user, project)
         skipped = []
         for kind, label in (
             ("quote_acceptance", "报价承接/加工方式"),
@@ -1545,36 +1898,47 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             skipped.append("客户验收/复验/扣款记录")
         if skipped:
             limitations.append("未分配对应查询工具或权限，未返回：" + "、".join(skipped))
+        analysis = _analysis(
+            project,
+            profile,
+            _latest_outsource_acceptance(quote_rows),
+            contract_rows,
+            signing_records,
+            active_plan,
+            plan_tasks,
+            supplier_progress_policies,
+            supplier_progress_reports,
+            material_handoffs,
+            material_verifications,
+            deduction_settlements,
+            change_negotiations,
+            order_tracking,
+            engineering_changes,
+            contacts,
+            payments,
+            closure_items,
+            customer_delivery_acceptance,
+            erp_execution_context,
+        )
+        project_card = _project_card(db, user, project, alternatives or ("项目定位",))
         return {
             "resolution": "RESOLVED",
             "data": [
                 {
-                    "project": _project_card(db, user, project, alternatives or ("项目定位",)),
+                    "project": project_card,
                     "profile": profile,
                     "full_outsource_contracts": _contract_summary(contract_rows),
-                    "analysis": _analysis(
-                        project,
-                        profile,
-                        _latest_outsource_acceptance(quote_rows),
-                        contract_rows,
-                        signing_records,
-                        active_plan,
-                        plan_tasks,
-                        supplier_progress_policies,
-                        supplier_progress_reports,
-                        material_handoffs,
-                        material_verifications,
-                        deduction_settlements,
-                        change_negotiations,
-                        order_tracking,
-                        engineering_changes,
-                        contacts,
-                        payments,
-                        closure_items,
-                        customer_delivery_acceptance,
-                    ),
+                    "analysis": analysis,
                 }
             ],
+            "model_context": _model_context(project_card, profile, contract_rows, analysis),
+            "scope_boundary": {
+                "complete": True,
+                "scope_key": "full_outsource",
+                "write_tools": sorted(
+                    tool for tool in FULL_OUTSOURCE_PROPOSAL_TOOLS if tool in allowed_tools
+                ),
+            },
             "source": "agent_db",
             "as_of": now().isoformat(),
             "limitations": limitations,
@@ -1625,6 +1989,9 @@ def validate_intent(db, user, payload):
     elif kind == "supplier_progress_report":
         data = parse_supplier_progress_report(proposal["input"])
         _, _, _, _, _, display = preview_supplier_progress_report(db, user, data)
+    elif kind == "outsource_change_negotiation":
+        data = parse_outsource_change_negotiation(proposal["input"])
+        _, _, _, _, _, display = preview_outsource_change_negotiation(db, user, data)
     else:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     if content_hash(display) != content_hash(proposal["display"]):
@@ -1648,6 +2015,11 @@ def confirm(db, user, payload):
         return {"project_id": data.project_id, "supplier_id": data.supplier_id,
             "supplier_progress_policy_id": row.id, "version": row.version,
             "action": "supplier_progress_policy", "status": "CONFIRMED"}
+    if proposal["kind"] == "outsource_change_negotiation":
+        row = create_outsource_change_negotiation(db, user, data)
+        return {"project_id": data.project_id, "supplier_id": data.supplier_id,
+            "outsource_change_negotiation_id": row.id,
+            "action": "outsource_change_negotiation", "status": "CONFIRMED"}
     row = create_supplier_progress_report(db, user, data)
     return {"project_id": data.project_id, "supplier_id": data.supplier_id,
         "supplier_progress_report_id": row.id, "action": "supplier_progress_report", "status": "CONFIRMED"}

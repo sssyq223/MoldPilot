@@ -133,16 +133,11 @@ def _bound_intakes(db, user, run):
 def _intake_for_bound_file(db, user, run, file_id):
     bound_ids = {str(row['id']) for row in _run_files(db, user, run)}
     if str(file_id) not in bound_ids:
-        # 查询操作允许使用当前会话内的历史附件；跨会话或跨用户仍被拒绝。
-        allowed = db.scalar(select(m.DocumentIntakeFile.id).join(
-            m.DocumentIntake, m.DocumentIntakeFile.intake_id == m.DocumentIntake.id,
-        ).where(
-            m.DocumentIntakeFile.file_id == str(file_id),
-            m.DocumentIntake.created_by == user.id,
-            m.DocumentIntake.conversation_id == run.conversation_id,
-        ))
-        if not allowed:
-            raise DomainError('FILE_CONTEXT_INVALID', '文件不属于当前 Agent Run 或当前会话', 403)
+        # A file selector is an operation input, so it must be explicitly
+        # bound to this Agent Run.  Conversation-level visibility is enough
+        # for read-only history rendering, but it is not write/lookup
+        # authorization for a tool call.
+        raise DomainError('FILE_CONTEXT_INVALID', '文件不属于当前 Agent Run 或当前会话', 403)
     intake = db.scalar(select(m.DocumentIntake).join(
         m.DocumentIntakeFile, m.DocumentIntakeFile.intake_id == m.DocumentIntake.id,
     ).where(
@@ -299,7 +294,11 @@ def _source_context(db, user, step_id):
     run = db.get(m.Run, step.run_id) if step else None
     if not run or run.user_id != user.id:
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
-    if run.status not in {"RUNNING", "SUCCEEDED"}:
+    # Scoped workers use the same live proposal lifecycle as the legacy
+    # worker.  A scoped run must remain confirmable after the worker claim;
+    # rejecting it here turns every browser confirmation into a false
+    # PROPOSAL_STOPPED error.
+    if run.status not in {"RUNNING", "RUNNING_SCOPED", "SUCCEEDED"}:
         raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)

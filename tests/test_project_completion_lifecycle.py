@@ -7,6 +7,7 @@ from app.authorization import PERMISSIONS
 from app.tool_gateway import execute, tool_schema
 from domain_packs.mold.erp.project.project_closure import create_case
 from domain_packs.mold.tool_gateway import SKILLS, TOOLS, skill_context
+from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import _delivery_stage
 from pg_db import factory as pg_factory
 
 
@@ -79,6 +80,84 @@ def stages(result):
     return {row["key"]: row for row in lifecycle(result)["stages"]}
 
 
+def test_unresolved_customer_acceptance_overrides_completed_closure_checklist():
+    closure = {"closure_case": {"items": [
+        {"item_key": "DELIVERY", "status": "DONE"},
+        {"item_key": "CUSTOMER_ACCEPTANCE", "status": "DONE"},
+    ]}}
+    derived = {
+        "has_customer_signature": True,
+        "has_failed_customer_acceptance": True,
+        "has_customer_recheck_passed": False,
+        "has_unresolved_customer_acceptance_failure": True,
+        "has_customer_acceptance": False,
+    }
+    stage = _delivery_stage({"analysis": {"derived_status": derived}}, closure, "NORMAL")
+    assert stage["state"] == "NEEDS_ATTENTION"
+    assert stage["facts"]["has_unresolved_customer_acceptance_failure"] is True
+    assert "历史通过或结项清单" in "".join(stage["blockers"])
+
+    # A later passing recheck in the same acceptance chain clears the blocker.
+    derived = {**derived, "has_customer_recheck_passed": True,
+               "has_unresolved_customer_acceptance_failure": False,
+               "has_customer_acceptance": True}
+    recovered = _delivery_stage({"analysis": {"derived_status": derived}}, closure, "NORMAL")
+    assert recovered["state"] == "COMPLETED"
+
+
+def test_completion_delivery_is_blocked_by_erp_quality_failure():
+    closure = {"closure_case": {"items": [
+        {"item_key": "DELIVERY", "status": "DONE"},
+        {"item_key": "CUSTOMER_ACCEPTANCE", "status": "DONE"},
+    ]}}
+    derived = {
+        "has_customer_signature": True,
+        "has_customer_acceptance": True,
+        "has_open_delivery_or_quality_issue": True,
+        "has_erp_quality_inspection": True,
+        "has_erp_quality_failure": True,
+    }
+    stage = _delivery_stage({"analysis": {"derived_status": derived}}, closure, "NORMAL")
+    assert stage["state"] == "NEEDS_ATTENTION"
+    assert "未关闭的质量、交付" in "".join(stage["blockers"])
+
+
+def test_completion_customer_finance_starts_when_erp_fulfillment_is_visible():
+    from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import _customer_finance_stage
+
+    stage = _customer_finance_stage(
+        {"analysis": {"derived_status": {
+            "has_erp_fulfillment_record": True,
+            "has_finance_correction": False,
+            "has_cost_or_deduction_signal": False,
+        }}},
+        None,
+        "NORMAL",
+    )
+    assert stage["state"] == "ACTIVE"
+    assert stage["facts"]["has_erp_fulfillment_record"] is True
+
+
+def test_completion_finance_branches_use_role_matched_erp_payment_facts():
+    from domain_packs.mold.tools.erp.project.completion_lifecycle_tools import (
+        _customer_finance_stage,
+        _supplier_settlement_stage,
+    )
+
+    row = {"analysis": {"derived_status": {
+        "has_erp_customer_payment_plan": True,
+        "has_erp_customer_payment_record": False,
+        "has_erp_supplier_payment_plan": True,
+        "has_erp_supplier_payment_record": False,
+    }}}
+    customer = _customer_finance_stage(row, None, "NORMAL")
+    supplier = _supplier_settlement_stage(row, None)
+    assert customer["state"] == "ACTIVE"
+    assert customer["facts"]["has_erp_customer_payment_plan"] is True
+    assert supplier["state"] == "ACTIVE"
+    assert supplier["facts"]["has_erp_supplier_payment_plan"] is True
+
+
 def test_completion_schema_skill_and_empty_project_are_registered_as_one_coordinator():
     engine, Session = factory()
     try:
@@ -110,6 +189,9 @@ def test_completion_schema_skill_and_empty_project_are_registered_as_one_coordin
             result = execute(db, admin, "query_project_completion_context", {"identifier": "CLOSE-EMPTY"})
             data = lifecycle(result)
             assert result["resolution"] == "RESOLVED"
+            assert result["scope_boundary"]["complete"] is True
+            assert result["scope_boundary"]["scope_key"] == "project_completion"
+            assert "prepare_project_closure_checklist" in result["scope_boundary"]["write_tools"]
             assert data["kind"] == "project_completion_lifecycle_v1"
             assert [row["key"] for row in data["stages"]] == [
                 "delivery_acceptance",
@@ -122,6 +204,8 @@ def test_completion_schema_skill_and_empty_project_are_registered_as_one_coordin
             assert data["closure_mode"] == "NORMAL"
             assert data["current_focus"]["key"] == "delivery_acceptance"
             assert data["recommended_next_steps"][0]["tool"] == "query_delivery_logistics_context"
+            handoffs = {row["key"]: row for row in data["handoffs"]}
+            assert handoffs["delivery_to_customer_finance"]["state"] == "BLOCKED"
             final_close = stages(result)["final_close"]
             assert final_close["state"] == "NOT_STARTED"
             assert final_close["action_tool"] == "prepare_project_closure_checklist"
@@ -159,6 +243,10 @@ def test_completion_normal_path_requires_each_stage_then_offers_normal_close():
             assert data["current_focus"]["key"] == "final_close"
             assert data["recommended_next_steps"][0]["tool"] == "prepare_project_normal_close"
             assert data["recommended_next_steps"][0]["requires_user_confirmation"] is True
+            handoffs = {row["key"]: row for row in data["handoffs"]}
+            assert handoffs["delivery_to_customer_finance"]["state"] == "CONNECTED"
+            assert handoffs["completion_to_archive"]["state"] == "CONNECTED"
+            assert handoffs["archive_to_final_close"]["state"] == "READY"
     finally:
         engine.dispose()
 
@@ -198,6 +286,9 @@ def test_completion_termination_path_allows_explicit_delivery_disposition_but_no
             assert by_key["customer_finance"]["state"] == "BLOCKED"
             assert data["current_focus"]["key"] == "customer_finance"
             assert by_key["final_close"]["state"] == "BLOCKED"
+            handoffs = {row["key"]: row for row in data["handoffs"]}
+            assert handoffs["delivery_to_customer_finance"]["state"] == "NOT_APPLICABLE"
+            assert handoffs["completion_to_archive"]["state"] == "BLOCKED"
             assert by_key["final_close"]["action_tool"] is None
     finally:
         engine.dispose()

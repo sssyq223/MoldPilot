@@ -33,8 +33,38 @@ def detail_data(db,subject):
                 'document_revision':subject.revision,
                 **(detail.get('source_summary') or {}),
             }
-    if subject.kind=='trial_request':detail['results']=[values(r) for r in rows(db,m.TrialResult,trial_id=subject.id)]
+    if subject.kind=='trial_request':
+        detail['results']=[]
+        for result in rows(db,m.TrialResult,trial_id=subject.id):
+            card=values(result)
+            card['attachments']=[
+                {
+                    **values(link, exclude=('trial_result_id',)),
+                    'filename': blob.filename,
+                    'media_type': blob.media_type,
+                    'size': blob.size,
+                    'sha256': blob.sha256,
+                }
+                for link, blob in db.execute(
+                    select(m.TrialResultAttachment, m.FileObject)
+                    .join(m.FileObject, m.FileObject.id == m.TrialResultAttachment.file_id)
+                    .where(m.TrialResultAttachment.trial_result_id == result.id)
+                    .order_by(m.TrialResultAttachment.version, m.TrialResultAttachment.id)
+                )
+            ]
+            detail['results'].append(card)
     if subject.kind=='assembly_issue':detail['execution']=[values(r) for r in rows(db,m.AssemblyExecution,assembly_id=subject.id)]
+    if subject.kind=='finance_correction':
+        original=db.get(m.PaymentConfirmation,detail['original_payment_id'])
+        if original:
+            detail['amount']=str(original.amount)
+            detail['currency']=original.currency
+            detail['reversal_amount']=str(-original.amount)
+            detail['original_payment']={'id':original.id,'request_id':original.request_id,
+                'amount':str(original.amount),'currency':original.currency,
+                'paid_date':original.paid_date.isoformat(),'reference':original.reference}
+            from domain_packs.mold.erp.finance.correction_allocations import detail_effects
+            detail['allocation_effects']=detail_effects(db,subject,original)
     return detail
 
 
@@ -124,8 +154,11 @@ def apply(db,user,subject):
         original=db.get(m.PaymentConfirmation,detail.original_payment_id)
         request=db.get(m.PaymentRequestDetail,original.request_id)
         db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==request.stage_id).with_for_update())
+        db.refresh(request)
         if detail.reversal_id or db.scalar(select(m.PaymentConfirmation.id).where(m.PaymentConfirmation.reversal_of_id==original.id)):
             raise DomainError('ALREADY_REVERSED','原付款已经冲正，禁止重复冲正')
+        from domain_packs.mold.erp.finance.correction_allocations import approved_effects, append_reversal
+        allocation_effects=approved_effects(db,subject,original)
         # Approval attests to supplied actual reversal evidence; never call a bank from here.
         reversal=m.PaymentConfirmation(request_id=original.request_id,amount=-original.amount,currency=original.currency,
             paid_date=detail.reversal_date,reference='REV-'+subject.id,evidence=detail.reversal_evidence,
@@ -134,3 +167,4 @@ def apply(db,user,subject):
         # Restore the same authorization reservation. Net paid decreases; total encumbrance is unchanged.
         request.reservation+=original.amount
         if request.reservation>request.amount:raise DomainError('RESERVATION_CONFLICT','冲正后的授权占用超限')
+        append_reversal(db,user,subject,original,reversal,allocation_effects)

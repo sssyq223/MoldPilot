@@ -163,6 +163,11 @@ def preview(db, project, data):
             409,
         )
     starts = _effective_starts(db, project.id)
+    selected_start = None
+    if data.start_notice_subject_id:
+        selected_start = next((row for row in starts if row['id']==data.start_notice_subject_id),None)
+        if not selected_start:
+            raise DomainError('CONTRACT_START_MISMATCH','合同引用的开工通知须在本项目内且已生效',409)
     return {
         "customer_rule_key": customer.rule_key if customer else None,
         "customer_classification": classification,
@@ -178,12 +183,14 @@ def preview(db, project, data):
         ),
         "internal_molds": molds,
         "effective_internal_starts": starts,
+        "selected_internal_start": selected_start,
     }
 
 
 def create(db, user, subject, data, association_snapshot):
+    from .contract_materials import version
     row = m.ContractBusinessTerms(
-        material_version=1,
+        material_version=version(db,subject.id),
         contract_subject_id=subject.id,
         signed_date=data.signed_date,
         delivery_due_date=data.delivery_due_date,
@@ -194,6 +201,7 @@ def create(db, user, subject, data, association_snapshot):
         customer_order_number=data.customer_order_number,
         mapping_evidence=data.mapping_evidence,
         association_snapshot=association_snapshot,
+        attachment_selection=list(data.file_ids),
         recorded_by=user.id,
     )
     db.add(row)
@@ -202,12 +210,8 @@ def create(db, user, subject, data, association_snapshot):
 
 
 def card(db, contract_subject_id):
-    row = db.scalar(
-        select(m.ContractBusinessTerms)
-        .where(m.ContractBusinessTerms.contract_subject_id == contract_subject_id)
-        .order_by(m.ContractBusinessTerms.material_version.desc())
-        .limit(1)
-    )
+    from .contract_materials import terms
+    row = terms(db, contract_subject_id)
     if not row:
         return None
     return {
@@ -220,6 +224,7 @@ def card(db, contract_subject_id):
         "customer_order_number": row.customer_order_number,
         "mapping_evidence": row.mapping_evidence,
         "association_snapshot": row.association_snapshot,
+        "attachment_selection": row.attachment_selection,
         "recorded_by": row.recorded_by,
         "material_version": row.material_version,
         "attachment_selection": row.attachment_selection,

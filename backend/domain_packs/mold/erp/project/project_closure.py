@@ -70,7 +70,11 @@ def system_facts(db,project_id):
         m.BusinessSubject.project_id==project_id)) or Decimal(0)
     open_orders=db.scalar(select(func.count()).select_from(m.PurchaseOrder).where(
         m.PurchaseOrder.project_id==project_id,m.PurchaseOrder.status.in_(['DRAFT','ISSUED']))) or 0
+    from domain_packs.mold.erp.procurement.customer_acceptance_status import summarize_customer_acceptance
+    acceptance = summarize_customer_acceptance(list(db.scalars(select(m.CustomerAcceptanceRecord).where(
+        m.CustomerAcceptanceRecord.project_id == project_id))))
     return {'active_plan_number':plan.number if plan else None,'plan_task_count':len(tasks),
+        'has_unresolved_customer_acceptance_failure': acceptance['has_unresolved_failure'],
         'unfinished_plan_tasks':sum(1 for task in tasks if task.status!='DONE'),
         'open_contact_cases':open_contacts,'open_payment_reservations':str(payment_reservations),
         'open_local_purchase_orders':open_orders}
@@ -189,6 +193,8 @@ def blockers(db,case):
         elif status=='NOT_APPLICABLE' and not item.allow_not_applicable:result.append(item.label+'（不得标记为不适用）')
     if case.mode=='NORMAL' and (not facts['active_plan_number'] or facts['unfinished_plan_tasks']):
         result.append('有效计划仍有未完成任务')
+    if case.mode=='NORMAL' and facts['has_unresolved_customer_acceptance_failure']:
+        result.append('客户验收仍有未解决的失败或关联冲突；清单完成或不适用不能代替对应复验')
     if facts['open_contact_cases']:result.append('仍有未关闭的工程联络事项')
     if Decimal(facts['open_payment_reservations'])!=0:result.append('仍有未释放的付款占用')
     if facts['open_local_purchase_orders']:result.append('仍有未关闭的 Agent 本地采购订单')

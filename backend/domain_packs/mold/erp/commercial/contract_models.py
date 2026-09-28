@@ -65,6 +65,7 @@ class ContractBusinessTerms(Base):
     customer_order_number: Mapped[str | None] = mapped_column(String(120))
     mapping_evidence: Mapped[str] = mapped_column(Text)
     association_snapshot: Mapped[dict] = mapped_column(J)
+    attachment_selection: Mapped[list[str] | None] = mapped_column(J, nullable=True)
     recorded_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
     attachment_selection: Mapped[dict | None] = mapped_column(J)
     __table_args__ = (
@@ -85,6 +86,7 @@ class ContractSettlementAllocation(IdentityMixin, Base):
     from disappearing or being counted as new cash.
     """
     __tablename__ = "contract_settlement_allocation"
+    material_version: Mapped[int] = mapped_column(Integer, default=1)
     target_contract_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), index=True)
     source_contract_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), index=True)
     target_stage_id: Mapped[str] = mapped_column(ForeignKey("payment_stage.id"), index=True)

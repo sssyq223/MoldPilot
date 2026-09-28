@@ -44,6 +44,8 @@ class BidIntakeRevision(IdentityMixin, Base):
     customer_contact: Mapped[str] = mapped_column(String(200))
     customer_mold_number: Mapped[str | None] = mapped_column(String(120))
     customer_model_or_material: Mapped[str | None] = mapped_column(String(200))
+    customer_model_number: Mapped[str | None] = mapped_column(String(200))
+    customer_material_number: Mapped[str | None] = mapped_column(String(200))
     project_name_snapshot: Mapped[str] = mapped_column(String(200))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     currency: Mapped[str | None] = mapped_column(String(3))

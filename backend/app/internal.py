@@ -69,7 +69,8 @@ def recent_requests(db,user,run):
     return list(reversed(selected))
 
 
-def conversation_history(db, user, run, current_authorization_hash, allowed_tools=None):
+def conversation_history(db, user, run, current_authorization_hash, allowed_tools=None,
+                        include_unverified_user=True):
     """Return a bounded, authorization-filtered transcript for model context.
 
     User messages and attachment metadata remain useful for reference. Assistant
@@ -81,13 +82,17 @@ def conversation_history(db, user, run, current_authorization_hash, allowed_tool
     prior = list(db.scalars(select(Run).where(
         Run.user_id == user.id, Run.conversation_id == run.conversation_id,
         Run.created_at < run.created_at,
-    ).order_by(Run.created_at, Run.id).limit(8)))
+    ).order_by(Run.created_at.desc(), Run.id.desc()).limit(8)))
+    prior.reverse()
     transcript = []
     for previous in prior:
+        history_files = run_files(db, user, previous)
         checkpoint = previous.checkpoint if isinstance(previous.checkpoint, dict) else {}
         previous_hash = checkpoint.get("authorization_hash")
         visible = (previous.security_version == user.security_version
                    and previous_hash == current_authorization_hash)
+        if not visible and not include_unverified_user:
+            continue
         result = previous.result if visible and isinstance(previous.result, dict) else None
         assistant = None
         if result:
@@ -95,6 +100,12 @@ def conversation_history(db, user, run, current_authorization_hash, allowed_tool
                 'response_kind', 'summary', 'suggestions', 'message', 'error_code',
                 'proposal_decision',
             ) if key in result}
+            if isinstance(assistant.get('summary'), str):
+                assistant['summary'] = assistant['summary'][:400]
+            if isinstance(assistant.get('message'), str):
+                assistant['message'] = assistant['message'][:400]
+            if isinstance(assistant.get('suggestions'), list):
+                assistant['suggestions'] = assistant['suggestions'][:8]
         actions = []
         if visible:
             confirmed = db.execute(select(HumanIntent, Step).join(
@@ -117,7 +128,13 @@ def conversation_history(db, user, run, current_authorization_hash, allowed_tool
             "run_id": previous.id,
             "created_at": previous.created_at.isoformat(),
             "status": public_run_status(previous.status),
-            "user": {"content": previous.prompt, "attachments": run_files(db, user, previous)},
+            # Keep the canonical file manifest at the turn level for callers
+            # that consume conversation history directly.  The nested user
+            # attachment shape remains for the model harness contract.
+            "files": history_files,
+            "request": previous.prompt,
+            "assistant_summary": assistant.get("summary") if assistant else None,
+            "user": {"content": previous.prompt, "attachments": history_files},
             "assistant": assistant,
             "confirmed_actions": actions,
         })
@@ -133,9 +150,15 @@ def install(app):
             return {"run": None}
         worker_scope = settings().worker_scope
         scoped_for_this_worker = Run.checkpoint["worker_scope"].as_string() == worker_scope
+        # Host-owned attachment runs may have their checkpoint reconstructed by
+        # a browser/client update before the first claim.  The creation audit
+        # and run-owned files remain authoritative; a missing scope is safe to
+        # recover onto the current worker, while an explicit other scope still
+        # stays isolated.
+        missing_worker_scope = Run.checkpoint["worker_scope"].as_string().is_(None)
         run = db.scalar(select(Run).where(or_(
             Run.status == LEGACY_QUEUED,
-            and_(Run.status == SCOPED_QUEUED, scoped_for_this_worker),
+            and_(Run.status == SCOPED_QUEUED, or_(scoped_for_this_worker, missing_worker_scope)),
             and_(Run.status == LEGACY_RUNNING, Run.lease_until < now()),
             and_(Run.status == SCOPED_RUNNING, scoped_for_this_worker, Run.lease_until < now()),
         )).order_by(Run.created_at).with_for_update(skip_locked=True).limit(1))
@@ -191,6 +214,7 @@ def install(app):
             "recent_requests": recent_requests(db, user, run),
             "conversation_history": conversation_history(
                 db, user, run, authorization_hash, allowed_tools=available_tools,
+                include_unverified_user=False,
             ),
             "conversation_files": jsonable_encoder(conversation_files(run.conversation_id, user, db)[:10]),
             "files": run_files(db, user, run),

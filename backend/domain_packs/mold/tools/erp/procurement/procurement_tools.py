@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from collections import Counter, defaultdict
 from decimal import Decimal
 from pydantic import Field, model_validator
@@ -10,7 +11,7 @@ from domain_packs.mold.ports.schemas import StrictModel
 
 
 class ProcurementPriceContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(default=None, min_length=1, max_length=200,
         description='项目编号/名称、料号/料品名称、价格单号、供应商、采购申请或订单线索。')
 
@@ -215,7 +216,7 @@ def _augment_order_receipts(db,orders):
                 shipment['receipts']=receipts
 
 
-def _analysis(prices,needs,requests,orders):
+def _analysis(prices,needs,requests,orders,erp_procurement_execution):
     today=now().date().isoformat()
     effective=[row for row in prices if row.get('status')=='EFFECTIVE']
     open_prices=[row for row in prices if row.get('status') in {'DRAFT','SUBMITTED','RETURNED','APPLY_BLOCKED'}]
@@ -227,6 +228,15 @@ def _analysis(prices,needs,requests,orders):
         mid=(need.get('material') or {}).get('id')
         if mid and mid not in material_has_price:no_price.append(need)
     tracking=_order_tracking(orders)
+    erp_records = (erp_procurement_execution or {}).get("records") or {}
+    erp_totals = erp_records.get("totals") or {}
+    erp_quality = erp_records.get("quality_inspection_records") or []
+    erp_quality_totals = erp_records.get("quality_totals") or {}
+    erp_quality_failed = [
+        row for row in erp_quality
+        if str(row.get("result") or "").lower() in {"unqualified", "partial"}
+        or str(row.get("status") or "").lower() in {"partial", "reject_return"}
+    ]
     warnings=[]
     if not effective:warnings.append('当前可见范围未见已生效采购价格，不能据此带出正式下单价格依据。')
     if open_prices:warnings.append('存在未完成的采购价格审批，价格依据可能即将变化。')
@@ -234,9 +244,15 @@ def _analysis(prices,needs,requests,orders):
     if no_price:warnings.append('存在设计BOM采购/委外需求未匹配到当前可见有效价格。')
     if tracking['totals'].get('unshipped_lines'):warnings.append('存在正式订单未完全发货的明细，需采购跟踪供应商生产/发货。')
     if tracking['totals'].get('exception_lines'):warnings.append('存在供应商发货异常，需关联整改、退换货、扣款或工程联络处理。')
+    if (erp_procurement_execution or {}).get("status") == "RESOLVED" and any(erp_totals.values()):
+        warnings.append('已读取 ERP 原系统采购订单、供应商发货、入库或库存流水；这些事实保留原系统引用，不能替代 Agent 本地订单收货、检验和异常闭环。')
+    if erp_quality:
+        warnings.append('已读取 ERP 原系统质检任务或结果；这些事实保留原系统引用，不能替代 Agent 本地入库检验或工程异常闭环。')
+    if erp_quality_failed:
+        warnings.append('ERP 存在采购/入库相关质检不合格或部分合格结果，需核对退换货、整改和复检依据。')
     return {'effective_prices':effective[:50],'open_price_reviews':open_prices[:50],'expired_prices':expired[:50],
         'design_procurement_needs_without_visible_price':no_price[:50],
-        'order_tracking':tracking,'warnings':warnings,'derived_status':{
+        'order_tracking':tracking,'erp_procurement_execution':erp_procurement_execution,'warnings':warnings,'derived_status':{
             'has_effective_price':bool(effective),
             'has_open_price_review':bool(open_prices),
             'has_design_procurement_need':bool(needs),
@@ -244,7 +260,15 @@ def _analysis(prices,needs,requests,orders):
             'has_purchase_request':bool(requests),
             'has_purchase_order':bool(orders),
             'has_unshipped_order_line':bool(tracking['totals'].get('unshipped_lines')),
-            'has_order_exception':bool(tracking['totals'].get('exception_lines'))}}
+            'has_order_exception':bool(tracking['totals'].get('exception_lines')),
+            'has_erp_purchase_order':bool(erp_totals.get('purchase_orders')),
+            'has_erp_supplier_delivery':bool(erp_totals.get('supplier_deliveries')),
+            'has_erp_inbound':bool(erp_totals.get('inbounds')),
+            'has_erp_stock_flow':bool(erp_totals.get('stock_flows')),
+            'has_erp_quality_inspection':bool(erp_quality),
+            'has_erp_quality_open':bool(erp_quality_totals.get('open_inspections')),
+            'has_erp_quality_failure':bool(erp_quality_failed or erp_quality_totals.get('failed_inspections')),
+        }}
 
 
 def query(db,user,data:ProcurementPriceContextInput,allowed_tools:set[str]):
@@ -260,6 +284,8 @@ def query(db,user,data:ProcurementPriceContextInput,allowed_tools:set[str]):
         requests=_purchase_requests(db,user,project.id,allowed_tools)
         orders=_order_rows(db,user,project.id,allowed_tools)
         _augment_order_receipts(db,orders)
+        from domain_packs.mold.erp.design.erp_progress import query_project_procurement_execution
+        erp_procurement_execution = query_project_procurement_execution(db, user, project)
         skipped=[]
         if 'query_design_route_context' not in allowed_tools and 'query_design_route' not in allowed_tools:skipped.append('设计BOM采购/委外需求')
         if 'query_purchase_requests' not in allowed_tools:skipped.append('采购申请')
@@ -267,7 +293,8 @@ def query(db,user,data:ProcurementPriceContextInput,allowed_tools:set[str]):
         if skipped:limitations.append('未分配对应查询工具，未返回：'+'、'.join(skipped))
         return {'resolution':'RESOLVED','data':[{'project':_project_card(db,user,project,alternatives or ('项目定位',)),
             'profile':_profile(db,user,project.id),'purchase_prices':prices,'design_procurement_needs':needs,
-            'purchase_requests':requests,'purchase_orders':orders,'analysis':_analysis(prices,needs,requests,orders)}],
+            'purchase_requests':requests,'purchase_orders':orders,
+            'analysis':_analysis(prices,needs,requests,orders,erp_procurement_execution)}],
             'source':'agent_db','as_of':now().isoformat(),'limitations':limitations}
     if alternatives is None:
         return {'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now().isoformat(),

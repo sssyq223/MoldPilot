@@ -1094,6 +1094,9 @@ def submit_subject(db,user,subject_id,revision,definition_id,material_review_id=
     if subject.status!='DRAFT':subject.revision+=1
     subject.status='SUBMITTED';subject.round_no+=1
     detail=domains.typed_detail(db,subject)
+    if subject.kind=='supplier_payment':
+        from domain_packs.mold.erp.finance.payment_basis import approval_material
+        detail['payment_basis']=approval_material(db,user,subject)
     snapshot={**domains.values(subject),'detail':detail,'lines':[],
               'amount':detail.get('amount'),'currency':detail.get('currency'),
               'submitted_at':now().isoformat(),'submitter':{'id':user.id,'username':user.username,'name':user.display_name,'department':user.department}}

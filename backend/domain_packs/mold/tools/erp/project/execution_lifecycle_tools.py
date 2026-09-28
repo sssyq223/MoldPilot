@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from pydantic import Field, ValidationError, model_validator
 
 from domain_packs.mold.ports.db import now
@@ -10,8 +11,32 @@ from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import (
 )
 
 
+EXECUTION_PROPOSAL_TOOLS = frozenset(
+    {
+        "prepare_project_plan_baseline",
+        "prepare_project_plan_change",
+        "prepare_plan_department_confirmation",
+        "prepare_design_order_approval",
+        "prepare_assembly_execution",
+        "prepare_trial_result",
+        "prepare_logistics_route",
+        "prepare_logistics_quote",
+        "prepare_customer_delivery_signature",
+        "prepare_customer_acceptance",
+        "prepare_outbound_release",
+        "prepare_contract_signing_record",
+        "prepare_supplier_material_handoff",
+        "prepare_supplier_material_verification",
+        "prepare_supplier_progress_policy",
+        "prepare_supplier_progress_report",
+        "prepare_outsource_change_negotiation",
+        "prepare_supplier_deduction_settlement",
+    }
+)
+
+
 class ProjectExecutionContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(
         default=None,
         min_length=1,
@@ -72,38 +97,73 @@ def _not_applicable_stage(key, name, query_tool, reason, *, conditional=False):
     }
 
 
-def _plan_stage(row):
+def _plan_stage(row, allowed_tools=None):
     if row is None:
         return _unavailable_stage("baseline_plan", "基线计划交接", "query_project_plan_context")
     analysis = _analysis(row)
     derived = analysis.get("derived_status") or {}
+    project_status = derived.get("project_status")
     active = analysis.get("active_plan")
     pending = [
         item for item in (row.get("project_plans") or [])
         if item.get("status") in {"DRAFT", "SUBMITTED", "RETURNED", "APPLY_BLOCKED"}
     ]
-    if derived.get("has_effective_plan") or active:
+    # When there is no effective plan yet, the required milestone list is a
+    # readiness checklist for a future proposal, not evidence that an
+    # existing plan is incomplete.  Keep that distinction in the execution
+    # projection so a DRAFT project is routed back to kickoff instead of
+    # being described as an incomplete baseline plan.
+    missing = (
+        (analysis.get("milestone_coverage") or {}).get("missing") or []
+        if active
+        else []
+    )
+    if project_status == "DRAFT":
+        # A missing plan on a draft project is an upstream kickoff handoff
+        # gap. Keep the execution stage visible, but do not describe it as a
+        # plan-only omission that can be fixed before formal start.
+        state = "BLOCKED"
+    elif (derived.get("has_effective_plan") or active) and missing:
+        state = "NEEDS_ATTENTION"
+    elif derived.get("has_effective_plan") or active:
         state = "ACTIVE"
     elif pending:
         state = "WAITING_APPROVAL"
     else:
         state = "NOT_STARTED"
     blockers = []
-    missing = (analysis.get("milestone_coverage") or {}).get("missing") or []
-    if state != "ACTIVE":
+    if project_status == "DRAFT":
+        blockers.append("项目当前仍为 DRAFT，正式开工尚未生效；必须先完成启动段交接，不能直接建立执行基线计划。")
+    if not (derived.get("has_effective_plan") or active):
         blockers.append("未见生效项目基线计划，后续阶段不能据此认定已获得正式计划依据。")
     if missing:
-        blockers.append("基线计划缺少部分项目大节点。")
+        labels = (analysis.get("milestone_coverage") or {}).get("missing_labels") or missing
+        blockers.append("基线计划缺少项目大节点：" + "、".join(labels) + "；需通过计划变更补齐。")
+    allowed_tools = allowed_tools or set()
+    action_tool = None
+    if state == "NEEDS_ATTENTION" and "prepare_project_plan_change" in allowed_tools:
+        if row.get("workflow_options"):
+            action_tool = "prepare_project_plan_change"
+    elif state == "NOT_STARTED" and project_status == "ACTIVE":
+        if "prepare_project_plan_baseline" in allowed_tools and row.get("baseline_workflow_options"):
+            action_tool = "prepare_project_plan_baseline"
     return {
         "key": "baseline_plan",
         "name": "基线计划交接",
         "state": state,
         "query_tool": "query_project_plan_context",
+        "action_tool": action_tool,
         "facts": {
             "active_plan": active,
             "pending_count": len(pending),
             "task_count": len(analysis.get("tasks") or []),
+            "required_milestones": (
+                analysis.get("milestone_coverage") or {}
+            ).get("required") or [],
             "missing_milestones": missing,
+            "baseline_readiness": analysis.get("baseline_readiness") or {},
+            "plan_change_workflow_count": len(row.get("workflow_options") or []),
+            "baseline_workflow_count": len(row.get("baseline_workflow_options") or []),
         },
         "blockers": blockers,
     }
@@ -170,9 +230,18 @@ def _procurement_stage(row, design_row):
     derived = analysis.get("derived_status") or {}
     design_derived = _analysis(design_row).get("derived_status") or {}
     design_visible = design_row is not None
+    has_erp_procurement_fact = any(
+        derived.get(key)
+        for key in (
+            "has_erp_purchase_order",
+            "has_erp_supplier_delivery",
+            "has_erp_inbound",
+            "has_erp_stock_flow",
+        )
+    )
     if design_visible and not design_derived.get("has_purchase_or_outsource_route") and not any(
         derived.get(key) for key in ("has_purchase_request", "has_purchase_order", "has_design_procurement_need")
-    ):
+    ) and not has_erp_procurement_fact:
         return _not_applicable_stage(
             "procurement",
             "采购 / 价格 / 订单",
@@ -188,6 +257,10 @@ def _procurement_stage(row, design_row):
         state = "ACTIVE"
     elif derived.get("has_purchase_order"):
         state = "COMPLETED"
+    elif derived.get("has_erp_supplier_delivery") or derived.get("has_erp_inbound") or derived.get("has_erp_stock_flow"):
+        state = "ACTIVE"
+    elif derived.get("has_erp_purchase_order"):
+        state = "ACTIVE"
     elif derived.get("has_purchase_request"):
         state = "ACTIVE"
     elif derived.get("has_design_procurement_need") and derived.get("has_effective_price"):
@@ -213,6 +286,10 @@ def _procurement_stage(row, design_row):
             "has_purchase_request": bool(derived.get("has_purchase_request")),
             "has_purchase_order": bool(derived.get("has_purchase_order")),
             "has_unshipped_order_line": bool(derived.get("has_unshipped_order_line")),
+            "has_erp_purchase_order": bool(derived.get("has_erp_purchase_order")),
+            "has_erp_supplier_delivery": bool(derived.get("has_erp_supplier_delivery")),
+            "has_erp_inbound": bool(derived.get("has_erp_inbound")),
+            "has_erp_stock_flow": bool(derived.get("has_erp_stock_flow")),
         },
         "blockers": blockers,
     }
@@ -255,6 +332,8 @@ def _full_outsource_stage(row, execution_mode):
         blockers.append("未见整套委外合同的人工签署文件或签署依据。")
     if derived.get("has_supplier_progress_risk") or derived.get("has_open_outsource_issue"):
         blockers.append("存在供应商进度风险或未关闭委外问题。")
+    if derived.get("has_erp_outsource_exception"):
+        blockers.append("ERP 原系统存在委外异常记录，需在原系统责任流程中处理并核对回执。")
     return {
         "key": "full_outsource",
         "name": "整套委外协同",
@@ -268,6 +347,10 @@ def _full_outsource_stage(row, execution_mode):
             "has_supplier_progress_policy": bool(derived.get("has_supplier_progress_policy")),
             "has_supplier_progress_report": bool(derived.get("has_supplier_progress_report")),
             "has_supplier_shipment_or_receipt": bool(derived.get("has_supplier_shipment_or_receipt")),
+            "has_erp_project_record": bool(derived.get("has_erp_project_record")),
+            "has_erp_outsource_order": bool(derived.get("has_erp_outsource_order")),
+            "has_erp_fulfillment_record": bool(derived.get("has_erp_fulfillment_record")),
+            "has_erp_outsource_exception": bool(derived.get("has_erp_outsource_exception")),
         },
         "blockers": blockers,
     }
@@ -289,13 +372,15 @@ def _manufacturing_stage(row, execution_mode):
     process = analysis.get("process_tasks") or []
     started = analysis.get("started_process_tasks") or []
     done = analysis.get("done_process_tasks") or []
+    has_erp_order = bool(derived.get("has_erp_manufacturing_order"))
+    has_erp_report = bool(derived.get("has_erp_work_report"))
     if not derived.get("has_effective_plan"):
         state = "BLOCKED"
     elif derived.get("has_open_quality_or_rework_contact") or derived.get("has_internal_route_without_task"):
         state = "NEEDS_ATTENTION"
     elif process and len(done) == len(process):
         state = "COMPLETED"
-    elif started:
+    elif started or has_erp_report or has_erp_order:
         state = "ACTIVE"
     elif process:
         state = "READY"
@@ -310,6 +395,8 @@ def _manufacturing_stage(row, execution_mode):
         blockers.append("存在未关闭质量或返工事项。")
     if process and not derived.get("has_independent_quality_report"):
         blockers.append("未见独立工序检测报告；任务完成不能替代检验合格。")
+    if has_erp_order or has_erp_report:
+        blockers.append("已读取 ERP 制造工单/报工事实；仍需核对独立质检结论，不能把报工完成当作检验合格。")
     return {
         "key": "manufacturing_quality",
         "name": "内部制造 / 质检",
@@ -321,6 +408,9 @@ def _manufacturing_stage(row, execution_mode):
             "started_count": len(started),
             "done_count": len(done),
             "has_independent_quality_report": bool(derived.get("has_independent_quality_report")),
+            "has_erp_manufacturing_order": has_erp_order,
+            "has_erp_work_report": has_erp_report,
+            "has_erp_work_order_report": bool(derived.get("has_erp_work_order_report")),
         },
         "blockers": blockers,
     }
@@ -339,13 +429,22 @@ def _assembly_stage(row, execution_mode):
         return _unavailable_stage("assembly_trial", "内部装配 / 试模", "query_assembly_trial_context")
     analysis = _analysis(row)
     derived = analysis.get("derived_status") or {}
+    assembly_trial_handoffs = (
+        analysis.get("assembly_trial_handoffs")
+        if isinstance(analysis.get("assembly_trial_handoffs"), list)
+        else []
+    )
     if not derived.get("has_effective_plan") or not derived.get("has_design_route"):
+        state = "BLOCKED"
+    elif derived.get("has_blocked_plan_dependency"):
         state = "BLOCKED"
     elif derived.get("has_trial_failed") or derived.get("has_open_assembly_or_trial_issue"):
         state = "NEEDS_ATTENTION"
     elif derived.get("has_assembly_done") and derived.get("has_trial_passed"):
         state = "COMPLETED"
     elif derived.get("has_assembly_started") or derived.get("has_trial_request"):
+        state = "ACTIVE"
+    elif derived.get("has_erp_assembly_or_trial_fact"):
         state = "ACTIVE"
     elif derived.get("has_assembly_plan_node") or derived.get("has_trial_plan_node"):
         state = "READY"
@@ -356,6 +455,8 @@ def _assembly_stage(row, execution_mode):
         blockers.append("未见生效计划，无法核对装配与试模前置。")
     if not derived.get("has_design_route"):
         blockers.append("未见设计 BOM 与路线，不能判断装配齐套。")
+    if derived.get("has_blocked_plan_dependency"):
+        blockers.append("装配或试模计划节点存在未完成前置依赖，不能认定已具备下游执行条件。")
     if derived.get("has_trial_failed"):
         blockers.append("存在试模未通过结果，需完成整改和重新验证。")
     if derived.get("has_open_assembly_or_trial_issue"):
@@ -373,7 +474,16 @@ def _assembly_stage(row, execution_mode):
             "has_trial_request": bool(derived.get("has_trial_request")),
             "has_trial_result": bool(derived.get("has_trial_result")),
             "has_trial_passed": bool(derived.get("has_trial_passed")),
+            "has_blocked_plan_dependency": bool(derived.get("has_blocked_plan_dependency")),
+            "has_erp_assembly_or_trial_fact": bool(derived.get("has_erp_assembly_or_trial_fact")),
+            "has_erp_work_report": bool(derived.get("has_erp_work_report")),
+            "handoff_states": {
+                item.get("key"): item.get("state")
+                for item in assembly_trial_handoffs
+                if isinstance(item, dict) and item.get("key")
+            },
         },
+        "handoffs": assembly_trial_handoffs,
         "blockers": blockers,
     }
 
@@ -383,16 +493,35 @@ def _delivery_stage(row):
         return _unavailable_stage("delivery_acceptance", "交付 / 签收 / 验收", "query_delivery_logistics_context")
     analysis = _analysis(row)
     derived = analysis.get("derived_status") or {}
+    unresolved_acceptance = derived.get("has_unresolved_customer_acceptance_failure")
+    if unresolved_acceptance is None:
+        unresolved_acceptance = (
+            derived.get("has_failed_customer_acceptance")
+            and not derived.get("has_customer_recheck_passed")
+        )
     if (
         derived.get("has_rejected_receipt")
         or derived.get("has_trial_failed")
+        or derived.get("has_outbound_release_failure")
         or derived.get("has_open_delivery_or_quality_issue")
-        or (derived.get("has_failed_customer_acceptance") and not derived.get("has_customer_recheck_passed"))
+        or derived.get("has_erp_delivery_exception")
+        or unresolved_acceptance
     ):
         state = "NEEDS_ATTENTION"
+    elif (
+        derived.get("has_trial_passed")
+        and derived.get("has_outbound_release_evidence") is not None
+        and not derived.get("has_outbound_self_inspection_passed")
+    ):
+        state = "BLOCKED"
     elif derived.get("has_customer_signature") and derived.get("has_customer_acceptance"):
         state = "COMPLETED"
-    elif derived.get("has_customer_signature") or derived.get("has_stock_out_movement") or derived.get("has_supplier_shipment"):
+    elif (
+        derived.get("has_customer_signature")
+        or derived.get("has_stock_out_movement")
+        or derived.get("has_supplier_shipment")
+        or derived.get("has_erp_fulfillment_record")
+    ):
         state = "ACTIVE"
     elif derived.get("has_trial_passed"):
         state = "READY"
@@ -405,10 +534,20 @@ def _delivery_stage(row):
         blockers.append("存在收货检验不合格数量。")
     if derived.get("has_trial_failed"):
         blockers.append("存在试模未通过结果，不能认定具备交付验收结论。")
+    if (
+        derived.get("has_trial_passed")
+        and derived.get("has_outbound_release_evidence") is not None
+        and not derived.get("has_outbound_self_inspection_passed")
+    ):
+        blockers.append("试模已通过但未见出厂自检/放行合格依据，不能推进出库发运。")
+    if derived.get("has_outbound_release_failure"):
+        blockers.append("最新出厂自检/放行未通过，需完成整改复验。")
     if derived.get("has_open_delivery_or_quality_issue"):
         blockers.append("存在未关闭质量、交付、物流或验收问题。")
-    if derived.get("has_failed_customer_acceptance") and not derived.get("has_customer_recheck_passed"):
-        blockers.append("客户验收未通过且未见复验通过。")
+    if derived.get("has_erp_delivery_exception"):
+        blockers.append("ERP 原系统存在未关闭的交付履约异常。")
+    if unresolved_acceptance:
+        blockers.append("当前客户验收链仍有未解决的失败结果，不能以历史通过代替复验通过。")
     return {
         "key": "delivery_acceptance",
         "name": "交付 / 签收 / 验收",
@@ -419,7 +558,13 @@ def _delivery_stage(row):
             "has_stock_out_movement": bool(derived.get("has_stock_out_movement")),
             "has_customer_signature": bool(derived.get("has_customer_signature")),
             "has_customer_acceptance": bool(derived.get("has_customer_acceptance")),
+            "has_unresolved_customer_acceptance_failure": bool(unresolved_acceptance),
+            "has_outbound_release_evidence": derived.get("has_outbound_release_evidence"),
+            "has_outbound_self_inspection_passed": derived.get("has_outbound_self_inspection_passed"),
+            "has_outbound_release_failure": derived.get("has_outbound_release_failure"),
             "has_structured_logistics_price": bool(derived.get("has_structured_logistics_price")),
+            "has_erp_fulfillment_record": bool(derived.get("has_erp_fulfillment_record")),
+            "has_erp_delivery_exception": bool(derived.get("has_erp_delivery_exception")),
         },
         "blockers": blockers,
     }
@@ -438,7 +583,13 @@ def _execution_mode(contexts):
     return "CONFLICT", True
 
 
-def _current_focus(stages):
+def _current_focus(stages, entry_handoff=None):
+    if (
+        entry_handoff
+        and entry_handoff.get("state") == "BLOCKED"
+        and entry_handoff.get("next_query_tool") == "query_project_kickoff_context"
+    ):
+        return {"key": "kickoff_handoff", "name": "启动段交接", "state": "BLOCKED"}
     applicable = [stage for stage in stages if stage["state"] not in {"UNAVAILABLE", "NOT_APPLICABLE"}]
     for stage in applicable:
         state = stage["state"]
@@ -455,6 +606,7 @@ def _current_focus(stages):
 
 def _phase(focus):
     return {
+        "kickoff_handoff": "KICKOFF_HANDOFF",
         "baseline_plan": "PLAN_HANDOFF",
         "design_route": "DESIGN_ENGINEERING",
         "procurement": "PROCUREMENT",
@@ -467,11 +619,87 @@ def _phase(focus):
     }.get(focus["key"], "EXECUTION")
 
 
-def _recommendations(focus, stages, allowed_tools):
+def _execution_entry_handoff(plan_row, allowed_tools):
+    """Expose the handoff from kickoff/start into the execution chain.
+
+    Execution starts only after formal start and a baseline plan are effective.
+    Keep this projection read-only: it points the caller back to the kickoff
+    coordinator when the project is still a draft, without preparing or
+    submitting a start request on its own.
+    """
+    if plan_row is None:
+        return {
+            "key": "kickoff_to_execution",
+            "from": "project_kickoff",
+            "to": "baseline_plan",
+            "state": "UNAVAILABLE",
+            "reason": "基线计划上下文不可见，不能判断启动链路是否已交接到执行链路。",
+            "next_query_tool": (
+                "query_project_kickoff_context"
+                if "query_project_kickoff_context" in allowed_tools
+                else None
+            ),
+        }
+    analysis = _analysis(plan_row)
+    derived = analysis.get("derived_status") or {}
+    project_status = derived.get("project_status")
+    has_effective_plan = bool(derived.get("has_effective_plan") or analysis.get("active_plan"))
+    if project_status == "DRAFT":
+        state = "BLOCKED"
+        reason = "项目仍处于 DRAFT，正式开工尚未生效；启动链路尚未交接到执行链路。"
+        next_tool = "query_project_kickoff_context"
+    elif has_effective_plan:
+        state = "CONNECTED"
+        reason = "正式项目计划已生效，启动链路已将依据交接到执行链路。"
+        next_tool = "query_project_plan_context"
+    else:
+        state = "WAITING"
+        reason = "项目已具备执行入口，但尚未见生效基线计划交接。"
+        next_tool = "query_project_plan_context"
+    if next_tool not in allowed_tools:
+        next_tool = None
+    return {
+        "key": "kickoff_to_execution",
+        "from": "project_kickoff",
+        "to": "baseline_plan",
+        "state": state,
+        "reason": reason,
+        "next_query_tool": next_tool,
+    }
+
+
+def _recommendations(focus, stages, allowed_tools, entry_handoff=None):
     if focus["key"] in {"completed", "visibility"}:
         return []
     stage = next((item for item in stages if item["key"] == focus["key"]), None)
+    if (
+        focus["key"] in {"baseline_plan", "kickoff_handoff"}
+        and entry_handoff
+        and entry_handoff.get("state") == "BLOCKED"
+        and entry_handoff.get("next_query_tool")
+    ):
+        return [{
+            "kind": "PRIMARY",
+            "stage": "project_kickoff",
+            "tool": entry_handoff["next_query_tool"],
+            "reason": "执行入口被正式开工门禁阻塞，先回到启动链路核对承接、正式开工和计划前置条件。",
+            "requires_user_confirmation": False,
+        }]
     tool = stage.get("query_tool") if stage else None
+    action_tool = stage.get("action_tool") if stage else None
+    if action_tool and action_tool in allowed_tools:
+        return [{
+            "kind": "PRIMARY",
+            "stage": stage["key"],
+            "tool": action_tool,
+            "reason": (
+                "当前基线计划缺少项目大节点，先依据已读取的计划事实准备计划变更建议；"
+                "补齐节点前不得认定执行链路完整。"
+                if action_tool == "prepare_project_plan_change"
+                else "正式开工已具备，但尚无生效基线计划；先依据真实项目节点准备基线计划建议。"
+            ),
+            "requires_user_confirmation": True,
+        }]
     if not tool or tool not in allowed_tools:
         return []
     return [{
@@ -481,6 +709,182 @@ def _recommendations(focus, stages, allowed_tools):
         "reason": "展开当前执行焦点的完整事实、缺口和来源后，再决定是否进入对应 ERP 或人工审批。",
         "requires_user_confirmation": False,
     }]
+
+
+def _boundary_read_tools(recommendations, allowed_tools):
+    """Keep an explicitly recommended cross-domain reader callable after the
+    execution coordinator closes deferred discovery.
+
+    The execution coordinator can deliberately route a blocked execution
+    entry back to the kickoff coordinator.  That reader is still part of the
+    current user request, so scope closure must preserve it instead of
+    returning a misleading ``SCOPE_CLOSED`` rejection.
+    """
+    return sorted(
+        {
+            recommendation.get("tool")
+            for recommendation in recommendations
+            if isinstance(recommendation, dict)
+            and isinstance(recommendation.get("tool"), str)
+            and recommendation.get("tool") in allowed_tools
+            and recommendation.get("tool") not in EXECUTION_PROPOSAL_TOOLS
+        }
+    )
+
+
+def _execution_handoffs(stages):
+    """Project the evidence boundaries between execution stages.
+
+    A stage being visible or even active does not prove that its output was
+    handed to the next responsibility.  Keep these edges read-only and
+    conservative so callers can see exactly which downstream task is still
+    disconnected without changing domain state or inventing ERP facts.
+    """
+    by_key = {stage["key"]: stage for stage in stages}
+
+    def edge(key, source, target, state, reason, next_tool=None):
+        return {
+            "key": key,
+            "from": source,
+            "to": target,
+            "state": state,
+            "reason": reason,
+            "next_query_tool": next_tool,
+        }
+
+    def unavailable(source, target):
+        return by_key[source]["state"] == "UNAVAILABLE" or by_key[target]["state"] == "UNAVAILABLE"
+
+    plan = by_key["baseline_plan"]
+    design = by_key["design_route"]
+    procurement = by_key["procurement"]
+    outsource = by_key["full_outsource"]
+    manufacturing = by_key["manufacturing_quality"]
+    assembly = by_key["assembly_trial"]
+    delivery = by_key["delivery_acceptance"]
+    result = []
+
+    if unavailable("baseline_plan", "design_route"):
+        result.append(edge("plan_to_design", "baseline_plan", "design_route", "UNAVAILABLE",
+                           "计划或设计阶段能力不可见，不能判断设计成果是否已接入计划。",
+                           "query_project_plan_context"))
+    elif design["state"] == "NOT_APPLICABLE":
+        result.append(edge("plan_to_design", "baseline_plan", "design_route", "NOT_APPLICABLE",
+                           "当前加工方式不要求内部设计路线，委外资料应转入整套委外协同。",
+                           "query_full_outsource_context"))
+    elif plan["state"] != "ACTIVE":
+        result.append(edge("plan_to_design", "baseline_plan", "design_route", "BLOCKED",
+                           "未见生效基线计划，设计成果不能认定已接入正式执行计划。",
+                           "query_project_plan_context"))
+    elif design["state"] in {"ACTIVE", "COMPLETED", "NEEDS_ATTENTION"}:
+        result.append(edge("plan_to_design", "baseline_plan", "design_route", "CONNECTED",
+                           "已见生效计划和设计路线事实；设计影响项仍需按设计阶段状态处理。",
+                           "query_design_route_context"))
+    else:
+        result.append(edge("plan_to_design", "baseline_plan", "design_route", "WAITING",
+                           "计划已生效，但尚未见生效设计路线接入。",
+                           "query_design_route_context"))
+
+    if procurement["state"] == "NOT_APPLICABLE":
+        result.append(edge("design_to_procurement", "design_route", "procurement", "NOT_APPLICABLE",
+                           "当前可见设计路线没有采购或局部委外需求。", "query_procurement_price_context"))
+    elif unavailable("design_route", "procurement"):
+        result.append(edge("design_to_procurement", "design_route", "procurement", "UNAVAILABLE",
+                           "设计或采购阶段能力不可见，不能判断采购需求是否已经承接。",
+                           "query_procurement_price_context"))
+    elif procurement["state"] in {"BLOCKED", "NEEDS_ATTENTION"}:
+        result.append(edge("design_to_procurement", "design_route", "procurement", "BLOCKED",
+                           "采购或价格/订单阶段存在明确阻塞或异常，设计采购需求尚未完成承接。",
+                           "query_procurement_price_context"))
+    elif procurement["state"] in {"READY", "ACTIVE", "COMPLETED"}:
+        result.append(edge("design_to_procurement", "design_route", "procurement", "CONNECTED",
+                           "采购需求已形成价格、请购或订单事实。", "query_procurement_price_context"))
+    else:
+        result.append(edge("design_to_procurement", "design_route", "procurement", "WAITING",
+                           "设计阶段已可见，但尚未见采购需求、价格或订单承接事实。",
+                           "query_procurement_price_context"))
+
+    if manufacturing["state"] == "NOT_APPLICABLE":
+        result.append(edge("plan_to_manufacturing", "baseline_plan", "manufacturing_quality", "NOT_APPLICABLE",
+                           "当前加工方式不要求内部制造，制造与质检应在委外协同阶段核对。",
+                           "query_full_outsource_context"))
+    elif unavailable("baseline_plan", "manufacturing_quality"):
+        result.append(edge("plan_to_manufacturing", "baseline_plan", "manufacturing_quality", "UNAVAILABLE",
+                           "计划或制造阶段能力不可见，不能判断工序任务是否已下达。",
+                           "query_manufacturing_quality_context"))
+    elif manufacturing["state"] in {"BLOCKED", "NEEDS_ATTENTION"}:
+        result.append(edge("plan_to_manufacturing", "baseline_plan", "manufacturing_quality", "BLOCKED",
+                           "制造或质检阶段存在计划、路线、质量或返工缺口。",
+                           "query_manufacturing_quality_context"))
+    elif manufacturing.get("facts", {}).get("process_task_count", 0):
+        result.append(edge("plan_to_manufacturing", "baseline_plan", "manufacturing_quality", "CONNECTED",
+                           "已见生效计划与工序任务事实。", "query_manufacturing_quality_context"))
+    else:
+        result.append(edge("plan_to_manufacturing", "baseline_plan", "manufacturing_quality", "WAITING",
+                           "计划已生效，但尚未见内部工序任务承接事实。",
+                           "query_manufacturing_quality_context"))
+
+    if assembly["state"] == "NOT_APPLICABLE":
+        result.append(edge("manufacturing_to_assembly", "manufacturing_quality", "assembly_trial", "NOT_APPLICABLE",
+                           "当前加工方式不要求内部装配与试模。", "query_full_outsource_context"))
+    elif unavailable("manufacturing_quality", "assembly_trial"):
+        result.append(edge("manufacturing_to_assembly", "manufacturing_quality", "assembly_trial", "UNAVAILABLE",
+                           "制造或装配阶段能力不可见，不能判断零件齐套与装配任务是否接上。",
+                           "query_assembly_trial_context"))
+    elif assembly["state"] in {"BLOCKED", "NEEDS_ATTENTION"}:
+        result.append(edge("manufacturing_to_assembly", "manufacturing_quality", "assembly_trial", "BLOCKED",
+                           "装配或试模前置条件存在缺口、失败或未关闭问题。",
+                           "query_assembly_trial_context"))
+    elif assembly.get("facts", {}).get("has_assembly_plan_node") or assembly.get("facts", {}).get("has_assembly_order"):
+        result.append(edge("manufacturing_to_assembly", "manufacturing_quality", "assembly_trial", "CONNECTED",
+                           "已见装配计划节点或装配工单承接事实。", "query_assembly_trial_context"))
+    else:
+        result.append(edge("manufacturing_to_assembly", "manufacturing_quality", "assembly_trial", "WAITING",
+                           "制造阶段可见，但尚未见装配计划节点或装配工单。",
+                           "query_assembly_trial_context"))
+
+    if outsource["state"] != "NOT_APPLICABLE":
+        if unavailable("full_outsource", "delivery_acceptance"):
+            state, reason = "UNAVAILABLE", "委外或交付阶段能力不可见，不能判断供应商交付是否接入。"
+        elif outsource["state"] in {"BLOCKED", "NEEDS_ATTENTION"}:
+            state, reason = "BLOCKED", "委外合同、签署、供应商进度或问题处理仍有缺口。"
+        elif delivery["state"] in {"ACTIVE", "COMPLETED"}:
+            state, reason = "CONNECTED", "已见委外执行与交付阶段事实。"
+        else:
+            state, reason = "WAITING", "委外执行尚未形成供应商发货、收货或交付验收承接事实。"
+        result.append(edge("outsource_to_delivery", "full_outsource", "delivery_acceptance", state, reason,
+                           "query_delivery_logistics_context"))
+
+    if assembly["state"] != "NOT_APPLICABLE":
+        if unavailable("assembly_trial", "delivery_acceptance"):
+            state, reason = "UNAVAILABLE", "装配/试模或交付阶段能力不可见，不能判断试模成果是否进入交付。"
+        elif assembly.get("facts", {}).get("has_trial_passed") and delivery["state"] in {"READY", "ACTIVE", "COMPLETED"}:
+            state, reason = "CONNECTED", "已见试模通过与交付阶段承接事实。"
+        elif assembly.get("facts", {}).get("has_trial_passed"):
+            state, reason = "READY", "试模已通过，但尚未见交付计划、出库或签收承接。"
+        else:
+            state, reason = "BLOCKED", "试模尚未通过，不能把装配完成当作可交付。"
+        result.append(edge("assembly_to_delivery", "assembly_trial", "delivery_acceptance", state, reason,
+                           "query_delivery_logistics_context"))
+    return result
+
+
+def _model_context(project_card, lifecycle):
+    return {
+        "project": project_card,
+        "execution_lifecycle": {
+            "kind": lifecycle.get("kind"),
+            "phase": lifecycle.get("phase"),
+            "execution_mode": lifecycle.get("execution_mode"),
+            "execution_mode_conflict": lifecycle.get("execution_mode_conflict"),
+            "current_focus": lifecycle.get("current_focus"),
+            "stages": lifecycle.get("stages") or [],
+            "entry_handoff": lifecycle.get("entry_handoff"),
+            "handoffs": lifecycle.get("handoffs") or [],
+            "recommended_next_steps": lifecycle.get("recommended_next_steps") or [],
+            "access_gaps": lifecycle.get("access_gaps") or [],
+        },
+    }
 
 
 def query(db, user, data: ProjectExecutionContextInput, allowed_tools: set[str]):
@@ -582,7 +986,7 @@ def query(db, user, data: ProjectExecutionContextInput, allowed_tools: set[str])
 
     execution_mode, mode_conflict = _execution_mode(contexts)
     stages = [
-        _plan_stage(contexts.get("plan")),
+        _plan_stage(contexts.get("plan"), allowed_tools),
         _design_stage(contexts.get("design"), execution_mode),
         _procurement_stage(contexts.get("procurement"), contexts.get("design")),
         _full_outsource_stage(contexts.get("full_outsource"), execution_mode),
@@ -590,7 +994,9 @@ def query(db, user, data: ProjectExecutionContextInput, allowed_tools: set[str])
         _assembly_stage(contexts.get("assembly"), execution_mode),
         _delivery_stage(contexts.get("delivery")),
     ]
-    focus = _current_focus(stages)
+    handoffs = _execution_handoffs(stages)
+    entry_handoff = _execution_entry_handoff(contexts.get("plan"), allowed_tools)
+    focus = _current_focus(stages, entry_handoff)
     lifecycle = {
         "kind": "project_execution_lifecycle_v1",
         "phase": _phase(focus),
@@ -598,11 +1004,20 @@ def query(db, user, data: ProjectExecutionContextInput, allowed_tools: set[str])
         "execution_mode_conflict": mode_conflict,
         "current_focus": focus,
         "stages": stages,
-        "recommended_next_steps": _recommendations(focus, stages, allowed_tools),
+        "entry_handoff": entry_handoff,
+        "handoffs": handoffs,
+        "recommended_next_steps": _recommendations(
+            focus,
+            stages,
+            allowed_tools,
+            entry_handoff,
+        ),
         "access_gaps": access_gaps,
         "guardrails": [
             "阶段能力缺失时显示 UNAVAILABLE，不根据相邻阶段、历史对话或自然语言推断结果。",
             "NOT_APPLICABLE 只在已读取加工方式或设计路线足以证明分支不适用时使用。",
+            "entry_handoff 只表示启动链路是否已把正式开工和计划依据交接到执行链路；BLOCKED 时先查询启动链路，不自动准备或提交正式开工。",
+            "handoffs 只表示当前可见证据是否把一个责任阶段接到下一个阶段；WAITING、BLOCKED 和 READY 都不是执行完成或审批生效。",
             "协调器只读；涉及写入、审批、ERP 执行或人工确认时必须进入对应业务能力并取得正式回执。",
         ],
     }
@@ -610,12 +1025,26 @@ def query(db, user, data: ProjectExecutionContextInput, allowed_tools: set[str])
         limitations.append("不同已授权阶段返回的加工方式不一致，已标记资料冲突；未据此裁剪执行分支。")
     if access_gaps:
         limitations.append("未读取以下未分配阶段能力：" + "、".join(access_gaps) + "。")
+    project_card = _project_card(db, user, project, alternatives or ("项目定位",))
+    recommendations = lifecycle["recommended_next_steps"]
+    scope_boundary = {
+        "complete": True,
+        "scope_key": "project_execution",
+        "write_tools": sorted(
+            tool for tool in EXECUTION_PROPOSAL_TOOLS if tool in allowed_tools
+        ),
+    }
+    read_tools = _boundary_read_tools(recommendations, allowed_tools)
+    if read_tools:
+        scope_boundary["read_tools"] = read_tools
     return {
         "resolution": "RESOLVED",
         "data": [{
-            "project": _project_card(db, user, project, alternatives or ("项目定位",)),
+            "project": project_card,
             "analysis": {"execution_lifecycle": lifecycle},
         }],
+        "model_context": _model_context(project_card, lifecycle),
+        "scope_boundary": scope_boundary,
         "source": "agent_db",
         "as_of": now().isoformat(),
         "limitations": limitations,

@@ -123,6 +123,10 @@ class ResponseInput(Mutation):
     source_system:Literal['AGENT','ERP','MANUAL']
     source_ref:str|None=Field(default=None,max_length=300)
     source_as_of:AwareDatetime|None=None
+    execution_plan_id:str|None=Field(default=None,min_length=1,max_length=36,
+        description='线上设变执行所依据的已批准处理方案 ID；不填时只记录未关联事实，不能用于认定本次方案执行完成。')
+    execution_start_id:str|None=Field(default=None,min_length=1,max_length=36,
+        description='上述方案对应的已生效正式开工通知 ID；与 execution_plan_id 同时填写。')
 
     @field_validator('content','execution_evidence')
     @classmethod
@@ -154,7 +158,13 @@ def require(db,user,action,c):
 
 def load(db,user,cid,write=False):
     q=select(m.ContactCase).where(m.ContactCase.id==cid)
-    c=db.scalar(q.with_for_update() if write else q)
+    if write:
+        # Approval effects and formal starts acquire the project first. Keep
+        # the same order for contact edits and refresh cached case material.
+        project_id=db.scalar(select(m.ContactCase.project_id).where(m.ContactCase.id==cid))
+        if project_id:
+            db.scalar(select(m.Project).where(m.Project.id==project_id).with_for_update())
+    c=db.scalar(q.with_for_update().execution_options(populate_existing=True) if write else q)
     if not c:raise DomainError('NOT_FOUND','联络单不存在或无权访问',404)
     require(db,user,'read',c)
     return c
@@ -189,6 +199,11 @@ def progress_summary(db,c):
         latest_resolution={'id':subject.id,'number':subject.number,'status':subject.status,'case_revision':resolution.case_revision}
     blockers=[]
     next_actions=[]
+    if resolution and c.mode=='ONLINE' and c.change_type=='CHANGE' and not c.closed_at:
+        from domain_packs.mold.erp.project.change_start import effective_notice
+        if not effective_notice(db,c,resolution):
+            blockers.append('本次设变尚无生效正式开工通知；方案获批不替代开工审批。')
+            next_actions.append('按原项目和原模具准备设变正式开工，免费或无新增合同也需审批。')
     if c.closed_at:
         state='CLOSED'
         next_actions.append('联络单已人工关闭，仅可查看历史过程和附件版本。')
@@ -224,8 +239,17 @@ def progress_summary(db,c):
         blockers.append('存在事项未在最新生效方案下复验合格。')
         next_actions.append('按最新方案重新反馈或复验受影响事项。')
     else:
-        state='READY_TO_CLOSE'
-        next_actions.append('所有有效事项已在最新生效方案下复验合格，可由发起人或指定验收负责人准备关闭。')
+        from domain_packs.mold.erp.change.contact_execution import require_current_basis
+        for task in active:
+            try:require_current_basis(db,c,task,resolution)
+            except DomainError as error:
+                blockers.append(error.message)
+        if blockers:
+            state='EXECUTION_BASIS_REQUIRED'
+            next_actions.append('先核对本次方案和开工对应的执行反馈，不能按旧反馈直接关闭。')
+        else:
+            state='READY_TO_CLOSE'
+            next_actions.append('所有有效事项已在最新生效方案下复验合格，可由发起人或指定验收负责人准备关闭。')
     return {'state':state,'task_counts':counts,'active_task_count':len(active),'latest_resolution':latest_resolution,
             'blockers':blockers,'next_actions':next_actions,
             'limitations':['办理状态由当前联络记录、事项、方案和复验结果派生；不读取或修改 ERP 异常流程。',
@@ -251,10 +275,12 @@ def serialize(db,c,details=False,user=None):
         result['can_record']=bool(user and not c.closed_at and permitted(db,user,'record',c))
         result['tasks']=[]
         for t in db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==c.id).order_by(m.ContactTask.created_at,m.ContactTask.id)):
+            from domain_packs.mold.erp.change.contact_execution import latest_basis
             g=db.get(m.AssignmentGroup,t.department_id);person=db.get(m.User,t.assignee_id) if t.assignee_id else None
             result['tasks'].append({'id':t.id,'title':t.title,'department_id':g.id,'department_name':g.name,
                 'department_active':g.active,'assignee_id':t.assignee_id,'assignee_name':person.display_name if person else None,
                 'status':t.status,'response':t.response,'verified_plan_id':t.verified_plan_id,
+                'execution_basis':latest_basis(db,t),
                 'affected_type':t.affected_type,'affected_ref':t.affected_ref,'impact_description':t.impact_description,
                 'planned_action':t.planned_action,'delivery_impact_days':t.delivery_impact_days,
                 'estimated_amount':t.estimated_amount,'currency':t.currency,'source_system':t.source_system,
@@ -274,7 +300,13 @@ def serialize(db,c,details=False,user=None):
 
 
 def replay(db,user,c,data,action):
-    digest=content_hash({'action':action,'input':data.model_dump(mode='json')})
+    encoded=data.model_dump(mode='json')
+    # New optional linkage must not change hashes of historical unlinked
+    # responses; an explicit linkage remains part of the immutable request.
+    if isinstance(data,ResponseInput):
+        for key in ('execution_plan_id','execution_start_id'):
+            if encoded.get(key) is None:encoded.pop(key,None)
+    digest=content_hash({'action':action,'input':encoded})
     old=db.scalar(select(m.ContactRecord).where(m.ContactRecord.case_id==c.id,m.ContactRecord.author_id==user.id,
         m.ContactRecord.request_key==str(data.request_key)))
     if old:
@@ -407,13 +439,15 @@ def respond(cid:str,tid:str,data:ResponseInput,user=Depends(current_user),db=Dep
     if done:return serialize(db,c,True,user)
     if t.status!='ASSIGNED':raise DomainError('TASK_FINISHED','该事项已有反馈，不能覆盖',409)
     if data.actual_completed_at>now():raise DomainError('INVALID_TIME','实际完成时间不能晚于当前时间')
+    from domain_packs.mold.erp.change.contact_execution import preview_basis
+    execution_basis=preview_basis(db,user,c,data)
     t.status='RESPONDED';t.response=data.content;t.actual_completed_at=data.actual_completed_at;t.actual_hours=data.actual_hours
     t.actual_amount=data.actual_amount;t.actual_currency=data.currency;t.execution_evidence=data.execution_evidence
     t.execution_source_system=data.source_system;t.execution_source_ref=data.source_ref;t.execution_source_as_of=data.source_as_of
     recipients=[c.created_by] if permitted(db,db.get(m.User,c.created_by),'read',c) else []
     return append(db,user,c,data,'RESPONDED',digest,{'task_id':t.id,'content':data.content,'actual_completed_at':data.actual_completed_at.isoformat(),
         'actual_hours':str(data.actual_hours),'actual_amount':str(data.actual_amount) if data.actual_amount is not None else None,
-        'currency':data.currency,'execution_evidence':data.execution_evidence,'source_system':data.source_system,
+        'currency':data.currency,'execution_evidence':data.execution_evidence,'execution_basis':execution_basis,'source_system':data.source_system,
         'source_ref':data.source_ref,'source_as_of':data.source_as_of.isoformat() if data.source_as_of else None,'is_approval':False},recipients=recipients)
 
 

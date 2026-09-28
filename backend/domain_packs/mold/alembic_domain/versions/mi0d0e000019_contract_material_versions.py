@@ -23,7 +23,7 @@ def _has_column(table: str, column: str) -> bool:
     rows = bind.execute(
         sa.text(
             "SELECT 1 FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = :table "
+            "WHERE table_schema = current_schema() AND table_name = :table "
             "AND column_name = :column"
         ),
         {"table": table, "column": column},
@@ -36,9 +36,9 @@ def _has_constraint(table: str, name: str) -> bool:
     rows = bind.execute(
         sa.text(
             "SELECT 1 FROM pg_constraint "
-            "WHERE conrelid = to_regclass(:table) AND conname = :name"
+            "WHERE conrelid = to_regclass(current_schema() || '.' || :table) AND conname = :name"
         ),
-        {"table": f"public.{table}", "name": name},
+        {"table": table, "name": name},
     ).fetchall()
     return bool(rows)
 

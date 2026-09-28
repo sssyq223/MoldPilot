@@ -14,6 +14,11 @@ TRACKING_ROLES = (
     ("MARKETING_OWNER", "市场负责人"),
 )
 
+INITIAL_PROCESSING_KINDS = {
+    "NEW_MOLD": "新模",
+    "FIRST_EXTERNAL_CHANGE": "首次承接外部模具设变",
+}
+
 
 def _revision_for_project(db, project_id, revision_id):
     revision = db.get(m.BidIntakeRevision, revision_id)
@@ -44,6 +49,31 @@ def _molds(db, project_id):
     ]
 
 
+def _erp_project_mapping(db, project_id):
+    """Return the human-confirmed ERP project identity for a start snapshot.
+
+    The mapping is an Agent-side evidence record.  Keeping its source and
+    confirmation time in the frozen start material makes the formal-start
+    proposal auditable without copying or writing any ERP data.
+    """
+    mapping = db.scalar(
+        select(m.ProjectERPMapping).where(
+            m.ProjectERPMapping.project_id == project_id,
+            m.ProjectERPMapping.status == "CONFIRMED",
+        )
+    )
+    if not mapping:
+        return None
+    return {
+        "id": mapping.id,
+        "erp_project_code": mapping.erp_project_code,
+        "source_ref": mapping.source_ref,
+        "source_as_of": mapping.source_as_of.isoformat() if mapping.source_as_of else None,
+        "confirmed_at": mapping.confirmed_at.isoformat() if mapping.confirmed_at else None,
+        "status": mapping.status,
+    }
+
+
 def _effective_contracts(db, project_id):
     result = []
     rows = db.scalars(
@@ -57,19 +87,10 @@ def _effective_contracts(db, project_id):
     )
     for subject in rows:
         detail = db.get(m.ContractDetail, subject.id)
-        receipt = db.scalar(
-            select(m.ContractReceiptEvidence)
-            .where(m.ContractReceiptEvidence.contract_subject_id == subject.id)
-            .order_by(m.ContractReceiptEvidence.material_version.desc())
-            .limit(1)
-        )
-        attachments = list(
-            db.scalars(
-                select(m.ContractAttachment).where(
-                    m.ContractAttachment.contract_subject_id == subject.id
-                )
-            )
-        )
+        from domain_packs.mold.erp.commercial import contract_materials
+        receipt = contract_materials.receipt(db, subject.id)
+        from domain_packs.mold.erp.commercial import contract_documents
+        attachments = [row for row in contract_documents.cards(db,subject.id) if row['is_current']]
         result.append(
             {
                 "id": subject.id,
@@ -89,24 +110,28 @@ def build(
     effective_date,
     expected_contract_date=None,
     contract_visibility=True,
+    *,
+    processing_kind,
 ):
     """Build and validate the exact business material shown on the start card."""
     revision = _revision_for_project(db, project.id, revision_id)
+    if processing_kind not in INITIAL_PROCESSING_KINDS:
+        raise DomainError("START_KIND_REQUIRED", "首次开工须明确选择新模或首次承接外部模具设变，不能根据历史参考模号推断。", 409)
     molds = _molds(db, project.id)
+    erp_project_mapping = _erp_project_mapping(db, project.id)
     if not molds:
         raise DomainError(
             "INTERNAL_MOLD_REQUIRED",
             "正式开工前必须先在 ERP 确认项目关联的唯一内部模具号",
             409,
         )
+    if any(row['status'] != 'ACTIVE' for row in molds):
+        raise DomainError('START_MOLD_INACTIVE', '本次开工关联的内部模具已停用，请先核对模具档案。', 409)
     internal_numbers = {row["internal_number"] for row in molds}
-    if (
-        revision.historical_mold_number
-        and revision.historical_mold_number not in internal_numbers
-    ):
+    if revision.historical_mold_number in internal_numbers:
         raise DomainError(
-            "HISTORICAL_MOLD_MISMATCH",
-            "已有模具设变必须复用已关联的原内部模具号，请先核对 ERP 模具关系",
+            "HISTORICAL_REFERENCE_IS_TARGET",
+            "备份/参考模具与本次开工对象必须分别关联；原模再次设变应走原项目设变流程，不能当作首次开工。",
             409,
         )
 
@@ -144,11 +169,15 @@ def build(
         "external_order_number": revision.external_order_number,
         "customer_mold_number": revision.customer_mold_number,
         "customer_model_or_material": revision.customer_model_or_material,
-        "processing_kind": (
-            "MOLD_CHANGE" if revision.historical_mold_number else "NEW_MOLD"
-        ),
+        "customer_model_number": revision.customer_model_number,
+        "customer_material_number": revision.customer_material_number,
+        "processing_kind": processing_kind,
         "historical_mold_number": revision.historical_mold_number,
+        "historical_relation_kind": revision.historical_relation_kind,
         "internal_molds": molds,
+        # This is a frozen Agent evidence snapshot; it does not mirror an ERP
+        # project record or authorize an ERP write.
+        "erp_project_mapping": erp_project_mapping,
         "external_start_date": (
             revision.external_start_date.isoformat()
             if revision.external_start_date
@@ -198,6 +227,54 @@ def create(db, user, subject, revision_id, material, expected_contract_date=None
     return row
 
 
+def validate_frozen_targets(db, subject, user=None):
+    """Recheck frozen identities at submission and final approval application.
+
+    Historical notices without a snapshot retain their existing legacy path;
+    a frozen notice must never silently follow a changed mold association.
+    """
+    snapshot = db.get(m.InternalStartSnapshot, subject.id)
+    if snapshot is None:
+        return
+    material = snapshot.linked_business
+    if material.get('processing_kind') == 'EXISTING_MOLD_CHANGE':
+        from domain_packs.mold.erp.project.change_start import validate_frozen
+        validate_frozen(db,user,subject,snapshot)
+        return True
+    if material.get('processing_kind') not in INITIAL_PROCESSING_KINDS:
+        raise DomainError('START_MATERIALS_REVIEW_REQUIRED', '开工材料未明确本次业务类型，请重新准备并核对。', 409)
+    revision = _revision_for_project(db, subject.project_id, snapshot.bid_intake_revision_id)
+    latest_id = db.scalar(select(m.BidIntakeRevision.id).where(
+        m.BidIntakeRevision.case_id == revision.case_id
+    ).order_by(m.BidIntakeRevision.version.desc()).limit(1))
+    if latest_id != revision.id:
+        raise DomainError('BID_INTAKE_VERSION_CONFLICT', '中标接收资料已有新版本，请重新核对开工材料。', 409)
+    # Lock the existing bindings and identities until approval application
+    # commits. The project itself is already locked by the domain caller.
+    current = list(db.execute(select(m.ProjectMold, m.Mold).join(
+        m.Mold, m.Mold.id == m.ProjectMold.mold_id
+    ).where(m.ProjectMold.project_id == subject.project_id).with_for_update()
+        .execution_options(populate_existing=True)))
+    frozen_ids = {(row['id'], row['internal_number']) for row in material.get('internal_molds', [])}
+    current_ids = {(mold.id, mold.internal_number) for _, mold in current}
+    if not frozen_ids or current_ids != frozen_ids or any(mold.status != 'ACTIVE' for _, mold in current):
+        raise DomainError('START_MOLD_MAPPING_CHANGED', '确认后的内部模具关联、模号或可用状态已变化，请重新核对开工材料。', 409)
+    frozen_mapping = material.get('erp_project_mapping')
+    if frozen_mapping:
+        current_mapping = db.scalar(select(m.ProjectERPMapping).where(
+            m.ProjectERPMapping.project_id == subject.project_id,
+            m.ProjectERPMapping.status == 'CONFIRMED',
+        ).with_for_update().execution_options(populate_existing=True))
+        if (
+            not current_mapping
+            or current_mapping.id != frozen_mapping.get('id')
+            or current_mapping.erp_project_code != frozen_mapping.get('erp_project_code')
+            or current_mapping.source_ref != frozen_mapping.get('source_ref')
+            or current_mapping.status != frozen_mapping.get('status')
+        ):
+            raise DomainError('START_MOLD_MAPPING_CHANGED', '确认后的 ERP 项目映射或来源已变化，请重新核对开工材料。', 409)
+
+
 def card(db, start_subject_id):
     if not start_subject_id:
         return None
@@ -237,10 +314,19 @@ def frozen_material_model_context(snapshot):
         "external_order_number": order_number,
         "customer_mold_number": linked.get("customer_mold_number"),
         "customer_model_or_material": linked.get("customer_model_or_material"),
+        "customer_model_number": linked.get("customer_model_number"),
+        "customer_material_number": linked.get("customer_material_number"),
+        "processing_kind": linked.get("processing_kind"),
+        "historical_mold_number": linked.get("historical_mold_number"),
+        "historical_relation_kind": linked.get("historical_relation_kind"),
+        "change_source": linked.get("change_source"),
+        "change_terms": linked.get("change_terms"),
+        "supplier_mapping": linked.get("supplier_mapping"),
         "internal_mold_numbers": [
             item.get("internal_number")
             for item in linked.get("internal_molds", [])
         ],
+        "erp_project_mapping": linked.get("erp_project_mapping"),
         "expected_contract_date": (
             snapshot.get("expected_contract_date")
             if isinstance(snapshot, dict) else None
@@ -346,6 +432,10 @@ def contract_follow_up(db, project_id, start_subject_id, visible_contracts=None)
             "contracts": [],
             "passive_reminder": None,
         }
+    material=snapshot.get('linked_business',{})
+    if material.get('processing_kind')=='EXISTING_MOLD_CHANGE' and material.get('contract_state_at_issue')=='NO_NEW_CONTRACT':
+        return {'state':'NOT_REQUIRED','expected_date':None,'actual_received_date':None,
+                'contracts':[],'passive_reminder':None}
     if visible_contracts is None:
         return {
             "state": "CONTRACT_VISIBILITY_REQUIRED",
@@ -355,6 +445,19 @@ def contract_follow_up(db, project_id, start_subject_id, visible_contracts=None)
             "passive_reminder": None,
         }
     contracts = list(visible_contracts)
+    if material.get('processing_kind')=='EXISTING_MOLD_CHANGE':
+        selected=(material.get('change_terms') or {}).get('contract_subject_id')
+        # A pre-existing unrelated contract cannot fulfill a new-contract notice.
+        if selected:
+            contracts=[item for item in contracts if item.get('id')==selected]
+            if not contracts:
+                return {'state':'LINKED_CONTRACT_UNAVAILABLE','expected_date':None,'actual_received_date':None,
+                        'contracts':[],'passive_reminder':None}
+        else:
+            contracts=[item for item in contracts if (
+                (((item.get('detail') or {}).get('business_terms') or {}).get('association_snapshot') or {})
+                .get('selected_internal_start', {}) or {}
+            ).get('id')==start_subject_id]
     received = []
     for item in contracts:
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else item
@@ -365,7 +468,7 @@ def contract_follow_up(db, project_id, start_subject_id, visible_contracts=None)
                     "number": item.get("number"),
                     "contract_number": detail.get("contract_number"),
                     "received_date": detail.get("received_date"),
-                    "attachment_count": len(detail.get("attachments") or []),
+                    "attachment_count": sum(row.get('is_current',True) for row in detail.get("attachments") or []),
                 }
             )
     expected = snapshot.get("expected_contract_date")

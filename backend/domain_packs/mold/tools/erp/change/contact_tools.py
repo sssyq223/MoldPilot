@@ -118,6 +118,8 @@ def preview(db,user,action,cid,tid,data,run=None):
             if task.assignee_id!=user.id or not c.assignee_eligible(db,user,group,case):raise DomainError('FORBIDDEN','只能由当前有权处理人提交反馈',403)
             if task.status!='ASSIGNED':raise DomainError('TASK_FINISHED','该事项已有反馈，不能覆盖',409)
             if data.actual_completed_at>now():raise DomainError('INVALID_TIME','实际完成时间不能晚于当前时间')
+            from domain_packs.mold.erp.change.contact_execution import preview_basis
+            result['本次执行依据']=preview_basis(db,user,case,data)
             result.update({'处理人':user.display_name,'反馈':data.content,'实际完成时间':data.actual_completed_at.isoformat(),
                            '实际工时':str(data.actual_hours),'实际金额':(str(data.actual_amount)+' '+data.currency) if data.actual_amount is not None else '不涉及',
                            '执行依据':data.execution_evidence,'事实来源':SOURCE_NAMES[data.source_system],'来源引用':data.source_ref or 'Agent本地记录',

@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -15,7 +16,7 @@ from domain_packs.mold.ports.schemas import StrictModel
 
 
 class QuoteContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(default=None, min_length=1, max_length=200,
         description='项目编号/名称、候选匹配线索、合同号、模具号等。')
 
@@ -282,11 +283,17 @@ def execute_quote_tool(db,user,key,arguments,run=None):
         'limitations':['仅准备报价承接/拒单建议；本人确认后才创建业务材料并提交审批，审批完成前不改变项目或合同。']}
 
 
-def source(db,user,step_id):
+def source(db,user,step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
     step=db.get(m.Step,step_id);run=db.get(m.Run,step.run_id) if step else None
     if not run or run.user_id!=user.id:raise DomainError('NOT_FOUND','操作建议不存在或无权访问',404)
-    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
+    if run.status not in {'RUNNING','RUNNING_SCOPED','SUCCEEDED'}:
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id==user.id,
+            m.HumanIntent.action=='quote_acceptance.execute',
+            m.HumanIntent.resource_id==step_id,
+            m.HumanIntent.receipt.is_not(None)).limit(1))
+        if not resolved:raise DomainError('PROPOSAL_STOPPED','任务已停止，请重新准备操作',409)
     if run.security_version!=user.security_version or run.checkpoint.get('authorization_hash')!=fingerprint(db,user):
         raise DomainError('AUTHORIZATION_CHANGED','授权已变化，请重新准备操作',403)
     proposal=step.result.get('proposal')
@@ -326,7 +333,7 @@ router=APIRouter()
 
 @router.get('/api/quote-acceptance-proposals/{step_id}')
 def proposal_status(step_id:str,user=Depends(current_user),db=Depends(get_db)):
-    source(db,user,step_id)
+    source(db,user,step_id,for_read=True)
     intent=db.scalar(select(m.HumanIntent).where(m.HumanIntent.user_id==user.id,
         m.HumanIntent.action=='quote_acceptance.execute',m.HumanIntent.resource_id==step_id,
         m.HumanIntent.receipt['status'].as_string()=='SUBMITTED').order_by(m.HumanIntent.created_at.desc()))

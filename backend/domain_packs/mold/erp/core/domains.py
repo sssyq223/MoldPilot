@@ -61,16 +61,12 @@ def typed_detail(db,subject):
             db,m.QuotationFeedback,quotation_subject_id=subject.id)]
     elif kind in {'sales_contract','full_outsource_contract'}:
         detail=values(db.get(m.ContractDetail,subject.id),('subject_id',))
-        receipt=db.scalar(
-            select(m.ContractReceiptEvidence)
-            .where(m.ContractReceiptEvidence.contract_subject_id==subject.id)
-            .order_by(m.ContractReceiptEvidence.material_version.desc())
-            .limit(1)
-        )
+        from domain_packs.mold.erp.commercial import contract_materials
+        receipt=contract_materials.receipt(db,subject.id)
         detail['received_date']=receipt.received_date.isoformat() if receipt else None
         from domain_packs.mold.erp.commercial import contract_terms
         detail['business_terms']=contract_terms.card(db,subject.id)
-        detail['stages']=[values(stage) for stage in rows(db,m.PaymentStage,contract_id=subject.id)]
+        detail['stages']=[values(stage) for stage in contract_materials.stages(db,subject.id)]
         from domain_packs.mold.erp.commercial import contract_documents
         from domain_packs.mold.erp.commercial.contract_relations import allocation_cards
         detail['attachments']=contract_documents.cards(db,subject.id)
@@ -106,7 +102,11 @@ def typed_detail(db,subject):
     elif kind=='engineering_change':
         detail=values(db.get(m.EngineeringChangeDetail,subject.id),('subject_id',))
         detail['impacts']=[values(i) for i in rows(db,m.ChangeImpact,change_id=subject.id)]
-    else:detail=values(db.get(m.BusinessDecisionDetail,subject.id),('subject_id',))
+    else:
+        detail=values(db.get(m.BusinessDecisionDetail,subject.id),('subject_id',))
+        if kind=='internal_start':
+            from domain_packs.mold.erp.project.start_materials import card
+            detail['formal_start_material']=card(db,subject.id)
     return detail
 
 
@@ -315,11 +315,15 @@ def create(db,user,payload):
         if detail.relation_type!='ORIGINAL':
             require_source(db,detail.replaces_id,project.id,{kind})
         db.add(m.ContractDetail(subject_id=subject.id,**detail.model_dump(exclude={'stages'})))
-        for stage in detail.stages:db.add(m.PaymentStage(contract_id=subject.id,currency=detail.currency,**stage.model_dump()))
+        for stage in detail.stages:
+            db.add(m.PaymentStage(contract_id=subject.id, currency=detail.currency,
+                **s.payment_stage_record(stage)))
     elif isinstance(detail,s.PaymentInput):
         stage=db.get(m.PaymentStage,detail.stage_id)
         if not stage:raise DomainError('STAGE_UNKNOWN','付款阶段不存在')
         contract=require_source(db,stage.contract_id,project.id,{'full_outsource_contract'})
+        from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+        require_current_stage(db,stage)
         if subject.category!=contract.category or detail.currency!=stage.currency:
             raise DomainError('CURRENCY_OR_SCOPE','付款币种或责任域与合同不一致')
         db.add(m.PaymentRequestDetail(subject_id=subject.id,**detail.model_dump()))
@@ -386,17 +390,21 @@ def payment_reserve(db,subject):
     detail=db.get(m.PaymentRequestDetail,subject.id)
     stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())
     require_source(db,stage.contract_id,subject.project_id,{'full_outsource_contract'})
+    from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+    require_current_stage(db,stage)
     if not stage.condition_confirmed:raise DomainError('PAYMENT_CONDITION','付款阶段条件尚未由人员核实',409)
     reservations=db.scalar(select(func.coalesce(func.sum(m.PaymentRequestDetail.reservation),0)).where(m.PaymentRequestDetail.stage_id==stage.id))
     paid=db.scalar(select(func.coalesce(func.sum(m.PaymentConfirmation.amount),0)).join(m.PaymentRequestDetail,m.PaymentRequestDetail.subject_id==m.PaymentConfirmation.request_id).where(m.PaymentRequestDetail.stage_id==stage.id))
+    from domain_packs.mold.erp.commercial.contract_relations import allocated_total
+    paid+=allocated_total(db,stage.contract_id,'SUPPLIER_PAYMENT',stage_id=stage.id)
     if detail.amount>stage.amount-reservations-paid:raise DomainError('PAYMENT_OVERFLOW','阶段可申请余额不足',409)
     detail.reservation=detail.amount
 
 
 def before_submit(db,user,subject):
-    project=db.scalar(select(m.Project).where(m.Project.id==subject.project_id).with_for_update())
-    allowed={'pause_resume','supplier_payment','engineering_change','contact_resolution','project_close','sales_contract','full_outsource_contract'}
-    if project.status in {'CLOSED','TERMINATED'} and subject.kind not in {'supplier_payment','project_close'}:
+    project=db.scalar(select(m.Project).where(m.Project.id==subject.project_id).with_for_update().execution_options(populate_existing=True))
+    allowed={'pause_resume','supplier_payment','finance_correction','engineering_change','contact_resolution','project_close','sales_contract','full_outsource_contract'}
+    if project.status in {'CLOSED','TERMINATED'} and subject.kind not in {'supplier_payment','finance_correction','project_close'}:
         raise DomainError('PROJECT_BLOCKED','项目已关闭或终止，禁止普通业务提交',409)
     if project.status=='PAUSED' and subject.kind not in allowed:raise DomainError('PROJECT_BLOCKED','项目暂停，禁止普通执行业务',409)
     if subject.kind=='contact_resolution':
@@ -418,6 +426,11 @@ def before_submit(db,user,subject):
             m.BusinessSubject.kind=='quotation',m.BusinessSubject.status=='EFFECTIVE').limit(1)):
             raise DomainError('QUOTE_VERSION_SOURCE_REQUIRED','项目已有生效报价，新增版本必须关联前一版本',409)
     elif subject.kind=='supplier_payment':payment_reserve(db,subject)
+    elif subject.kind=='finance_correction':
+        from domain_packs.mold.erp.finance.correction_allocations import effects
+        detail=db.get(m.FinanceCorrectionDetail,subject.id)
+        for effect in effects(db,db.get(m.PaymentConfirmation,detail.original_payment_id)):
+            authorize(db,user,db.get(m.BusinessSubject,effect['target_contract_id']),'read')
     elif subject.kind in {'sales_contract','full_outsource_contract'}:
         from domain_packs.mold.erp.commercial.contract_relations import validate_relation
         validate_relation(db,subject,lock=True)
@@ -425,6 +438,9 @@ def before_submit(db,user,subject):
         from domain_packs.mold.erp.project.project_closure import validate_close_detail
         validate_close_detail(db,project,db.get(m.ProjectClosureDetail,subject.id),subject.id)
     elif subject.kind=='internal_start':
+        from domain_packs.mold.erp.project.start_materials import validate_frozen_targets
+        if validate_frozen_targets(db, subject, user):
+            return
         detail=db.get(m.BusinessDecisionDetail,subject.id)
         source=require_source(db,detail.source_subject_id,subject.project_id,{'quote_acceptance'})
         if db.get(m.BusinessDecisionDetail,source.id).decision!='ACCEPT':raise DomainError('NOT_ACCEPTED','报价尚未确认承接')
@@ -441,13 +457,13 @@ def release_reservation(db,subject):
 
 def apply(db,user,subject):
     """Called inside the same local transaction as the final human approval."""
-    project=db.scalar(select(m.Project).where(m.Project.id==subject.project_id).with_for_update())
+    project=db.scalar(select(m.Project).where(m.Project.id==subject.project_id).with_for_update().execution_options(populate_existing=True))
     kind=subject.kind
     from domain_packs.mold import domain_extensions as ext
     if kind in ext.TABLES:
         if kind not in {'finance_correction','contact_resolution'} and project.status!='ACTIVE':raise DomainError('PROJECT_BLOCKED','业务生效要求项目执行中')
         ext.apply(db,user,subject)
-    if project.status=='PAUSED' and kind not in {'pause_resume','supplier_payment','engineering_change','contact_resolution','project_close','sales_contract','full_outsource_contract'}:
+    if project.status=='PAUSED' and kind not in {'pause_resume','supplier_payment','finance_correction','engineering_change','contact_resolution','project_close','sales_contract','full_outsource_contract'}:
         raise DomainError('APPLY_BLOCKED','项目已暂停，审批通过但业务暂不能生效',409)
     if kind=='quote_acceptance':
         detail=db.get(m.BusinessDecisionDetail,subject.id)
@@ -475,10 +491,13 @@ def apply(db,user,subject):
             'currency':detail.currency,'preliminary_execution_mode':detail.preliminary_execution_mode,
         },[subject.created_by])
     elif kind=='internal_start':
-        if project.status!='DRAFT':raise DomainError('START_STATE','只有未开工项目可正式开工',409)
-        detail=db.get(m.BusinessDecisionDetail,subject.id)
-        source=require_source(db,detail.source_subject_id,project.id,{'quote_acceptance'})
-        if db.get(m.BusinessDecisionDetail,source.id).decision!='ACCEPT':raise DomainError('NOT_ACCEPTED','未确认承接')
+        from domain_packs.mold.erp.project.start_materials import validate_frozen_targets
+        repeated=validate_frozen_targets(db, subject, user)
+        if not repeated:
+            if project.status!='DRAFT':raise DomainError('START_STATE','只有未开工项目可正式开工',409)
+            detail=db.get(m.BusinessDecisionDetail,subject.id)
+            source=require_source(db,detail.source_subject_id,project.id,{'quote_acceptance'})
+            if db.get(m.BusinessDecisionDetail,source.id).decision!='ACCEPT':raise DomainError('NOT_ACCEPTED','未确认承接')
         project.status='ACTIVE';project.row_version+=1
         from domain_packs.mold.erp.project import start_dispatches
         start_dispatches.create_for_internal_start(db,user,subject)
@@ -563,6 +582,9 @@ def apply(db,user,subject):
     elif kind=='supplier_payment':
         detail=db.get(m.PaymentRequestDetail,subject.id)
         stage=db.scalar(select(m.PaymentStage).where(m.PaymentStage.id==detail.stage_id).with_for_update())
+        require_source(db,stage.contract_id,subject.project_id,{'full_outsource_contract'})
+        from domain_packs.mold.erp.commercial.contract_materials import require_current_stage
+        require_current_stage(db,stage)
         if not stage.condition_confirmed or detail.reservation!=detail.amount:
             raise DomainError('APPLY_BLOCKED','付款条件或预留金额已变化')
         # Reservation remains occupied until finance confirms actual payment.

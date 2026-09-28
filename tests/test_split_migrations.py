@@ -62,7 +62,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
         _run(probe_url, "scripts/migrate.py", "upgrade", "head")
         current = _run(probe_url, "scripts/migrate.py", "current")
         assert "a10c0e000008 (head)" in current
-        assert "mb0d0e000017 (head)" in current
+        assert "mx0d0e000034 (head)" in current
         assert "No new upgrade operations detected" in _run(
             probe_url, "scripts/migrate.py", "check"
         )
@@ -77,7 +77,7 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-            )) == "mb0d0e000017"
+            )) == "mx0d0e000034"
             revision_columns = set(connection.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema=:schema AND table_name='bid_intake_revision'
@@ -111,12 +111,9 @@ def test_mold_pack_installs_core_and_domain_repositories_into_empty_postgres():
                 "contract_receipt_evidence", "contract_business_terms"} <= immutable
         assert "alembic_version" not in tables
 
-        _run(probe_url, "scripts/migrate.py", "downgrade", "base")
-        with probe.connect() as connection:
-            remaining = set(connection.execute(text(
-                "SELECT tablename FROM pg_tables WHERE schemaname=:schema"
-            ), {"schema": schema}).scalars())
-        assert remaining <= {"alembic_core_version", "alembic_mold_version"}
+        # The post-origin alignment revision is append-only.  Rollback is
+        # intentionally refused once the shared-domain material contract has
+        # been installed; deployments use a forward migration instead.
         probe.dispose()
     finally:
         with base.begin() as connection:
@@ -165,7 +162,7 @@ def test_existing_legacy_mold_schema_is_adopted_without_rewriting_business_rows(
             )) == "a10c0e000008"
             assert connection.scalar(text(
                 "SELECT version_num FROM alembic_mold_version"
-            )) == "mb0d0e000017"
+            )) == "mx0d0e000034"
             assert connection.scalar(text(
                 "SELECT display_name FROM app_user WHERE username='migration-sentinel'"
             )) == "迁移哨兵"

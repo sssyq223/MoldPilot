@@ -46,6 +46,17 @@ def plan(db,project,user,number='PLAN-001',kind='project_plan',status='EFFECTIVE
     return subject
 
 
+def effective_start(db,project,user,number='START-001'):
+    subject=m.BusinessSubject(kind='internal_start',number=number,project_id=project.id,
+        created_by=user.id,status='EFFECTIVE')
+    db.add(subject);db.flush()
+    db.add(m.BusinessDecisionDetail(subject_id=subject.id,source_subject_id=None,
+        decision='START',execution_mode='INTERNAL',effective_date=date.today(),
+        evidence='正式开工审批已生效',amount=None,currency=None))
+    db.flush()
+    return subject
+
+
 def task(db,plan_subject,user,key,name,start,end,status='PLANNED'):
     row=m.PlanTask(plan_id=plan_subject.id,key=key,name=name,owner_user_id=user.id,
         planned_start=start,planned_end=end,status=status,
@@ -77,7 +88,20 @@ class FakeERPProgressClient:
             '2026-09-16T10:00:00+08:00')
 
 
-def test_plan_context_schema_and_progress_analysis():
+class FakeERPCandidateProgressClient(FakeERPProgressClient):
+    def business_molds(self, project_no=None, mold_no=None):
+        assert project_no == "PLAN-ERP-CANDIDATE"
+        return {
+            "records": [{
+                "project_code": project_no,
+                "mold_code": "MOLD-ERP-CANDIDATE",
+                "source_ref": "scheduling/api/business/molds/:PLAN-ERP-CANDIDATE:MOLD-ERP-CANDIDATE",
+            }]
+        }
+
+
+def test_plan_context_schema_and_progress_analysis(monkeypatch):
+    monkeypatch.setattr(erp_progress, 'settings', lambda: SimpleNamespace(erp_base_url=''))
     engine,Session=factory()
     today=date.today()
     try:
@@ -129,6 +153,36 @@ def test_plan_context_schema_and_progress_analysis():
         engine.dispose()
 
 
+def test_project_plan_draft_is_confirmed_local_material_before_formal_start():
+    engine,Session=factory()
+    today=date.today()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-DRAFT',status='DRAFT')
+            capability(db,admin,'prepare_project_plan_draft')
+            conversation=m.Conversation(user_id=admin.id,title='开工前计划草案')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备开工前计划草案',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin)})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'客户承接后先梳理计划草案',
+                'tasks':[{'key':'design','name':'结构设计及出图','owner_user_id':admin.id,
+                    'planned_start':today.isoformat(),'planned_end':(today+timedelta(days=2)).isoformat(),'prerequisites':[]}]}
+            from domain_packs.mold.tools.erp.project.plan_tools import execute_plan_tool, confirm
+            evidence=execute_plan_tool(db,admin,'prepare_project_plan_draft',args,run=run)
+            step=m.Step(run_id=run.id,sequence=0,tool='prepare_project_plan_draft',request_hash='hash',result=evidence)
+            db.add(step);db.flush()
+            assert not list(db.scalars(select(m.BusinessSubject).where(m.BusinessSubject.project_id==p.id)))
+            receipt=confirm(db,admin,{'step_id':step.id,'proposal_hash':bpm.content_hash(evidence['proposal'])})
+            assert receipt['status']=='DRAFT'
+            subject=db.get(m.BusinessSubject,receipt['subject_id'])
+            assert subject.status=='DRAFT'
+            assert db.scalar(select(m.PlanTask).where(m.PlanTask.plan_id==subject.id)).key=='design'
+    finally:
+        engine.dispose()
+
+
 def test_plan_context_reads_erp_progress_as_reference_without_mirroring(monkeypatch):
     engine,Session=factory()
     FakeERPProgressClient.calls=[]
@@ -159,6 +213,69 @@ def test_plan_context_reads_erp_progress_as_reference_without_mirroring(monkeypa
             assert 'secretField' not in str(erp)
             assert 'internalCost' not in str(erp)
             assert not list(db.scalars(select(m.PlanTask).where(m.PlanTask.plan_id==base.id,m.PlanTask.actual_end.is_not(None))))
+    finally:
+        engine.dispose()
+
+
+def test_plan_context_can_read_exact_erp_candidate_nodes_before_local_handoff(monkeypatch):
+    engine,Session=factory()
+    FakeERPCandidateProgressClient.calls=[]
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-ERP-CANDIDATE')
+            db.add(m.ERPIdentity(user_id=admin.id,erp_user_id='ERP-ADMIN',token_ciphertext='cipher'))
+        monkeypatch.setattr(erp_progress,'settings',lambda:SimpleNamespace(erp_base_url='https://erp.example.test'))
+        monkeypatch.setattr(erp_progress,'decrypt',lambda value:'token-123')
+        monkeypatch.setattr(erp_progress,'ERPClient',FakeERPCandidateProgressClient)
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_project_plan_context',{'identifier':'PLAN-ERP-CANDIDATE'})
+            erp=result['data'][0]['erp_execution_progress']
+            assert erp['status']=='RESOLVED'
+            assert erp['mold_reference_source']=='ERP_EXACT_CANDIDATE'
+            assert erp['handoff_required'] is True
+            assert erp['mold_numbers']==['MOLD-ERP-CANDIDATE']
+            assert FakeERPCandidateProgressClient.calls == [{
+                'token':'token-123',
+                'mold_no':'MOLD-ERP-CANDIDATE',
+                'project_no':'PLAN-ERP-CANDIDATE',
+            }]
+    finally:
+        engine.dispose()
+
+
+def test_plan_context_baseline_readiness_includes_erp_mapping_gate(monkeypatch):
+    """A complete local plan still cannot submit before ERP handoff mapping."""
+    engine,Session=factory()
+    today=date(2026,9,1)
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-ERP-MAPPING-READINESS')
+            base=plan(db,p,admin,'PLAN-ERP-MAPPING-BASE')
+            for index,(key,name) in enumerate((
+                ('design','结构设计及出图'),('purchase','原材料采购'),
+                ('machining','工序加工'),('assembly','装配'),
+                ('trial','试模'),('delivery','最终交付验收'),
+            )):
+                task(db,base,admin,key,name,today+timedelta(days=index),today+timedelta(days=index+1))
+        monkeypatch.setattr(
+            erp_progress,
+            'query_project_progress',
+            lambda db,user,project: {
+                'status':'ERP_PROJECT_MAPPING_REQUIRED',
+                'limitations':['等待人工确认 ERP 项目映射'],
+                'records':None,
+            },
+        )
+        with Session() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            result=execute(db,admin,'query_project_plan_context',{'identifier':'PLAN-ERP-MAPPING-READINESS'})
+            readiness=result['data'][0]['analysis']['baseline_readiness']
+            assert readiness['complete'] is True
+            assert readiness['erp_mapping_required'] is True
+            assert readiness['erp_mapping_status']=='ERP_PROJECT_MAPPING_REQUIRED'
+            assert readiness['can_submit'] is False
+            assert 'ERP 项目与模具尚未完成人工映射' in readiness['blockers'][0]
     finally:
         engine.dispose()
 
@@ -241,6 +358,37 @@ def test_plan_context_reports_no_effective_plan_and_multiple_candidates():
             analysis=resolved['data'][0]['analysis']
             assert analysis['derived_status']['has_effective_plan'] is False
             assert '未见有效项目计划' in ''.join(analysis['warnings'])
+    finally:
+        engine.dispose()
+
+
+def test_plan_context_hides_write_workflows_until_real_plan_prerequisites_exist():
+    """A read result must not advertise baseline/change submission too early."""
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, 'admin', True)
+            draft_project = project(db, 'PLAN-WORKFLOW-DRAFT', status='DRAFT')
+            active_without_start = project(db, 'PLAN-WORKFLOW-NO-START', status='ACTIVE')
+            config = {
+                'business_type': 'project_plan',
+                'nodes': [{'key': 'review', 'name': '计划核对', 'mode': 'ALL',
+                           'users': [admin.id], 'reject_rules': []}],
+            }
+            db.add(m.WorkflowDefinition(
+                process_key='plan_workflow_prerequisite_guard', version=1,
+                name='计划前置条件核对', status='PUBLISHED', config=config,
+                bpmn_xml=bpm.compile_bpmn(config), package_hash='test',
+            ))
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username='admin').one()
+            for code in ('PLAN-WORKFLOW-DRAFT', 'PLAN-WORKFLOW-NO-START'):
+                result = execute(db, admin, 'query_project_plan_context', {'identifier': code})
+                row = result['data'][0]
+                assert row['baseline_workflow_options'] == []
+                assert row['workflow_options'] == []
+                assert '未返回基线计划审批流程' in ''.join(result['limitations'])
+                assert '未返回计划变更审批流程' in ''.join(result['limitations'])
     finally:
         engine.dispose()
 
@@ -488,6 +636,7 @@ def test_plan_baseline_proposal_requires_human_confirmation_then_submits_bpm():
     try:
         with Session.begin() as db:
             admin=user(db,'admin',True);p=project(db,'PLAN-BASELINE-PREP',status='ACTIVE')
+            effective_start(db,p,admin,'PLAN-BASELINE-PREP-START')
             config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
             definition=m.WorkflowDefinition(process_key='project_plan_baseline',version=1,name='项目基线计划审批',
                 status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
@@ -543,11 +692,44 @@ def test_plan_baseline_proposal_requires_human_confirmation_then_submits_bpm():
         engine.dispose()
 
 
+def test_plan_baseline_proposal_rejects_missing_project_milestones():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True)
+            p=project(db,'PLAN-BASELINE-MISSING-MILESTONE',status='ACTIVE')
+            effective_start(db,p,admin,'PLAN-BASELINE-MISSING-START')
+            config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='project_plan_baseline',version=1,name='项目基线计划审批',
+                status='PUBLISHED',config=config,bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+            db.add(definition)
+            conversation=m.Conversation(user_id=admin.id,title='基线计划')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='准备不完整基线计划',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'缺少大节点的计划不应提交',
+                'workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计及出图','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]}]}
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
+            with pytest.raises(DomainError) as error:
+                execute(db,admin,'prepare_project_plan_baseline',args,run=run)
+            assert error.value.code=='MILESTONE_COVERAGE_INCOMPLETE'
+            assert '原材料/五金/委外采购' in error.value.message
+    finally:
+        engine.dispose()
+
+
 def test_plan_baseline_proposal_rejects_existing_plan():
     engine,Session=factory()
     try:
         with Session.begin() as db:
             admin=user(db,'admin',True);p=project(db,'PLAN-BASELINE-EXISTS',status='ACTIVE')
+            effective_start(db,p,admin,'PLAN-BASELINE-EXISTS-START')
             existing=plan(db,p,admin,'PLAN-EXISTS')
             task(db,existing,admin,'design','结构设计',date(2026,9,1),date(2026,9,5),'PLANNED')
             config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
@@ -567,6 +749,80 @@ def test_plan_baseline_proposal_rejects_existing_plan():
             with pytest.raises(DomainError) as duplicate:
                 execute(db,admin,'prepare_project_plan_baseline',args,run=run)
             assert duplicate.value.code=='PLAN_EXISTS'
+    finally:
+        engine.dispose()
+
+
+def test_plan_baseline_rejects_active_project_without_effective_formal_start():
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True)
+            p=project(db,'PLAN-BASELINE-NO-START',status='ACTIVE')
+            config={'business_type':'project_plan','nodes':[{'key':'review','name':'基线计划核对','mode':'ALL','users':[admin.id],'reject_rules':[]}]}
+            definition=m.WorkflowDefinition(process_key='project_plan_baseline_no_start',version=1,
+                name='项目基线计划审批',status='PUBLISHED',config=config,
+                bpmn_xml=bpm.compile_bpmn(config),package_hash='test')
+            db.add(definition)
+            conversation=m.Conversation(user_id=admin.id,title='缺正式开工的基线计划')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='不应绕过正式开工准备基线计划',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'ACTIVE 但没有正式开工依据',
+                'workflow_definition_id':definition.id,
+                'tasks':[{'key':'design','name':'结构设计及出图','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]},
+                    {'key':'purchase','name':'原材料采购','owner_user_id':admin.id,
+                    'planned_start':'2026-09-06','planned_end':'2026-09-10','prerequisites':['design']},
+                    {'key':'machining','name':'工序加工','owner_user_id':admin.id,
+                    'planned_start':'2026-09-11','planned_end':'2026-09-20','prerequisites':['purchase']},
+                    {'key':'assembly','name':'装配','owner_user_id':admin.id,
+                    'planned_start':'2026-09-21','planned_end':'2026-09-25','prerequisites':['machining']},
+                    {'key':'trial','name':'试模','owner_user_id':admin.id,
+                    'planned_start':'2026-09-26','planned_end':'2026-09-28','prerequisites':['assembly']},
+                    {'key':'delivery','name':'最终交付验收','owner_user_id':admin.id,
+                    'planned_start':'2026-09-29','planned_end':'2026-09-30','prerequisites':['trial']}]}
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id,
+                m.Run.prompt=='不应绕过正式开工准备基线计划'))
+            with pytest.raises(DomainError) as error:
+                execute(db,admin,'prepare_project_plan_baseline',args,run=run)
+            assert error.value.code=='START_REQUIRED'
+            assert '生效正式开工通知' in error.value.message
+    finally:
+        engine.dispose()
+
+
+def test_plan_baseline_requires_confirmed_erp_mapping_when_erp_identity_is_configured(monkeypatch):
+    from domain_packs.mold.tools.erp.project import plan_tools
+
+    monkeypatch.setattr(plan_tools, 'mold_settings', lambda: SimpleNamespace(erp_base_url='http://127.0.0.1:9099'))
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'PLAN-BASELINE-MAPPING-GATE',status='ACTIVE')
+            effective_start(db,p,admin,'PLAN-BASELINE-MAPPING-GATE-START')
+            db.add(m.ERPIdentity(user_id=admin.id,erp_user_id='ERP-ADMIN',token_ciphertext='cipher'))
+            conversation=m.Conversation(user_id=admin.id,title='ERP 映射门禁')
+            db.add(conversation);db.flush()
+            run=m.Run(conversation_id=conversation.id,user_id=admin.id,security_version=admin.security_version,
+                prompt='ERP 映射未确认时不应准备基线计划',status='SUCCEEDED',
+                checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
+            db.add(run);db.flush()
+            args={'project_id':p.id,'project_version':p.row_version,'reason':'映射门禁测试',
+                'workflow_definition_id':'missing-workflow',
+                'tasks':[{'key':'design','name':'结构设计及出图','owner_user_id':admin.id,
+                    'planned_start':'2026-09-01','planned_end':'2026-09-05','prerequisites':[]}]}
+        with Session.begin() as db:
+            admin=db.query(m.User).filter_by(username='admin').one()
+            run=db.scalar(select(m.Run).where(m.Run.prompt=='ERP 映射未确认时不应准备基线计划'))
+            with pytest.raises(DomainError) as error:
+                execute(db,admin,'prepare_project_plan_baseline',args,run=run)
+            assert error.value.code=='ERP_PROJECT_MAPPING_REQUIRED'
+            assert '人工映射' in error.value.message
     finally:
         engine.dispose()
 
@@ -666,4 +922,3 @@ def test_department_confirmation_proposal_detects_version_conflict_on_confirm():
             assert confirmation.status=='PENDING'
     finally:
         engine.dispose()
-

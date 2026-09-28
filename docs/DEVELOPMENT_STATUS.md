@@ -1,5 +1,46 @@
 # 开发覆盖情况
 
+## 交接基线与工作区治理（2026-09-27）
+- 启动编排已改为 `scripts/start_services.ps1` 直接启动隐藏、独立的 Python/Node 进程，避免可见 `cmd` 窗口的中文方框和父脚本退出时回收服务；API、Agent Worker、消息 Worker、Vite 已验证持续存活，日志写入 `.local/logs/*-detached-*.log`。未配置 `AGENT_OCR_SERVICE_TOKEN` 时文档 Worker 明确跳过。`一键启动.bat --check`、8001 健康检查、5173 页面和当前管理员浏览器中文 AX 文本均通过。
+- 当前只读黄金路径复测：`BROWSER-START-CONTRACT-001` 为“启动与基线阶段”，主线阻塞是 ERP 项目/模具人工映射，基线计划缺少设计、采购、加工、装配、试模、交付六类节点，销售合同保留为并行跟进；没有确认卡、审批或写入动作。
+- 启动器改造后的正式开工、交接、Harness、计划和生命周期/执行定向回归为 `236 passed`；全量 pytest 仍被测试安全门正确阻断于未运行的 `127.0.0.1:55432/moldpilot_test`，没有把业务库当测试库使用。
+- 正式开工材料快照现在冻结已确认的 Agent→ERP 项目映射来源、读取时点和确认时间；提交/生效前重新核对映射，映射撤销或来源变化会以 `START_MOLD_MAPPING_CHANGED` 阻断旧开工卡。开工工具回归 `26 passed`。
+- 本轮接手复核了真实 ERP 只读数据：`M260133` / `M260133-P3` 确实存在，模具关联 80 条工单，ERP 项目包含设计、采购、加工、装配、试模、交付 6 个节点且当前均未排期/启动；未执行 ERP 写入。人工交接建议新增项目来源引用一致性校验，伪造引用返回 `MOLD_HANDOFF_EVIDENCE_CHANGED`；交接、启动、计划和 Harness 回归 `192 passed`，Worker 已重启加载当前代码。
+- 启动链路事实边界已补强：Harness 对 `kickoff_lifecycle` 的已完成阶段和 `erp_mold_handoff.records` 做结构化校验，修复模型把已完成承接说成未承接、把 `M260133 / M260133-P3` 候选说成不存在的问题；浏览器只读回归已恢复为“ERP 候选存在但需人工映射，合同可并行”。
+- 映射确认后的正式开工门禁已加回归：确认 Agent→ERP 项目/模具映射后，readiness 清除 ERP 映射阻塞但仍保持 DRAFT 与正式开工条件门禁，交接专项 `3 passed`。
+- 映射确认后的启动串联已加回归：`LOCAL_ASSOCIATION_PRESENT` 后协调器转到 `prepare_internal_start`，仍保持 DRAFT 与正式开工门禁；启动/交接相关测试 `14 passed`。
+- 正式开工只读投影已补齐 `candidate_records` 和 `customer_start_conditions`，直接查询不会再把合同未跟踪误判为客户开工条件缺失；浏览器复测已返回客户条件已确认、ERP 映射为主线阻塞。
+- 生命周期总览已补强类型化答复边界：`全生命周期` 别名会优先路由到生命周期协调器；Harness 校验 `main_blockers`、`parallel_follow_ups`、`baseline_requirements`，并行合同不能被写成主线阻塞，六类基线要求必须按权威标签列出；分段新增 `stage_statuses`，正式开工状态直接按阶段事实读取。真实 `BROWSER-START-CONTRACT-001` 浏览器回归已返回无生效基线、六类准确节点和合同并行跟进。
+- 计划流程选项已按真实前置条件收敛：`query_project_plan_context` 只有在 `ACTIVE` 项目存在生效 `START` 正式开工依据时才返回基线审批流程，只有存在当前计划时才返回计划变更流程；避免草稿或未开工项目暴露不可用写入路径。计划/生命周期定向回归 `44 passed`。
+- 重启 API/Worker 后内置浏览器只读回归通过：`BROWSER-START-CONTRACT-001` 约 17 秒返回无生效基线、六类大节点缺失和无有效任务启动；无 `MODEL_OUTPUT_INVALID`、确认卡或写入动作。
+- 只读全生命周期查询已修复：Harness 会过滤“可准备/已创建”等状态词，避免把状态核对误判成正式操作；协调器取得权威证据后立即收口。内置浏览器使用 `admin` 在 5173 端口复测成功，返回 READY（可准备）、基线计划尚未创建或生效及销售合同/正式开工缺口，全程没有写入动作。
+
+- 业务路由已按场景收敛：包含“项目启动链路 + ERP 项目/模具映射 + 正式开工 + 基线计划”的请求会先进入项目启动链路协调器；仅查询正式开工条件仍进入正式开工只读边界。避免宽场景被窄场景截断，同时保留 ToolSearch 协议修复能力。Harness 路由/生命周期测试本轮 164 个通过，内置浏览器已用真实项目复测。
+- 模具交接 proposal 已增加结构化执行契约：确认后只在 Agent 建立项目 ERP 映射、Mold、ProjectMold 和来源审计，不提交 Agent BPM、不回写 ERP；Harness 会拦截模型对该契约的越界审批表述，显式交接确认卡请求优先激活对应工具并抑制无关设计 MCP。浏览器实测建议卡正文和详情字段均保持该边界，未执行确认。
+- 本轮最终复核：Harness、模具交接、能力目录、项目启动/生命周期/执行等定向套件共 `204 passed`；项目 `.venv` 下的运行时只读检查、`一键启动.bat --check`、Python `compileall`、差异检查和跟踪垃圾文件扫描通过，`5173/8001/9099` 健康状态均为 200。
+- 基线计划交接断点已修复：`ACTIVE` 项目在启动/正式开工/基线计划证据未齐时继续停留在“启动与基线”，不再被总览误切到执行段；已有有效计划缺大节点时按可用流程推荐 `prepare_project_plan_change`，无有效计划时推荐 `prepare_project_plan_baseline`。两者只生成建议并要求本人确认，浏览器复测 `BROWSER-START-CONTRACT-001` 已返回基线计划焦点、无生效基线和销售合同待补。
+- 已按 `docs/现状分析-交接.md` 接手主线，收敛为“报价接收 → 中标承接 → 合同确认 → 正式开工 → 基线计划 → ERP 模具交接”的工作台协同链路；不新增传统 ERP 菜单或重复 ERP 功能。
+- “基线计划交接”不再被提前假报为已生效：项目仍处于未正式开工、无可冻结基线计划时，链路明确阻塞在启动段交接；进入正式开工后才检查基线计划大节点，之后才允许 ERP 模具交接。
+- ERP 模具交接已实现只读候选核对与人工确认闭环：Agent 保存 ERP 来源、版本和证据后登记本地关联，不直接写 ERP；没有唯一候选时保持阻塞。当前还补上了 Agent 项目与 ERP 项目的显式映射记录，`BROWSER-BID-START-001` 查询可看到 ERP `M260133/M260133-P3`，状态为“需要人工确认项目映射”，不会自动关联。
+- 已合并远端基线并规范 Core/mold 迁移链；迁移探测改为按当前 schema，补齐旧库合同/付款阶段/附件字段、被错误戳记数据库的文档/开工/设变分支表，以及项目 ERP 映射表，当前 mold head 为 `mz0d0e000036`，隔离空库、旧库和本机运行库迁移均通过。
+- 工作区治理已完成：`.gitignore` 过滤 `.pi/`、Python/pytest/Vite/Parcel/Turbo 缓存、临时目录、日志、锁文件、Office 临时文件以及 `*.xls/ *.xlsx/ *.xlsm/ *.xlsb/ *.xltx/ *.xlt/ *.xlam/ *.xla/ *.ods`；当前暂存区、未暂存变更和已跟踪文件扫描均无上述垃圾文件，运行中的 Vite 日志仅保持被忽略，不进入提交。
+- 本轮验证：启动、项目生命周期、执行链路、基线计划、ERP 项目/模具映射与模具交接定向回归 `50 passed`；前端 Vitest `49 passed`、mold/template 双业务包类型检查和 mold 生产构建通过，Python `compileall` 和差异检查通过。运行入口保持前端 `5173`、Agent API `8001`、ERP `9099`；已在干净浏览器标签页用 `admin/admin123` 登录验证通过。
+- 最新内置浏览器只读复测已实际调用“读取项目启动链路”：页面明确显示 ERP 候选 `M260133-P3`、Agent/ERP 项目映射待人工确认、合同可并行补录和基线计划需待正式开工；未创建业务材料或执行 ERP 写入。
+- 最新内置浏览器办理复测已生成待批准的“ERP 项目模具人工交接”建议卡：Agent 项目 `BROWSER-BID-START-001`、ERP 项目 `M260133`、ERP 模具 `M260133-P3`，显示 ERP 来源引用和“确认后建立 Agent 映射、不回写 ERP”。本次没有点击批准，数据库仅记录 `agent_proposal` 证据，`action_outcomes` 未执行正式写入。为修复模型越过 ToolSearch 的断点，Harness 现在只在当前请求明确办理、工具归属于已匹配业务技能时，通过真实 ToolSearch 桥接延后能力；只读请求和无关工具仍 fail-closed。浏览器实测状态为“等待批准”。
+- 启动链路文案边界已补强：`prepare_project_mold_handoff` 确认后直接建立 Agent 项目 ERP 映射、`Mold`/`ProjectMold` 及来源审计，不提交 BPM、不回写 ERP；正式开工和基线计划才提交各自 BPM。相关 Harness 回归 `146 passed`。
+- ProposalCard 已按 `requires_approval` 区分“查看并确认”与“查看并批准”，当前 5173 卡片显示“等待本人确认”，避免把本地模具交接误认为 BPM 审批；前端 `typecheck` 和 `build:mold` 已通过。
+- 已补齐需求 FR-021 的开工前计划草案：`prepare_project_plan_draft` 需本人确认后才在 Agent 保存 `project_plan=DRAFT` 和任务，不提交 BPM、不生效基线、不下达 ERP；启动链路将草案标为 `DRAFT_PREPARED`，正式开工后仍保留基线计划门禁。计划工具回归 `17 passed`，模具交接、正式开工、启动/执行链路合计 `65 passed`。
+- 发现交付阶段已有实现但工具目录未串联：已把 `prepare_customer_delivery_signature` 与 `prepare_outbound_release` 接回工具目录、Schema、执行路由和交付/收尾技能；交付工具回归 `21 passed`。两者仍只登记 Agent 事实，需本人确认，不回写 ERP。
+- 继续盘点发现装配试模、财务付款/冲正和委外设变议价也存在“实现已在领域工具、工具网关未暴露”的断点：已接入 `prepare_assembly_execution`、`prepare_trial_result`、`prepare_finance_correction`、`prepare_supplier_payment_condition`、`prepare_supplier_payment_request`、`prepare_outsource_change_negotiation` 的目录、权限、Schema、执行路由和对应技能；定向串联回归 `90 passed`。这些工具仍沿用原有本人确认或 BPM 审批边界，不扩大 ERP 写入范围。
+- 本轮综合回归覆盖 Harness、能力目录、计划、模具交接、正式开工、启动/执行、交付和收尾共 `263 passed`；Worker 已重启加载最新工具目录。
+- 真实库复测发现并修复 ERP 计划进度适配器边界：`system/projectNode/list` 或 `system/productionSchedule/list` 返回成功但缺少 `data` 时，原实现会抛出 `KeyError` 使启动链路 500；现在返回显式 `ERP_PROTOCOL_ERROR`，保留项目启动/计划的可读阻塞，不把 ERP 响应异常伪装成无计划。适配器、计划和启动链路回归 `31 passed`，Worker 已重新加载修复。
+- 启动链路建议文案已区分“首次建立基线”和“已有基线缺大节点”：前者明确要求提交前补齐六类大节点，后者才建议走计划变更，避免把“尚无计划”误导成“已有计划变更”。
+- 当前 ACTIVE 验证项目 `BROWSER-START-CONTRACT-001` 已能稳定返回 `PLAN_APPROVAL`：正式开工已生效，但没有有效基线计划，且缺少设计、采购、工序加工、装配、试模、最终交付六类大节点；这是真实的业务资料缺口，不是页面或模型故障，下一步应由业务负责人补齐节点后再准备基线计划。
+- 合同材料修订链已补齐：合同提案支持 `existing_subject_id`、版本和修订原因校验；确认修订时递增合同材料版本并保留旧条款、收款到达证据、付款节点、附件和审批快照，新版本重新提交审批。合同修订/替代/开工关联回归 `31 passed`。
+- Agent 宿主上下文边界已修复：附件触发 Run 即使客户端重写 checkpoint，也会从创建审计和当前 worker scope 恢复可信触发信息；无 scope 的旧恢复任务继续走兼容队列，确认后的新任务仍走 scoped queue。Agent API 与文档 Worker 启动契约回归 `29 passed`，一键启动入口现在包含 Document Worker。
+- 黄金路径回执边界已继续收口：报价版本/承接、中标接收、模具交接、正式开工和基线计划的只读 Proposal 状态接口，在本人确认后即使 Run 进入等待恢复状态也能读取权威回执；重新确认仍严格拒绝。报价/中标回归 `12 passed`，启动/计划/交接回归 `49 passed`，模具交接专项 `3 passed`。
+- 内置浏览器回归时发现旧 API/Worker 进程与当前工作区代码不一致会把生命周期查询变成 `TOOL_EXECUTION_FAILED`，且不生成工具证据；清理重复进程并用当前 `.venv` 重启后，同一查询真实返回生命周期回执，继续展开执行链路可列出设计、采购、工序加工、装配、试模、最终交付六类缺失大节点。`一键启动.bat` 已改为启动前只读检查 PostgreSQL、拒绝占用中的 8001/5173、固定当前虚拟环境并启动五个服务，不再日常自动执行迁移；`一键启动.bat --check` 已实测返回 0。
+
 ## 本地能力与第 11 章增量（2026-09-24，代码验证状态）
 
 - 工程联络单上传识别链路已支持 PDF/PNG/JPG 及可编辑 DOCX：DOCX 保留原件后由本机 Word COM 转成临时 PDF，再复用文字层/PaddleOCR、页块坐标和 AuditEvent；转换源/派生 PDF SHA256 与转换器写入完成事件，不新增迁移。表格型联络单仍需真实 Word 样本完成字段/复选框识别验收；真实工作台上传闭环尚未完成。
@@ -1077,3 +1118,14 @@ OpenSSL 官方说明 3.5 默认发送 X25519MLKEM768 和 X25519 两种 key share
 - `query_contract_context` 只读返回精简的模型语义卡和完整持久化证据。资金时序仅使用生效合同且已人工确认的付款节点日期；未确认日期返回 `DATES_INCOMPLETE`，不会被推断成真实资金缺口。
 - 内置浏览器用 `Qwen/Qwen3.5-35B-A3B` 对 `SMOKE-CONTRACT-0919182654` 完成真实工具调用，正确返回合同号、签订/交付日期、付款方式、内部模具号、客户编号 `BROWSER-CONTRACT-CUSTOMER` 和审批未生效的资金时序风险。确认后的合同卡仍保留且按钮不可重复执行。
 - Core 迁移保持 `a10c0e000008`，模具领域迁移已到 `mb0d0e000012`；迁移自动检查无新增操作。前端 Vitest 12 项、双模板类型检查和生产构建通过；后端全量测试使用仓库内独立临时目录复核，避免 Windows 系统临时目录权限污染。
+
+## ERP 项目节点适配与黄金路径回归（2026-09-27）
+
+- `ERPClient.project_nodes()` 已对齐 ERP 实际路由：按项目号读取 `system/project/list`，再读取 `system/projectNode/project/{id}`；`rows`、`data` 和空列表均按只读协议解析。
+- 已确认 Agent→ERP 映射时，ERP 进度查询使用映射后的 ERP 项目号；未确认映射时仅返回候选，不用 Agent 本地模具号冒充 ERP 执行对象。
+- 重点回归 218 项通过；浏览器 5173 使用管理员会话验证基线计划门禁，结果清楚返回六类缺失节点和 ERP 映射阻塞，未提交确认卡或写入操作。
+- 当前交付仍未闭合：基线计划尚未生效，`M260133`/`M260133-P3` 仍需人工确认映射；本地 API 8001、前端 5173、ERP 9099 保持运行。
+- 基线计划阶段门禁已补强：ERP 已启用并存在当前用户 ERP 身份时，未确认 `ProjectERPMapping` 会阻断生命周期中的基线计划准备，直接准备也返回 `ERP_PROJECT_MAPPING_REQUIRED`；纯 Agent 本地项目仍可按原流程建立计划。
+- 计划上下文的 `baseline_readiness` 现在同步包含 ERP 映射门禁状态、阻塞原因，并在映射未确认时强制 `can_submit=false`，保证模型 Harness、生命周期投影与页面读取同一提交事实。
+- 5173 全生命周期复测显示 `BROWSER-START-CONTRACT-001` 为“启动与基线 / BLOCKED”，ERP 映射是主线阻塞，销售合同保留为并行跟进项；未生成确认卡，也未写入 Agent 或 ERP。
+

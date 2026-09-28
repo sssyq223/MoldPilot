@@ -37,7 +37,7 @@ def _card(link, blob, *, current=True):
     }
 
 
-def validate_proposal_files(db, user, file_ids, run, project_id, contract_kind):
+def validate_proposal_files(db, user, file_ids, run, project_id, contract_kind, existing_subject_id=None):
     if not run or run.user_id != user.id:
         raise DomainError("FILE_CONTEXT_INVALID", "合同附件必须来自当前本人会话任务", 403)
     referenced={blob.id:blob for blob in reference_run_files(db,user,run,file_ids)}
@@ -54,12 +54,15 @@ def validate_proposal_files(db, user, file_ids, run, project_id, contract_kind):
                 m.BusinessSubject.project_id == project_id,
                 m.BusinessSubject.kind == contract_kind,
                 m.BusinessSubject.status.in_(ACTIVE_CONTRACT_STATES),
+                m.BusinessSubject.id != existing_subject_id if existing_subject_id else True,
                 m.FileObject.sha256 == blob.sha256,
             )
             .limit(1)
         )
         if duplicate:
             raise DomainError("CONTRACT_FILE_DUPLICATE", "该项目已有内容相同的有效合同附件，请勿重复提交", 409)
+        if any(previous.sha256 == blob.sha256 for previous in blobs):
+            raise DomainError("CONTRACT_FILE_DUPLICATE", "本轮合同不能重复选择内容相同的原件", 409)
         blobs.append(blob)
     return blobs
 
@@ -71,6 +74,11 @@ def preview_cards(blobs, source_kind):
 def link_initial(db, user, subject, blobs, source_kind):
     links = []
     for blob in blobs:
+        existing = db.scalar(select(m.ContractAttachment).where(
+            m.ContractAttachment.contract_subject_id == subject.id, m.ContractAttachment.file_id == blob.id))
+        if existing:
+            links.append(existing)
+            continue
         link = m.ContractAttachment(
             contract_subject_id=subject.id,
             file_id=blob.id,
@@ -137,4 +145,10 @@ def cards(db, contract_subject_id):
     latest = {}
     for link, _ in rows:
         latest.setdefault(link.document_id, link.version)
-    return [_card(link, blob, current=link.version == latest[link.document_id]) for link, blob in rows]
+    from .contract_materials import terms
+    current_terms = terms(db, contract_subject_id)
+    selected = set(current_terms.attachment_selection) if current_terms and current_terms.attachment_selection is not None else None
+    if selected is not None and not selected <= {blob.id for _,blob in rows}:
+        raise DomainError('CONTRACT_FILE_SELECTION_INVALID', '本轮合同原件选择包含未关联文件，请核对材料', 409)
+    return [_card(link, blob, current=(blob.id in selected if selected is not None else link.version == latest[link.document_id]))
+            for link, blob in rows]

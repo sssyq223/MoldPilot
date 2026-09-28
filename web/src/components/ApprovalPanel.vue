@@ -118,11 +118,11 @@ async function claimApproval() {
       <section class="surface"><h3><FileText :size="16"/> 附件资料</h3><template v-if="approvalFiles.length"><p class="muted">以下为提交本轮审批时锁定的附件版本。</p><FileMaterial v-for="file in approvalFiles" :key="file.id" :file="file" @error="emit('error',$event)"/></template><p v-else class="muted">当前申请未绑定附件。</p></section>
     </div>
     <section class="timeline surface approval-flow">
-      <div class="approval-flow-head"><div><h3>审批流程</h3><small class="muted">{{detail.definition.name}} · 第 {{detail.definition.version}} 版</small></div><span v-if="detail.status==='RUNNING'" class="approval-flow-progress">当前 {{Math.min(detail.stage_index + 1, detail.nodes.length)}} / {{detail.nodes.length}}</span></div>
+      <div class="approval-flow-head"><div class="approval-flow-heading"><h3>审批流程</h3><small class="muted">{{detail.definition.name}} · 第 {{detail.definition.version}} 版</small></div><div class="approval-flow-actions"><ApprovalBusinessDetails :detail="detail"/><span v-if="detail.status==='RUNNING'" class="approval-flow-progress">当前 {{Math.min(detail.stage_index + 1, detail.nodes.length)}} / {{detail.nodes.length}}</span></div></div>
       <div class="approval-flow-track">
         <div class="approval-flow-node complete">
           <span class="approval-flow-marker"><Check :size="10"/></span>
-          <div class="approval-flow-content"><div class="approval-flow-row"><div class="approval-flow-title"><strong>发起申请</strong><span class="approval-flow-state">已提交</span></div><ApprovalBusinessDetails :detail="detail"/></div><small>{{detail.snapshot.submitter.name}} · {{shanghai(detail.snapshot.submitted_at)}}</small></div>
+          <div class="approval-flow-content"><div class="approval-flow-row"><div class="approval-flow-title"><strong>发起申请</strong><span class="approval-flow-state">已提交</span></div></div><small>{{detail.snapshot.submitter.name}} · {{shanghai(detail.snapshot.submitted_at)}}</small></div>
         </div>
         <div v-for="(node,i) in detail.nodes" :key="node.key" class="approval-flow-node" :class="{current:detail.status==='RUNNING'&&i===detail.stage_index,complete:detail.status==='COMPLETED'||i<detail.stage_index,halted:['REJECTED','RETURNED','CANCELLED'].includes(detail.status)&&i===detail.stage_index}">
           <span class="approval-flow-marker"><Check v-if="detail.status==='COMPLETED'||i<detail.stage_index" :size="10"/><i v-else-if="detail.status==='RUNNING'&&i===detail.stage_index"/></span>

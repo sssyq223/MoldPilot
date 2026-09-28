@@ -208,12 +208,12 @@ def test_upload_quota_and_cross_conversation_rejected(client,data,monkeypatch):
 
 def test_attachment_confirmation_versions_and_immutable_originals(client,data,monkeypatch):
     sign_in(client);case,_=create(client,data[0]);first=upload(client).json()
-    _,ctx=start(client,monkeypatch,'admin')
+    _,ctx=start(client,monkeypatch,'admin',conversation_id=first['conversation_id'],file_ids=[first['id']])
     e=propose(client,ctx,'attach',{'case_id':case['id'],'revision':1,'file_id':first['id'],'title':'设计讨论材料','previous_id':None})
     assert client.get('/api/contacts/'+case['id']).json()['attachments']==[]
     assert confirm(client,intent(client,e)).status_code==200
     case=client.get('/api/contacts/'+case['id']).json();previous=case['attachments'][0]['id']
-    second=upload(client,PDF+b'\nupdated').json();case=link(client,ctx,case,second,1,previous)
+    second=upload(client,PDF+b'\nupdated',cid=first['conversation_id']).json();case=link(client,ctx,case,second,1,previous)
     assert [(f['version'],f['is_current']) for f in case['attachments']]==[(2,True),(1,False)]
     assert all('conversation_id' not in f for f in case['attachments'])
     assert len(case['records'])==2 and case['records'][0]['kind']=='ATTACHMENT_ADDED'
@@ -221,7 +221,7 @@ def test_attachment_confirmation_versions_and_immutable_originals(client,data,mo
     for table in ('file_object','contact_attachment'):
         with pytest.raises(DBAPIError):
             with data[1].begin() as db:db.execute(text('DELETE FROM '+table))
-    third=upload(client,PDF+b'\nthird').json()
+    third=upload(client,PDF+b'\nthird',cid=first['conversation_id']).json()
     r=client.post(f"/internal/runs/{ctx['id']}/tools",headers=worker_headers(),json={'epoch':ctx['epoch'],'sequence':2,'key':'prepare_contact_attach','arguments':{
         'case_id':case['id'],'revision':case['revision'],'file_id':third['id'],'title':'旧版本替换','previous_id':previous}})
     assert r.status_code==409 and r.json()['error']['code']=='VERSION_CONFLICT'
@@ -237,7 +237,7 @@ def test_attachment_link_notifies_collaboration_participants(client,data,monkeyp
     tid=case['tasks'][0]['id']
     case=client.post(f"/api/contacts/{case['id']}/tasks/{tid}/assign",
         json=operation(case,assignee_id=ids['buyer'],reason='附件核对通知验证')).json()
-    blob=upload(client).json();_,ctx=start(client,monkeypatch,'admin')
+    blob=upload(client).json();_,ctx=start(client,monkeypatch,'admin',conversation_id=blob['conversation_id'],file_ids=[blob['id']])
     case=link(client,ctx,case,blob)
     with factory() as db:
         event=db.scalar(select(Outbox).where(Outbox.kind=='contact.attachment_added',Outbox.resource_id==case['id']))
@@ -261,7 +261,7 @@ def test_uploader_cannot_bypass_business_revocation(client,data,monkeypatch):
     with factory.begin() as db:
         db.add(Grant(user_id=ids['buyer'],permission='file.upload',effect='ALLOW',scope={'all':True},fields=['*'],reason='合成',granted_by=ids['admin']))
         db.add(Capability(user_id=ids['buyer'],kind='TOOL',key='prepare_contact_attach',enabled=True))
-    sign_in(client,'test_buyer');blob=upload(client).json();_,ctx=start(client,monkeypatch)
+    sign_in(client,'test_buyer');blob=upload(client).json();_,ctx=start(client,monkeypatch,conversation_id=blob['conversation_id'],file_ids=[blob['id']])
     case=link(client,ctx,case,blob)
     assert client.get('/api/files/'+blob['id']+'/content').status_code==200
     with factory.begin() as db:

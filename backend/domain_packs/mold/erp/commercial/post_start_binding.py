@@ -10,18 +10,30 @@ from domain_packs.mold.ports.events import record
 
 
 ACCEPTED_DECISIONS = {"PROJECT_ACCEPTED", "FULL_OUTSOURCE_ACCEPTED"}
-TARGET_TYPES = {"SALES_CONTRACT"}
+TARGET_TYPES = {"SALES_CONTRACT", "ACCOUNTING_CHECKLIST"}
 
 
 def validate_target_reference(target, *, target_type, project_id, target_version):
-    if target_type != "SALES_CONTRACT" or not isinstance(target, dict):
-        raise DomainError("BINDING_TARGET_INVALID", "正式绑定对象不是销售合同")
-    if target.get("kind") not in {"sales_contract", "full_outsource_contract"}:
-        raise DomainError("BINDING_TARGET_INVALID", "目标业务事实不是合同")
+    if not isinstance(target, dict):
+        raise DomainError("BINDING_TARGET_INVALID", "正式绑定对象不存在")
+    if target_type == "ACCOUNTING_CHECKLIST":
+        # Accounting material is an Agent-local evidence object. ERP cost
+        # sheets and external IDs are deliberately rejected at this boundary.
+        if target.get("kind") != "local_accounting_checklist":
+            raise DomainError("BINDING_TARGET_INVALID", "核算清单必须是 Agent 本地资料")
+        if target.get("source_system") != "agent_db":
+            raise DomainError("BINDING_TARGET_INVALID", "核算清单来源系统无效")
+        if not target.get("fingerprint"):
+            raise DomainError("VERSION_CONFLICT", "核算清单缺少当前版本指纹")
+    elif target_type == "SALES_CONTRACT":
+        if target.get("kind") not in {"sales_contract", "full_outsource_contract"}:
+            raise DomainError("BINDING_TARGET_INVALID", "目标业务事实不是合同")
+    else:
+        raise DomainError("BINDING_TARGET_INVALID", "正式绑定对象类型不受支持")
     if target.get("project_id") != project_id:
-        raise DomainError("BINDING_PROJECT_CONFLICT", "合同不属于开工通知项目", 409)
+        raise DomainError("BINDING_PROJECT_CONFLICT", "绑定对象不属于开工通知项目", 409)
     if target.get("revision") != target_version:
-        raise DomainError("VERSION_CONFLICT", "合同版本已变化，请重新核对", 409)
+        raise DomainError("VERSION_CONFLICT", "绑定对象版本已变化，请重新核对", 409)
 
 
 def require_binding_decision(decision, *, notice_version, target_version):
@@ -57,11 +69,17 @@ def bind_post_start(db, user, *, decision_id, start_notice_id, target_type,
         {"decision": decision.decision, "start_notice_version": decision.start_notice_version},
         notice_version=notice.version, target_version=target_version,
     )
-    target = db.get(m.BusinessSubject, str(target_id))
-    target_view = (
-        {"kind": target.kind, "project_id": target.project_id, "revision": target.revision}
-        if target else target
-    )
+    if target_type == "ACCOUNTING_CHECKLIST":
+        from domain_packs.mold.erp.commercial import checklist_binding
+        target_view = checklist_binding.resolve_reference(
+            db, user, str(target_id), target_version,
+        )
+    else:
+        target = db.get(m.BusinessSubject, str(target_id))
+        target_view = (
+            {"kind": target.kind, "project_id": target.project_id, "revision": target.revision}
+            if target else target
+        )
     validate_target_reference(
         target_view, target_type=target_type, project_id=notice.project_id,
         target_version=target_version,
@@ -76,7 +94,7 @@ def bind_post_start(db, user, *, decision_id, start_notice_id, target_type,
         start_notice_version=notice.version, target_type=target_type,
         target_id=target_id, target_version=target_version, mold_rows=mold_rows,
     )
-    target_fingerprint = None
+    target_fingerprint = target_view.get("fingerprint") if isinstance(target_view, dict) else None
     duplicate = db.scalar(select(m.PostStartBinding).where(
         m.PostStartBinding.target_type == target_type,
         m.PostStartBinding.target_id == str(target_id),

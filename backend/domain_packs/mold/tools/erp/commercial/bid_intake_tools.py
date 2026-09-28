@@ -41,7 +41,12 @@ class BidIntakeProposalInput(StrictModel):
     customer_company: str = Field(min_length=1, max_length=200)
     customer_contact: str = Field(min_length=1, max_length=200)
     customer_mold_number: str | None = Field(default=None, min_length=1, max_length=120)
-    customer_model_or_material: str | None = Field(default=None, min_length=1, max_length=200)
+    customer_model_or_material: str | None = Field(default=None, min_length=1, max_length=200,
+        description="历史未分类的机型/物料原文，仅保留来源；不能自动认定为机型或物料号。新资料分别填写下列字段。")
+    customer_model_number: str | None = Field(default=None, min_length=1, max_length=200,
+        description="资料中明确的客户机型；不得用客户模号、物料号或订单编号代替。")
+    customer_material_number: str | None = Field(default=None, min_length=1, max_length=200,
+        description="资料中明确的客户物料号；不得用客户机型、模号或订单编号代替。")
     project_name_snapshot: str = Field(min_length=1, max_length=200)
     amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
@@ -222,6 +227,8 @@ def _revision_card(row, attachments):
         "customer_company": row.customer_company, "customer_contact": row.customer_contact,
         "customer_mold_number": row.customer_mold_number,
         "customer_model_or_material": row.customer_model_or_material,
+        "customer_model_number": row.customer_model_number,
+        "customer_material_number": row.customer_material_number,
         "project_name_snapshot": row.project_name_snapshot,
         "amount": str(row.amount) if row.amount is not None else None, "currency": row.currency,
         "our_recipient": row.our_recipient, "external_order_number": row.external_order_number,
@@ -448,6 +455,11 @@ def _intake_fingerprint(data, blobs):
     payload = data.model_dump(mode="json", exclude={
         "project_version", "previous_revision_id", "version", "attachments",
     })
+    # Preserve fingerprints for existing unclassified records. Adding an
+    # absent optional field must not allow the same source to bypass dedup.
+    for name in ("customer_model_number", "customer_material_number"):
+        if payload[name] is None:
+            payload.pop(name)
     payload["files"] = sorted(
         [{"sha256": blobs[item.file_id].sha256, "role": item.role} for item in data.attachments],
         key=lambda item: (item["sha256"], item["role"]),
@@ -512,7 +524,10 @@ def preview_bid_intake(db, user, data, run):
         "客户分类": {"HISENSE": "海信", "HAIER": "海尔", "OTHER": "其他客户"}[data.customer_classification],
         "分类依据": data.classification_evidence,
         "客户与联系人": data.customer_company + " · " + data.customer_contact,
-        "客户模号/机型物料": (data.customer_mold_number or "未匹配") + " · " + (data.customer_model_or_material or "未提供"),
+        "客户模号": data.customer_mold_number or "未提供",
+        "客户机型": data.customer_model_number or "未提供",
+        "客户物料号": data.customer_material_number or "未提供",
+        "历史机型/物料原文（未分类）": data.customer_model_or_material or "无",
         "项目名称": data.project_name_snapshot,
         "金额": (str(data.amount) + " " + data.currency) if data.amount is not None else "资料未提供，留空待人工补充",
         "我方收件人": data.our_recipient,
@@ -556,7 +571,7 @@ def execute_bid_intake_tool(db, user, key, arguments, run=None):
     }
 
 
-def source(db, user, step_id):
+def source(db, user, step_id, *, for_read=False):
     from domain_packs.mold.tool_gateway import available_tools
 
     step = db.get(m.Step, step_id)
@@ -564,7 +579,14 @@ def source(db, user, step_id):
     if not run or run.user_id != user.id:
         raise DomainError("NOT_FOUND", "操作建议不存在或无权访问", 404)
     if run.status not in {"RUNNING", "RUNNING_SCOPED", "SUCCEEDED"}:
-        raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
+        resolved = for_read and db.scalar(select(m.HumanIntent.id).where(
+            m.HumanIntent.user_id == user.id,
+            m.HumanIntent.action == "bid_intake.execute",
+            m.HumanIntent.resource_id == step_id,
+            m.HumanIntent.receipt.is_not(None),
+        ).limit(1))
+        if not resolved:
+            raise DomainError("PROPOSAL_STOPPED", "任务已停止，请重新准备操作", 409)
     if run.security_version != user.security_version or run.checkpoint.get("authorization_hash") != fingerprint(db, user):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
     proposal = step.result.get("proposal")
@@ -701,6 +723,10 @@ def _backfill_lifecycle_links(db, user, case):
 
 def confirm(db, user, payload):
     proposal, data, run = validate_intent(db, user, payload)
+    # Serialize a new intake version with formal-start approval application.
+    # Refresh an identity that validation may already have loaded.
+    db.scalar(select(m.Project).where(m.Project.id == data.project_id)
+              .with_for_update().execution_options(populate_existing=True))
     project, case, _, blobs, fingerprint_value, _ = preview_bid_intake(db, user, data, run)
     if not case:
         case = m.BidIntakeCase(project_id=project.id, created_by=user.id)
@@ -715,6 +741,8 @@ def confirm(db, user, payload):
         classification_confirmed_by=user.id, customer_company=data.customer_company,
         customer_contact=data.customer_contact, customer_mold_number=data.customer_mold_number,
         customer_model_or_material=data.customer_model_or_material,
+        customer_model_number=data.customer_model_number,
+        customer_material_number=data.customer_material_number,
         project_name_snapshot=data.project_name_snapshot, amount=data.amount, currency=data.currency,
         our_recipient=data.our_recipient, external_order_number=data.external_order_number,
         external_start_date=data.external_start_date, customer_due_date=data.customer_due_date,
@@ -751,7 +779,7 @@ router = APIRouter()
 
 @router.get("/api/bid-intake-proposals/{step_id}")
 def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)):
-    source(db, user, step_id)
+    source(db, user, step_id, for_read=True)
     intent = db.scalar(select(m.HumanIntent).where(
         m.HumanIntent.user_id == user.id,
         m.HumanIntent.action == "bid_intake.execute",

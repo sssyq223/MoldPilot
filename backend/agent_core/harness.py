@@ -25,6 +25,11 @@ FORMAL_ACTION_TERMS = getattr(_policy, "FORMAL_ACTION_TERMS", ACTION_INTENT_TERM
 FORMAL_ACTION_NEGATED_PHRASES = getattr(_policy, "FORMAL_ACTION_NEGATED_PHRASES", ())
 READ_ONLY_INTENT_TERMS = getattr(_policy, "READ_ONLY_INTENT_TERMS", ())
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = getattr(_policy, "UNAMBIGUOUS_FORMAL_ACTION_TERMS", FORMAL_ACTION_TERMS)
+FORMAL_ACTION_STATUS_PREFIXES = getattr(
+    _policy,
+    "FORMAL_ACTION_STATUS_PREFIXES",
+    ("可", "已", "未", "尚未", "待", "正在"),
+)
 WORKBENCH_SUPPORT_HINTS = _policy.WORKBENCH_SUPPORT_HINTS
 BUSINESS_OBJECT_HINTS = _policy.BUSINESS_OBJECT_HINTS
 BUSINESS_ACTION_HINTS = _policy.BUSINESS_ACTION_HINTS
@@ -118,16 +123,21 @@ def _structured_result_text(content):
     return qwen_wrapper.group('payload').strip() if qwen_wrapper else stripped
 
 
-FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。必须直接输出约定的 JSON 对象；evidence_ids 只能填写已经取得的证据编号。"""
+FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。不要输出分析、推理过程或自然语言前缀；在单个响应中直接输出约定的 JSON 对象。summary 保持在 400 个汉字以内，suggestions 最多 6 条；evidence_ids 只能填写已经取得的证据编号。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 evidence_ids。附件 ID、会话 ID、业务对象 ID 和历史轮次证据都不是本轮证据编号。请删除无效编号；若用户询问业务事实且尚无本轮证据，请先调用当前可用的只读工具取得事实，再用工具返回的 evidence_id 作答。"""
 AUTHORITATIVE_READ_REMINDER = """本次问题涉及必须从权威业务数据源读取的事实，不能使用模型训练知识、历史助手答复或常识直接作答。请调用指定的只读工具；只有工具执行失败时才输出 CLARIFICATION，并准确说明无法取得当前数据。"""
 TOOL_ARGUMENT_REPAIR_REMINDER = """上一轮工具调用的 arguments 不是有效 JSON 对象，工具尚未执行。请根据当前工具的参数 schema 重新发起一次工具调用；arguments 必须是一个完整 JSON 对象，不能在对象结束后追加字段，也不能把对象类型字段写成字符串。"""
 DUPLICATE_TOOL_REMINDER = """你刚才请求了已经用相同参数返回过证据的工具调用。不要重复查询同一事实。工具调用阶段现在结束，请只依据已有证据直接输出约定 JSON 对象。"""
 UNKNOWN_TOOL_REMINDER = """上一轮把按需能力目录名称当成了函数名。能力目录中的场景名称和标识都不能直接调用；当前工具列表没有该函数。若仍需业务能力，只能调用 ToolSearch，并把用户实际要查询或办理的场景作为 query；下一轮只能调用 ToolSearch 结果中“已激活可调用工具”列出的真实函数名。ToolSearch 的能力目录名称、matches 或 matched_groups 仅用于说明匹配场景，不是函数名。不要因为请求中出现业务编号就先搜索候选匹配，当前场景工具可以自行定位有权访问的业务对象。"""
+DEFERRED_TOOL_REMINDER = """上一轮直接调用了尚未激活的按需业务工具，工具没有执行。当前工具列表只允许调用已激活函数；请先调用 ToolSearch，并使用用户当前实际要查询或办理的场景作为 query，下一轮只能调用 ToolSearch 返回的“已激活可调用工具”。不要把工具目录名称当成函数名，也不要绕过当前项目或权限范围。"""
 ACTION_OUTCOME_REPAIR_REMINDER = """上一轮的结论违反了正式操作结果协议：本轮存在尚未成功的正式操作工具调用，且没有对应的成功回执或待确认操作证据。不得声称已经准备、提交或执行操作，也不得引导用户查找并不存在的确认卡。请根据工具返回的错误输出 response_kind=CLARIFICATION，明确说明本次操作尚未准备成功、需要补充或修正什么；evidence_ids 只能引用已经取得的只读事实证据。"""
 ACTION_EVIDENCE_REPAIR_REMINDER = """上一轮遗漏了正式操作的成功证据。只要结论声称已经准备、提交或执行操作，evidence_ids 就必须包含本轮所有成功正式操作工具返回的证据编号；不得只引用前置查询证据。请重新输出约定 JSON。"""
 ACTION_NOT_COMPLETED_REPAIR_REMINDER = """本轮用户明确要求准备或办理正式操作，但目前没有任何成功的正式操作工具回执或待确认操作证据。只读查询结果不能证明操作已经准备、提交或执行。不得声称已有确认卡；请输出 response_kind=CLARIFICATION，明确说明操作尚未完成以及需要用户补充或系统配置的条件。"""
+LIFECYCLE_CLAIM_REPAIR_REMINDER = """上一轮答复违反了生命周期证据边界。工具结果把当前主线阻塞和可并行跟进事项分开标记；只有类型化的 main_blockers/blockers 才能描述为“主线阻塞、关键阻塞、不能推进”或同义结论。parallel_follow_ups 只能说明为并行补齐、后续跟进或待核对事项，不能把它升级成当前主线阻塞。请依据工具返回的结构化事实重新输出约定 JSON。"""
+KICKOFF_FACT_REPAIR_REMINDER = """上一轮答复与启动链路的类型化事实冲突。请以工具返回的 kickoff_lifecycle 阶段状态和 erp_mold_handoff 为准：已完成的报价/中标接收/承接阶段不得写成未完成；ERP records 中已有候选时不得写成“没有候选/没有有效 ERP 模具号”，应准确说明候选存在但仍需人工项目映射或模具交接。请重新输出约定 JSON。"""
+KICKOFF_BASELINE_REPAIR_REMINDER = """上一轮答复把基线计划的“可准备”误写成“可提交/可审批”。请以 kickoff_lifecycle.project_plan.facts.baseline_readiness.can_submit 和 missing_milestones 为准：只有 can_submit=true 且节点清单完整时才能说明可提交基线计划审批；can_submit=false 时只能说明需补齐节点或继续核对，不能建议提交、审批或生效。请重新输出约定 JSON。"""
+PROPOSAL_BOUNDARY_REPAIR_REMINDER = """上一轮回复违反了操作建议的结构化执行契约。只能依据 proposal.execution_contract 和 display 说明当前建议；不得声称已提交 BPM、已提交审批或审批已生效，除非执行契约明确允许。请保留待本人确认的状态，并重新输出约定 JSON。"""
 PROPOSAL_RESOLVED_REPAIR_REMINDER = """本轮是确认卡处理完成后的恢复回复，ProposalResolution 工具消息已经提供可信人工决定和权威执行回执。不得再次输出 AWAITING_APPROVAL，不得要求用户重复确认。批准后的回复必须使用 response_kind=BUSINESS，并依据权威回执说明本次实际完成、提交或生效到哪一步；暂不执行后的回复应明确尊重该决定。最终 JSON 还必须原样包含 proposal_decision（approved 或 dismissed），证明已经消费该权威回执。请重新输出约定 JSON。"""
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
@@ -174,6 +184,327 @@ def _tool_result_for_model(result, *, prefer_model_context=False):
         if key in result:
             projected[key] = result[key]
     return projected
+
+
+def _proposal_execution_contract(result):
+    """Return a domain-declared proposal boundary, if one was returned.
+
+    Proposal semantics belong to the domain tool, while the Harness owns the
+    final-response protocol.  Keeping the contract structured lets the
+    Harness reject a contradictory model summary without hard-coding a
+    particular business action into the model prompt.
+    """
+    if not isinstance(result, dict):
+        return None
+    proposal = result.get("proposal")
+    contract = proposal.get("execution_contract") if isinstance(proposal, dict) else None
+    return contract if isinstance(contract, dict) else None
+
+
+def _proposal_contract_instruction(contract):
+    """Build a concise provider-visible reminder from a domain contract."""
+    if not isinstance(contract, dict):
+        return ""
+    summary = contract.get("user_facing_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return ""
+    return (
+        "本次操作建议的结构化执行契约必须优先于模型自行概括："
+        + summary.strip()
+        + "。最终说明不得超出该契约。"
+    )
+
+
+def _asserted_contract_term(text, term):
+    """Detect a prohibited claim while allowing an explicit negation."""
+    if not isinstance(text, str) or not isinstance(term, str) or not term:
+        return False
+    start = 0
+    # Keep the check semantic instead of matching only the bare action word.
+    # Read-only lifecycle summaries commonly use ``无法/不可提交`` for a
+    # closed gate and ``完成条件后方可提交`` for a conditional next step.
+    # Both are safe descriptions when the typed boundary says the gate is
+    # currently closed; treating them as positive actions causes an endless
+    # protocol-repair loop in the provider harness.
+    negations = (
+        "不", "未", "不会", "无需", "不得", "不应", "不能", "无法", "不可",
+        "方可", "才能", "后再", "之后再", "完成后", "满足后", "条件满足后",
+    )
+    while True:
+        index = text.find(term, start)
+        if index < 0:
+            return False
+        prefix = text[max(0, index - 4):index]
+        if not any(prefix.endswith(marker) for marker in negations):
+            return True
+        start = index + len(term)
+
+
+def _lifecycle_claim_boundary(result):
+    """Extract typed lifecycle blocking facts from a read-only tool receipt.
+
+    Domain coordinators own the business rules.  The Harness only preserves
+    their claim boundary so a provider cannot collapse a parallel follow-up
+    into the current blocking path while composing its final prose.
+    """
+    if not isinstance(result, dict):
+        return None
+    context = result.get("model_context")
+    if not isinstance(context, dict):
+        # Most read-only tools return their compact model payload under
+        # ``data`` rather than ``model_context``.  Keep the lifecycle path
+        # optional, but still inspect the typed plan gate below.
+        context = {}
+    lifecycle = context.get("project_lifecycle")
+    if not isinstance(lifecycle, dict):
+        lifecycle = context.get("kickoff_lifecycle")
+    # Project-plan context is intentionally a read-only, compact payload and
+    # does not carry a lifecycle wrapper.  Promote its typed baseline gate to
+    # the same Harness boundary so a provider cannot lose the submission
+    # decision merely because ToolSearch activated the plan reader directly.
+    if not isinstance(lifecycle, dict):
+        rows = result.get("data")
+        first = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
+        analysis = first.get("analysis") if isinstance(first, dict) else None
+        readiness = analysis.get("baseline_readiness") if isinstance(analysis, dict) else None
+        if not isinstance(readiness, dict):
+            return None
+        missing_labels = [
+            str(label).strip() for label in (readiness.get("missing_labels") or [])
+            if str(label).strip()
+        ]
+        missing_keys = [
+            str(key).strip() for key in (readiness.get("missing_milestones") or [])
+            if str(key).strip()
+        ]
+        can_submit = readiness.get("can_submit")
+        baseline = {
+            "can_submit": can_submit,
+            "missing_milestones": missing_keys,
+        }
+        requirements = [
+            {"key": key, "label": label}
+            for key, label in zip(missing_keys, missing_labels)
+        ]
+        return {
+            "main_blockers": ([{
+                "stage": "project_plan",
+                "name": "基线计划",
+                "reason": "基线计划提交门禁未通过。",
+            }] if can_submit is False else []),
+            "parallel_follow_ups": [],
+            "baseline_requirements": requirements,
+            "baseline": baseline,
+        }
+    main_blockers = []
+    parallel = []
+    baseline_requirements = []
+    for segment in lifecycle.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        stage = segment.get("focus") if isinstance(segment.get("focus"), dict) else {}
+        stage_key = stage.get("key") or segment.get("key")
+        stage_name = stage.get("name") or segment.get("name") or stage_key
+        for reason in segment.get("blockers") or []:
+            if isinstance(reason, str) and reason.strip():
+                main_blockers.append({"stage": stage_key, "name": stage_name, "reason": reason.strip()})
+        coverage = segment.get("baseline_coverage")
+        if isinstance(coverage, dict) and not coverage.get("baseline_exists"):
+            for item in coverage.get("required_for_baseline") or []:
+                if isinstance(item, dict) and item.get("label"):
+                    baseline_requirements.append({
+                        "key": item.get("key"),
+                        "label": str(item.get("label")).strip(),
+                    })
+        for item in segment.get("parallel_follow_ups") or []:
+            if isinstance(item, dict):
+                reason = item.get("reason") or item.get("text") or item.get("follow_up")
+                name = item.get("name") or item.get("stage") or segment.get("name")
+                key = item.get("key") or item.get("stage")
+            else:
+                reason, name, key = item, segment.get("name"), segment.get("key")
+            if isinstance(reason, str) and reason.strip():
+                parallel.append({"stage": key, "name": name, "reason": reason.strip()})
+    stages = lifecycle.get("stages") or []
+    if isinstance(stages, list):
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            name = stage.get("name") or stage.get("key")
+            if stage.get("parallel"):
+                for reason in stage.get("follow_ups") or []:
+                    if isinstance(reason, str) and reason.strip():
+                        parallel.append({"stage": stage.get("key"), "name": name, "reason": reason.strip()})
+    if not main_blockers and not parallel and not baseline_requirements:
+        return None
+    return {
+        "main_blockers": main_blockers,
+        "parallel_follow_ups": parallel,
+        "baseline_requirements": baseline_requirements,
+    }
+
+
+def _kickoff_fact_boundary(result):
+    """Extract typed kickoff facts that must not be contradicted in prose.
+
+    Kickoff orchestration is a stage projection rather than a free-form
+    summary.  Preserve only the small set of facts whose negation would send
+    the user down a different business path (completed acceptance and visible
+    ERP candidates).  The domain owns the values; the Harness only rejects a
+    contradictory compression by the provider.
+    """
+    if not isinstance(result, dict):
+        return None
+    context = result.get("model_context")
+    if not isinstance(context, dict):
+        return None
+    lifecycle = context.get("kickoff_lifecycle")
+    readiness = context.get("readiness") if isinstance(context.get("readiness"), dict) else {}
+    direct_handoff = context.get("erp_mold_handoff")
+    direct_baseline = context.get("baseline_plan")
+    if not isinstance(lifecycle, dict) and not isinstance(direct_handoff, dict) and not isinstance(direct_baseline, dict):
+        return None
+    completed = []
+    candidate_rows = []
+    mapping_state = None
+    baseline = {}
+    for stage in (lifecycle.get("stages") if isinstance(lifecycle, dict) else []) or []:
+        if not isinstance(stage, dict):
+            continue
+        key = str(stage.get("key") or "").strip()
+        if stage.get("state") == "COMPLETED" and key:
+            completed.append(key)
+        facts = stage.get("facts") if isinstance(stage.get("facts"), dict) else {}
+        if key == "project_plan":
+            readiness_facts = facts.get("baseline_readiness")
+            if isinstance(readiness_facts, dict):
+                baseline = {
+                    "state": stage.get("state"),
+                    "can_submit": readiness_facts.get("can_submit"),
+                    "missing_milestones": list(readiness_facts.get("missing_milestones") or []),
+                }
+        handoff = facts.get("erp_mold_handoff")
+        if isinstance(handoff, dict):
+            rows = handoff.get("records") or []
+            if isinstance(rows, list):
+                candidate_rows.extend(row for row in rows if isinstance(row, dict))
+            mapping_state = handoff.get("handoff_state") or mapping_state
+    if readiness.get("has_effective_acceptance"):
+        completed.append("acceptance")
+    if isinstance(direct_handoff, dict):
+        rows = direct_handoff.get("candidate_records") or direct_handoff.get("records") or []
+        if isinstance(rows, list):
+            candidate_rows.extend(row for row in rows if isinstance(row, dict))
+        mapping_state = direct_handoff.get("handoff_state") or mapping_state
+    if isinstance(direct_baseline, dict):
+        baseline = {
+            "state": direct_baseline.get("state"),
+            "can_submit": direct_baseline.get("can_submit"),
+            "missing_milestones": list(direct_baseline.get("missing_milestones") or []),
+        }
+    if not completed and not candidate_rows and not mapping_state and not baseline:
+        return None
+    parallel = []
+    contract = context.get("contract_follow_up")
+    if isinstance(contract, dict) and contract.get("state") in {"NOT_TRACKED", "OVERDUE", "READY"}:
+        parallel.append({"stage": "contract", "name": "销售合同", "reason": "合同可并行补齐。"})
+    return {
+        "completed_stages": completed,
+        "erp_candidates": [
+            {key: row.get(key) for key in ("project_code", "mold_code", "source_ref") if row.get(key)}
+            for row in candidate_rows
+        ],
+        "erp_handoff_state": mapping_state,
+        "baseline": baseline,
+        "parallel_follow_ups": parallel,
+    }
+
+
+def _kickoff_fact_violations(text, boundaries):
+    """Find claims that negate authoritative kickoff facts."""
+    if not isinstance(text, str) or not text or not boundaries:
+        return []
+    violations = set()
+    for boundary in boundaries:
+        completed = set(boundary.get("completed_stages") or [])
+        if {"bid_intake", "acceptance"} & completed:
+            if any(term in text for term in ("未完成承接", "承接尚未触发", "未正式承接", "未完成中标接收")):
+                violations.add("completed_acceptance")
+        candidates = boundary.get("erp_candidates") or []
+        if candidates and any(term in text for term in (
+            "没有候选", "无有效 ERP 模具号", "当前无有效 ERP 模具号", "当前没有有效 ERP 模具号"
+        )):
+            # “未完成人工映射/待人工映射” is valid when a candidate is
+            # present; only an absence claim is contradictory.
+            violations.add("erp_candidate_presence")
+    return sorted(violations)
+
+
+def _kickoff_baseline_violations(text, boundaries):
+    """Reject submission claims when the typed baseline gate is incomplete."""
+    if not isinstance(text, str) or not text or not boundaries:
+        return []
+    submission_terms = (
+        "提交审批", "提交基线计划", "提交计划审批", "审批生效", "基线计划已生效",
+    )
+    violations = set()
+    for boundary in boundaries:
+        baseline = boundary.get("baseline") or {}
+        if baseline.get("can_submit") is not False:
+            continue
+        if any(_asserted_contract_term(text, term) for term in submission_terms):
+            violations.add("baseline_submission_before_requirements")
+        # Treat an explicit empty blocker field as contradictory, but do not
+        # truncate a real blocker such as ``主线真实阻塞：无有效计划`` at the
+        # shared prefix ``主线真实阻塞：无``.
+        empty_blocker_patterns = (
+            r"主线真实阻塞\s*[：:]\s*无(?:\s|[。；，,、!?！？]|$)",
+            r"(?:^|[。；，,、\s])无主线阻塞(?:\s|[。；，,、!?！？]|$)",
+            r"(?:^|[。；，,、\s])没有主线阻塞(?:\s|[。；，,、!?！？]|$)",
+        )
+        if any(re.search(pattern, text) for pattern in empty_blocker_patterns):
+            violations.add("baseline_missing_main_blocker")
+    return sorted(violations)
+
+
+def _lifecycle_claim_violations(text, boundaries):
+    """Return parallel-stage labels asserted as blocking in final prose.
+
+    This is data-driven: labels come from the coordinator receipt, while the
+    marker vocabulary is generic and shared by every lifecycle stage.
+    """
+    if not isinstance(text, str) or not text or not boundaries:
+        return []
+    markers = ("阻塞", "关键阻塞", "不能推进", "无法推进", "禁止开工", "卡住", "停滞")
+    negations = ("不构成", "不是", "并非", "不属于", "不影响", "可并行", "并行补齐", "后续跟进")
+    violations = set()
+    for boundary in boundaries:
+        for item in boundary.get("parallel_follow_ups") or []:
+            label = str(item.get("name") or "").strip()
+            if not label:
+                continue
+            for match in re.finditer(re.escape(label), text):
+                window = text[max(0, match.start() - 12):min(len(text), match.end() + 96)]
+                if any(marker in window for marker in markers) and not any(marker in window for marker in negations):
+                    violations.add(label)
+                    break
+    return sorted(violations)
+
+
+def _lifecycle_baseline_violations(text, boundaries):
+    """Require exact typed baseline requirements when the model lists gaps."""
+    if not isinstance(text, str) or not text or not boundaries:
+        return []
+    list_markers = ("六类缺失", "六类大节点", "缺失大节点", "节点包括")
+    if not any(marker in text for marker in list_markers):
+        return []
+    missing = set()
+    for boundary in boundaries:
+        for item in boundary.get("baseline_requirements") or []:
+            label = str(item.get("label") or "").strip()
+            if label and label not in text:
+                missing.add(label)
+    return sorted(missing)
 
 
 def _tool_accepts_empty_arguments(tool):
@@ -237,22 +568,72 @@ def _has_formal_action_intent(prompt):
     scope, a remaining positive action phrase still wins (for example
     "不要准备草稿，直接提交审批").
     """
-    original = _compact_intent_text(prompt)
-    compact = original
+    # Keep the raw lower-cased text for ASCII word-boundary matching.  The
+    # compact form remains useful for Chinese phrase matching and negation
+    # removal, but compacting ``please submit`` into ``pleasesubmit`` would
+    # make a genuine English action request impossible to recognize.
+    original = str(prompt or "").lower()
+    match_original = original
+    compact = _compact_intent_text(prompt)
     negated_scope = False
     for phrase in sorted(FORMAL_ACTION_NEGATED_PHRASES, key=len, reverse=True):
         folded = _compact_intent_text(phrase)
         if folded and folded in compact:
             negated_scope = True
             compact = compact.replace(folded, "")
+            # Keep the same negated scope out of the raw text used for ASCII
+            # word-boundary matching.  Otherwise ``do not execute action``
+            # would still look like a positive ``execute action`` request.
+            match_original = re.sub(re.escape(str(phrase).lower()), "", match_original)
+    # A status statement such as “可准备” or “基线计划已创建” describes the
+    # current fact being checked; it is not a request to perform that action.
+    # Strip these grammatical prefixes before looking for a positive operation
+    # so a read-only lifecycle query cannot enter the formal-action receipt path.
+    for term in sorted(FORMAL_ACTION_TERMS, key=len, reverse=True):
+        folded_term = _compact_intent_text(term)
+        if not folded_term:
+            continue
+        for prefix in FORMAL_ACTION_STATUS_PREFIXES:
+            folded = _compact_intent_text(prefix + term)
+            if folded:
+                compact = compact.replace(folded, "")
+    # Compound nouns such as “提交门禁/提交条件” describe the status being
+    # inspected; the verb is not an instruction to submit anything.
+    for phrase in ("提交门禁", "提交条件", "提交状态", "提交审批状态"):
+        compact = compact.replace(_compact_intent_text(phrase), "")
     # Business nouns can also be action verbs: “查询最近上报” is read-only,
     # while “请上报进度” is an operation.  An explicit read-only scope plus an
     # explicit operation negation wins unless a separate unambiguous formal
     # action remains after removing the negated phrase.
     if (negated_scope and _contains_any(original, READ_ONLY_INTENT_TERMS)
-            and not _contains_any(compact, UNAMBIGUOUS_FORMAL_ACTION_TERMS)):
+            and not _contains_action_terms(match_original, compact, UNAMBIGUOUS_FORMAL_ACTION_TERMS)):
         return False
-    return _contains_any(compact, FORMAL_ACTION_TERMS)
+    return _contains_action_terms(match_original, compact, FORMAL_ACTION_TERMS)
+
+
+def _contains_action_terms(original, compact, terms):
+    """Match action words without treating structured field names as verbs.
+
+    The Harness receives both natural-language Chinese and structured keys such
+    as ``can_submit``.  Compacting punctuation is useful for Chinese intent
+    matching, but it turns the latter into ``cansubmit`` and a substring check
+    falsely detects ``submit``.  ASCII action terms therefore use word-boundary
+    matching against the original text; natural-language terms keep the
+    compacted matching behavior used by the domain policy.
+    """
+    original_text = str(original or "").lower()
+    compact_text = str(compact or "")
+    for term in terms:
+        raw = str(term or "").strip()
+        folded = _compact_intent_text(raw)
+        if not folded:
+            continue
+        if re.fullmatch(r"[a-z][a-z0-9 _-]*", raw.lower()):
+            if re.search(rf"(?<![a-z0-9_]){re.escape(raw.lower())}(?![a-z0-9_])", original_text):
+                return True
+        elif folded in compact_text:
+            return True
+    return False
 
 
 def _attachment_candidates(context):
@@ -366,6 +747,11 @@ def _business_tool_auto_activation_allowed(context):
     current_prompt = context.get("prompt") or ""
     if _is_pure_conversation(current_prompt):
         return False
+    # Spreadsheet parsing is owned by the two ERP design-upload skills. An
+    # attachment alone must never activate generic business discovery when
+    # neither skill is installed or authorized.
+    if _has_design_list_attachment(context) and not _has_design_upload_skill(context):
+        return False
     has_current_business_object = _contains_any(current_prompt, ALL_BUSINESS_OBJECT_HINTS)
     # The generic policy covers cross-domain queries and formal operations.
     # The design policy additionally covers non-formal workflow steps such as
@@ -443,6 +829,11 @@ def _business_tool_activation_allowed(context):
                 normalized = _compact_intent_text(text)
                 return "解析" in normalized and ("确认" in normalized or "是否" in normalized)
         return False
+    # Spreadsheet parsing is owned by the two ERP design-upload skills. An
+    # attachment alone must never activate generic business discovery when
+    # neither skill is installed or authorized.
+    if _has_design_list_attachment(context) and not _has_design_upload_skill(context):
+        return False
     has_current_business_object = _contains_any(current_prompt, ALL_BUSINESS_OBJECT_HINTS)
     has_current_action = (_contains_any(current_prompt, BUSINESS_ACTION_HINTS)
                           or _contains_any(current_prompt, DESIGN_BUSINESS_ACTION_HINTS)
@@ -451,6 +842,20 @@ def _business_tool_activation_allowed(context):
     has_workbench_support = _contains_any(current_prompt, WORKBENCH_SUPPORT_HINTS)
     if has_workbench_support and not has_current_action:
         return False
+    # A formal operation can name only its action (for example, “准备文件
+    # 类型确认建议”) while relying on the immediately visible attachment or
+    # prior turn for the business object.  Keep the capability discoverable via
+    # ToolSearch; the domain tool still requires authoritative IDs and a
+    # confirmation proposal before any write.
+    if _has_formal_action_intent(current_prompt):
+        return True
+    # Follow-up document work commonly says “刚才上传的文件/预分类”。 The
+    # attachment manifest is the trusted object reference for that wording,
+    # so it may open ToolSearch without broadening the active business tools.
+    if (has_historical_file := bool(_attachment_candidates(context))
+            and has_current_action
+            and _contains_any(current_prompt, ("文件", "附件", "文档", "预分类", "接收", "类型"))):
+        return has_historical_file
     # Exposing ToolSearch is not a business read by itself. Once the current
     # turn names a business object, let the model select a bounded read tool
     # even when the question uses no allow-listed verb (for example 密度是多少).
@@ -530,7 +935,18 @@ def _skill_tool_groups(skills, all_tools):
                        ),
                        "host_auto_invoke_queries": skill.get("host_auto_invoke_queries")
                        or spec.get("host_auto_invoke_queries", []),
-                       "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", [])})
+                       "priority_patterns": skill.get("priority_patterns") or spec.get("priority_patterns", []),
+                       "priority_excludes": skill.get("priority_excludes") or spec.get("priority_excludes", []),
+                       "action_activation_queries": skill.get("action_activation_queries")
+                       or spec.get("action_activation_queries", []),
+                       "action_activation_tools": [name for name in (
+                           skill.get("action_activation_tools")
+                           or spec.get("action_activation_tools", [])
+                       ) if name in all_tools],
+                       "suppress_tool_search_on_action_activation": bool(
+                           skill.get("suppress_tool_search_on_action_activation")
+                           or spec.get("suppress_tool_search_on_action_activation", False)
+                       )})
     return result
 
 
@@ -733,6 +1149,15 @@ def _group_prompt_relevance(current_prompt, group, deferred_tools):
 def _group_priority_matches(current_prompt, group):
     """Return whether a domain-declared identifier makes this group authoritative."""
     text = str(current_prompt or "")
+    lowered = text.lower()
+    # A more specific bounded coordinator can explicitly yield to a broader
+    # lifecycle scene.  This keeps a prompt such as “项目启动链路，同时说明
+    # 正式开工” on the kickoff coordinator instead of silently narrowing it to
+    # the single formal-start reader.  Metadata is optional for other packs.
+    for exclusion in group.get("priority_excludes", []):
+        value = str(exclusion or "").strip().lower()
+        if value and value in lowered:
+            return False
     for pattern in group.get("priority_patterns", []):
         try:
             if re.search(str(pattern), text):
@@ -855,6 +1280,16 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
     priority_groups = [group for group in tool_groups
                        if _group_priority_matches(current_prompt, group)
                        and any(name in deferred_tools for name in group["tools"])]
+    # When a prioritized scene explicitly owns a deferred action, an exact
+    # ToolSearch for that action is the model's intended next step.  Activate
+    # the optional action itself instead of repeatedly returning only the
+    # scene's read boundary.  Keep the broader priority rule for exact names
+    # that belong to unrelated capabilities (for example a design-upload
+    # reader mentioned by a kickoff prompt).
+    if (normalized in deferred_tools and priority_groups and action_intent
+            and any(normalized in group.get("optional", group.get("optional_tools", []))
+                    for group in priority_groups)):
+        return [normalized], [normalized], []
     if priority_groups:
         # A domain-owned identifier pattern is stronger than a model-shortened
         # ToolSearch phrase. Rank concrete tools from the full current prompt
@@ -1002,8 +1437,10 @@ def _initial_messages(context, system_content):
             if not isinstance(turn,dict):
                 continue
             user=turn.get("user") if isinstance(turn.get("user"),dict) else {}
-            content=str(user.get("content") or "")
-            attachments=user.get("attachments") if isinstance(user.get("attachments"),list) else []
+            content=str(user.get("content") or turn.get("request") or "")
+            attachments=user.get("attachments") if isinstance(user.get("attachments"),list) else (
+                turn.get("files") if isinstance(turn.get("files"), list) else []
+            )
             historical_file_ids.update(
                 str(file.get("id") or file.get("file_id"))
                 for file in attachments
@@ -1012,8 +1449,19 @@ def _initial_messages(context, system_content):
             historical_user=HISTORICAL_USER_PREFIX+content
             if attachments:
                 historical_user+=HISTORICAL_ATTACHMENT_MARKER+_attachment_context(attachments)
+            if isinstance(turn.get("confirmed_actions"), list) and turn["confirmed_actions"]:
+                historical_user += "\n该历史消息已确认动作引用（仅用于本轮指代，不代表本轮授权）：" + json.dumps(
+                    turn["confirmed_actions"], ensure_ascii=False,
+                )
             messages.append({"role":"user","content":historical_user})
             assistant=turn.get("assistant")
+            if not isinstance(assistant, dict) and turn.get("assistant_summary"):
+                assistant={"summary": turn.get("assistant_summary")}
+            if isinstance(turn.get("confirmed_actions"), list):
+                assistant = {
+                    **(assistant if isinstance(assistant, dict) else {}),
+                    "confirmed_actions": turn["confirmed_actions"],
+                }
             if isinstance(assistant,dict) and assistant:
                 messages.append({"role":"assistant","content":
                     HISTORICAL_ASSISTANT_PREFIX+json.dumps(assistant,ensure_ascii=False)})
@@ -1317,6 +1765,27 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     and group.get("suppress_tool_search_on_auto_activation")
                     and not formal_action_requested):
                 suppress_tool_search = True
+        # An explicit action phrase can activate the single action tool owned
+        # by the current coordinator without exposing unrelated deferred
+        # capabilities.  The action is still only a callable schema; the
+        # model must query the authoritative reader and provide its real IDs
+        # before the domain tool can prepare a proposal.
+        if formal_action_requested:
+            for group in tool_groups:
+                aliases = [str(alias).strip().lower()
+                           for alias in group.get("action_activation_queries", [])
+                           if str(alias).strip()]
+                if not aliases or not any(alias in normalized_prompt for alias in aliases):
+                    continue
+                selected = set(group.get("action_activation_tools", [])) & set(all_tools)
+                if not selected:
+                    continue
+                active_tool_names.update(selected)
+                load_selected_skills(selected, [group["key"]])
+                for name in selected:
+                    auto_deferred.pop(name, None)
+                if group.get("suppress_tool_search_on_action_activation"):
+                    suppress_tool_search = True
         # UI action cards carry the exact registered Tool name.  Treat that
         # name as an explicit activation request; otherwise a broad automatic
         # skill (for example formal-start readiness) can suppress ToolSearch
@@ -1398,6 +1867,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     model_metrics = context.get('model_metrics', {})
     finalizing = (bool(proposal_resolution) and not post_proposal_continuation) or context.get('finalizing', False)
     protocol_repairs = context.get('protocol_repairs', 0)
+    protocol_repair_events = [
+        event for event in context.get('protocol_repair_events', [])
+        if isinstance(event, dict)
+    ]
     executed_tool_signatures = list(context.get('executed_tool_signatures', []))
     persisted_tool_names = {
         signature.rsplit(":", 1)[0]
@@ -1411,6 +1884,18 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     if evidence_ids and "evidence_tools" not in context:
         evidence_tools.update(persisted_tool_names)
     action_outcomes = dict(context.get('action_outcomes', {}))
+    proposal_contracts = [
+        contract for contract in context.get('proposal_contracts', [])
+        if isinstance(contract, dict)
+    ]
+    lifecycle_boundaries = [
+        boundary for boundary in context.get('lifecycle_boundaries', [])
+        if isinstance(boundary, dict)
+    ]
+    kickoff_boundaries = [
+        boundary for boundary in context.get('kickoff_boundaries', [])
+        if isinstance(boundary, dict)
+    ]
     compactions = list(context.get('context_compactions', []))
     last_model_message = context.get('last_model_message')
     streaming_model_message = (context.get('streaming_model_message')
@@ -1476,7 +1961,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
 
     def request_protocol_repair(reminder):
         nonlocal finalizing, protocol_repairs, next_model_instructions, streaming_model_message
+        protocol_repair_events.append({
+            'kind': 'protocol',
+            'reminder': str(reminder).split('\n', 1)[0][:160],
+            'attempt': protocol_repairs + 1,
+        })
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
+            save()
             raise RuntimeError("MODEL_OUTPUT_INVALID")
         finalizing = True
         protocol_repairs += 1
@@ -1486,7 +1977,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
 
     def request_tool_repair(reminder):
         nonlocal protocol_repairs, next_model_instructions, streaming_model_message
+        protocol_repair_events.append({
+            'kind': 'tool',
+            'reminder': str(reminder).split('\n', 1)[0][:160],
+            'attempt': protocol_repairs + 1,
+        })
         if protocol_repairs >= MAX_PROTOCOL_REPAIRS:
+            save()
             raise RuntimeError("MODEL_OUTPUT_INVALID")
         protocol_repairs += 1
         streaming_model_message = None
@@ -1510,9 +2007,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             'model_elapsed_ms': model_elapsed_ms, 'model_metrics':model_metrics,
                             'finalizing': finalizing,
                             'protocol_repairs': protocol_repairs,
+                            'protocol_repair_events': protocol_repair_events,
                             'executed_tool_signatures': executed_tool_signatures,
                             'action_outcomes': action_outcomes,
-                            'active_tool_names': sorted(active_tool_names),
+                            'proposal_contracts': proposal_contracts,
+                            'lifecycle_boundaries': lifecycle_boundaries,
+                            'kickoff_boundaries': kickoff_boundaries,
+                                'active_tool_names': sorted(active_tool_names),
                             'activated_skill_keys': sorted(activated_skill_keys),
                             'active_skill_keys': sorted(active_skill_keys),
                             'last_model_message': last_model_message,
@@ -1562,7 +2063,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 check_budget()
                 if count >= max_tools: raise RuntimeError("BUDGET_EXCEEDED")
                 name = call["function"]["name"]
-                if name not in batch_allowed_names: raise RuntimeError("TOOL_FORBIDDEN")
+                if name not in batch_allowed_names:
+                    raise RuntimeError("TOOL_FORBIDDEN")
                 try:
                     signature, arguments = tool_signature(call)
                 except ToolArgumentsError:
@@ -1588,6 +2090,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     activated_skill_keys.update(matched_groups)
                     active_skill_keys.update(matched_groups)
                     load_selected_skills(candidates, matched_groups)
+                    for group in tool_groups:
+                        if group.get("key") in matched_groups and group.get("requires_tool_evidence"):
+                            required_evidence_tools.update(group.get("required") or group.get("tools") or [])
                     instructions = _full_skill_prompt(tool_groups, newly_activated_skills)
                     if instructions:
                         messages.append({"role": "system", "content": instructions})
@@ -1634,12 +2139,34 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 executed_tool_signatures.append(signature)
                 count += 1
                 pending_index += 1
+                contract = _proposal_execution_contract(result)
+                if contract and contract not in proposal_contracts:
+                    proposal_contracts.append(contract)
+                lifecycle_boundary = _lifecycle_claim_boundary(result)
+                if lifecycle_boundary and lifecycle_boundary not in lifecycle_boundaries:
+                    lifecycle_boundaries.append(lifecycle_boundary)
+                kickoff_boundary = _kickoff_fact_boundary(result)
+                if kickoff_boundary and kickoff_boundary not in kickoff_boundaries:
+                    kickoff_boundaries.append(kickoff_boundary)
                 model_result = _tool_result_for_model(
                     result,
                     prefer_model_context=(not formal_action_requested
                                           or result.get("model_context_complete") is True),
                 )
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(model_result, ensure_ascii=False)})
+                contract_instruction = _proposal_contract_instruction(contract)
+                if contract_instruction:
+                    messages.append({"role": "system", "content": contract_instruction})
+                if lifecycle_boundary:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "本次生命周期查询的类型化证据边界："
+                            + json.dumps(lifecycle_boundary, ensure_ascii=False)
+                            + "。最终答复只能把 main_blockers/blockers 描述为主线阻塞；"
+                            "parallel_follow_ups 只能作为并行跟进，不能升级为阻塞。"
+                        ),
+                    })
                 save()
             pending, pending_index = [], 0
             # A narrowly auto-activated authoritative reader has already
@@ -1765,6 +2292,46 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 if invalid_names <= skill_names:
                     request_tool_repair(UNKNOWN_TOOL_REMINDER)
                     continue
+                # A provider may emit a deferred tool directly, either before
+                # the first read or after an authoritative read.  Only bridge
+                # this protocol mistake when the tool is owned by the active
+                # business skill and the user explicitly requested an action;
+                # generic/unregistered calls and read-only requests remain
+                # fail-closed.  The synthetic call is still the real
+                # ToolSearch path, so no business tool is activated or run
+                # behind the model's back.
+                owned_deferred = any(
+                    name in set(group.get("tools", [])) | set(group.get("optional", []))
+                    for group in tool_groups
+                    for name in invalid_names
+                )
+                if invalid_names <= set(deferred_tools) and formal_action_requested and owned_deferred:
+                    search_call = {
+                        "id": "harness-tool-search-" + hashlib.sha256(
+                            ("\n".join(sorted(invalid_names))).encode("utf-8")
+                        ).hexdigest()[:24],
+                        "type": "function",
+                        "function": {
+                            "name": TOOL_SEARCH_NAME,
+                            "arguments": json.dumps(
+                                {"query": " ".join(sorted(invalid_names))},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                    messages.append({
+                        "role": "assistant",
+                        "content": "已核对当前业务事实，正在激活下一步办理能力。",
+                        "tool_calls": [search_call],
+                    })
+                    streaming_model_message = None
+                    pending = [search_call]
+                    pending_index = 0
+                    save()
+                    continue
+                if evidence_ids and invalid_names <= set(deferred_tools):
+                    request_tool_repair(DEFERRED_TOOL_REMINDER)
+                    continue
                 raise RuntimeError("TOOL_FORBIDDEN")
             signatures = []
             try:
@@ -1820,6 +2387,58 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         kind = result.get('response_kind', 'BUSINESS')
         if kind not in {'BUSINESS','AWAITING_APPROVAL','CONVERSATION','CLARIFICATION'}: raise RuntimeError('MODEL_OUTPUT_INVALID')
         result['response_kind'] = kind
+        contract_text = " ".join([
+            result.get("summary") or "",
+            *[item for item in result.get("suggestions", []) if isinstance(item, str)],
+        ])
+        boundary_violations = sorted({
+            str(term).strip() for contract in proposal_contracts
+            for term in contract.get("forbidden_summary_terms", [])
+            if str(term).strip() and _asserted_contract_term(contract_text, str(term).strip())
+        })
+        if boundary_violations:
+            request_tool_repair(
+                PROPOSAL_BOUNDARY_REPAIR_REMINDER
+                + "\n检测到越界表述："
+                + json.dumps(boundary_violations, ensure_ascii=False)
+            )
+            continue
+        lifecycle_violations = _lifecycle_claim_violations(
+            contract_text, [*lifecycle_boundaries, *kickoff_boundaries]
+        )
+        if lifecycle_violations:
+            request_tool_repair(
+                LIFECYCLE_CLAIM_REPAIR_REMINDER
+                + "\n被错误升级为阻塞的并行事项："
+                + json.dumps(lifecycle_violations, ensure_ascii=False)
+            )
+            continue
+        baseline_violations = _lifecycle_baseline_violations(contract_text, lifecycle_boundaries)
+        if baseline_violations:
+            request_tool_repair(
+                LIFECYCLE_CLAIM_REPAIR_REMINDER
+                + "\n基线节点清单未按权威字段完整列出，缺少："
+                + json.dumps(baseline_violations, ensure_ascii=False)
+            )
+            continue
+        kickoff_violations = _kickoff_fact_violations(contract_text, kickoff_boundaries)
+        if kickoff_violations:
+            request_tool_repair(
+                KICKOFF_FACT_REPAIR_REMINDER
+                + "\n检测到与启动链路事实冲突："
+                + json.dumps(kickoff_violations, ensure_ascii=False)
+            )
+            continue
+        kickoff_baseline_violations = _kickoff_baseline_violations(
+            contract_text, [*kickoff_boundaries, *lifecycle_boundaries]
+        )
+        if kickoff_baseline_violations:
+            request_tool_repair(
+                KICKOFF_BASELINE_REPAIR_REMINDER
+                + "\n检测到基线提交门禁冲突："
+                + json.dumps(kickoff_baseline_violations, ensure_ascii=False)
+            )
+            continue
         missing_authoritative_reads = required_evidence_tools - evidence_tools
         attempted_required_reads = required_evidence_tools & attempted_tools
         if missing_authoritative_reads and not (

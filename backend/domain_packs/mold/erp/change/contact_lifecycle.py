@@ -206,17 +206,26 @@ def preview(db,user,case,tid,action,data):
         return {'撤销事项':task.title,'撤销依据':data.evidence,'说明':'保留原责任和过程记录；方案范围改变须重新审批。'}
     reviewer(db,user,case,action)
     resolution=approved(db,user,case)
+    from domain_packs.mold.erp.project.change_start import require_effective_notice
+    if action!='review' or data.decision=='PASS':
+        require_effective_notice(db,case,resolution)
     if action=='review':
         task=db.get(m.ContactTask,tid)
         if not task or task.case_id!=case.id:raise DomainError('NOT_FOUND','事项不存在',404)
         if task.status not in {'RESPONDED','VERIFIED'}:raise DomainError('RESPONSE_REQUIRED','处理人须先提交完成反馈',409)
         if task.assignee_id==user.id:raise DomainError('INDEPENDENT_RECHECK','处理人不能复验自己的处理结果',403)
         if task.status=='VERIFIED' and task.verified_plan_id==resolution.subject_id:raise DomainError('ALREADY_VERIFIED','本方案下的合格复验不能覆盖',409)
+        if data.decision=='PASS':
+            from domain_packs.mold.erp.change.contact_execution import require_current_basis
+            require_current_basis(db,case,task,resolution)
         return {'复验事项':task.title,'处理反馈':task.response,'结论':'合格' if data.decision=='PASS' else '退回整改',
                 '复验依据':data.evidence,'方案编号':db.get(m.BusinessSubject,resolution.subject_id).number}
     tasks=list(db.scalars(select(m.ContactTask).where(m.ContactTask.case_id==case.id,m.ContactTask.status!='CANCELLED')))
     if not tasks or any(t.status!='VERIFIED' or t.verified_plan_id!=resolution.subject_id for t in tasks):
         raise DomainError('RECHECK_REQUIRED','所有有效责任事项须在最新批准方案下复验合格',409)
+    from domain_packs.mold.erp.change.contact_execution import require_current_basis
+    for task in tasks:
+        require_current_basis(db,case,task,resolution)
     return {'关闭依据':data.evidence,'复验合格事项数':len(tasks),'方案编号':db.get(m.BusinessSubject,resolution.subject_id).number,
             '说明':'人工关闭联络协作事项；不会自动修改 ERP、采购订单或客户承诺。'}
 
@@ -265,6 +274,8 @@ def context(db,user,case):
         result['reviewer_candidates']=[{'id':p.id,'name':p.display_name} for p in db.scalars(select(m.User).where(m.User.active.is_(True)))
             if all(c.permitted(db,p,a,case) for a in ('read','review','close'))]
     result['resolutions']=[]
+    result['execution_basis_options']=[]
+    current=latest(db,case)
     for resolution in db.scalars(select(m.ContactResolution).join(m.BusinessSubject).where(m.ContactResolution.case_id==case.id).order_by(m.BusinessSubject.created_at.desc())):
         subject=db.get(m.BusinessSubject,resolution.subject_id)
         try:domains.authorize(db,user,subject,'read')
@@ -275,6 +286,22 @@ def context(db,user,case):
         ).order_by(m.ApprovalInstance.created_at.desc()).limit(1))
         result['resolutions'].append({'id':subject.id,'number':subject.number,'status':subject.status,'solution':resolution.solution,
             'instance_id':instance.id if instance else None,'snapshot':resolution.material_snapshot})
+        if current and current.subject_id==subject.id and subject.status=='EFFECTIVE':
+            try:
+                approved(db,user,case)
+            except DomainError:
+                continue
+            from domain_packs.mold.erp.project.change_start import effective_notice
+            start_id=effective_notice(db,case,resolution)
+            if start_id:
+                start=db.get(m.BusinessSubject,start_id)
+                try:
+                    fields=domains.authorize(db,user,start,'read')
+                    if '*' in fields or {'id','number'}<=fields:
+                        result['execution_basis_options'].append({'execution_plan_id':subject.id,
+                            'plan_number':subject.number,'execution_start_id':start.id,'start_number':start.number})
+                except DomainError:
+                    pass
     return result
 
 

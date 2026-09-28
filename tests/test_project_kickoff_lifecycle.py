@@ -5,6 +5,13 @@ from app import bpm, models as m
 from app.authorization import PERMISSIONS
 from app.tool_gateway import execute, tool_schema
 from pg_db import factory as pg_factory
+from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import (
+    ProjectKickoffContextInput,
+    _contract_stage,
+    _plan_stage,
+    _recommendations,
+    query as kickoff_query,
+)
 
 
 def factory():
@@ -44,6 +51,95 @@ def grant(db, admin, target, permission, project_id):
 
 def capability(db, target, key, kind="TOOL"):
     db.add(m.Capability(user_id=target.id, kind=kind, key=key, enabled=True))
+
+
+def test_plan_recommendation_explains_missing_nodes_before_first_baseline():
+    def stage(key, state, *, action_tool=None, facts=None):
+        return {
+            "key": key,
+            "state": state,
+            "query_tool": f"query_{key}",
+            "action_tool": action_tool,
+            "facts": facts or {},
+        }
+
+    stages = [
+        stage("quotation", "COMPLETED"),
+        stage("bid_intake", "COMPLETED"),
+        stage("acceptance", "COMPLETED"),
+        stage("contract", "COMPLETED"),
+        stage("internal_start", "COMPLETED"),
+        stage(
+            "project_plan",
+            "READY",
+            action_tool="prepare_project_plan_baseline",
+            facts={"active_plan": None, "missing_milestones": ["design", "delivery"]},
+        ),
+    ]
+
+    result = _recommendations(stages, {"prepare_project_plan_baseline"})
+
+    assert result[0]["tool"] == "prepare_project_plan_baseline"
+    assert "尚无完整基线计划" in result[0]["reason"]
+    assert "计划变更" not in result[0]["reason"]
+
+
+def test_parallel_contract_gap_is_follow_up_not_a_kickoff_blocker():
+    stage = _contract_stage(
+        {"sales_contracts": [], "late_expected_contracts": [], "workflow_options": {}},
+        set(),
+    )
+    assert stage["parallel"] is True
+    assert stage["blockers"] == []
+    assert stage["follow_ups"]
+
+
+def test_plan_stage_routes_incomplete_effective_plan_to_plan_change():
+    row = {
+        "analysis": {
+            "derived_status": {"has_effective_plan": True, "project_status": "ACTIVE"},
+            "active_plan": {"id": "plan-1", "status": "EFFECTIVE"},
+            "milestone_coverage": {
+                "missing": ["trial"],
+                "missing_labels": ["试模/调试"],
+            },
+        },
+        "project_plans": [{"status": "EFFECTIVE"}],
+        "workflow_options": [{"id": "plan-change-flow"}],
+        "baseline_workflow_options": [],
+    }
+    stage = _plan_stage(
+        row,
+        {"prepare_project_plan_change"},
+        "COMPLETED",
+        "ACTIVE",
+    )
+    assert stage["state"] == "NEEDS_ATTENTION"
+    assert stage["action_tool"] == "prepare_project_plan_change"
+    assert stage["facts"]["plan_change_workflow_count"] == 1
+
+
+def test_plan_stage_blocks_first_baseline_until_erp_mapping_is_confirmed():
+    row = {
+        "analysis": {
+            "derived_status": {"has_effective_plan": False, "project_status": "ACTIVE"},
+            "active_plan": None,
+            "milestone_coverage": {"missing": ["design"], "missing_labels": []},
+        },
+        "project_plans": [],
+        "workflow_options": [],
+        "baseline_workflow_options": [{"id": "baseline-flow"}],
+        "erp_execution_progress": {"status": "ERP_PROJECT_MAPPING_REQUIRED"},
+    }
+    stage = _plan_stage(
+        row,
+        {"prepare_project_plan_baseline"},
+        "COMPLETED",
+        "ACTIVE",
+    )
+    assert stage["state"] == "BLOCKED"
+    assert stage["action_tool"] is None
+    assert any("ERP 项目与模具尚未完成人工映射" in item for item in stage["blockers"])
 
 
 def workflow(db, approver, business_type):
@@ -164,15 +260,30 @@ def plan(db, project_row, creator, number="PLAN-KICKOFF"):
     db.add(subject)
     db.flush()
     db.add(m.PlanDetail(subject_id=subject.id, reason="项目启动基线"))
-    db.add(m.PlanTask(
-        plan_id=subject.id,
-        key="design",
-        name="结构设计",
-        owner_user_id=creator.id,
-        planned_start=date.today(),
-        planned_end=date.today() + timedelta(days=5),
-        status="PLANNED",
-    ))
+    names = [
+        ("design", "结构设计及出图"),
+        ("purchase", "五金采购"),
+        ("machining", "工序加工"),
+        ("assembly", "装配"),
+        ("trial", "试模"),
+        ("delivery", "最终交付"),
+    ]
+    previous = None
+    for index, (key, name) in enumerate(names):
+        row = m.PlanTask(
+            plan_id=subject.id,
+            key=key,
+            name=name,
+            owner_user_id=creator.id,
+            planned_start=date.today() + timedelta(days=index * 3),
+            planned_end=date.today() + timedelta(days=index * 3 + 2),
+            status="PLANNED",
+        )
+        db.add(row)
+        db.flush()
+        if previous:
+            db.add(m.TaskDependency(task_id=row.id, prerequisite_id=previous.id))
+        previous = row
     return subject
 
 
@@ -197,6 +308,14 @@ def test_kickoff_schema_and_fresh_project_recommend_acceptance_with_parallel_con
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
             by_key = stages(result)
             assert result["resolution"] == "RESOLVED"
+            assert result["scope_boundary"]["complete"] is True
+            assert result["scope_boundary"]["scope_key"] == "project_kickoff"
+            assert "prepare_quotation_version" in result["scope_boundary"]["write_tools"]
+            assert "prepare_internal_start" in result["scope_boundary"]["write_tools"]
+            assert "query_quote_evaluation_context" in result["scope_boundary"]["read_tools"]
+            assert "query_contract_context" in result["scope_boundary"]["read_tools"]
+            assert result["model_context"]["project"]["code"] == "KICKOFF-FRESH"
+            assert result["model_context"]["kickoff_lifecycle"]["phase"] == "QUOTATION"
             assert lifecycle["kind"] == "project_kickoff_lifecycle_v2"
             assert lifecycle["phase"] == "QUOTATION"
             assert by_key["quotation"]["state"] == "READY"
@@ -264,8 +383,40 @@ def test_kickoff_moves_from_acceptance_to_start_then_plan_then_execution():
             assert by_key["contract"]["state"] == "COMPLETED"
             assert by_key["internal_start"]["state"] == "COMPLETED"
             assert by_key["project_plan"]["state"] == "ACTIVE"
-            assert by_key["project_plan"]["facts"]["task_count"] == 1
+            assert by_key["project_plan"]["facts"]["task_count"] == 6
             assert lifecycle["recommended_next_steps"] == []
+    finally:
+        engine.dispose()
+
+
+def test_kickoff_context_aliases_preserve_acceptance_for_start_readiness():
+    """Coordinator tool names must not hide facts owned by the start reader."""
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "admin", True)
+            project_row = project(db, "KICKOFF-CONTEXT-ALIASES", status="ACTIVE")
+            decision(db, project_row, admin, "quote_acceptance", "QA-CONTEXT-ALIASES", "ACCEPT")
+            decision(db, project_row, admin, "internal_start", "START-CONTEXT-ALIASES", "START")
+        with Session() as db:
+            admin = db.query(m.User).filter_by(username="admin").one()
+            allowed = {
+                "query_project_kickoff_context",
+                "query_quote_acceptance_context",
+                "query_bid_intake_context",
+                "query_contract_context",
+                "query_internal_start_readiness",
+                "query_project_plan_context",
+            }
+            result = kickoff_query(
+                db, admin,
+                ProjectKickoffContextInput(identifier="KICKOFF-CONTEXT-ALIASES"),
+                allowed,
+            )
+            lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
+            start = next(row for row in lifecycle["stages"] if row["key"] == "internal_start")
+            assert start["state"] == "COMPLETED"
+            assert "当前可见范围未见有效承接记录。" not in start["blockers"]
     finally:
         engine.dispose()
 
@@ -294,6 +445,87 @@ def test_kickoff_routes_effective_quotation_to_bid_intake_before_acceptance():
         engine.dispose()
 
 
+def test_kickoff_routes_unique_erp_mold_candidate_to_human_handoff_before_start():
+    from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import _start_stage
+
+    row = {
+        "readiness": {
+            "has_effective_internal_start": False,
+            "can_prepare_start_from_known_facts": True,
+            "project_status": "DRAFT",
+            "known_blockers": [],
+        },
+        "latest_internal_start": None,
+        "open_start_requests": [],
+        "workflow_options": [{"id": "start-flow"}],
+        "customer_start_conditions": {"complete": True},
+        "erp_mold_handoff": {
+            "handoff_state": "ERP_CANDIDATE_REQUIRES_HANDOFF",
+            "exact_project_records": [{
+                "project_code": "P-001",
+                "mold_code": "M-001",
+                "source_ref": "scheduling/api/business/molds/:P-001:M-001",
+            }],
+            "local_internal_mold_numbers": [],
+        },
+    }
+
+    stage = _start_stage(
+        row,
+        {
+            "query_internal_start_readiness",
+            "prepare_internal_start",
+            "prepare_project_mold_handoff",
+        },
+        "COMPLETED",
+    )
+
+    assert stage["state"] == "READY"
+    assert stage["action_tool"] == "prepare_project_mold_handoff"
+    assert stage["facts"]["erp_mold_handoff"]["handoff_state"] == (
+        "ERP_CANDIDATE_REQUIRES_HANDOFF"
+    )
+
+
+def test_kickoff_routes_confirmed_erp_handoff_to_formal_start():
+    from domain_packs.mold.tools.erp.project.kickoff_lifecycle_tools import _start_stage
+
+    row = {
+        "readiness": {
+            "has_effective_internal_start": False,
+            "can_prepare_start_from_known_facts": True,
+            "project_status": "DRAFT",
+            "known_blockers": [],
+        },
+        "latest_internal_start": None,
+        "open_start_requests": [],
+        "workflow_options": [{"id": "start-flow"}],
+        "customer_start_conditions": {"complete": True},
+        "erp_mold_handoff": {
+            "handoff_state": "LOCAL_ASSOCIATION_PRESENT",
+            "project_mapping_state": "CONFIRMED",
+            "erp_project_code": "ERP-P-001",
+            "exact_project_records": [{
+                "project_code": "ERP-P-001",
+                "mold_code": "ERP-M-001",
+                "source_ref": "scheduling/api/business/molds/:ERP-P-001:ERP-M-001",
+            }],
+            "records": [],
+            "local_internal_mold_numbers": ["ERP-M-001"],
+        },
+    }
+
+    stage = _start_stage(
+        row,
+        {"query_internal_start_readiness", "prepare_internal_start"},
+        "COMPLETED",
+    )
+
+    assert stage["state"] == "READY"
+    assert stage["action_tool"] == "prepare_internal_start"
+    assert stage["facts"]["erp_mold_handoff"]["project_mapping_state"] == "CONFIRMED"
+
+
 def test_kickoff_keeps_unassigned_stage_tools_unread_and_does_not_leak_numbers():
     engine, Session = factory()
     try:
@@ -310,6 +542,12 @@ def test_kickoff_keeps_unassigned_stage_tools_unread_and_does_not_leak_numbers()
             operator = db.query(m.User).filter_by(username="operator").one()
             result = execute(db, operator, "query_project_kickoff_context", {"identifier": "KICKOFF-LIMITED"})
             lifecycle = result["data"][0]["analysis"]["kickoff_lifecycle"]
+            assert result["scope_boundary"] == {
+                "complete": True,
+                "scope_key": "project_kickoff",
+                "write_tools": [],
+            }
+            assert result["model_context"]["kickoff_lifecycle"]["phase"] == lifecycle["phase"]
             assert {row["state"] for row in lifecycle["stages"]} == {"UNAVAILABLE"}
             assert lifecycle["access_gaps"] == ["客户报价", "承接确认", "中标接收", "销售合同", "正式开工", "项目计划"]
             assert "SECRET-QA" not in str(result)

@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 from collections import Counter, defaultdict
 from pydantic import Field, model_validator
 from sqlalchemy import select, and_
@@ -9,7 +10,7 @@ from domain_packs.mold.ports.schemas import StrictModel
 
 
 class DesignRouteContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(default=None, min_length=1, max_length=200,
         description='项目编号/名称、设计单号、图纸版本、物料编号/名称、计划任务或工程联络线索。')
 

@@ -261,6 +261,26 @@ def pause_project(db, project, creator, reason="客户通知暂停，涉及 SECR
     return pause
 
 
+def test_customer_reference_and_free_text_do_not_prove_change_type_or_written_approval():
+    from domain_packs.mold.tools.erp.change.change_intake_tools import _engineering_changes
+    legacy=_engineering_changes([{'id':'legacy','category':'hardware','detail':{
+        'problem':'客户邮件供应商设计采购都出现在描述里','solution':'免费改模，标题不能决定执行方式'}}],{})
+    assert legacy[0]['source_classification']=='UNCLASSIFIED'
+    engine,Session=factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'REFERENCE-ONLY')
+            case=m.ContactCase(project_id=p.id,created_by=admin.id,request_key='ref-only',request_hash='hash',
+                title='供应商客户改模字样不能代替分类',description='仅有客户档案引用',mode='ONLINE',
+                category='hardware',customer_ref='CUSTOMER-MASTER-ID',change_type='EXCEPTION',problem_source='QUALITY_ISSUE')
+            db.add(case);db.flush()
+            status=execute(db,admin,'query_change_intake_context',{'project_id':p.id})['data'][0]['analysis']['derived_status']
+            assert status['has_customer_change_signal'] is False
+            assert status['has_customer_written_evidence'] is False
+    finally:
+        engine.dispose()
+
+
 def test_change_intake_schema_and_context_summary():
     engine, Session = factory()
     try:
@@ -283,7 +303,11 @@ def test_change_intake_schema_and_context_summary():
             assert status["has_customer_change_signal"] is True
             assert status["has_customer_written_evidence"] is True
             assert status["has_internal_mold_identity"] is True
-            assert status["has_effective_start_notice"] is True
+            assert status["has_project_start_notice"] is True
+            assert status["all_current_changes_started"] is False
+            assert status['missing_change_start_count']==1
+            assert analysis['change_start_readiness'][0]['state']=='FORMAL_START_REQUIRED'
+            assert '项目最初开工' in ''.join(analysis['warnings'])
             assert status["has_effective_contract"] is True
             assert status["has_plan_impact_context"] is True
             assert status["has_approved_solution"] is True
@@ -310,6 +334,12 @@ def test_change_intake_schema_and_context_summary():
             assert "完整任务列表" in "".join(seed["required_before_prepare"])
             assert "不会自动改计划" in candidate["guardrail"]
             assert "不能把方案审批" in "".join(analysis["warnings"])
+            handoffs = {row["key"]: row for row in analysis["change_handoffs"]}
+            assert handoffs["change_to_confirmation"]["state"] == "CONNECTED"
+            assert handoffs["solution_to_plan"]["state"] == "READY"
+            assert handoffs["plan_to_execution"]["state"] == "BLOCKED"
+            assert handoffs["change_to_contract_finance"]["state"] == "NOT_APPLICABLE"
+            assert handoffs["change_to_close"]["state"] == "BLOCKED"
             assert "不同事实" in "".join(result["limitations"])
     finally:
         engine.dispose()

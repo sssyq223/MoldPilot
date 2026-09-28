@@ -4,6 +4,7 @@ import pytest
 from app import models as m,domains,domain_schemas as s,project_closure as closure
 from app.db import now
 from app.errors import DomainError
+from app.tool_gateway import execute
 from pg_db import database
 
 
@@ -62,6 +63,17 @@ def test_termination_stops_only_unfinished_local_tasks_and_opens_different_check
     assert db.get(m.ProjectProfile,project.id).settlement_status=='TERMINATION_PENDING'
 
 
+def test_project_closure_context_exposes_scope_boundary_and_compact_model_context(db):
+    user,project,_=setup_project(db,code='P-CLOSE-CONTEXT')
+    result=execute(db,user,'query_project_closure_context',{'project_id':project.id})
+    assert result['scope_boundary']['complete'] is True
+    assert result['scope_boundary']['scope_key']=='project_closure'
+    assert 'prepare_project_closure_checklist' in result['scope_boundary']['write_tools']
+    assert 'prepare_project_normal_close' in result['scope_boundary']['write_tools']
+    assert result['model_context']['project']['code']=='P-CLOSE-CONTEXT'
+    assert result['model_context']['closure']['case'] is None
+
+
 def test_erp_item_requires_native_reference_and_changes_keep_history(db):
     user,project,_=setup_project(db)
     case=closure.open_normal_case(db,user,project.id,project.row_version,'交付后结项','启动完整核对')
@@ -87,6 +99,39 @@ def test_normal_close_rechecks_live_open_issues_and_cannot_use_a_completed_snaps
         domains.create(db,user,close_payload(project,'NORMAL_CLOSE',closure_case_id=case.id,
             closure_case_version=case.version))
     assert error.value.code=='CLOSE_BLOCKED' and '工程联络' in error.value.message
+    assert project.status=='ACTIVE' and case.status=='OPEN'
+
+
+def test_normal_close_cannot_override_failed_acceptance_and_rechecks_at_apply(db):
+    from domain_packs.mold.erp.procurement.delivery_logistics import CustomerAcceptanceProposalInput, create_customer_acceptance
+    user,project,_=setup_project(db,code='P-CLOSE-ACCEPTANCE')
+    case=closure.open_normal_case(db,user,project.id,project.row_version,'交付后','逐项核对')
+    complete_manual_items(db,user,case)
+    failure=create_customer_acceptance(db,user,CustomerAcceptanceProposalInput(
+        project_id=project.id,project_version=project.row_version,result='FAILED',accepted_date=date.today(),
+        issue_description='尺寸超差',evidence='客户拒收原件'))
+    db.flush()
+    for status in ('DONE','NOT_APPLICABLE'):
+        closure.update_item(db,user,case.id,case.version,'CUSTOMER_ACCEPTANCE',status,
+            '人工清单核对','人工说明','MANUAL',None,None)
+        with pytest.raises(DomainError) as blocked:
+            with db.begin_nested():
+                domains.create(db,user,close_payload(project,'NORMAL_CLOSE',closure_case_id=case.id,
+                    closure_case_version=case.version))
+        assert blocked.value.code=='CLOSE_BLOCKED' and '验收' in blocked.value.message
+    create_customer_acceptance(db,user,CustomerAcceptanceProposalInput(
+        project_id=project.id,project_version=project.row_version,result='PASSED',acceptance_type='RECHECK',
+        previous_acceptance_id=failure.id,accepted_date=date.today(),evidence='对应整改后复验签字报告'))
+    db.flush()
+    final=domains.create(db,user,close_payload(project,'NORMAL_CLOSE',closure_case_id=case.id,
+        closure_case_version=case.version))
+    create_customer_acceptance(db,user,CustomerAcceptanceProposalInput(
+        project_id=project.id,project_version=project.row_version,result='FAILED',accepted_date=date.today(),
+        issue_description='另一项客户验收不合格',evidence='关闭批准前新增验收问题'))
+    db.flush()
+    with pytest.raises(DomainError) as changed:
+        domains.apply(db,user,final)
+    assert changed.value.code=='CLOSE_BLOCKED'
     assert project.status=='ACTIVE' and case.status=='OPEN'
 
 

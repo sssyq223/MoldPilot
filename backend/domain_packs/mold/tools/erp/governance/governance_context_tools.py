@@ -1,3 +1,4 @@
+from domain_packs.mold.erp.core.project_locator import ProjectId
 """Read-only governance evidence for permissions, audit, notifications, files and ERP source state."""
 from collections import defaultdict
 from pydantic import Field, model_validator
@@ -12,7 +13,7 @@ from domain_packs.mold.ports.schemas import StrictModel
 
 
 class GovernanceContextInput(StrictModel):
-    project_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: ProjectId | None = Field(default=None)
     identifier: str | None = Field(default=None, min_length=1, max_length=200, description="项目编号/名称、模具号、联络单号或业务引用。")
     target_user_id: str | None = Field(default=None, min_length=1, max_length=36, description="可选；审计某个用户在该项目上的有效授权。默认审计当前用户。")
 

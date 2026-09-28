@@ -2101,6 +2101,19 @@ def _control_arguments(key: str, data: StrictModel) -> dict:
 
 
 def execute_tool(db, user, key: str, arguments: dict, run=None):
+    # A model-supplied confirm=True is not a human confirmation.  Until a
+    # HumanIntent-backed dispatcher owns the external write and its outcome,
+    # ERP mutations must not be reachable through the model tool gateway.
+    if TOOL_SPECS.get(key, {}).get("write"):
+        raise DomainError(
+            "ERP_DESIGN_CONFIRMATION_REQUIRED",
+            "该 ERP 设计操作尚未接入本人确认与执行回执，不能由 Agent 直接执行",
+            409,
+        )
+    return _execute_registered_tool(db, user, key, arguments, run=run)
+
+
+def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
     try:
         data = _INPUTS[key].model_validate(arguments or {})
     except ValidationError as error:

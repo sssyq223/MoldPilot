@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
 
@@ -7,12 +8,6 @@ from domain_packs.mold.authorization import access, predicate, select_fields
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.tools.erp.project.plan_tools import ProjectPlanContextInput, _strength
-
-
-CHANGE_KEYWORDS = ("设变", "变更", "改模", "修模", "改版", "change", "revision")
-CUSTOMER_KEYWORDS = ("客户", "customer", "邮件", "确认", "合同", "报价", "订单")
-OUTSOURCE_KEYWORDS = ("委外", "外协", "供应商", "采购", "outsource", "supplier")
-INTERNAL_KEYWORDS = ("内部", "设计", "加工", "制造", "装配", "试模", "质检", "返工")
 
 
 def _project_card(db, user, project, matched_by=()):
@@ -61,7 +56,7 @@ def _subject_rows(db, user, project_id, kind, allowed_tools, limit=50):
     for subject in db.scalars(
         select(m.BusinessSubject)
         .where(m.BusinessSubject.project_id == project_id, m.BusinessSubject.kind == kind)
-        .order_by(m.BusinessSubject.created_at.desc(), m.BusinessSubject.id)
+        .order_by(m.BusinessSubject.created_at.desc(), m.BusinessSubject.id.desc())
         .limit(limit)
     ):
         try:
@@ -174,6 +169,7 @@ def _decision_rows(rows, decision=None, mode=None):
                 "currency": detail.get("currency"),
                 "evidence_present": bool(detail.get("evidence")),
                 "source_subject_id": detail.get("source_subject_id"),
+                "processing_kind": ((detail.get('formal_start_material') or {}).get('linked_business') or {}).get('processing_kind'),
             }
         )
     return result
@@ -241,7 +237,6 @@ def _engineering_changes(rows, plan_task_names):
                     "rechecked": impact.get("recheck_passed") is not None,
                 }
             )
-        text = " ".join(str(detail.get(key) or "") for key in ("problem", "solution", "customer_evidence"))
         result.append(
             {
                 "id": row.get("id"),
@@ -252,7 +247,7 @@ def _engineering_changes(rows, plan_task_names):
                 "solution": detail.get("solution"),
                 "customer_due_affected": detail.get("customer_due_affected"),
                 "customer_evidence_present": bool(detail.get("customer_evidence")),
-                "source_classification": _classify_change(row.get("category"), text),
+                "source_classification": _classify_change(row.get("category")),
                 "impact_count": len(impacts),
                 "impacts": impacts,
             }
@@ -264,6 +259,7 @@ def _contact_cases(db, user, project_id, allowed_tools):
     if "query_contact_cases" not in allowed_tools and "query_change_intake_context" not in allowed_tools:
         return []
     from domain_packs.mold.erp.change.contacts import permitted
+    from domain_packs.mold.erp.change.contact_execution import latest_basis
 
     rows = []
     q = (
@@ -295,6 +291,7 @@ def _contact_cases(db, user, project_id, allowed_tools):
                     "actual_currency": task.actual_currency,
                     "execution_evidence_present": bool(task.execution_evidence),
                     "verified_plan_id": task.verified_plan_id,
+                    "execution_basis": latest_basis(db,task),
                     "source_system": task.source_system,
                     "source_ref": task.source_ref,
                 }
@@ -572,20 +569,165 @@ def _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allo
     return result[:50]
 
 
-def _classify_change(category, text):
-    value = ((category or "") + " " + (text or "")).casefold()
-    customer = any(keyword.casefold() in value for keyword in CUSTOMER_KEYWORDS) or category == "customer_change"
-    outsource = any(keyword.casefold() in value for keyword in OUTSOURCE_KEYWORDS) or category == "outsource"
-    internal = any(keyword.casefold() in value for keyword in INTERNAL_KEYWORDS)
-    if customer and outsource:
-        return "CUSTOMER_CHANGE_OUTSOURCE_EXECUTION"
-    if customer:
-        return "CUSTOMER_CHANGE_INTERNAL_OR_UNSPECIFIED"
-    if outsource:
-        return "OUTSOURCE_CHANGE"
-    if internal:
-        return "INTERNAL_REWORK_OR_MOLD_CHANGE"
-    return "UNCLASSIFIED"
+def _classify_change(category):
+    # Legacy documents expose only category. Prose cannot prove a business
+    # classification or execution route; retain unknowns for human review.
+    return {'customer_change':'CUSTOMER_CHANGE_INTERNAL_OR_UNSPECIFIED',
+            'outsource':'OUTSOURCE_CHANGE'}.get(category,'UNCLASSIFIED')
+
+
+def _change_starts(contacts,resolutions,starts):
+    result=[]
+    for case in contacts:
+        if case.get('mode')!='ONLINE' or case.get('change_type')!='CHANGE' or case.get('collaboration_status')=='CLOSED':
+            continue
+        current=next((row for row in resolutions if row.get('case_id')==case['id']),None)
+        notices=[row for row in starts if current and row.get('source_subject_id')==current['id']
+                 and row.get('processing_kind')=='EXISTING_MOLD_CHANGE']
+        effective=next((row for row in notices if row.get('status')=='EFFECTIVE'),None)
+        state=('PLAN_APPROVAL_REQUIRED' if not current or current.get('status')!='EFFECTIVE'
+               else 'EFFECTIVE' if effective else 'FORMAL_START_REQUIRED')
+        result.append({'case_id':case['id'],'case_title':case.get('title'),
+            'resolution_subject_id':current.get('id') if current else None,'state':state,
+            'start_subject_id':effective.get('id') if effective else None})
+    return result
+
+
+def _change_handoffs(
+    contacts,
+    engineering_changes,
+    resolutions,
+    plan_tasks,
+    plan_adjustment_candidates,
+    effective_contracts,
+    amount_tasks,
+    open_change_impacts,
+    incomplete_contact_tasks,
+    allowed_tools,
+):
+    """Expose the evidence boundaries in a change's downstream chain.
+
+    This is deliberately a projection.  A plan candidate, an effective change
+    record, or a contact response does not execute the referenced ERP task.
+    The states make the missing responsibility visible without creating a
+    second plan, contract, work order, or financial record in the Agent layer.
+    """
+    has_change = bool(contacts or engineering_changes)
+
+    def handoff(key, source, target, state, reason, next_tool=None):
+        return {
+            "key": key,
+            "from": source,
+            "to": target,
+            "state": state,
+            "reason": reason,
+            "next_query_tool": next_tool,
+        }
+
+    if not has_change:
+        return [
+            handoff(
+                "change_to_confirmation",
+                "engineering_change",
+                "customer_confirmation",
+                "NOT_APPLICABLE",
+                "当前未见工程设变或工程联络记录。",
+                "query_change_intake_context",
+            )
+        ]
+
+    customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE"]
+    customer_ready = bool(customer_cases) and all(
+        any(
+            row.get("case_id") == case.get("id") and row.get("status") == "EFFECTIVE" and row.get("customer_evidence_present")
+            for row in resolutions
+        )
+        for case in customer_cases
+    )
+    if customer_cases:
+        confirmation_state = "CONNECTED" if customer_ready else "BLOCKED"
+        confirmation_reason = (
+            "客户设变已见生效处理方案及书面确认依据。"
+            if customer_ready
+            else "客户设变线索尚未形成可核对的生效处理方案和书面确认依据。"
+        )
+    else:
+        confirmation_state = "NOT_APPLICABLE"
+        confirmation_reason = "当前可见设变不属于客户设变来源，未要求客户确认交接。"
+
+    effective_resolution_cases = {row.get("case_id") for row in resolutions if row.get("status") == "EFFECTIVE"}
+    if contacts and not effective_resolution_cases:
+        solution_state = "WAITING"
+        solution_reason = "已见工程联络事项，但尚未见生效处理方案。"
+    elif effective_resolution_cases:
+        solution_state = "CONNECTED"
+        solution_reason = "已见工程联络事项与生效处理方案的承接事实。"
+    else:
+        solution_state = "CONNECTED" if any(row.get("status") == "EFFECTIVE" for row in engineering_changes) else "WAITING"
+        solution_reason = (
+            "已见生效工程设变记录，但仍需按影响对象核对后续执行。"
+            if solution_state == "CONNECTED"
+            else "已见工程设变记录，但尚未见生效方案或执行依据。"
+        )
+
+    if "query_project_plan_context" not in allowed_tools:
+        plan_state = "UNAVAILABLE"
+        plan_reason = "未分配项目计划查询能力，不能判断设变是否已接入计划。"
+        plan_tool = "query_project_plan_context"
+    elif not plan_tasks:
+        plan_state = "BLOCKED"
+        plan_reason = "当前未见有效计划任务，不能把设变影响转成可审批的计划变更。"
+        plan_tool = "query_project_plan_context"
+    elif plan_adjustment_candidates and any(
+        candidate.get("candidate_status") == "READY_FOR_PLAN_CHANGE_PREPARE" for candidate in plan_adjustment_candidates
+    ):
+        plan_state = "READY"
+        plan_reason = "已匹配受影响计划节点，但仍需完整任务列表、部门核对和计划变更审批。"
+        plan_tool = "query_project_plan_context"
+    elif plan_adjustment_candidates:
+        plan_state = "BLOCKED"
+        plan_reason = "存在设变影响候选，但匹配、处理方案、暂停状态或责任反馈仍有证据缺口。"
+        plan_tool = "query_project_plan_context"
+    else:
+        plan_state = "WAITING"
+        plan_reason = "已见设变记录和计划上下文，但尚未形成明确的计划变更候选。"
+        plan_tool = "query_project_plan_context"
+
+    if open_change_impacts or incomplete_contact_tasks:
+        execution_state = "BLOCKED"
+        execution_reason = "仍有未完成的执行、反馈、复验或关闭事项，不能把方案生效当作下游执行完成。"
+    elif any(row.get("status") == "EFFECTIVE" for row in engineering_changes):
+        execution_state = "CONNECTED"
+        execution_reason = "当前可见设变影响均已有执行/复验闭环证据；仍不代表 ERP 工单已被 Agent 执行。"
+    else:
+        execution_state = "WAITING"
+        execution_reason = "设变记录尚未形成可核对的生效执行依据。"
+
+    if amount_tasks:
+        finance_state = "CONNECTED" if effective_contracts else "BLOCKED"
+        finance_reason = (
+            "费用或扣款影响已关联到生效合同上下文，仍需财务按正式节点核对。"
+            if effective_contracts
+            else "存在费用或扣款影响，但尚未见生效合同依据。"
+        )
+    else:
+        finance_state = "NOT_APPLICABLE"
+        finance_reason = "当前可见设变没有费用、扣款或合同金额影响记录。"
+
+    close_state = "BLOCKED" if open_change_impacts or incomplete_contact_tasks else "READY"
+    close_reason = (
+        "设变仍有未完成影响项或联络事项，不能进入正常关闭。"
+        if close_state == "BLOCKED"
+        else "当前可见设变影响项已无开放记录，但仍需项目收尾协调器核对全部关闭条件。"
+    )
+    return [
+        handoff("change_to_confirmation", "engineering_change", "customer_confirmation", confirmation_state, confirmation_reason, "query_change_intake_context"),
+        handoff("change_to_solution", "customer_confirmation", "change_solution", solution_state, solution_reason, "query_change_intake_context"),
+        handoff("solution_to_plan", "change_solution", "plan_change", plan_state, plan_reason, plan_tool),
+        handoff("plan_to_execution", "plan_change", "change_execution", execution_state, execution_reason, "query_change_intake_context"),
+        handoff("change_to_contract_finance", "change_solution", "contract_finance", finance_state, finance_reason, "query_finance_context"),
+        handoff("change_to_close", "change_execution", "project_close", close_state, close_reason, "query_project_completion_context"),
+    ]
 
 
 def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts, outsource_contracts, plan_tasks, engineering_changes, contacts, resolutions, project_control, allowed_tools):
@@ -593,7 +735,20 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
     contact_problem_sources = Counter(case.get("problem_source") or "UNKNOWN" for case in contacts)
     affected_types = Counter(task.get("affected_type") for task in contact_tasks)
     planned_actions = Counter(task.get("planned_action") for task in contact_tasks)
-    amount_tasks = [task for task in contact_tasks if task.get("estimated_amount") or task.get("actual_amount")]
+    def has_nonzero_amount(task):
+        for value in (task.get("estimated_amount"), task.get("actual_amount")):
+            if value in (None, ""):
+                continue
+            try:
+                if Decimal(str(value)) != Decimal("0"):
+                    return True
+            except (InvalidOperation, ValueError):
+                # Preserve an explicit non-numeric amount as a review signal;
+                # never silently drop a value that needs financial checking.
+                return True
+        return False
+
+    amount_tasks = [task for task in contact_tasks if has_nonzero_amount(task)]
     incomplete_contact_tasks = [
         task
         for task in contact_tasks
@@ -608,25 +763,61 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
     ]
     effective_contracts = [row for row in sales_contracts + outsource_contracts if row.get("status") == "EFFECTIVE"]
     effective_starts = [row for row in starts if row.get("status") == "EFFECTIVE"]
-    external_or_customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE" or case.get("customer_ref")]
+    external_or_customer_cases = [case for case in contacts if case.get("problem_source") == "CUSTOMER_CHANGE"]
+    written_customer_evidence=any(row.get('customer_evidence_present') for row in resolutions+engineering_changes)
+    customer_confirmation_readiness=[]
+    for case in external_or_customer_cases:
+        current=next((row for row in resolutions if row.get('case_id')==case['id']),None)
+        customer_confirmation_readiness.append({'case_id':case['id'],
+            'resolution_subject_id':current.get('id') if current else None,
+            'written_evidence_present':bool(current and current.get('customer_evidence_present'))})
+    change_starts=_change_starts(contacts,resolutions,starts)
+    missing_change_starts=[row for row in change_starts if row['state']!='EFFECTIVE']
+    by_case={row['case_id']:row for row in change_starts}
+    stale_execution_tasks=[]
+    for case in contacts:
+        current=by_case.get(case['id'])
+        if not current:continue
+        for task in case.get('tasks') or []:
+            if task.get('status') not in {'RESPONDED','VERIFIED'}:continue
+            basis=task.get('execution_basis') or {}
+            if (basis.get('status')!='LINKED' or not current['start_subject_id']
+                    or basis.get('plan_id')!=current['resolution_subject_id']
+                    or basis.get('start_subject_id')!=current['start_subject_id']):
+                stale_execution_tasks.append(task)
+    incomplete_contact_tasks=list({row['id']:row for row in incomplete_contact_tasks+stale_execution_tasks}.values())
     outsource_cases = [case for case in contacts if case.get("category") == "outsource" or case.get("problem_source") == "OUTSOURCE_DEFECT"]
     project_control_status = (project_control or {}).get("derived_status") or {}
     plan_adjustment_candidates = _plan_adjustment_candidates(project, contacts, plan_tasks, resolutions, allowed_tools, project_control)
+    change_handoffs = _change_handoffs(
+        contacts,
+        engineering_changes,
+        resolutions,
+        plan_tasks,
+        plan_adjustment_candidates,
+        effective_contracts,
+        amount_tasks,
+        open_change_impacts,
+        incomplete_contact_tasks,
+        allowed_tools,
+    )
 
     gaps = []
     warnings = []
     if not contacts and not engineering_changes:
         gaps.append("未见工程联络单或工程变更业务记录，不能仅凭合同、报价或口头描述认定已有设变记录。")
-    if external_or_customer_cases and not any(case.get("customer_ref") for case in external_or_customer_cases) and not any(change.get("customer_evidence_present") for change in engineering_changes):
+    if any(not row['written_evidence_present'] for row in customer_confirmation_readiness):
         gaps.append("存在客户设变线索但未见客户书面确认依据；口头沟通需补书面记录或可核对聊天/邮件证据。")
     if not molds:
         gaps.append("未见项目关联内部模具档案；已有模具再次设变不能重复建模具，需先定位原项目/原模具。")
-    if external_or_customer_cases and not effective_starts:
-        warnings.append("存在客户设变线索但未见已生效开工通知；无合同或免费小设变也不能跳过开工条件。")
+    if missing_change_starts:
+        warnings.append("存在设变尚无对应当前方案的生效开工通知；项目最初开工或其他设变的通知不能替代，免费或无新增合同也须开工审批。")
     if amount_tasks and not effective_contracts:
         warnings.append("存在费用或扣款影响线索，但未见已生效合同；收费/免费、是否补合同和设变记录必须分开核对。")
     if open_change_impacts or incomplete_contact_tasks:
         warnings.append("存在未完成执行、复验或关闭的设变/联络事项，不能把方案审批或工程联络单获批等同于整改完成。")
+    if stale_execution_tasks:
+        warnings.append('存在反馈未关联当前方案与本次生效开工；不得把旧版本反馈当成本次已执行或复验齐备。')
     if outsource_cases and not outsource_contracts:
         warnings.append("存在委外设变或外协不良线索，但未见委外合同上下文；委外金额需由采购与供应商确认并保留依据。")
     if project_control_status.get("has_active_pause"):
@@ -644,6 +835,9 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
         "known_molds": molds,
         "latest_quote_acceptance": quote_acceptance[0] if quote_acceptance else None,
         "effective_start_notices": effective_starts,
+        "change_start_readiness": change_starts,
+        "customer_confirmation_readiness": customer_confirmation_readiness,
+        "unlinked_or_stale_execution_tasks": stale_execution_tasks,
         "sales_contracts": sales_contracts,
         "full_outsource_contracts": outsource_contracts,
         "plan_tasks": plan_tasks,
@@ -652,6 +846,7 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
         "contact_resolutions": resolutions,
         "project_control": project_control,
         "plan_adjustment_candidates": plan_adjustment_candidates,
+        "change_handoffs": change_handoffs,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -659,9 +854,11 @@ def _analysis(project, profile, molds, quote_acceptance, starts, sales_contracts
             "profile_execution_mode": (profile or {}).get("execution_mode"),
             "has_change_record": bool(contacts or engineering_changes),
             "has_customer_change_signal": bool(external_or_customer_cases) or any(change.get("customer_evidence_present") for change in engineering_changes),
-            "has_customer_written_evidence": any(case.get("customer_ref") for case in external_or_customer_cases) or any(change.get("customer_evidence_present") for change in engineering_changes),
+            "has_customer_written_evidence": written_customer_evidence,
             "has_internal_mold_identity": bool(molds),
-            "has_effective_start_notice": bool(effective_starts),
+            "has_project_start_notice": bool(effective_starts),
+            "all_current_changes_started": bool(change_starts) and not missing_change_starts,
+            "missing_change_start_count": len(missing_change_starts),
             "has_effective_contract": bool(effective_contracts),
             "has_charge_or_cost_impact": bool(amount_tasks),
             "has_outsource_change_signal": bool(outsource_cases) or any(change.get("source_classification") in {"OUTSOURCE_CHANGE", "CUSTOMER_CHANGE_OUTSOURCE_EXECUTION"} for change in engineering_changes),

@@ -1,11 +1,13 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 
 from app import models as m
 from app.authorization import PERMISSIONS
 from pg_db import factory as pg_factory
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tools.erp.manufacturing.manufacturing_quality_tools import _analysis
 
 
 def factory():
@@ -148,6 +150,8 @@ def test_manufacturing_quality_schema_and_context_summary():
             assert analysis["derived_status"]["has_finish_report"] is False
             assert analysis["derived_status"]["has_independent_quality_report"] is False
             assert analysis["derived_status"]["has_open_quality_or_rework_contact"] is True
+            assert analysis["erp_manufacturing_execution"]["status"] in {"NOT_CONFIGURED", "LOGIN_REQUIRED"}
+            assert analysis["derived_status"]["has_erp_manufacturing_order"] is False
             assert analysis["design_internal_route_items"][0]["material_code"] == "STEEL-SECRET"
             assert "检测报告" in "".join(analysis["gaps"])
     finally:
@@ -196,4 +200,37 @@ def test_manufacturing_quality_reports_multiple_candidates_without_deciding():
             assert "请使用项目 ID" in "".join(result["limitations"])
     finally:
         engine.dispose()
+
+
+def test_manufacturing_quality_projects_erp_work_hours_and_assignment_facts():
+    analysis = _analysis(
+        SimpleNamespace(status="ACTIVE"),
+        {},
+        {"project_plan": [], "plan_change": []},
+        [],
+        [],
+        {"trial_requests": [], "assembly_issues": []},
+        [],
+        [],
+        {"records": {
+            "work_reports": [
+                {"id": 1, "work_hours": "2.50", "worker_name": "张三", "operation_name": "CNC粗加工"},
+                {"id": 2, "work_hours": "bad", "resource": "CNC-01"},
+            ],
+            "work_order_reports": [],
+            "manufacturing_orders": [{"id": 10}],
+            "quality_inspections": [],
+            "quality_totals": {},
+        }},
+    )
+
+    assert analysis["erp_work_report_summary"] == {
+        "report_count": 2,
+        "reports_with_work_hours": 1,
+        "reports_with_assignment": 2,
+        "work_hours_total": "2.50",
+    }
+    assert analysis["derived_status"]["has_erp_work_hours"] is True
+    assert analysis["derived_status"]["has_erp_work_assignment"] is True
+    assert "部分记录带有可解析工时" in "".join(analysis["warnings"])
 

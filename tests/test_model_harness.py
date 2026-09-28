@@ -21,6 +21,17 @@ def test_tls_compatibility_keeps_certificate_and_hostname_verification():
     with pytest.raises(ValueError): tls_context(key_exchange="insecure")
 
 
+def test_read_only_status_words_do_not_trigger_formal_action_intent():
+    prompt = (
+        '请只读查询项目 BROWSER-START-CONTRACT-001 的项目全生命周期。'
+        'READY 只表示可准备，不表示基线计划已创建或生效；不要准备确认卡，不要提交审批。'
+    )
+    assert harness_module._has_formal_action_intent(prompt) is False
+    assert harness_module._has_formal_action_intent('请准备项目基线计划确认建议。') is True
+    assert harness_module._has_formal_action_intent('please submit the plan') is True
+    assert harness_module._has_formal_action_intent('can_submit、erp_mapping_required') is False
+
+
 def test_model_request_shape_and_tool_call():
     def serve(request):
         body = json.loads(request.content)
@@ -257,8 +268,10 @@ class TranscriptModel(Model):
     def __init__(self, replies):
         super().__init__(replies)
         self.transcripts = []
+        self.tool_names = []
     def generate(self, messages, tools):
         self.transcripts.append(copy.deepcopy(messages))
+        self.tool_names.append([(tool.get("function") or {}).get("name") for tool in tools])
         return super().generate(messages, tools)
 
 
@@ -305,6 +318,402 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_deferred_action_after_authoritative_read_is_repaired_without_bypassing_read_only_boundary():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context', 'description': '读取项目启动链路。'}}
+    prepare = {'type': 'function', 'function': {
+        'name': 'prepare_project_mold_handoff', 'description': '准备 ERP 项目模具交接确认卡。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'call-query', 'type': 'function',
+        'function': {'name': 'query_project_kickoff_context', 'arguments': '{}'},
+    }]}
+    gateway = Gateway()
+    # A coordinator read is authoritative for a read-only request.  Once it
+    # returns evidence the Harness hides all tools and asks for the final
+    # envelope; a model cannot fan out into deferred action tools afterward.
+    model = InspectingRepliesModel([call_query, FINAL])
+    result = run_loop(context(
+        prompt='只读核对 ERP 项目模具交接状态，不准备或执行任何操作。',
+        core_tool_names=['query_project_kickoff_context'],
+        tools=[query, prepare],
+        tool_annotations={
+            'query_project_kickoff_context': {'readOnlyHint': True},
+            'prepare_project_mold_handoff': {'readOnlyHint': False},
+        },
+        skills=[{'key': 'project_kickoff_orchestration',
+                 'tools': ['query_project_kickoff_context'],
+                 'activation_queries': ['项目模具交接']}],
+    ), model, gateway)
+
+    assert result['summary'] == 'one visible project'
+    assert gateway.physical_calls == 1
+    assert gateway.saved['protocol_repairs'] == 0
+    assert model.tool_names == [
+        ['ToolSearch', 'query_project_kickoff_context'],
+        [],
+    ]
+
+
+def test_lifecycle_claim_boundary_repairs_parallel_item_promoted_to_blocker():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_lifecycle', 'description': '读取项目全生命周期。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'lifecycle-query', 'type': 'function',
+        'function': {'name': 'query_project_lifecycle', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '销售合同尚未收到，构成当前关键阻塞；项目基线计划也尚未建立。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '当前主线阻塞是基线计划尚未建立；销售合同可并行补齐，不构成当前主线阻塞。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class LifecycleGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'project_lifecycle': {
+                        'segments': [{
+                            'key': 'kickoff', 'name': '启动与基线',
+                            'focus': {'key': 'project_plan', 'name': '项目基线计划'},
+                            'blockers': ['未见生效项目基线计划。'],
+                            'parallel_follow_ups': [{
+                                'stage': 'contract', 'name': '销售合同',
+                                'reason': '销售合同可并行补齐。',
+                            }],
+                        }],
+                    },
+                },
+            }
+
+    gateway = LifecycleGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询项目全生命周期，不准备或执行任何操作。',
+        core_tool_names=['query_project_lifecycle'],
+        tools=[query],
+        tool_annotations={'query_project_lifecycle': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert result['summary'] == '当前主线阻塞是基线计划尚未建立；销售合同可并行补齐，不构成当前主线阻塞。'
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_kickoff_fact_boundary_repairs_missing_erp_candidate_and_completed_acceptance_claim():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context', 'description': '读取项目启动链路。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'kickoff-query', 'type': 'function',
+        'function': {'name': 'query_project_kickoff_context', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '中标承接尚未触发，当前没有有效 ERP 模具号。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '报价、中标接收和承接已完成；ERP 已返回 M260133 / M260133-P3，当前仍需人工项目映射和模具交接。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class KickoffGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'kickoff_lifecycle': {
+                        'stages': [
+                            {'key': 'bid_intake', 'state': 'COMPLETED', 'facts': {}},
+                            {'key': 'acceptance', 'state': 'COMPLETED', 'facts': {}},
+                            {'key': 'internal_start', 'state': 'READY', 'facts': {
+                                'erp_mold_handoff': {
+                                    'handoff_state': 'ERP_PROJECT_MAPPING_REQUIRED',
+                                    'records': [{'project_code': 'M260133', 'mold_code': 'M260133-P3',
+                                                 'source_ref': 'scheduling/api/business/molds/:M260133:M260133-P3'}],
+                                },
+                            }},
+                        ],
+                    },
+                },
+            }
+
+    gateway = KickoffGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询项目启动链路，不准备或执行任何操作。',
+        core_tool_names=['query_project_kickoff_context'],
+        tools=[query],
+        tool_annotations={'query_project_kickoff_context': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert result['summary'].startswith('报价、中标接收和承接已完成')
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_direct_start_projection_preserves_candidate_fact_boundary():
+    query = {'type': 'function', 'function': {
+        'name': 'query_internal_start_readiness', 'description': '读取正式开工条件。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'start-query', 'type': 'function',
+        'function': {'name': 'query_internal_start_readiness', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '当前没有有效 ERP 模具号。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': 'ERP 已返回 M260133-P3 候选，当前需人工完成项目映射。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class StartGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'readiness': {'has_effective_acceptance': True},
+                    'contract_follow_up': {'state': 'NOT_TRACKED'},
+                    'erp_mold_handoff': {
+                        'handoff_state': 'ERP_PROJECT_MAPPING_REQUIRED',
+                        'candidate_records': [{
+                            'project_code': 'M260133', 'mold_code': 'M260133-P3',
+                        }],
+                    },
+                },
+            }
+
+    gateway = StartGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询正式开工条件，不准备或执行任何操作。',
+        core_tool_names=['query_internal_start_readiness'],
+        tools=[query],
+        tool_annotations={'query_internal_start_readiness': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert result['summary'].startswith('ERP 已返回 M260133-P3')
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_direct_start_projection_repairs_baseline_submission_claim():
+    query = {'type': 'function', 'function': {
+        'name': 'query_internal_start_readiness', 'description': '读取正式开工条件。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'start-plan-query', 'type': 'function',
+        'function': {'name': 'query_internal_start_readiness', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '正式开工已完成，建议提交基线计划审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '正式开工已完成，但基线计划仍有节点缺口，当前不能提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class StartPlanGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'baseline_plan': {
+                        'can_submit': False,
+                        'missing_milestones': ['design', 'delivery'],
+                    },
+                },
+            }
+
+    gateway = StartPlanGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询正式开工和项目基线计划状态，不准备或执行任何操作。',
+        core_tool_names=['query_internal_start_readiness'],
+        tools=[query],
+        tool_annotations={'query_internal_start_readiness': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert '不能提交审批' in result['summary']
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_plan_context_projection_repairs_baseline_submission_claim():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_plan_context', 'description': '读取项目计划上下文。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'plan-context-query', 'type': 'function',
+        'function': {'name': 'query_project_plan_context', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '当前无生效基线计划，但建议立即提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '当前无生效基线计划，六类节点均缺失，当前不能提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class PlanContextGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'data': [{
+                    'analysis': {
+                        'baseline_readiness': {
+                            'can_submit': False,
+                            'missing_milestones': ['design', 'delivery'],
+                            'missing_labels': ['设计工艺分析/结构设计及出图', '最终交付/出库/验收'],
+                        },
+                    },
+                }],
+            }
+
+    gateway = PlanContextGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询项目基线计划提交门禁，不准备或执行任何操作。',
+        core_tool_names=['query_project_plan_context'],
+        tools=[query],
+        skills=[{'key': 'project_plan_context_review',
+                 'tools': ['query_project_plan_context'],
+                 'requires_tool_evidence': True,
+                 'auto_activation_queries': ['基线计划']}],
+        tool_annotations={'query_project_plan_context': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert '不能提交审批' in result['summary']
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_baseline_gate_accepts_closed_or_conditional_submission_wording():
+    boundaries = [{'baseline': {'can_submit': False}}]
+    assert harness_module._kickoff_baseline_violations(
+        '当前无法提交审批，需补齐节点。', boundaries
+    ) == []
+    assert harness_module._kickoff_baseline_violations(
+        '完成前置条件后方可提交审批。', boundaries
+    ) == []
+    assert harness_module._kickoff_baseline_violations(
+        '主线真实阻塞：无有效计划、无节点覆盖。', boundaries
+    ) == []
+    assert harness_module._kickoff_baseline_violations(
+        '主线真实阻塞：无。', boundaries
+    ) == ['baseline_missing_main_blocker']
+
+
+def test_kickoff_baseline_gate_repairs_submission_claim_when_nodes_are_missing():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context', 'description': '读取项目启动链路。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'kickoff-plan-query', 'type': 'function',
+        'function': {'name': 'query_project_kickoff_context', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '正式开工已完成，建议立即准备基线计划草案并提交审批；当前仍需补齐六类节点。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '正式开工已完成，但基线计划提交门禁未满足，需先补齐六类节点；当前只能准备资料，不能提交审批。',
+        'evidence_ids': ['e1'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class KickoffPlanGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            return {
+                'evidence_id': 'e1',
+                'model_context': {
+                    'kickoff_lifecycle': {
+                        'stages': [{
+                            'key': 'project_plan', 'state': 'READY', 'facts': {
+                                'baseline_readiness': {
+                                    'can_submit': False,
+                                    'missing_milestones': ['design', 'delivery'],
+                                },
+                            },
+                        }],
+                    },
+                },
+            }
+
+    gateway = KickoffPlanGateway()
+    model = Model([call_query, wrong, corrected])
+    result = run_loop(context(
+        prompt='只读查询项目启动链路，不准备或执行任何操作。',
+        core_tool_names=['query_project_kickoff_context'],
+        tools=[query],
+        tool_annotations={'query_project_kickoff_context': {'readOnlyHint': True}},
+    ), model, gateway)
+
+    assert '不能提交审批' in result['summary']
+    assert gateway.saved['protocol_repairs'] == 1
+
+
+def test_proposal_execution_contract_repairs_bpm_claim_for_agent_mapping():
+    query = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context', 'description': '读取项目启动链路。'}}
+    prepare = {'type': 'function', 'function': {
+        'name': 'prepare_project_mold_handoff', 'description': '准备 ERP 项目模具交接确认卡。'}}
+    call_query = {'role': 'assistant', 'tool_calls': [{
+        'id': 'contract-query', 'type': 'function',
+        'function': {'name': 'query_project_kickoff_context', 'arguments': '{}'},
+    }]}
+    search_prepare = {'role': 'assistant', 'tool_calls': [{
+        'id': 'contract-search', 'type': 'function',
+        'function': {'name': 'ToolSearch', 'arguments': json.dumps({
+            'query': 'prepare_project_mold_handoff',
+        })},
+    }]}
+    call_prepare = {'role': 'assistant', 'tool_calls': [{
+        'id': 'contract-prepare', 'type': 'function',
+        'function': {'name': 'prepare_project_mold_handoff', 'arguments': '{}'},
+    }]}
+    wrong = {'role': 'assistant', 'content': json.dumps({
+        'summary': '确认后将提交 Agent BPM 审批。',
+        'evidence_ids': ['e1', 'e2'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    corrected = {'role': 'assistant', 'content': json.dumps({
+        'summary': '确认后仅在 Agent 建立项目 ERP 映射和本地模具关联，不提交 Agent BPM。',
+        'evidence_ids': ['e1', 'e2'], 'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class ContractGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            if key == 'prepare_project_mold_handoff':
+                self.physical_calls += 1
+                return {
+                    'evidence_id': 'e2', 'data': [],
+                    'proposal': {
+                        'kind': 'project_mold_handoff',
+                        'execution_contract': {
+                            'user_facing_summary': '确认后仅在 Agent 建立项目 ERP 映射，不提交 Agent BPM',
+                            'forbidden_summary_terms': ['提交 Agent BPM'],
+                        },
+                    },
+                }
+            return super().execute(seq, key, arguments)
+
+    gateway = ContractGateway()
+    model = InspectingRepliesModel([call_query, search_prepare, call_prepare, wrong,
+                                    corrected, corrected, corrected])
+    result = run_loop(context(
+        prompt='核对 ERP 项目模具交接后准备确认建议卡。',
+        core_tool_names=['query_project_kickoff_context'],
+        tools=[query, prepare],
+        tool_annotations={
+            'query_project_kickoff_context': {'readOnlyHint': True},
+            'prepare_project_mold_handoff': {'readOnlyHint': False},
+        },
+        skills=[{'key': 'project_kickoff_orchestration',
+                 'tools': ['query_project_kickoff_context'],
+                 'optional_tools': ['prepare_project_mold_handoff'],
+                 'activation_queries': ['项目模具交接']}],
+    ), model, gateway)
+
+    assert result['summary'] == '确认后仅在 Agent 建立项目 ERP 映射和本地模具关联，不提交 Agent BPM。'
+    assert gateway.saved['protocol_repairs'] == 1
 
 
 def test_context_pressure_does_not_finalize_before_newly_activated_tool_turn(monkeypatch):
@@ -662,7 +1071,7 @@ def test_tool_search_activates_bounded_skill_tool_pack_for_next_turn():
     assert model.tool_names == [
         ['ToolSearch'],
         ['ToolSearch', 'query_project_plan_context'],
-        ['ToolSearch', 'query_project_plan_context'],
+        [],
     ]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_project_plan_context']
@@ -1118,6 +1527,78 @@ def test_formal_start_scene_overrides_model_shortened_exact_purchase_tool_search
     assert matches == ['internal_start_readiness']
     assert activated == ['query_internal_start_readiness']
     assert matched_groups == ['internal_start_readiness']
+
+
+def test_explicit_kickoff_chain_yields_to_formal_start_keyword_in_same_request():
+    start = {'type': 'function', 'function': {
+        'name': 'query_internal_start_readiness',
+        'description': '按项目线索核对正式开工条件；只读。'}}
+    kickoff = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context',
+        'description': '按项目线索读取项目启动链路；只读。'}}
+    deferred = {tool['function']['name']: tool for tool in (start, kickoff)}
+    groups = harness_module._skill_tool_groups([
+        {
+            'key': 'internal_start_readiness',
+            'tools': ['query_internal_start_readiness'],
+            'activation_queries': ['正式开工', '开工条件'],
+            'priority_patterns': ['正式开工|开工条件'],
+            'priority_excludes': ['项目启动链路', '项目模具交接'],
+        },
+        {
+            'key': 'project_kickoff_orchestration',
+            'tools': ['query_project_kickoff_context'],
+            'activation_queries': ['项目启动链路', '从承接到开工'],
+            'priority_patterns': ['项目启动链路|从承接到开工'],
+        },
+    ], deferred)
+    prompt = ('读取项目启动链路：BROWSER-BID-START-001，说明 ERP 项目/模具映射、'
+              '正式开工和基线计划当前状态。')
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        'query_internal_start_readiness', deferred, groups, current_prompt=prompt)
+
+    assert matches == ['project_kickoff_orchestration']
+    assert activated == ['query_project_kickoff_context']
+    assert matched_groups == ['project_kickoff_orchestration']
+
+
+def test_project_erp_mold_handoff_scene_overrides_design_upload_tool_search():
+    kickoff = {'type': 'function', 'function': {
+        'name': 'query_project_kickoff_context', 'description': '读取项目启动链路。'}}
+    design = {'type': 'function', 'function': {
+        'name': 'query_erp_design_upload_result', 'description': '读取新模设计上传结果。'}}
+    deferred = {tool['function']['name']: tool for tool in (kickoff, design)}
+    groups = harness_module._skill_tool_groups([{
+        'key': 'project_kickoff_orchestration',
+        'tools': ['query_project_kickoff_context'],
+        'activation_queries': ['项目模具交接'],
+        'priority_patterns': [
+            r'项目.{0,12}(?:ERP)?(?:项目)?映射',
+            r'(?:ERP\s*)?项目.{0,20}模具.{0,8}交接',
+            r'模具.{0,8}交接(?:确认|建议|卡)?',
+        ],
+        'skill_layer': 'erp',
+        'skill_domain': 'project',
+        'route_terms': ['项目', '模具交接'],
+    }, {
+        'key': 'erp_design_new_mold_upload',
+        'tools': ['query_erp_design_upload_result'],
+        'activation_queries': ['设计上传结果'],
+        'skill_layer': 'erp',
+        'skill_domain': 'design',
+        'route_terms': ['项目', '模具'],
+    }], deferred)
+    prompt = ('基于刚才结果，准备 ERP 项目模具人工交接确认建议卡：'
+              'Agent 项目 BROWSER-BID-START-001，ERP 项目 M260133，ERP 模具 M260133-P3。只生成确认卡。')
+
+    matches, activated, matched_groups = harness_module._find_deferred_tools(
+        'query_erp_design_upload_result', deferred, groups,
+        action_intent=True, current_prompt=prompt)
+
+    assert matches == ['project_kickoff_orchestration']
+    assert activated == ['query_project_kickoff_context']
+    assert matched_groups == ['project_kickoff_orchestration']
 
 
 def test_current_turn_reorders_catalog_and_uses_the_most_specific_matching_alias():

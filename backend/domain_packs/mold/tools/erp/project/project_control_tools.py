@@ -16,10 +16,19 @@ from domain_packs.mold.ports.bpm import content_hash
 from domain_packs.mold.ports.db import get_db,now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.security import current_user
+from domain_packs.mold.erp.core.project_locator import ProjectId
+
+
+PROJECT_CONTROL_PROPOSAL_TOOLS = frozenset(
+    {
+        "prepare_project_pause",
+        "prepare_project_resume",
+    }
+)
 
 
 class ProjectContextInput(StrictModel):
-    project_id:str|None=Field(default=None,min_length=1,max_length=36)
+    project_id:ProjectId|None=None
     identifier:str|None=Field(default=None,min_length=1,max_length=200,
         description='项目编号/名称、模具号、工程联络标题、客户引用或暂停恢复单号。')
 
@@ -184,6 +193,45 @@ def project_context(db,user,project):
         'workflow_options':workflow_options(db,user,project)}
 
 
+def _model_context(row):
+    return {
+        "project": {
+            "id": row.get("id"),
+            "code": row.get("code"),
+            "name": row.get("name"),
+            "status": row.get("status"),
+            "row_version": row.get("row_version"),
+        },
+        "project_control": {
+            "customer_due_date": row.get("customer_due_date"),
+            "active_plan": row.get("active_plan"),
+            "active_pause": row.get("active_pause"),
+            "pending_pause_requests": row.get("pending_pause_requests") or [],
+            "pause_history_summary": [
+                {
+                    "pause_subject_id": item.get("pause_subject_id"),
+                    "resume_subject_id": item.get("resume_subject_id"),
+                    "start_date": item.get("start_date"),
+                    "end_date": item.get("end_date"),
+                    "shifted_days": item.get("shifted_days"),
+                    "shift_applied": item.get("shift_applied"),
+                    "task_shift_count": item.get("task_shift_count"),
+                }
+                for item in (row.get("pause_history") or [])
+            ],
+            "derived_status": row.get("derived_status") or {},
+            "workflow_options": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "version": item.get("version"),
+                }
+                for item in (row.get("workflow_options") or [])
+            ],
+        },
+    }
+
+
 def schema(action):
     return (PauseProposalInput if action=='pause' else ResumeProposalInput).model_json_schema()
 
@@ -233,6 +281,7 @@ def preview(db,user,action,data):
 
 def execute_tool(db,user,key,arguments,run=None):
     if key=='query_project_control_context':
+        from domain_packs.mold.tool_gateway import available_tools
         try:data=ProjectContextInput.model_validate(arguments)
         except ValidationError:raise DomainError('INVALID_TOOL_INPUT','请提供有效项目标识')
         project,alternatives,truncated=resolve_project(db,user,data)
@@ -241,8 +290,19 @@ def execute_tool(db,user,key,arguments,run=None):
             '暂停期只限制普通下单、报工、发料和计划执行；资料补录、沟通记录、合同结算核对、工程联络和恢复申请仍按权限办理']
         if truncated:limitations.append('最多检查前500个可见项目，结果可能未覆盖全部可见范围。')
         if project:
-            return jsonable_encoder({'resolution':'RESOLVED','data':[project_context(db,user,project)],'source':'agent_db','as_of':now(),
-                'limitations':limitations})
+            row = project_context(db,user,project)
+            return jsonable_encoder({
+                'resolution':'RESOLVED',
+                'data':[row],
+                'model_context':_model_context(row),
+                'scope_boundary':{
+                    'complete':True,
+                    'scope_key':'project_control',
+                    'write_tools':sorted(
+                        tool for tool in PROJECT_CONTROL_PROPOSAL_TOOLS if tool in available_tools(db,user)
+                    ),
+                },
+                'source':'agent_db','as_of':now(),'limitations':limitations})
         if alternatives is None:
             return jsonable_encoder({'resolution':'NOT_FOUND_OR_FORBIDDEN','data':[],'source':'agent_db','as_of':now(),'limitations':limitations})
         if alternatives:

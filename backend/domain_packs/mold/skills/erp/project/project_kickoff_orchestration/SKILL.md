@@ -10,9 +10,9 @@
 
 步骤：
 1. 先调用 `query_project_kickoff_context`，使用本轮给出的项目 ID、项目编号或名称定位唯一项目；多候选时要求用户选择，不得自动合并项目。
-2. 按工具返回的 `analysis.kickoff_lifecycle.stages` 说明客户报价、承接确认、销售合同、正式开工和项目基线计划的真实状态。报价版本保存客户资料、成本、工艺、工期、价格与交期；销售合同是可并行补齐事项，不把“合同缺失”自动解释为“禁止开工”。历史项目已经有承接/拒单而没有结构化报价时标为不适用，不倒推或伪造历史版本。
+2. 按工具返回的 `analysis.kickoff_lifecycle.stages` 说明客户报价、承接确认、销售合同、正式开工和项目基线计划的真实状态。阶段状态 `READY` 只表示已具备准备该业务动作的条件，不表示材料已创建、审批已提交或计划已生效；只有 `DRAFT_PREPARED`、`WAITING_APPROVAL`、`ACTIVE` 等事实状态才按其字面说明。报价版本保存客户资料、成本、工艺、工期、价格与交期；销售合同是可并行补齐事项，缺失或逾期只应放在 `follow_ups`/`parallel_follow_ups`，不能当作当前主线 `blockers`，也不能解释为“禁止开工”。历史项目已经有承接/拒单而没有结构化报价时标为不适用，不倒推或伪造历史版本。
 3. 仅当用户本轮只是询问状态时，基于 `recommended_next_steps` 给出下一步，不调用任何 `prepare_*` 工具。
-4. 当用户明确要求继续办理时，只选择 `recommended_next_steps` 中当前阶段的一项。先用该阶段的查询工具取得完整真实 ID、项目版本、流程选项和业务材料，再调用对应 `prepare_*`；不得从生命周期摘要、附件文件名或历史对话拼写入参数。
-5. `prepare_quotation_version`、`prepare_quote_acceptance_decision`、`prepare_contract_record`、`prepare_internal_start` 和 `prepare_project_plan_baseline` 都只产生待本人核对的确认卡。本人确认后才分别提交 Agent BPM；等待审批期间停止当前链路，不并行创建后续阶段，不把“已提交”写成“已生效”。
+4. 当用户明确要求继续办理时，只选择 `recommended_next_steps` 中当前阶段的一项。先用该阶段的查询工具取得完整真实 ID、项目版本、流程选项和业务材料，再调用对应 `prepare_*`；不得从生命周期摘要、附件文件名或历史对话拼写入参数。正式开工前如果用户明确要求先整理计划，可调用 `prepare_project_plan_draft`，但仍必须使用查询返回的项目版本和完整任务清单。
+5. `prepare_quotation_version`、`prepare_quote_acceptance_decision`、`prepare_contract_record`、`prepare_internal_start` 和 `prepare_project_plan_baseline` 都只产生待本人核对的确认卡。本人确认后才分别提交 Agent BPM；等待审批期间停止当前链路，不并行创建后续阶段，不把“已提交”写成“已生效”。已有生效计划但 `missing_milestones` 非空时，必须先使用查询返回的当前计划 ID、完整任务清单和计划变更流程，准备 `prepare_project_plan_change`；不得把计划变更说成首次基线，也不得自行补造设计、采购、加工、装配、试模或交付日期。`prepare_project_plan_draft` 是开工前草案例外：本人确认后只在 Agent 保存 `project_plan=DRAFT` 和节点，不提交 BPM、不生效基线、不下达 ERP；正式开工后仍需重新核对并提交基线审批。`prepare_project_mold_handoff` 是启动前的人工映射例外：本人确认后只在 Agent 建立 `ProjectERPMapping`、`Mold` 和 `ProjectMold` 及 ERP 来源审计，不提交 BPM、不回写 ERP，也不能把本地映射说成正式开工或计划已生效。
 
 客户报价必须使用当前 Run 明确上传并由本人可见的客户资料，审批生效后才能供承接决定引用。销售合同登记必须使用当前 Run 明确上传并由本人可见的合同原件。正式开工必须引用有效承接决定。基线计划必须在正式开工生效后，使用完整节点清单和真实流程 ID；审批前不下达 ERP 采购、生产、装配或试模任务。

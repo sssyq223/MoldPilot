@@ -57,6 +57,7 @@ const erpDesignRowRepriceTokens=new Map<string,number>()
 let erpDesignPreviewPoll:number|null=null
 let erpDesignPreviewRequest=0
 const loadedErpDesignImportStatuses=new Set<number>()
+const openedErpDesignRunIds=new Set<string>()
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
 const processedFileIds=ref<string[]>([]),documentRefresh=ref(0)
 function documentFilesHandled(ids:string[]){processedFileIds.value=ids;const handled=new Set(ids);selectedFiles.value=selectedFiles.value.filter(f=>!handled.has(f.id))}

@@ -9,6 +9,7 @@ from domain_packs.mold.erp.core.rules import evaluate
 from app.query_guard import validate_sql
 from app.errors import DomainError
 from conftest import sign_in, draft, submit, PASSWORD
+from app.config import settings, trusted_origin_set
 
 
 def test_health_timezone(client):
@@ -34,6 +35,29 @@ def test_avatar_profile_is_persisted(client):
 
 def test_invalid_login(client):
     assert client.post('/api/auth/login',json={'username':'admin','password':'bad'}).status_code==401
+
+
+def test_login_accepts_explicit_additional_first_party_origin_and_rejects_unknown(client, data, monkeypatch):
+    monkeypatch.setenv('AGENT_ORIGIN', 'http://localhost:5174')
+    monkeypatch.setenv('AGENT_TRUSTED_ORIGINS', 'http://127.0.0.1:5173,http://localhost:5174')
+    settings.cache_clear()
+    try:
+        assert trusted_origin_set() == {'http://127.0.0.1:5173', 'http://localhost:5174'}
+        accepted = client.post(
+            '/api/auth/login',
+            json={'username': 'admin', 'password': PASSWORD},
+            headers={'Origin': 'http://127.0.0.1:5173'},
+        )
+        assert accepted.status_code == 200, accepted.text
+        rejected = client.post(
+            '/api/auth/login',
+            json={'username': 'admin', 'password': PASSWORD},
+            headers={'Origin': 'http://evil.example'},
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()['error']['code'] == 'ORIGIN_DENIED'
+    finally:
+        settings.cache_clear()
 
 
 def test_new_user_without_grants(client,data):

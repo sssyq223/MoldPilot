@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     pg_client_image: str = _compatible("pg_client_image", "postgres:18-alpine")
     acceptance_evidence_file: str = _compatible("acceptance_evidence_file", ".local/acceptance-gates.json")
     origin: str = _compatible("origin", "http://127.0.0.1:5173")
+    # Extra first-party browser origins must be explicitly opted in. This is
+    # useful when the same isolated installation is exposed through a second
+    # local Vite port while retaining the primary origin for compatibility.
+    trusted_origins: str = _compatible("trusted_origins", "")
     cookie_secure: bool = _compatible("cookie_secure", True)
     environment: str = _compatible("environment", "development")
     audit_log_retention_days: int = _compatible("audit_log_retention_days", 0, ge=0, le=3650)
@@ -149,6 +153,13 @@ class Settings(BaseSettings):
 @lru_cache
 def settings() -> Settings:
     return Settings()
+
+
+def trusted_origin_set(config: Settings | None = None) -> set[str]:
+    """Return normalized browser origins allowed by this installation."""
+    cfg = config or settings()
+    values = [cfg.origin, *(cfg.trusted_origins or "").split(",")]
+    return {value.strip().rstrip("/") for value in values if value and value.strip()}
 
 
 def _model_config_path() -> Path:

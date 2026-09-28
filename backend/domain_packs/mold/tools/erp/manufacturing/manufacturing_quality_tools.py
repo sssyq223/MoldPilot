@@ -1,4 +1,5 @@
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from sqlalchemy import select, and_
 
 from domain_packs.mold import models as m
@@ -266,7 +267,7 @@ def _contact_issues(db, user, project_id, allowed_tools):
     return issues[:20]
 
 
-def _analysis(project, profile, records, task_rows, design_materials, assembly_trial, contacts, designs):
+def _analysis(project, profile, records, task_rows, design_materials, assembly_trial, contacts, designs, erp_execution_context):
     process_tasks = [task for task in task_rows if task["process_like"]]
     started = [task for task in process_tasks if task["has_start_report"]]
     done = [task for task in process_tasks if task["has_finish_report"]]
@@ -280,6 +281,42 @@ def _analysis(project, profile, records, task_rows, design_materials, assembly_t
         for result in trial.get("results", [])
         if result.get("passed") is False
     ]
+    erp_records = (erp_execution_context or {}).get("records") or {}
+    erp_totals = erp_records.get("totals") or {}
+    erp_orders = erp_records.get("manufacturing_orders") or []
+    erp_reports = (erp_records.get("work_reports") or []) + (erp_records.get("work_order_reports") or [])
+    erp_quality = erp_records.get("quality_inspections") or []
+    erp_quality_totals = erp_records.get("quality_totals") or {}
+    erp_quality_open = [
+        row for row in erp_quality
+        if str(row.get("status") or "").lower() in {"pending", "inspecting"}
+    ]
+    erp_quality_failed = [
+        row for row in erp_quality
+        if str(row.get("result") or "").lower() in {"unqualified", "partial"}
+        or str(row.get("status") or "").lower() in {"partial", "reject_return"}
+    ]
+    valid_work_hours = []
+    assigned_work_reports = []
+    for row in erp_reports:
+        raw_hours = row.get("work_hours")
+        if raw_hours is not None and str(raw_hours).strip():
+            try:
+                hours = Decimal(str(raw_hours))
+            except (InvalidOperation, ValueError):
+                hours = None
+            if hours is not None and hours >= 0:
+                valid_work_hours.append(hours)
+        if any(str(row.get(key) or "").strip() for key in (
+            "worker_name", "resource", "resource_id", "operation_name", "operation_id",
+        )):
+            assigned_work_reports.append(row)
+    work_report_summary = {
+        "report_count": len(erp_reports),
+        "reports_with_work_hours": len(valid_work_hours),
+        "reports_with_assignment": len(assigned_work_reports),
+        "work_hours_total": str(sum(valid_work_hours, Decimal("0"))),
+    }
     warnings = []
     gaps = []
     if not records.get("project_plan") and not records.get("plan_change"):
@@ -290,8 +327,22 @@ def _analysis(project, profile, records, task_rows, design_materials, assembly_t
         gaps.append("未见加工类任务实际开工或现场报工日期。")
     if started and not done:
         warnings.append("已有加工类任务开工记录，但未见全部完工记录。")
-    gaps.append("未见结构化工时、设备、人员班组或现场异常报工明细；当前只能读取计划任务实际开始/完成日期。")
-    gaps.append("未见独立工序检测报告、合格验收资料或质检结论；不能把计划任务完成直接等同于检验合格。")
+    if not erp_reports:
+        gaps.append("未见结构化工时、设备、人员班组或现场异常报工明细；当前只能读取计划任务实际开始/完成日期。")
+    elif not erp_orders:
+        warnings.append("ERP 已有现场报工记录，但未返回可匹配的制造工单；不能将报工归并到本项目计划。")
+    if erp_reports and not valid_work_hours:
+        gaps.append("ERP 已有现场报工，但未见可解析工时；不能据此形成工时核对或成本依据。")
+    elif erp_reports and len(valid_work_hours) < len(erp_reports):
+        warnings.append("ERP 报工中只有部分记录带有可解析工时；汇总仅统计明确的非负工时，不补猜缺失值。")
+    if erp_reports and not assigned_work_reports:
+        gaps.append("ERP 报工未见人员、设备或工序责任字段，不能形成资源责任核对。")
+    if not erp_quality:
+        gaps.append("未见独立工序检测报告、合格验收资料或质检结论；不能把计划任务完成直接等同于检验合格。")
+    elif erp_quality_open:
+        warnings.append("ERP 存在待检或检验中的质检任务，制造工序尚未形成最终质量结论。")
+    if erp_quality_failed:
+        warnings.append("ERP 存在不合格或部分合格质检结果，需关联工程联络、整改任务和复检依据。")
     if unlinked_internal:
         warnings.append("存在内部加工路线物料未关联计划任务，不能判断该工序已排入计划。")
     if purchase_or_outsource:
@@ -310,6 +361,9 @@ def _analysis(project, profile, records, task_rows, design_materials, assembly_t
         "assembly": assembly_trial["assembly_issues"],
         "trial": assembly_trial["trial_requests"],
         "quality_or_rework_contacts": contacts,
+        "erp_manufacturing_execution": erp_execution_context,
+        "erp_work_report_summary": work_report_summary,
+        "erp_quality_inspections": erp_quality,
         "gaps": gaps,
         "warnings": warnings,
         "derived_status": {
@@ -319,10 +373,18 @@ def _analysis(project, profile, records, task_rows, design_materials, assembly_t
             "has_process_task": bool(process_tasks),
             "has_start_report": bool(started),
             "has_finish_report": bool(done),
-            "has_independent_quality_report": False,
+            "has_independent_quality_report": bool(erp_quality),
             "has_open_quality_or_rework_contact": bool(open_contacts),
             "has_internal_route_without_task": bool(unlinked_internal),
             "has_purchase_or_outsource_route": bool(purchase_or_outsource),
+            "has_erp_manufacturing_order": bool(erp_totals.get("manufacturing_orders")),
+            "has_erp_work_report": bool(erp_reports),
+            "has_erp_work_order_report": bool(erp_totals.get("work_order_reports")),
+            "has_erp_work_hours": bool(valid_work_hours),
+            "has_erp_work_assignment": bool(assigned_work_reports),
+            "has_erp_quality_inspection": bool(erp_quality),
+            "has_erp_quality_open": bool(erp_quality_open or erp_quality_totals.get("open_inspections")),
+            "has_erp_quality_failure": bool(erp_quality_failed or erp_quality_totals.get("failed_inspections")),
         },
     }
 
@@ -345,6 +407,8 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
         assembly_trial = _assembly_trials(db, user, project.id, allowed_tools)
         contacts = _contact_issues(db, user, project.id, allowed_tools)
         profile = _profile(db, user, project.id)
+        from domain_packs.mold.erp.design.erp_progress import query_project_manufacturing_execution
+        erp_execution_context = query_project_manufacturing_execution(db, user, project)
         skipped = []
         if "query_design_route_context" not in allowed_tools and "query_design_route" not in allowed_tools:
             skipped.append("设计BOM与内部/采购/委外路线")
@@ -356,7 +420,7 @@ def query(db, user, data: ProjectPlanContextInput, allowed_tools: set[str]):
             skipped.append("试模记录")
         if skipped:
             limitations.append("未分配对应查询工具，未返回：" + "、".join(skipped))
-        analysis = _analysis(project, profile, records, task_rows, design_materials, assembly_trial, contacts, designs)
+        analysis = _analysis(project, profile, records, task_rows, design_materials, assembly_trial, contacts, designs, erp_execution_context)
         return {
             "resolution": "RESOLVED",
             "data": [

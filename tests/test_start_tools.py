@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -61,7 +61,17 @@ def workflow(db,user):
     db.add(row);db.flush();return row
 
 
-def customer_start_conditions(db,project,user,suffix='001'):
+def test_legacy_start_material_does_not_guess_model_or_material_identifiers():
+    from domain_packs.mold.erp.project.start_materials import frozen_material_model_context
+    snapshot = {'linked_business': {'customer_model_or_material': 'UNCLASSIFIED-001'}}
+    result = frozen_material_model_context(snapshot)
+    assert result['customer_model_or_material'] == 'UNCLASSIFIED-001'
+    assert result['customer_model_number'] is None
+    assert result['customer_material_number'] is None
+    assert snapshot == {'linked_business': {'customer_model_or_material': 'UNCLASSIFIED-001'}}
+
+
+def customer_start_conditions(db,project,user,suffix='001',*,historical_mold_number=None,historical_relation_kind=None):
     conversation=m.Conversation(user_id=user.id,title='客户开工条件 '+suffix)
     db.add(conversation);db.flush()
     case=m.BidIntakeCase(project_id=project.id,created_by=user.id)
@@ -73,12 +83,14 @@ def customer_start_conditions(db,project,user,suffix='001'):
         classification_evidence='业务人员已人工确认客户分类',classification_confirmed_by=user.id,
         customer_company='测试客户',customer_contact='客户项目经理',customer_mold_number=None,
         customer_model_or_material=None,project_name_snapshot=project.name,amount=None,currency=None,
+        customer_model_number='MODEL-'+suffix, customer_material_number='MATERIAL-'+suffix,
         our_recipient='项目负责人',external_order_number='EXT-ORDER-'+suffix,
         external_start_date=date.today(),customer_due_date=date.today(),
         customer_process_confirmed=True,
         customer_process_confirmation_evidence='客户工艺方案已经双方人工确认',
-        matched_quotation_subject_id=None,historical_mold_number=None,historical_relation_kind=None,
-        match_result='UNMATCHED',match_evidence='本次不引用历史报价或模具',notes='',recorded_by=user.id,
+        matched_quotation_subject_id=None,historical_mold_number=historical_mold_number,historical_relation_kind=historical_relation_kind,
+        match_result='MANUAL' if historical_mold_number else 'UNMATCHED',
+        match_evidence='本人已核对历史备份/参考关系' if historical_mold_number else '本次不引用历史报价或模具',notes='',recorded_by=user.id,
     )
     db.add(revision);db.flush()
     blob=m.FileObject(
@@ -140,14 +152,20 @@ def test_start_readiness_blocks_acceptance_without_customer_start_conditions():
         engine.dispose()
 
 
-def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
+@pytest.mark.parametrize('processing_kind,reference_kind', [
+    ('NEW_MOLD', None), ('NEW_MOLD', 'REFERENCE'), ('NEW_MOLD', 'BACKUP'),
+    ('FIRST_EXTERNAL_CHANGE', None),
+])
+def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm(processing_kind,reference_kind):
     engine,Session=factory()
     try:
         with Session.begin() as db:
             admin=user(db,'admin',True);p=project(db,'START-PREPARE','正式开工办理项目')
             accept=decision(db,p,admin,'quote_acceptance','QA-START-PREPARE','ACCEPT',mode='FULL_OUTSOURCE')
             sales_contract(db,p,admin)
-            intake=customer_start_conditions(db,p,admin,'102')
+            intake=customer_start_conditions(db,p,admin,'102',
+                historical_mold_number='OLD-REFERENCE-MOLD' if reference_kind else None,
+                historical_relation_kind=reference_kind)
             definition=workflow(db,admin)
             conversation=m.Conversation(user_id=admin.id,title='正式开工')
             db.add(conversation);db.flush()
@@ -156,11 +174,12 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'delegated_auto'})
             db.add(run);db.flush()
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
-                'bid_intake_revision_id':intake.id,
+                'bid_intake_revision_id':intake.id,'processing_kind':processing_kind,
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知与工艺方案已确认',
                 'workflow_definition_id':definition.id}
         schema=tool_schema('prepare_internal_start')['function']['parameters']
         assert {'project_id','project_version','source_subject_id','bid_intake_revision_id','workflow_definition_id'} <= set(schema['properties'])
+        assert 'processing_kind' in schema['required']
         with Session.begin() as db:
             admin=db.query(m.User).filter_by(username='admin').one()
             run=db.scalar(select(m.Run).where(m.Run.user_id==admin.id))
@@ -186,7 +205,12 @@ def test_prepare_internal_start_requires_human_confirmation_then_submits_bpm():
             assert snapshot.bid_intake_revision_id==args['bid_intake_revision_id']
             assert snapshot.linked_business['external_order_number']=='EXT-ORDER-102'
             assert snapshot.linked_business['internal_molds'][0]['internal_number']=='MOLD-102'
-            assert snapshot.linked_business['processing_kind']=='NEW_MOLD'
+            assert snapshot.linked_business['customer_model_number']=='MODEL-102'
+            assert snapshot.linked_business['customer_material_number']=='MATERIAL-102'
+            assert snapshot.linked_business['processing_kind']==processing_kind
+            assert snapshot.linked_business['historical_relation_kind']==reference_kind
+            assert snapshot.linked_business['historical_mold_number']==('OLD-REFERENCE-MOLD' if reference_kind else None)
+            assert db.scalar(select(m.Mold.internal_number)) == 'MOLD-102'
             intake_link=db.scalar(select(m.BidIntakeLifecycleLink).where(
                 m.BidIntakeLifecycleLink.subject_id==start.id
             ))
@@ -219,7 +243,7 @@ def test_start_without_contract_requires_expected_date_and_projects_overdue_foll
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
             db.add(run);db.flush()
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
-                'bid_intake_revision_id':intake.id,
+                'bid_intake_revision_id':intake.id,'processing_kind':'NEW_MOLD',
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
                 'workflow_definition_id':definition.id}
         with Session.begin() as db:
@@ -260,6 +284,8 @@ def test_start_without_contract_requires_expected_date_and_projects_overdue_foll
             }
             assert model_context['frozen_start_material']['external_order_number']=='EXT-ORDER-106'
             assert model_context['frozen_start_material']['internal_mold_numbers']==['MOLD-106']
+            assert model_context['frozen_start_material']['customer_model_number']=='MODEL-106'
+            assert model_context['frozen_start_material']['customer_material_number']=='MATERIAL-106'
             assert model_context['contract_follow_up']['state']=='OVERDUE'
             assert model_context['contract_follow_up']['overdue_reminder']['active'] is True
             assert set(model_context['contract_follow_up']['overdue_reminder']['recipient_names'])=={
@@ -270,6 +296,162 @@ def test_start_without_contract_requires_expected_date_and_projects_overdue_foll
             }
             assert model_context['finance_handoff']['notification_delivered'] is False
             assert model_context['finance_handoff']['explicit_receipt_acknowledged'] is None
+    finally:
+        engine.dispose()
+
+
+def test_initial_start_cannot_treat_reference_mold_as_execution_target():
+    from domain_packs.mold.erp.project import start_materials
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-REFERENCE-TARGET','模具关系冲突')
+            intake=customer_start_conditions(db,p,admin,'R01',
+                historical_mold_number='MOLD-R01',historical_relation_kind='REFERENCE')
+            with pytest.raises(Exception) as error:
+                start_materials.build(db,p,intake.id,date.today(),
+                    expected_contract_date=date.today(),processing_kind='NEW_MOLD')
+            assert error.value.code == 'HISTORICAL_REFERENCE_IS_TARGET'
+            assert p.status == 'DRAFT'
+            assert db.scalar(select(m.Mold.internal_number)) == 'MOLD-R01'
+    finally:
+        engine.dispose()
+
+
+def test_start_requires_declared_work_kind_instead_of_guessing_from_reference():
+    from domain_packs.mold.tools.erp.project.start_tools import parse_start
+    args={'project_id':'p','project_version':1,'source_subject_id':'accepted',
+          'bid_intake_revision_id':'intake','effective_date':date.today().isoformat(),
+          'evidence':'本人确认的开工依据','workflow_definition_id':'workflow'}
+    with pytest.raises(Exception) as missing:
+        parse_start(args)
+    assert missing.value.code == 'INVALID_TOOL_INPUT'
+    with pytest.raises(Exception) as existing_change:
+        parse_start({**args,'processing_kind':'MOLD_CHANGE'})
+    assert existing_change.value.code == 'INVALID_TOOL_INPUT'
+
+
+@pytest.mark.parametrize('change,code', [
+    ('renumber', 'START_MOLD_MAPPING_CHANGED'),
+    ('inactive', 'START_MOLD_MAPPING_CHANGED'),
+    ('extra_target', 'START_MOLD_MAPPING_CHANGED'),
+    ('new_intake_version', 'BID_INTAKE_VERSION_CONFLICT'),
+    ('unchanged', None),
+])
+def test_frozen_start_targets_are_rechecked_before_submission_and_application(change,code):
+    from domain_packs.mold.erp.project import start_materials
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-FROZEN','冻结开工核对')
+            intake=customer_start_conditions(db,p,admin,'F01')
+            accepted=decision(db,p,admin,'quote_acceptance','QA-FROZEN','ACCEPT')
+            start=decision(db,p,admin,'internal_start','START-FROZEN-NOTICE','START',source_subject_id=accepted.id,status='DRAFT')
+            material=start_materials.build(db,p,intake.id,date.today(),
+                expected_contract_date=date.today(),processing_kind='NEW_MOLD')
+            start_materials.create(db,admin,start,intake.id,material,date.today())
+            mold=db.scalar(select(m.Mold))
+            if change=='renumber':
+                mold.internal_number='RENUMBERED'
+            elif change=='inactive':
+                mold.status='INACTIVE'
+            elif change=='extra_target':
+                extra=m.Mold(internal_number='OTHER-TARGET',name='新关联对象')
+                db.add(extra);db.flush()
+                db.add(m.ProjectMold(project_id=p.id,mold_id=extra.id))
+            elif change=='new_intake_version':
+                values={column.name:getattr(intake,column.name) for column in m.BidIntakeRevision.__table__.columns
+                        if column.name not in {'id','created_at','version','previous_revision_id','source_fingerprint'}}
+                db.add(m.BidIntakeRevision(**values,version=2,previous_revision_id=intake.id,source_fingerprint='f'*64))
+            db.flush()
+            if code:
+                for action in (domains.before_submit,domains.apply):
+                    with pytest.raises(Exception) as rejected:
+                        action(db,admin,start)
+                    assert rejected.value.code == code
+                assert p.status=='DRAFT'
+                assert db.scalar(select(m.InternalStartDispatch)) is None
+            else:
+                domains.before_submit(db,admin,start)
+                domains.apply(db,admin,start)
+                assert p.status=='ACTIVE'
+                assert len(list(db.scalars(select(m.InternalStartDispatch))))==5
+            assert db.get(m.InternalStartSnapshot,start.id).linked_business['internal_molds'][0]['internal_number']=='MOLD-F01'
+    finally:
+        engine.dispose()
+
+
+def test_frozen_start_rechecks_confirmed_erp_project_mapping():
+    """A formal-start snapshot must retain and revalidate the ERP mapping."""
+    from domain_packs.mold.erp.project import start_materials
+
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, 'admin', True)
+            p = project(db, 'START-ERP-MAPPING', 'ERP 映射冻结')
+            intake = customer_start_conditions(db, p, admin, 'ERP-MAPPING')
+            accepted = decision(db, p, admin, 'quote_acceptance', 'QA-ERP-MAPPING', 'ACCEPT')
+            start = decision(
+                db, p, admin, 'internal_start', 'START-ERP-MAPPING-NOTICE', 'START',
+                source_subject_id=accepted.id, status='DRAFT',
+            )
+            timestamp = datetime.now(timezone.utc)
+            mapping = m.ProjectERPMapping(
+                project_id=p.id,
+                erp_project_code='ERP-P-START',
+                source_ref='scheduling/api/business/molds/:ERP-P-START',
+                source_as_of=timestamp,
+                evidence='项目负责人已核对 ERP 项目号',
+                confirmed_by=admin.id,
+                confirmed_at=timestamp,
+                status='CONFIRMED',
+            )
+            db.add(mapping)
+            db.flush()
+            material = start_materials.build(
+                db, p, intake.id, date.today(),
+                expected_contract_date=date.today(), processing_kind='NEW_MOLD',
+            )
+            assert material['erp_project_mapping']['erp_project_code'] == 'ERP-P-START'
+            start_materials.create(db, admin, start, intake.id, material, date.today())
+            mapping.status = 'REVOKED'
+            db.flush()
+            with pytest.raises(Exception) as rejected:
+                domains.before_submit(db, admin, start)
+            assert rejected.value.code == 'START_MOLD_MAPPING_CHANGED'
+    finally:
+        engine.dispose()
+
+
+def test_approval_reloads_mold_changed_by_another_session():
+    from domain_packs.mold.erp.project import start_materials
+    from app.errors import DomainError
+
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin=user(db,'admin',True);p=project(db,'START-CONCURRENT')
+            intake=customer_start_conditions(db,p,admin,'C01')
+            accepted=decision(db,p,admin,'quote_acceptance','QA-CONCURRENT','ACCEPT')
+            start=decision(db,p,admin,'internal_start','START-CONCURRENT-NOTICE','START',
+                source_subject_id=accepted.id,status='DRAFT')
+            material=start_materials.build(db,p,intake.id,date.today(),
+                expected_contract_date=date.today(),processing_kind='NEW_MOLD')
+            start_materials.create(db,admin,start,intake.id,material,date.today())
+            start_id,admin_id=start.id,admin.id
+        with Session() as approval_db:
+            cached_mold=approval_db.scalar(select(m.Mold))
+            start=approval_db.get(m.BusinessSubject,start_id)
+            admin=approval_db.get(m.User,admin_id)
+            with Session.begin() as updater:
+                updater.get(m.Mold,cached_mold.id).status='INACTIVE'
+            assert cached_mold.status=='ACTIVE'
+            with pytest.raises(DomainError) as rejected:
+                domains.apply(approval_db,admin,start)
+            assert rejected.value.code=='START_MOLD_MAPPING_CHANGED'
+            assert approval_db.get(m.Project,start.project_id).status=='DRAFT'
+            assert approval_db.scalar(select(m.InternalStartDispatch)) is None
     finally:
         engine.dispose()
 
@@ -289,7 +471,7 @@ def test_prepare_internal_start_rejects_stale_project_version():
                 checkpoint={'authorization_hash':fingerprint(db,admin),'agent_permission_mode':'ask'})
             db.add(run);db.flush()
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
-                'bid_intake_revision_id':intake.id,
+                'bid_intake_revision_id':intake.id,'processing_kind':'NEW_MOLD',
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
                 'workflow_definition_id':definition.id}
             p.row_version += 1
@@ -325,7 +507,7 @@ def test_prepare_internal_start_does_not_leak_contract_or_plan_without_permissio
             capability(db,operator,'prepare_internal_start')
             run.checkpoint={'authorization_hash':fingerprint(db,operator),'agent_permission_mode':'ask'}
             args={'project_id':p.id,'project_version':p.row_version,'source_subject_id':accept.id,
-                'bid_intake_revision_id':intake.id,
+                'bid_intake_revision_id':intake.id,'processing_kind':'NEW_MOLD',
                 'effective_date':date.today().isoformat(),'evidence':'客户开工通知已确认',
                 'workflow_definition_id':definition.id}
         with Session.begin() as db:
@@ -558,4 +740,3 @@ def test_internal_start_business_state_follows_six_stage_sequence():
             assert start.id==sixth['data'][0]['latest_internal_start']['id']
     finally:
         engine.dispose()
-

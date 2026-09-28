@@ -9,10 +9,11 @@
 - 使用 `business_state` 说明“待承接确认→已承接待开工条件→待正式下达→已正式下达→待计划审批→执行中”的当前位置；拒单、暂停、终止和关闭是独立结果，不要强行映射成正常推进阶段。
 - 正式开工生效后，使用 `department_handoffs` 核对设计、采购、生产制造、装配和财务五类项目角色的交接记录与投递状态。`UNASSIGNED` 表示角色配置缺失，`FILTERED_BY_CURRENT_PERMISSION` 表示消息已消费但当前授权不允许生成通知；不得把二者说成已通知。
 - 使用 `formal_start_material` 核对本次正式通知冻结的外部订单、客户、内部模具、机型/物料、项目、合同状态、开工日期、交期及中标接收版本；不存在冻结材料时明确指出历史资料缺口，不从当前值反推过去通知内容。
-- 合同晚到不必然阻塞开工；无生效销售合同时调用 `prepare_internal_start` 必须填写 `expected_contract_date`。使用 `contract_follow_up` 区分待到、今日到期、逾期、缺实际到达日期、缺附件和已收到；`passive_reminder` 只是查询触发的催补提示，不代表系统已签订合同。
-- 新模正式开工前必须已有 ERP 唯一内部模具号关联；已有模具设变必须复用中标接收记录中的原内部模具号。工具阻断时先补齐 ERP 模具关系，不在 Agent 本地伪造模具号。
+- 合同晚到不必然阻塞开工；首次开工无生效销售合同时必须填写 `expected_contract_date`。再次设变按本次合同方式独立核对：无新增合同、沿用销售合同、或新增销售合同待到；待到时填写预计日期，后续合同通过 `start_notice_subject_id` 明确关联本次通知，不能用原合同冒充本次合同已收到。
+- 首次开工前必须已有 ERP 唯一内部模具号关联，并由本人明确 `processing_kind`：`NEW_MOLD`（新模）或 `FIRST_EXTERNAL_CHANGE`（首次承接外部模具设变）。历史模具 BACKUP/REFERENCE 只是备份/参考关系，不是本次执行对象，不要求把它改成本次内部模号。
+- 已有 ACTIVE 项目再次设变也使用 `prepare_internal_start`，但选择 `EXISTING_MOLD_CHANGE`：从 `existing_mold_change_start.plan_candidates` 选择当前已批准方案作为 `source_subject_id`，明确执行方式和 `change` 条款，不填写中标接收版本。必须沿用原项目、原模具 ID，核对免费/收费金额、书面依据及方案原件附件、合同方式和本次交期。用户未明确的事实须补充，不能为绕过状态限制重复建项目或模具；暂停/关闭/终止项目不能通过此入口自动恢复。
 - 客户工艺方案人工确认、外部订单号、客户开工日期、客户交期和外部开工通知附件必须在同一中标接收记录中形成可核对事实；承接决定不能替代这些客户开工条件。
-- 如果用户明确要求正式下达开工，且 `query_internal_start_readiness` 返回 `readiness.can_prepare_start_from_known_facts=true` 与可用审批流程，才能调用 `prepare_internal_start`。必须使用查询返回的真实 `project.id`、`project.row_version`、已生效承接记录 `latest_acceptance.id`、当前 `customer_start_conditions.current_revision_id` 和 `workflow_options.id`，不能凭自然语言、截图或历史对话构造。
+- 首次开工使用 `readiness.can_prepare_start_from_known_facts` 及可用审批流程；再次设变使用独立的 `existing_mold_change_start` 条件，不把首次开工已完成误认作所有设变都已开工。两类流程均使用查询返回的真实对象与版本；候选方案不等于已满足开工条件。
 - `prepare_internal_start` 只生成待本人确认的 proposal。本人确认后才创建正式开工通知材料并提交 Agent BPM；审批生效前不改变项目状态，不下达设计/采购/生产/装配/试模任务，也不把销售合同或承接记录单独当成已正式开工。
 - 审批生效时只形成项目状态、五类部门交接回执和站内通知，不创建设计、采购、生产、装配或试模执行任务。部门后续任务仍必须依据已生效项目计划或 ERP 权威执行记录。
 - 只读核对时不得创建开工通知、不下达设计/采购/生产/装配/试模任务，不替代项目负责人和相关部门人工确认。
