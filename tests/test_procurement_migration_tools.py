@@ -31,6 +31,15 @@ MIGRATED_TOOLS = {
     "prepare_purchase_temporary_group_delete",
     "prepare_purchase_repurchase_submit",
     "prepare_purchase_supplier_rank_adjustment",
+    "query_purchase_order_quantity_change_context",
+    "query_purchase_hardware_award_context",
+    "prepare_purchase_order_quantity_change",
+    "prepare_purchase_hardware_award_submit",
+    "prepare_purchase_hardware_award_draft",
+    "query_purchase_price_compare_context", "query_purchase_repurchase_system_price",
+    "prepare_purchase_price_compare_approval",
+    "query_supplier_price_access_policy", "prepare_supplier_price_access_decision",
+    "prepare_purchase_hardware_award_final_approve",
 }
 
 
@@ -60,6 +69,10 @@ def test_procurement_migration_skills_have_skill_documents_and_confirmation_hand
         "prepare_purchase_temporary_group_save", "prepare_purchase_temporary_group_delete",
         "prepare_purchase_repurchase_submit",
         "prepare_purchase_supplier_rank_adjustment",
+        "prepare_purchase_order_quantity_change", "prepare_purchase_hardware_award_submit",
+        "prepare_purchase_hardware_award_draft", "prepare_purchase_hardware_award_final_approve",
+        "prepare_purchase_price_compare_approval",
+        "prepare_supplier_price_access_decision",
     } <= handled
 
 
@@ -165,3 +178,27 @@ def test_phase3_repurchase_submit_requires_version_and_unique_lines():
     assert result["source"] == "agent_proposal"
     assert result["proposal"]["tool"] == "prepare_purchase_repurchase_submit"
     assert result["proposal"]["input"]["lines"][0]["line_id"] == 101
+
+
+def test_phase4_quantity_change_supports_single_and_batch_typed_inputs():
+    single = migration_tools.execute_tool(None, None, "prepare_purchase_order_quantity_change", {
+        "order_id": 29, "order_detail_id": 301, "target_quantity": "12.500", "reason": "客户需求变更",
+    })
+    assert single["proposal"]["input"]["target_quantity"] == "12.500"
+    batch = migration_tools.execute_tool(None, None, "prepare_purchase_order_quantity_change", {
+        "order_id": 29, "changes": [
+            {"order_detail_id": 301, "target_quantity": "12.500"},
+            {"order_detail_id": 302, "target_quantity": "3"},
+        ], "reason": "批量核对后调整",
+    })
+    assert len(batch["proposal"]["input"]["changes"]) == 2
+
+
+def test_phase4_hardware_award_final_approval_requires_explicit_price_source():
+    result = migration_tools.execute_tool(None, None, "prepare_purchase_hardware_award_final_approve", {
+        "todo_id": 18, "expected_version": 4, "comment": "按报价定标", "lines": [{
+            "request_detail_id": 901, "final_supplier_id": 77, "final_unit_price": "8.80",
+            "source_type": "current_quote", "source_dispatch_id": 31, "source_submission_id": 32,
+        }],
+    })
+    assert result["proposal"]["input"]["lines"][0]["source_type"] == "current_quote"

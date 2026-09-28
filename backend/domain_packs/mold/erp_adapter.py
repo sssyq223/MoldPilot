@@ -384,6 +384,99 @@ class ERPClient:
             json=payload,
         ).get('data') or {})
 
+    def purchase_order_quantity_change_impact(self, order_id):
+        return normalized(self.request(
+            'GET', f'api/agent/procurement/orders/{int(order_id)}/quantity-change-impact'
+        ).get('data') or {})
+
+    def create_order_quantity_change_proposal(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/order-quantity-change-proposals',
+            json=payload,
+        ).get('data') or {})
+
+    def decide_order_quantity_change(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/order-quantity-change-decisions',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_create_draft(self, source_group_id):
+        return normalized(self.request(
+            'POST', 'purchase/hardware-award/draft',
+            json={'sourceGroupId': int(source_group_id)},
+        ).get('data') or {})
+
+    def hardware_award_detail(self, batch_id):
+        return normalized(self.request(
+            'GET', f'purchase/hardware-award/{int(batch_id)}'
+        ).get('data') or {})
+
+    def hardware_award_refresh_quotes(self, batch_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/{int(batch_id)}/refresh-quotes',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_submit(self, batch_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/{int(batch_id)}/submit',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_general_todos(self, params=None):
+        payload = self.request('GET', 'purchase/hardware-award/todos/general', params=params or {})
+        return normalized(payload.get('rows') or payload.get('data') or payload)
+
+    def hardware_award_todo_detail(self, todo_id):
+        return normalized(self.request(
+            'GET', f'purchase/hardware-award/todos/{int(todo_id)}'
+        ).get('data') or {})
+
+    def hardware_award_final_preview(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/final-preview',
+            json=payload,
+        ).get('data') or {})
+
+    def hardware_award_final_approve(self, todo_id, payload):
+        return normalized(self.request(
+            'POST', f'purchase/hardware-award/todos/{int(todo_id)}/final-approve',
+            json=payload,
+        ).get('data') or {})
+
+    def purchase_price_compare_list(self):
+        payload = self.request('GET', 'purchase/price-compare/list')
+        return normalized(payload.get('data') or payload.get('rows') or [])
+
+    def submit_purchase_price_compare_negotiated_approval(self, payload):
+        return normalized(self.request(
+            'POST', 'purchase/price-compare/negotiated-approval', json=payload,
+        ).get('data') or {})
+
+    def manual_dispatch_system_price(self, batch_id, line_id, supplier_id):
+        payload = self.request(
+            'GET', f'purchase/manual-dispatch/{int(batch_id)}/lines/{int(line_id)}/system-price',
+            params={'supplierId': int(supplier_id)},
+        )
+        return normalized(payload.get('data') or {})
+
+    def supplier_price_access_policy(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/price-access/policy', json=payload,
+        ).get('data') or {})
+
+    def supplier_price_access_request(self, request_id):
+        return normalized(self.request(
+            'GET', f'api/agent/procurement/price-access/requests/{int(request_id)}'
+        ).get('data') or {})
+
+    def decide_supplier_price_access_request(self, request_id, payload):
+        return normalized(self.request(
+            'POST', f'api/agent/procurement/price-access/requests/{int(request_id)}/decision',
+            json=payload,
+        ).get('data') or {})
+
     def claim_purchase_request(self, request_id, payload=None):
         return normalized(self.request(
             'POST', f'purchase/workbench/requests/{int(request_id)}/claim',

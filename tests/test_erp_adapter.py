@@ -536,6 +536,92 @@ def test_phase3_adapter_uses_erp_agent_supplier_ranking_routes(monkeypatch):
     ]
 
 
+def test_phase4_adapter_uses_quantity_change_and_hardware_award_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith('/quantity-change-impact'):
+            return httpx.Response(200, json={'code': 200, 'data': {'orderId': 8, 'version': 2}})
+        if request.url.path.endswith('/order-quantity-change-proposals'):
+            return httpx.Response(200, json={'code': 200, 'data': {'proposalId': 15}})
+        if request.url.path.endswith('/purchase/hardware-award/11'):
+            return httpx.Response(200, json={'code': 200, 'data': {'batchId': 11, 'version': 3}})
+        if request.url.path.endswith('/purchase/hardware-award/11/submit'):
+            return httpx.Response(200, json={'code': 200, 'data': {'status': 'PENDING'}})
+        if request.url.path.endswith('/final-preview'):
+            return httpx.Response(200, json={'code': 200, 'data': {'valid': True}})
+        if request.url.path.endswith('/final-approve'):
+            return httpx.Response(200, json={'code': 200, 'data': {'status': 'APPROVED'}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_order_quantity_change_impact(8)['version'] == 2
+        assert client.create_order_quantity_change_proposal({})['proposalId'] == 15
+        assert client.hardware_award_detail(11)['batchId'] == 11
+        assert client.hardware_award_submit(11, {})['status'] == 'PENDING'
+        assert client.hardware_award_final_preview(11, {})['valid'] is True
+        assert client.hardware_award_final_approve(11, {})['status'] == 'APPROVED'
+    finally:
+        client.close()
+    assert calls == [
+        ('GET', '/api/agent/procurement/orders/8/quantity-change-impact'),
+        ('POST', '/api/agent/procurement/actions/order-quantity-change-proposals'),
+        ('GET', '/purchase/hardware-award/11'),
+        ('POST', '/purchase/hardware-award/11/submit'),
+        ('POST', '/purchase/hardware-award/todos/11/final-preview'),
+        ('POST', '/purchase/hardware-award/todos/11/final-approve'),
+    ]
+
+
+def test_phase4_adapter_uses_price_compare_and_sensitive_price_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith('/price-compare/list'):
+            return httpx.Response(200, json={'code': 200, 'data': [{'priceId': 7}]})
+        if request.url.path.endswith('/negotiated-approval'):
+            return httpx.Response(200, json={'code': 200, 'data': {'approvalCount': 1}})
+        if request.url.path.endswith('/system-price'):
+            return httpx.Response(200, json={'code': 200, 'data': {'unitPrice': '8.8'}})
+        if request.url.path.endswith('/price-access/policy'):
+            return httpx.Response(200, json={'code': 200, 'data': {'allowed': True}})
+        if request.url.path.endswith('/price-access/requests/4'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 4, 'status': 'pending'}})
+        if request.url.path.endswith('/price-access/requests/4/decision'):
+            return httpx.Response(200, json={'code': 200, 'data': {'status': 'approved'}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_price_compare_list()[0]['priceId'] == 7
+        assert client.submit_purchase_price_compare_negotiated_approval({})['approvalCount'] == 1
+        assert client.manual_dispatch_system_price(2, 3, 4)['unitPrice'] == '8.8'
+        assert client.supplier_price_access_policy({})['allowed'] is True
+        assert client.supplier_price_access_request(4)['status'] == 'pending'
+        assert client.decide_supplier_price_access_request(4, {})['status'] == 'approved'
+    finally:
+        client.close()
+    assert calls == [
+        ('GET', '/purchase/price-compare/list'),
+        ('POST', '/purchase/price-compare/negotiated-approval'),
+        ('GET', '/purchase/manual-dispatch/2/lines/3/system-price'),
+        ('POST', '/api/agent/procurement/price-access/policy'),
+        ('GET', '/api/agent/procurement/price-access/requests/4'),
+        ('POST', '/api/agent/procurement/price-access/requests/4/decision'),
+    ]
+
+
 def test_plan_progress_rejects_success_payload_without_data_instead_of_raising_keyerror(monkeypatch):
     monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
         erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,

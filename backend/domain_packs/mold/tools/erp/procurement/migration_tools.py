@@ -330,6 +330,125 @@ class PurchaseSupplierRankAdjustmentProposalInput(StrictModel):
         return self
 
 
+class PurchaseOrderQuantityChangeContextInput(StrictModel):
+    order_id: int = Field(ge=1)
+
+
+class PurchaseOrderQuantityChangeLineInput(StrictModel):
+    order_detail_id: int = Field(ge=1)
+    target_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+
+
+class PurchaseOrderQuantityChangeProposalInput(StrictModel):
+    order_id: int = Field(ge=1)
+    order_detail_id: int | None = Field(default=None, ge=1)
+    target_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=3)
+    changes: list[PurchaseOrderQuantityChangeLineInput] | None = Field(default=None, min_length=2, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_single_or_batch(self):
+        single = self.order_detail_id is not None or self.target_quantity is not None
+        if self.changes is not None and single:
+            raise ValueError("批量数量变更不能同时提交单行参数")
+        if self.changes is None and not (self.order_detail_id and self.target_quantity is not None):
+            raise ValueError("数量变更必须提供单行明细或批量 changes")
+        if self.changes and len({item.order_detail_id for item in self.changes}) != len(self.changes):
+            raise ValueError("批量数量变更不能重复指定明细")
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("数量变更原因不能为空")
+        return self
+
+
+class PurchaseHardwareAwardContextInput(StrictModel):
+    batch_id: int = Field(ge=1)
+
+
+class PurchaseHardwareAwardDraftProposalInput(StrictModel):
+    source_group_id: int = Field(ge=1)
+
+
+class PurchaseHardwareAwardSubmitProposalInput(StrictModel):
+    batch_id: int = Field(ge=1)
+    expected_version: int = Field(ge=0)
+    general_manager_id: int = Field(ge=1)
+    remark: str = Field(default="", max_length=500)
+
+
+class PurchaseHardwareAwardFinalLineInput(StrictModel):
+    request_detail_id: int = Field(ge=1)
+    final_supplier_id: int = Field(ge=1)
+    final_unit_price: str = Field(min_length=1, max_length=40)
+    source_type: Literal["current_quote", "history_price"]
+    source_dispatch_id: int | None = Field(default=None, ge=1)
+    source_submission_id: int | None = Field(default=None, ge=1)
+    source_price_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_source(self):
+        if self.source_type == "current_quote" and not (self.source_dispatch_id and self.source_submission_id):
+            raise ValueError("当前报价定标必须提供 source_dispatch_id 和 source_submission_id")
+        if self.source_type == "history_price" and not self.source_price_id:
+            raise ValueError("历史价格定标必须提供 source_price_id")
+        return self
+
+
+class PurchaseHardwareAwardFinalApproveProposalInput(StrictModel):
+    todo_id: int = Field(ge=1)
+    expected_version: int = Field(ge=0)
+    comment: str = Field(default="", max_length=500)
+    lines: list[PurchaseHardwareAwardFinalLineInput] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_details(self):
+        ids = [line.request_detail_id for line in self.lines]
+        if len(ids) != len(set(ids)):
+            raise ValueError("定标明细不能重复")
+        return self
+
+
+class PurchasePriceCompareContextInput(StrictModel):
+    pass
+
+
+class PurchasePriceCompareLineInput(StrictModel):
+    price_id: int = Field(ge=1)
+    negotiated_price: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    price_type: str | None = Field(default=None, max_length=40)
+    source_type: str | None = Field(default=None, max_length=40)
+    remark: str | None = Field(default=None, max_length=500)
+
+
+class PurchasePriceCompareApprovalProposalInput(StrictModel):
+    lines: list[PurchasePriceCompareLineInput] = Field(min_length=1, max_length=500)
+    remark: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def unique_price_ids(self):
+        ids = [line.price_id for line in self.lines]
+        if len(ids) != len(set(ids)):
+            raise ValueError("议价审批不能重复指定价格记录")
+        return self
+
+
+class PurchaseRepurchaseSystemPriceContextInput(StrictModel):
+    batch_id: int = Field(ge=1)
+    line_id: int = Field(ge=1)
+    supplier_id: int = Field(ge=1)
+
+
+class SupplierPriceAccessPolicyInput(StrictModel):
+    query_type: str = Field(min_length=1, max_length=32)
+    keyword: str | None = Field(default=None, max_length=200)
+
+
+class SupplierPriceAccessDecisionProposalInput(StrictModel):
+    request_id: int = Field(ge=1)
+    action: Literal["approve", "reject"]
+    comment: str = Field(default="", max_length=500)
+
+
 INPUTS = {
     "prepare_raw_material_split": RawMaterialSplitProposalInput,
     "prepare_purchase_decision": PurchaseDecisionProposalInput,
@@ -349,6 +468,12 @@ INPUTS = {
     "prepare_purchase_temporary_group_delete": PurchaseTemporaryGroupDeleteProposalInput,
     "prepare_purchase_repurchase_submit": PurchaseRepurchaseSubmitProposalInput,
     "prepare_purchase_supplier_rank_adjustment": PurchaseSupplierRankAdjustmentProposalInput,
+    "prepare_purchase_order_quantity_change": PurchaseOrderQuantityChangeProposalInput,
+    "prepare_purchase_hardware_award_submit": PurchaseHardwareAwardSubmitProposalInput,
+    "prepare_purchase_hardware_award_draft": PurchaseHardwareAwardDraftProposalInput,
+    "prepare_purchase_hardware_award_final_approve": PurchaseHardwareAwardFinalApproveProposalInput,
+    "prepare_purchase_price_compare_approval": PurchasePriceCompareApprovalProposalInput,
+    "prepare_supplier_price_access_decision": SupplierPriceAccessDecisionProposalInput,
 }
 
 PROPOSAL_TOOLS = frozenset(INPUTS)
@@ -807,6 +932,103 @@ def query_purchase_supplier_ranking_context(db, user, data, allowed_tools=None):
         client.close()
 
 
+def query_purchase_order_quantity_change_context(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        impact = client.purchase_order_quantity_change_impact(data.order_id)
+        return {
+            "resolution": "RESOLVED", "data": [impact], "source": "erp",
+            "as_of": now().isoformat(),
+            "limitations": ["订单数量变更影响、当前版本和供应商确认约束来自 ERP；本工具只读。"],
+        }
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
+def query_purchase_hardware_award_context(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        award = client.hardware_award_detail(data.batch_id)
+        return {
+            "resolution": "RESOLVED", "data": [award], "source": "erp",
+            "as_of": now().isoformat(),
+            "limitations": ["五金定标批次、报价来源和版本来自 ERP；本工具不在本地计算最低价或定标结果。"],
+        }
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
+def query_purchase_price_compare_context(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        rows = client.purchase_price_compare_list()
+        return {"resolution": "RESOLVED", "data": rows if isinstance(rows, list) else [rows],
+                "source": "erp", "as_of": now().isoformat(),
+                "limitations": ["报价比较行和价格来源来自 ERP；MoldPilot 不本地排序或改写价格。"]}
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
+def query_purchase_repurchase_system_price(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        price = client.manual_dispatch_system_price(data.batch_id, data.line_id, data.supplier_id)
+        return {"resolution": "RESOLVED", "data": [price], "source": "erp",
+                "as_of": now().isoformat(),
+                "limitations": ["重采系统价由 ERP 按批次行和供应商严格匹配；本工具只读。"]}
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
+def query_supplier_price_access_policy(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    try:
+        policy = client.supplier_price_access_policy({
+            key: value for key, value in {"queryType": data.query_type, "keyword": data.keyword}.items()
+            if value not in (None, "")
+        })
+        return {"resolution": "RESOLVED", "data": [policy], "source": "erp",
+                "as_of": now().isoformat(),
+                "limitations": ["供应商价格敏感访问策略由 ERP 判定；本工具不缓存有效价或供应商价格。"]}
+    except DomainError as error:
+        return {"resolution": error.code, "data": [], "source": "erp",
+                "as_of": now().isoformat(), "limitations": [error.message]}
+    finally:
+        client.close()
+
+
 def _group_snapshot(db, user, group_id):
     client, _identity = _client_for_user(db, user)
     try:
@@ -836,6 +1058,12 @@ def _proposal_display(key, data, snapshot):
         "prepare_purchase_temporary_group_delete": "删除采购临时分组",
         "prepare_purchase_repurchase_submit": "提交无人接单重采审批",
         "prepare_purchase_supplier_rank_adjustment": "调整采购供应商候选顺位",
+        "prepare_purchase_order_quantity_change": "提交采购订单数量变更",
+        "prepare_purchase_hardware_award_submit": "提交五金定标审批",
+        "prepare_purchase_hardware_award_draft": "创建五金定标草稿",
+        "prepare_purchase_hardware_award_final_approve": "审批五金定标结果",
+        "prepare_purchase_price_compare_approval": "提交采购报价议价审批",
+        "prepare_supplier_price_access_decision": "审批供应商价格访问申请",
     }
     return {
         "操作": names[key],
@@ -877,6 +1105,36 @@ def execute_tool(db, user, key, arguments, run=None):
         except ValidationError as error:
             raise DomainError("INVALID_TOOL_INPUT", "供应商候选顺位查询参数无效：" + error.errors()[0]["msg"]) from None
         return query_purchase_supplier_ranking_context(db, user, data)
+    if key == "query_purchase_order_quantity_change_context":
+        try:
+            data = PurchaseOrderQuantityChangeContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购订单数量变更查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_order_quantity_change_context(db, user, data)
+    if key == "query_purchase_hardware_award_context":
+        try:
+            data = PurchaseHardwareAwardContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "五金定标查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_hardware_award_context(db, user, data)
+    if key == "query_purchase_price_compare_context":
+        try:
+            data = PurchasePriceCompareContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "采购报价比较查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_price_compare_context(db, user, data)
+    if key == "query_purchase_repurchase_system_price":
+        try:
+            data = PurchaseRepurchaseSystemPriceContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "重采系统价查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_repurchase_system_price(db, user, data)
+    if key == "query_supplier_price_access_policy":
+        try:
+            data = SupplierPriceAccessPolicyInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商价格访问策略参数无效：" + error.errors()[0]["msg"]) from None
+        return query_supplier_price_access_policy(db, user, data)
     if key.startswith("query_"):
         try:
             data = ProcurementContextInput.model_validate(arguments or {})
@@ -921,6 +1179,18 @@ def execute_tool(db, user, key, arguments, run=None):
         snapshot = {"native_id": data.batch_id, "tool": key}
     elif key == "prepare_purchase_supplier_rank_adjustment":
         snapshot = {"native_id": data.split_group_id, "tool": key}
+    elif key == "prepare_purchase_order_quantity_change":
+        snapshot = {"native_id": data.order_id, "tool": key}
+    elif key == "prepare_purchase_hardware_award_submit":
+        snapshot = {"native_id": data.batch_id, "tool": key}
+    elif key == "prepare_purchase_hardware_award_draft":
+        snapshot = {"native_id": data.source_group_id, "tool": key}
+    elif key == "prepare_purchase_hardware_award_final_approve":
+        snapshot = {"native_id": data.todo_id, "tool": key}
+    elif key == "prepare_purchase_price_compare_approval":
+        snapshot = {"native_id": data.lines[0].price_id, "tool": key}
+    elif key == "prepare_supplier_price_access_decision":
+        snapshot = {"native_id": data.request_id, "tool": key}
     else:
         snapshot = _group_snapshot(db, user, getattr(data, "group_id", 0))
     proposal = {
@@ -985,6 +1255,14 @@ def _fresh_group_check(db, user, proposal):
                 current = client.manual_dispatch_detail(int(data["batch_id"]))
             elif tool == "prepare_purchase_supplier_rank_adjustment" and data.get("split_group_id"):
                 current = client.purchase_supplier_ranking(int(data["split_group_id"]))
+            elif tool == "prepare_purchase_order_quantity_change" and data.get("order_id"):
+                current = client.purchase_order_quantity_change_impact(int(data["order_id"]))
+            elif tool in {"prepare_purchase_hardware_award_submit"} and data.get("batch_id"):
+                current = client.hardware_award_detail(int(data["batch_id"]))
+            elif tool == "prepare_purchase_hardware_award_final_approve" and data.get("todo_id"):
+                current = client.hardware_award_todo_detail(int(data["todo_id"]))
+            elif tool == "prepare_supplier_price_access_decision" and data.get("request_id"):
+                current = client.supplier_price_access_request(int(data["request_id"]))
             else:
                 return None
         finally:
@@ -994,7 +1272,7 @@ def _fresh_group_check(db, user, proposal):
         raise DomainError("VERSION_CONFLICT", "ERP 采购分组状态已变化，请重新查询并准备操作", 409)
     expected_version = data.get("expected_version")
     if expected_version is not None:
-        actual = current.get("version") or current.get("versionNo") or current.get("rowVersion") or current.get("claim_version")
+        actual = current.get("version") or current.get("versionNo") or current.get("rowVersion") or current.get("claim_version") or current.get("statusVersion") or current.get("expectedVersion")
         if actual is not None and int(actual) != int(expected_version):
             raise DomainError("VERSION_CONFLICT", "ERP 采购分组版本已变化，请重新查询并准备操作", 409)
     expected_snapshot_hash = data.get("expected_snapshot_hash")
@@ -1278,6 +1556,76 @@ def confirm(db, user, payload):
                 "traceId": operation_key,
                 "idempotencyKey": operation_key,
             })
+        elif tool == "prepare_purchase_order_quantity_change":
+            request_payload = {
+                "orderId": data["order_id"],
+                "reason": data["reason"],
+                "idempotencyKey": str(operation.id),
+            }
+            if data.get("changes") is not None:
+                request_payload["changes"] = [
+                    {"orderDetailId": line["order_detail_id"], "targetQuantity": line["target_quantity"]}
+                    for line in data["changes"]
+                ]
+            else:
+                request_payload.update({
+                    "orderDetailId": data["order_detail_id"],
+                    "targetQuantity": data["target_quantity"],
+                })
+            result = client.create_order_quantity_change_proposal(request_payload)
+        elif tool == "prepare_purchase_hardware_award_submit":
+            result = client.hardware_award_submit(
+                int(data["batch_id"]),
+                {
+                    "expectedVersion": data["expected_version"],
+                    "generalManagerId": data["general_manager_id"],
+                    "remark": data.get("remark", ""),
+                },
+            )
+        elif tool == "prepare_purchase_hardware_award_draft":
+            result = client.hardware_award_create_draft(int(data["source_group_id"]))
+        elif tool == "prepare_purchase_hardware_award_final_approve":
+            line_payload = []
+            for line in data["lines"]:
+                line_payload.append({
+                    key: value for key, value in {
+                        "requestDetailId": line["request_detail_id"],
+                        "finalSupplierId": line["final_supplier_id"],
+                        "finalUnitPrice": line["final_unit_price"],
+                        "sourceType": line["source_type"],
+                        "sourceDispatchId": line.get("source_dispatch_id"),
+                        "sourceSubmissionId": line.get("source_submission_id"),
+                        "sourcePriceId": line.get("source_price_id"),
+                    }.items() if value not in (None, "")
+                })
+            preview_payload = {
+                "expectedVersion": data["expected_version"],
+                "lines": line_payload,
+            }
+            client.hardware_award_final_preview(int(data["todo_id"]), preview_payload)
+            result = client.hardware_award_final_approve(
+                int(data["todo_id"]),
+                {**preview_payload, "comment": data.get("comment", "")},
+            )
+        elif tool == "prepare_purchase_price_compare_approval":
+            result = client.submit_purchase_price_compare_negotiated_approval({
+                "lines": [
+                    {key: value for key, value in {
+                        "priceId": line["price_id"],
+                        "priceType": line.get("price_type"),
+                        "sourceType": line.get("source_type"),
+                        "negotiatedPrice": line["negotiated_price"],
+                        "remark": line.get("remark"),
+                    }.items() if value not in (None, "")}
+                    for line in data["lines"]
+                ],
+                "remark": data.get("remark", ""),
+            })
+        elif tool == "prepare_supplier_price_access_decision":
+            result = client.decide_supplier_price_access_request(
+                int(data["request_id"]),
+                {"action": data["action"], "comment": data.get("comment", "")},
+            )
         else:
             raise DomainError("TOOL_UNKNOWN", "采购正式动作未实现", 403)
         receipt = {
