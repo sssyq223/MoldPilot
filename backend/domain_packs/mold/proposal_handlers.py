@@ -103,6 +103,9 @@ HANDLERS = (
         "prepare_purchase_claim", "prepare_hardware_inquiry", "prepare_supplier_order_decision",
         "prepare_supplier_quote_submit", "prepare_supplier_delivery_create", "prepare_supplier_exception",
         "prepare_purchase_split_adjustment", "prepare_purchase_split_adjustment_submit",
+        "prepare_purchase_temporary_group_save", "prepare_purchase_temporary_group_delete",
+        "prepare_purchase_repurchase_submit",
+        "prepare_purchase_supplier_rank_adjustment",
     })),
     ProposalHandler("finance.execute", "domain_packs.mold.tools.erp.finance.finance_context_tools", frozenset({
         "prepare_finance_correction", "prepare_supplier_payment_condition", "prepare_supplier_payment_request",

@@ -17,6 +17,8 @@ MIGRATED_TOOLS = {
     "query_purchase_workbench_context",
     "query_supplier_portal_context",
     "query_purchase_adjustment_context",
+    "query_purchase_repurchase_context",
+    "query_purchase_supplier_ranking_context",
     "prepare_purchase_claim",
     "prepare_hardware_inquiry",
     "prepare_supplier_order_decision",
@@ -25,6 +27,10 @@ MIGRATED_TOOLS = {
     "prepare_supplier_exception",
     "prepare_purchase_split_adjustment",
     "prepare_purchase_split_adjustment_submit",
+    "prepare_purchase_temporary_group_save",
+    "prepare_purchase_temporary_group_delete",
+    "prepare_purchase_repurchase_submit",
+    "prepare_purchase_supplier_rank_adjustment",
 }
 
 
@@ -51,6 +57,9 @@ def test_procurement_migration_skills_have_skill_documents_and_confirmation_hand
         "prepare_purchase_claim", "prepare_hardware_inquiry", "prepare_supplier_order_decision",
         "prepare_supplier_quote_submit", "prepare_supplier_delivery_create", "prepare_supplier_exception",
         "prepare_purchase_split_adjustment", "prepare_purchase_split_adjustment_submit",
+        "prepare_purchase_temporary_group_save", "prepare_purchase_temporary_group_delete",
+        "prepare_purchase_repurchase_submit",
+        "prepare_purchase_supplier_rank_adjustment",
     } <= handled
 
 
@@ -135,3 +144,24 @@ def test_phase3_split_adjustment_prepare_is_typed_and_confirmation_only(monkeypa
     assert result["source"] == "agent_proposal"
     assert result["proposal"]["tool"] == "prepare_purchase_split_adjustment"
     assert result["proposal"]["input"]["groups"][0]["allocations"][0]["quantity"] == "2.500"
+
+
+def test_phase3_repurchase_submit_requires_version_and_unique_lines():
+    result = migration_tools.execute_tool(
+        None,
+        None,
+        "prepare_purchase_repurchase_submit",
+        {
+            "batch_id": 29,
+            "expected_version": 2,
+            "lines": [{
+                "line_id": 101,
+                "supplier_id": 31,
+                "unit_price": "18.50",
+            }],
+            "approver_overrides": [],
+        },
+    )
+    assert result["source"] == "agent_proposal"
+    assert result["proposal"]["tool"] == "prepare_purchase_repurchase_submit"
+    assert result["proposal"]["input"]["lines"][0]["line_id"] == 101

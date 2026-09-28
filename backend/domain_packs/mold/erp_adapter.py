@@ -328,6 +328,62 @@ class ERPClient:
             json=payload or {},
         ).get('data') or {})
 
+    def save_purchase_temporary_group(self, request_id, payload):
+        return normalized(self.request(
+            'PUT', f'purchase/workbench/split-adjustments/context/{int(request_id)}/temporary-groups',
+            json=payload,
+        ).get('data') or {})
+
+    def delete_purchase_temporary_group(self, request_id, client_group_key):
+        return normalized(self.request(
+            'DELETE',
+            f'purchase/workbench/split-adjustments/context/{int(request_id)}/temporary-groups/{client_group_key}',
+        ).get('data') or {})
+
+    def manual_dispatch_by_order(self, order_id):
+        payload = self.request('GET', f'purchase/manual-dispatch/by-order/{int(order_id)}')
+        return normalized(payload.get('data') or {})
+
+    def manual_dispatch_detail(self, batch_id):
+        payload = self.request('GET', f'purchase/manual-dispatch/{int(batch_id)}')
+        return normalized(payload.get('data') or {})
+
+    def manual_dispatch_suppliers(self):
+        payload = self.request('GET', 'purchase/manual-dispatch/suppliers')
+        return _safe_cards(
+            payload.get('rows') or payload.get('data') or payload,
+            ['id','supplierId','supplier_id','name','supplierName','supplier_name','status','enabled'],
+            'purchase/manual-dispatch/suppliers',
+        )[:500]
+
+    def save_manual_dispatch_draft(self, batch_id, payload):
+        return normalized(self.request(
+            'PUT', f'purchase/manual-dispatch/{int(batch_id)}/draft', json=payload,
+        ).get('data') or {})
+
+    def submit_manual_dispatch(self, batch_id, payload=None):
+        return normalized(self.request(
+            'POST', f'purchase/manual-dispatch/{int(batch_id)}/submit', json=payload or {},
+        ).get('data') or {})
+
+    def purchase_supplier_ranking(self, group_id):
+        payload = self.request(
+            'GET', f'api/agent/procurement/split-groups/{int(group_id)}/supplier-ranking'
+        )
+        return normalized(payload.get('data') or {})
+
+    def preview_supplier_rank_adjustment(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/supplier-rank-adjustment/preview',
+            json=payload,
+        ).get('data') or {})
+
+    def create_supplier_rank_adjustment_proposal(self, payload):
+        return normalized(self.request(
+            'POST', 'api/agent/procurement/actions/supplier-rank-adjustment/proposals',
+            json=payload,
+        ).get('data') or {})
+
     def claim_purchase_request(self, request_id, payload=None):
         return normalized(self.request(
             'POST', f'purchase/workbench/requests/{int(request_id)}/claim',

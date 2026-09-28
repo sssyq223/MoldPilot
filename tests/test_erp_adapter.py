@@ -455,6 +455,87 @@ def test_phase3_adapter_uses_split_adjustment_routes_and_filters_history(monkeyp
     ]
 
 
+def test_phase3_adapter_uses_temporary_group_and_repurchase_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path.endswith('/temporary-groups'):
+            return httpx.Response(200, json={'code': 200, 'data': {'clientGroupKey': 'A'}})
+        if '/temporary-groups/' in path:
+            return httpx.Response(200, json={'code': 200, 'data': {}})
+        if path.endswith('/purchase/manual-dispatch/by-order/19'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 29, 'version': 2}})
+        if path.endswith('/purchase/manual-dispatch/29'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 29, 'version': 2}})
+        if path.endswith('/purchase/manual-dispatch/suppliers'):
+            return httpx.Response(200, json={'code': 200, 'rows': [{'id': 31, 'name': '供应商A', 'secret': 'hidden'}]})
+        if path.endswith('/purchase/manual-dispatch/29/draft'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 29, 'status': 'DRAFT'}})
+        if path.endswith('/purchase/manual-dispatch/29/submit'):
+            return httpx.Response(200, json={'code': 200, 'data': {'id': 29, 'status': 'APPROVAL_PENDING'}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.save_purchase_temporary_group(8, {'clientGroupKey': 'A'})['clientGroupKey'] == 'A'
+        client.delete_purchase_temporary_group(8, 'A')
+        assert client.manual_dispatch_by_order(19)['id'] == 29
+        assert client.manual_dispatch_detail(29)['version'] == 2
+        suppliers = client.manual_dispatch_suppliers()
+        assert suppliers[0]['name'] == '供应商A'
+        assert 'secret' not in str(suppliers)
+        assert client.save_manual_dispatch_draft(29, {})['status'] == 'DRAFT'
+        assert client.submit_manual_dispatch(29)['status'] == 'APPROVAL_PENDING'
+    finally:
+        client.close()
+    assert [(method, path) for method, path in calls] == [
+        ('PUT', '/purchase/workbench/split-adjustments/context/8/temporary-groups'),
+        ('DELETE', '/purchase/workbench/split-adjustments/context/8/temporary-groups/A'),
+        ('GET', '/purchase/manual-dispatch/by-order/19'),
+        ('GET', '/purchase/manual-dispatch/29'),
+        ('GET', '/purchase/manual-dispatch/suppliers'),
+        ('PUT', '/purchase/manual-dispatch/29/draft'),
+        ('POST', '/purchase/manual-dispatch/29/submit'),
+    ]
+
+
+def test_phase3_adapter_uses_erp_agent_supplier_ranking_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
+        erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,
+        credential_encryption_key='unused',
+    ))
+
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith('/supplier-ranking'):
+            return httpx.Response(200, json={'code': 200, 'data': {'groupId': 7, 'snapshotHash': 'a' * 64}})
+        if request.url.path.endswith('/supplier-rank-adjustment/preview'):
+            return httpx.Response(200, json={'code': 200, 'data': {'sourceSnapshotHash': 'a' * 64}})
+        if request.url.path.endswith('/supplier-rank-adjustment/proposals'):
+            return httpx.Response(200, json={'code': 200, 'data': {'proposalId': 12}})
+        return httpx.Response(404, json={'code': 404})
+
+    client = erp_adapter.ERPClient(token='erp-token', transport=httpx.MockTransport(handler))
+    try:
+        assert client.purchase_supplier_ranking(7)['snapshotHash'] == 'a' * 64
+        assert client.preview_supplier_rank_adjustment({'splitGroupId': 7})['sourceSnapshotHash'] == 'a' * 64
+        assert client.create_supplier_rank_adjustment_proposal({'splitGroupId': 7})['proposalId'] == 12
+    finally:
+        client.close()
+    assert calls == [
+        ('GET', '/api/agent/procurement/split-groups/7/supplier-ranking'),
+        ('POST', '/api/agent/procurement/actions/supplier-rank-adjustment/preview'),
+        ('POST', '/api/agent/procurement/actions/supplier-rank-adjustment/proposals'),
+    ]
+
+
 def test_plan_progress_rejects_success_payload_without_data_instead_of_raising_keyerror(monkeypatch):
     monkeypatch.setattr(erp_adapter, 'settings', lambda: SimpleNamespace(
         erp_base_url='https://erp.example.test', erp_allow_insecure_local=False,

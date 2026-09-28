@@ -240,6 +240,96 @@ class PurchaseSplitAdjustmentSubmitProposalInput(StrictModel):
     reason: str = Field(default="", max_length=500)
 
 
+class PurchaseTemporaryGroupSaveProposalInput(StrictModel):
+    request_id: int = Field(ge=1)
+    client_group_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    display_name: str = Field(min_length=1, max_length=100)
+    biz_type: str = Field(min_length=1, max_length=50)
+    category_id: int | None = Field(default=None, ge=1)
+    category_name: str | None = Field(default=None, max_length=200)
+    applicable_detail_ids: list[int] = Field(min_length=1, max_length=500)
+    supplier_ids: list[int] = Field(min_length=1, max_length=100)
+    receive_site_id: int = Field(ge=1)
+    remark: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_group(self):
+        self.display_name = self.display_name.strip()
+        self.category_name = self.category_name.strip() if self.category_name else None
+        self.biz_type = self.biz_type.strip()
+        if not self.display_name or not self.biz_type:
+            raise ValueError("临时分组名称和业务类型不能为空")
+        if self.category_id is None and not self.category_name:
+            raise ValueError("临时分组必须提供 category_id 或 category_name")
+        if len(set(self.applicable_detail_ids)) != len(self.applicable_detail_ids):
+            raise ValueError("临时分组明细不能重复")
+        if len(set(self.supplier_ids)) != len(self.supplier_ids):
+            raise ValueError("临时分组候选供应商不能重复")
+        return self
+
+
+class PurchaseTemporaryGroupDeleteProposalInput(StrictModel):
+    request_id: int = Field(ge=1)
+    client_group_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+class PurchaseRepurchaseContextInput(StrictModel):
+    order_id: int | None = Field(default=None, ge=1)
+    batch_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_locator(self):
+        if bool(self.order_id) == bool(self.batch_id):
+            raise ValueError("order_id 和 batch_id 须且只能填写一项")
+        return self
+
+
+class PurchaseRepurchaseLineInput(StrictModel):
+    line_id: int = Field(ge=1)
+    supplier_id: int = Field(ge=1)
+    unit_price: str = Field(min_length=1, max_length=40)
+
+
+class PurchaseApproverOverrideInput(StrictModel):
+    node_code: str = Field(min_length=1, max_length=100)
+    role_ids: list[int] = Field(default_factory=list, max_length=20)
+    user_ids: list[int] = Field(default_factory=list, max_length=20)
+
+
+class PurchaseRepurchaseSubmitProposalInput(StrictModel):
+    batch_id: int = Field(ge=1)
+    expected_version: int = Field(ge=0)
+    lines: list[PurchaseRepurchaseLineInput] = Field(min_length=1, max_length=500)
+    approver_overrides: list[PurchaseApproverOverrideInput] = Field(default_factory=list, max_length=20)
+    comment: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def unique_repurchase_lines(self):
+        line_ids = [item.line_id for item in self.lines]
+        if len(set(line_ids)) != len(line_ids):
+            raise ValueError("重采单不能重复指定同一批次行")
+        return self
+
+
+class PurchaseSupplierRankingContextInput(StrictModel):
+    group_id: int = Field(ge=1)
+
+
+class PurchaseSupplierRankAdjustmentProposalInput(StrictModel):
+    split_group_id: int = Field(ge=1)
+    target_candidate_id: int = Field(ge=1)
+    expected_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    to_rank: int = Field(ge=1, le=10000)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_reason(self):
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("供应商顺位调整原因不能为空")
+        return self
+
+
 INPUTS = {
     "prepare_raw_material_split": RawMaterialSplitProposalInput,
     "prepare_purchase_decision": PurchaseDecisionProposalInput,
@@ -255,6 +345,10 @@ INPUTS = {
     "prepare_supplier_exception": SupplierExceptionProposalInput,
     "prepare_purchase_split_adjustment": PurchaseSplitAdjustmentPreviewProposalInput,
     "prepare_purchase_split_adjustment_submit": PurchaseSplitAdjustmentSubmitProposalInput,
+    "prepare_purchase_temporary_group_save": PurchaseTemporaryGroupSaveProposalInput,
+    "prepare_purchase_temporary_group_delete": PurchaseTemporaryGroupDeleteProposalInput,
+    "prepare_purchase_repurchase_submit": PurchaseRepurchaseSubmitProposalInput,
+    "prepare_purchase_supplier_rank_adjustment": PurchaseSupplierRankAdjustmentProposalInput,
 }
 
 PROPOSAL_TOOLS = frozenset(INPUTS)
@@ -642,6 +736,77 @@ def query_purchase_adjustment_context(db, user, data, allowed_tools=None):
     }
 
 
+def _purchase_repurchase_context(db, user, data):
+    result = {
+        "status": "NOT_CONFIGURED",
+        "batch": None,
+        "suppliers": [],
+        "source_system": "ERP",
+        "as_of": now().isoformat(),
+        "limitations": [],
+    }
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+        return result
+    try:
+        result["batch"] = (
+            client.manual_dispatch_detail(data.batch_id)
+            if data.batch_id else client.manual_dispatch_by_order(data.order_id)
+        )
+        result["suppliers"] = client.manual_dispatch_suppliers()
+        result["status"] = "RESOLVED"
+        result["as_of"] = now().isoformat()
+        result["limitations"].append(
+            "无人接单重采批次、逐零件价格和供应商候选来自 ERP；MoldPilot 不本地计算正式金额或审批结果。"
+        )
+    except DomainError as error:
+        result["status"] = error.code
+        result["limitations"].append(error.message)
+    finally:
+        client.close()
+    return normalized(result)
+
+
+def query_purchase_repurchase_context(db, user, data, allowed_tools=None):
+    context = _purchase_repurchase_context(db, user, data)
+    return {
+        "resolution": "RESOLVED" if context.get("status") == "RESOLVED" else context.get("status"),
+        "data": [context],
+        "source": "erp",
+        "as_of": context.get("as_of", now().isoformat()),
+        "limitations": [
+            "本工具只读；逐零件重采提交必须以 ERP 当前批次、快照和两级审批人信息生成确认提案。",
+        ] + context.get("limitations", []),
+    }
+
+
+def query_purchase_supplier_ranking_context(db, user, data, allowed_tools=None):
+    try:
+        client, _identity = _client_for_user(db, user)
+    except DomainError as error:
+        return {
+            "resolution": error.code, "data": [], "source": "erp",
+            "as_of": now().isoformat(), "limitations": [error.message],
+        }
+    try:
+        ranking = client.purchase_supplier_ranking(data.group_id)
+        return {
+            "resolution": "RESOLVED", "data": [ranking], "source": "erp",
+            "as_of": now().isoformat(),
+            "limitations": ["候选顺位和快照来自 ERP；本工具只读，调整必须另行确认。"],
+        }
+    except DomainError as error:
+        return {
+            "resolution": error.code, "data": [], "source": "erp",
+            "as_of": now().isoformat(), "limitations": [error.message],
+        }
+    finally:
+        client.close()
+
+
 def _group_snapshot(db, user, group_id):
     client, _identity = _client_for_user(db, user)
     try:
@@ -667,6 +832,10 @@ def _proposal_display(key, data, snapshot):
         "prepare_supplier_exception": "提交供应商交付异常",
         "prepare_purchase_split_adjustment": "预览采购拆组调整",
         "prepare_purchase_split_adjustment_submit": "提交采购拆组调整",
+        "prepare_purchase_temporary_group_save": "保存采购临时分组",
+        "prepare_purchase_temporary_group_delete": "删除采购临时分组",
+        "prepare_purchase_repurchase_submit": "提交无人接单重采审批",
+        "prepare_purchase_supplier_rank_adjustment": "调整采购供应商候选顺位",
     }
     return {
         "操作": names[key],
@@ -696,6 +865,18 @@ def execute_tool(db, user, key, arguments, run=None):
         except ValidationError as error:
             raise DomainError("INVALID_TOOL_INPUT", "采购调整查询参数无效：" + error.errors()[0]["msg"]) from None
         return query_purchase_adjustment_context(db, user, data)
+    if key == "query_purchase_repurchase_context":
+        try:
+            data = PurchaseRepurchaseContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "重采查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_repurchase_context(db, user, data)
+    if key == "query_purchase_supplier_ranking_context":
+        try:
+            data = PurchaseSupplierRankingContextInput.model_validate(arguments or {})
+        except ValidationError as error:
+            raise DomainError("INVALID_TOOL_INPUT", "供应商候选顺位查询参数无效：" + error.errors()[0]["msg"]) from None
+        return query_purchase_supplier_ranking_context(db, user, data)
     if key.startswith("query_"):
         try:
             data = ProcurementContextInput.model_validate(arguments or {})
@@ -733,6 +914,12 @@ def execute_tool(db, user, key, arguments, run=None):
     elif key == "prepare_purchase_split_adjustment_submit":
         snapshot = {"native_id": data.adjustment_id, "tool": key}
     elif key == "prepare_purchase_split_adjustment":
+        snapshot = {"native_id": data.split_group_id, "tool": key}
+    elif key in {"prepare_purchase_temporary_group_save", "prepare_purchase_temporary_group_delete"}:
+        snapshot = {"request_id": data.request_id, "tool": key}
+    elif key == "prepare_purchase_repurchase_submit":
+        snapshot = {"native_id": data.batch_id, "tool": key}
+    elif key == "prepare_purchase_supplier_rank_adjustment":
         snapshot = {"native_id": data.split_group_id, "tool": key}
     else:
         snapshot = _group_snapshot(db, user, getattr(data, "group_id", 0))
@@ -792,6 +979,12 @@ def _fresh_group_check(db, user, proposal):
                 current = client.supplier_purchase_order_detail(int(data["order_id"]))
             elif tool == "prepare_purchase_split_adjustment_submit" and data.get("adjustment_id"):
                 current = client.purchase_split_adjustment_detail(int(data["adjustment_id"]))
+            elif tool in {"prepare_purchase_temporary_group_save", "prepare_purchase_temporary_group_delete"} and data.get("request_id"):
+                current = client.purchase_split_adjustment_context(int(data["request_id"]))
+            elif tool == "prepare_purchase_repurchase_submit" and data.get("batch_id"):
+                current = client.manual_dispatch_detail(int(data["batch_id"]))
+            elif tool == "prepare_purchase_supplier_rank_adjustment" and data.get("split_group_id"):
+                current = client.purchase_supplier_ranking(int(data["split_group_id"]))
             else:
                 return None
         finally:
@@ -804,6 +997,11 @@ def _fresh_group_check(db, user, proposal):
         actual = current.get("version") or current.get("versionNo") or current.get("rowVersion") or current.get("claim_version")
         if actual is not None and int(actual) != int(expected_version):
             raise DomainError("VERSION_CONFLICT", "ERP 采购分组版本已变化，请重新查询并准备操作", 409)
+    expected_snapshot_hash = data.get("expected_snapshot_hash")
+    if expected_snapshot_hash:
+        actual_hash = current.get("snapshotHash") or current.get("snapshot_hash") or current.get("sourceSnapshotHash")
+        if actual_hash and str(actual_hash) != str(expected_snapshot_hash):
+            raise DomainError("VERSION_CONFLICT", "ERP 采购候选快照已变化，请重新查询并准备操作", 409)
     return current
 
 
@@ -845,6 +1043,7 @@ def _operation_record(db, user, payload, proposal, identity):
             or (proposal.get("input") or {}).get("order_id")
             or (proposal.get("input") or {}).get("split_group_id")
             or (proposal.get("input") or {}).get("adjustment_id")
+            or (proposal.get("input") or {}).get("batch_id")
             or "-"
         ),
         state="DISPATCHING",
@@ -1021,6 +1220,64 @@ def confirm(db, user, payload):
                     }.items() if value not in (None, "")
                 },
             )
+        elif tool == "prepare_purchase_temporary_group_save":
+            result = client.save_purchase_temporary_group(
+                int(data["request_id"]),
+                {
+                    "clientGroupKey": data["client_group_key"],
+                    "displayName": data["display_name"],
+                    "bizType": data["biz_type"],
+                    "categoryId": data.get("category_id"),
+                    "categoryName": data["category_name"],
+                    "applicableDetailIds": data["applicable_detail_ids"],
+                    "supplierIds": data["supplier_ids"],
+                    "receiveMode": "company_warehouse",
+                    "receiveSiteId": data["receive_site_id"],
+                    "remark": data.get("remark", ""),
+                },
+            )
+        elif tool == "prepare_purchase_temporary_group_delete":
+            result = client.delete_purchase_temporary_group(
+                int(data["request_id"]), data["client_group_key"]
+            )
+        elif tool == "prepare_purchase_repurchase_submit":
+            result = client.save_manual_dispatch_draft(
+                int(data["batch_id"]),
+                {
+                    "expectedVersion": data["expected_version"],
+                    "lines": [
+                        {
+                            "lineId": line["line_id"],
+                            "supplierId": line["supplier_id"],
+                            "unitPrice": line["unit_price"],
+                        }
+                        for line in data["lines"]
+                    ],
+                },
+            )
+            submit_payload = {
+                "expectedVersion": result.get("statusVersion", data["expected_version"]),
+                "approverOverrides": data.get("approver_overrides") or [],
+            }
+            result = client.submit_manual_dispatch(int(data["batch_id"]), submit_payload)
+        elif tool == "prepare_purchase_supplier_rank_adjustment":
+            request_payload = {
+                "splitGroupId": data["split_group_id"],
+                "targetCandidateId": data["target_candidate_id"],
+                "expectedSnapshotHash": data["expected_snapshot_hash"],
+                "toRank": data["to_rank"],
+                "reason": data["reason"],
+            }
+            client.preview_supplier_rank_adjustment(request_payload)
+            operation_key = str(operation.id)
+            result = client.create_supplier_rank_adjustment_proposal({
+                **request_payload,
+                "sourceSessionId": f"moldpilot:{operation_key}",
+                "targetSessionId": f"moldpilot:{operation_key}",
+                "sourceMessageId": operation_key,
+                "traceId": operation_key,
+                "idempotencyKey": operation_key,
+            })
         else:
             raise DomainError("TOOL_UNKNOWN", "采购正式动作未实现", 403)
         receipt = {

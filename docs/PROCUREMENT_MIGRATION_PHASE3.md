@@ -11,8 +11,11 @@
 | 拆组调整查询 | `query_purchase_adjustment_context` | `GET /purchase/workbench/split-adjustments/context/{request_id}`、`GET /purchase/workbench/split-adjustments`、`GET /purchase/workbench/split-adjustments/{adjustment_id}` | 查询原组上下文、版本、快照和历史 |
 | 拆组调整预览 | `prepare_purchase_split_adjustment` | `POST /purchase/workbench/split-adjustments/preview` | 按原组版本、快照和完整数量分配生成确认提案；预览不等于正式提交 |
 | 拆组调整提交 | `prepare_purchase_split_adjustment_submit` | `POST /purchase/workbench/split-adjustments/{adjustment_id}/submit` | 对 ERP 已生成的调整提案重新校验版本后提交 |
+| 临时分组维护 | `prepare_purchase_temporary_group_save`、`prepare_purchase_temporary_group_delete` | `PUT/DELETE /purchase/workbench/split-adjustments/context/{request_id}/temporary-groups...` | 保存或删除未转正式调整的 ERP 草稿 |
+| 无人接单重采 | `query_purchase_repurchase_context`、`prepare_purchase_repurchase_submit` | `GET /purchase/manual-dispatch/by-order/{order_id}`、`GET /purchase/manual-dispatch/{batch_id}`、`PUT .../draft`、`POST .../submit` | 读取重采批次、逐件指定供应商和价格，提交两级审批 |
+| 候选顺位调整 | `query_purchase_supplier_ranking_context`、`prepare_purchase_supplier_rank_adjustment` | `GET /api/agent/procurement/split-groups/{group_id}/supplier-ranking`、`POST /api/agent/procurement/actions/supplier-rank-adjustment/{preview,proposals}` | 用 ERP 快照生成候选顺位提案，不直接写候选表 |
 
-新增 Skill：`purchase_adjustment`。数量分配、目标组标识和原因使用严格结构化输入；原采购组不会被本地改写。版本冲突、权限不足或 ERP 结果不明时停止本轮操作。
+新增 Skill：`purchase_adjustment`。数量分配、目标组标识、重采明细和原因使用严格结构化输入；原采购组不会被本地改写。版本冲突、权限不足或 ERP 结果不明时停止本轮操作。
 
 ## 边界
 
