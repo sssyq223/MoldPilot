@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import timedelta
 
 from sqlalchemy import select
 
@@ -31,6 +31,27 @@ class SqlAlchemyMailLedger:
             row.last_uid = cursor.last_uid
             row.last_polled_at = now()
         self.db.flush()
+
+    def try_acquire_lease(self, account_id: str, owner: str, ttl_seconds: int = 90) -> bool:
+        row = self.db.scalar(select(m.MailMonitorCursor).where(m.MailMonitorCursor.account_id == account_id).with_for_update())
+        if row is None:
+            row = m.MailMonitorCursor(account_id=account_id, lease_owner=owner, leased_until=now() + timedelta(seconds=ttl_seconds))
+            self.db.add(row)
+            self.db.flush()
+            return True
+        if row.leased_until and row.leased_until > now() and row.lease_owner != owner:
+            return False
+        row.lease_owner = owner
+        row.leased_until = now() + timedelta(seconds=ttl_seconds)
+        self.db.flush()
+        return True
+
+    def release_lease(self, account_id: str, owner: str) -> None:
+        row = self.db.scalar(select(m.MailMonitorCursor).where(m.MailMonitorCursor.account_id == account_id).with_for_update())
+        if row and row.lease_owner == owner:
+            row.lease_owner = ""
+            row.leased_until = None
+            self.db.flush()
 
     def record_message(self, account: MailMonitorConfig, uid: int, uid_validity: str, raw: bytes, parsed: ParsedMail, raw_sha256: str, archive_path: str) -> None:
         existing = self.db.scalar(select(m.MailMessage).where(

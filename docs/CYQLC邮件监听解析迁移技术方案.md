@@ -2,7 +2,7 @@
 
 版本：0.1  
 日期：2026-09-28  
-状态：迁移设计稿  
+状态：设计稿与首批实现已落地（未配置真实邮箱）
 源项目：D:\mold-agent\cyqlc  
 目标项目：D:\mold-agent\MoldPilot
 
@@ -75,18 +75,19 @@ MoldPilot 已具备目标所需的封装机制：
 MoldPilot/backend/domain_packs/mold/
 ├─ mail/
 │  ├─ parser.py                 # MIME、附件、正文表格和分类
-│  ├─ imap_client.py             # SSL/STARTTLS、SEARCH、FETCH、大小限制
-│  ├─ monitor_service.py         # 游标、UIDVALIDITY、重试、隔离、状态
-│  ├─ repository.py              # SQLAlchemy 查询和幂等写入
-│  └─ schemas.py                 # Pydantic 输入输出
+│  ├─ monitor.py                 # SSL/STARTTLS、SEARCH、FETCH、游标与大小限制
+│  ├─ ledger.py                  # SQLAlchemy 台账、幂等写入与租约
+│  └─ parser.py                  # MIME、附件、正文表格和分类
 ├─ tools/local/
-│  └─ mail_intake_tools.py       # query_* 与 prepare_* Tool
+│  └─ mail_tools.py              # query_* 与 prepare_* Tool
 ├─ skills/local/mail/
 │  └─ mail_monitoring/
 │     └─ SKILL.md
 └─ alembic_domain/versions/
-   └─ mb0d0e0000xx_mail_monitoring.py
+   └─ na0d0e000037_mail_monitoring.py
 ~~~
+
+应用层独立入口为 `backend/app/mail_worker.py`。它从 `secret_ref` 解析受控密码，缺少密码时只记录 `CONFIG_ERROR`，不会尝试连接邮箱。
 
 需要在 tool_gateway.py 的 skill_paths() 路由表增加：
 
@@ -145,7 +146,7 @@ imap_client.py 只负责字节流和 IMAP 协议，不理解业务类型；parse
 
 ## 6. Tool 设计
 
-工具分为只读查询、管理员配置和资料复核三组。工具注册在 backend/domain_packs/mold/tool_gateway.py，Schema 使用 Pydantic model_json_schema()，执行函数在 mail_intake_tools.py 中调用 monitor_service。
+工具分为只读查询、管理员配置和资料复核三组。工具注册在 backend/domain_packs/mold/tool_gateway.py，Schema 使用 Pydantic model_json_schema()，执行函数在 mail_tools.py 中查询台账或生成 Proposal。
 
 | Tool | 类型 | 权限 | 作用 | 是否直接写业务事实 |
 |---|---|---|---|---|
@@ -156,7 +157,7 @@ imap_client.py 只负责字节流和 IMAP 协议，不理解业务类型；parse
 | prepare_mail_monitor_config | 准备 | mail.manage | 校验并生成邮箱配置 Proposal；密码只接收 secret reference | 否，需确认 |
 | prepare_mail_monitor_rescan | 准备 | mail.manage | 清除指定账号游标并生成重新回溯 Proposal | 否，需确认 |
 | prepare_mail_review | 准备 | mail.review | 将指定邮件/文档绑定到当前 Run，形成分类复核和后续处理建议 | 否，需确认 |
-| prepare_mail_domain_handoff | 准备 | 目标领域权限 | 将已人工确认的邮件资料交给具体 MoldPilot 领域 Skill/BPM | 否，需确认 |
+| prepare_mail_domain_handoff | 规划保留 | 目标领域权限 | 后续按业务对象实现显式交接；当前版本不注册此工具 | 否，需确认 |
 
 不建议暴露模型直接调用 start_mail_monitor、stop_mail_monitor 或 poll_now。监听开关由管理员设置，采集由后台 worker 执行；Tool 只查询状态或准备变更建议。若产品确实要求聊天控制启停，应增加 prepare_mail_monitor_enable/disable，并走现有 Proposal/确认链。
 
@@ -191,7 +192,7 @@ SKILLS["mail_monitoring"] = {
     "optional_tools": [
         "query_mail_message_detail", "query_mail_document",
         "prepare_mail_monitor_config", "prepare_mail_monitor_rescan",
-        "prepare_mail_review", "prepare_mail_domain_handoff",
+        "prepare_mail_review",
     ],
     "activation_tools": ["query_mail_monitor_status", "query_mail_processing_history"],
     "activation_queries": ["邮件监听", "邮箱监听", "邮件解析", "邮件处理记录", "IMAP", "邮件附件"],
@@ -298,25 +299,25 @@ mail_document
 
 ## 11. 分阶段实施计划
 
-### 阶段 A：解析内核迁移
+### 阶段 A：解析内核迁移（已完成）
 
 - 从 cyqlc 拆出 parser.py，去除数据库、Principal、FastAPI 依赖。
 - 搬迁 EML/工作簿样例和分类/限额测试。
 - 验证四类业务分类、Markdown/HTML 表格、重复附件、超限和损坏输入。
 
-### 阶段 B：MoldPilot 归档与台账
+### 阶段 B：MoldPilot 归档与台账（已完成首批实现）
 
 - 增加 Alembic domain migration 和 SQLAlchemy 模型。
-- 接入 FileObject、私有对象存储和 file_policy。
-- 实现 monitor_service.py、租约、UID 游标、重试和隔离。
-- 新增独立 mail_worker.py，先手动启动，不默认打开真实邮箱。
+- 文件原件当前归档到受控 archive_root，并在 `mail_message.detail_json` 留存摘要路径；接入 FileObject/RunFile 是下一步生产化工作。
+- `monitor.py`、`ledger.py` 已实现租约、UID 游标、大小限制、哈希归档和失败记账。
+- 已新增独立 `mail_worker.py`，默认不打开真实邮箱。
 
-### 阶段 C：Tool/Skill 暴露
+### 阶段 C：Tool/Skill 暴露（已完成首批实现）
 
 - 在 tool_gateway.py 注册工具、权限、Schema 和执行分派。
 - 创建 skills/local/mail/mail_monitoring/SKILL.md。
 - 通过 run-bound MCP tools/list 和 tools/call 验证工具可见性、参数校验和权限过滤。
-- 先只开放查询和复核；配置、重扫、跨领域交接走 Proposal。
+- 已开放查询、配置、重扫和人工复核；配置与动作均走 Proposal，跨领域交接仍待领域适配器。
 
 ### 阶段 D：领域交接
 
