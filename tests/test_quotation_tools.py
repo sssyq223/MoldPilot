@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app import bpm, business, models as m
 from app.authorization import fingerprint
 from app.tool_gateway import execute, tool_schema
+from domain_packs.mold.tools.erp.commercial.quotation_tools import revise_quotation_form_proposal
 from pg_db import factory as pg_factory
 
 
@@ -153,6 +154,33 @@ def test_quotation_form_seed_is_registered_and_does_not_write_a_quote():
             }, run=run)
             assert evidence["proposal"]["display"]["form_status"] == "NEEDS_HUMAN_SELECTION"
             assert evidence["proposal"]["display"]["workflow_options"] == []
+            assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind == "quotation")) is None
+    finally:
+        engine.dispose()
+
+
+def test_quotation_form_revision_becomes_a_version_proposal_without_writing():
+    engine, Session = factory()
+    try:
+        with Session.begin() as db:
+            admin = user(db, "form-revision-admin")
+            project_row = project(db, "QUOTE-FORM-REVISION-001")
+            definition = workflow(db, admin, "quotation")
+            run, blob = run_with_file(db, admin, project_row.code, digest="b" * 64)
+            seed = execute(db, admin, "prepare_quotation_form", {
+                "project_id": project_row.id,
+                "project_version": project_row.row_version,
+                "file_ids": [blob.id],
+            }, run=run)
+            step = m.Step(run_id=run.id, sequence=0, tool="prepare_quotation_form",
+                          request_hash="form-revision", result=seed)
+            db.add(step); db.flush()
+            values = quotation_args(project_row, definition, blob.id)
+            values["owner_user_id"] = admin.id
+            revised = revise_quotation_form_proposal(db, admin, step.id, values)
+            assert revised["kind"] == "quotation"
+            assert revised["action"] == "quotation_version"
+            assert revised["input"]["workflow_definition_id"] == definition.id
             assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind == "quotation")) is None
     finally:
         engine.dispose()

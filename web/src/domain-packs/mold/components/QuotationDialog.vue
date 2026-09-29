@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { X } from 'lucide-vue-next'
-import { api, post } from '../../../api'
+import { post } from '../../../api'
 import { quotationFormMissingFields } from '../quotationForm'
 
 type Props = { stepId: string; proposal: any; archived?: boolean }
@@ -85,7 +85,7 @@ function payload() {
 async function prepare() {
   if (!validate() || busy.value) return
   busy.value = true; error.value = ''
-  try { intent.value = await post(`/proposals/${encodeURIComponent(props.stepId)}/intent`, { input: payload() }) }
+  try { intent.value = await post(`/quotation-proposals/${encodeURIComponent(props.stepId)}/form-intent`, { input: payload() }) }
   catch (e: any) { error.value = e.message || '报价 Proposal 准备失败'; emit('error', error.value) }
   finally { busy.value = false }
 }
