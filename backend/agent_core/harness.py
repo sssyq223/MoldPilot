@@ -971,18 +971,6 @@ def _trusted_attachment_skill_groups(context, groups):
     return result
 
 
-def _full_skill_prompt(groups, activated_keys):
-    selected = []
-    activated = set(activated_keys or ())
-    for group in groups:
-        instructions = str(group.get("instructions") or "").strip()
-        if group["key"] in activated and instructions:
-            selected.append(f"# 已激活技能：{group['key']}\n{instructions}")
-    if not selected:
-        return ""
-    return "以下完整技能说明由本机业务包提供，必须按其边界与步骤执行：\n\n" + "\n\n".join(selected)
-
-
 def _route_skill_groups(text, groups):
     """Narrow retrieval to pack-provided layer/domain folders when possible."""
     normalized = (text or "").lower()
@@ -1220,7 +1208,13 @@ def _compact_skills(skills, active_keys=None):
     result = []
     for skill in skills:
         key = skill.get("key")
-        if selected_keys and key not in selected_keys:
+        # Skill summaries are only useful after the Harness has selected a
+        # capability.  Sending the entire authorized catalog on the first
+        # turn makes a narrow query pay for every domain's metadata before
+        # ToolSearch has activated anything.  The on-demand tool catalogue is
+        # already present for discovery; full instructions are added only for
+        # selected skills below.
+        if key not in selected_keys:
             continue
         item = {"name": (registered.get(key, {}) or {}).get("name") or skill.get("name"),
                 "version": skill.get("version")}
@@ -2109,16 +2103,17 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         tool_annotations=tool_annotations)
                     activated = [match for match in candidates if match not in active_tool_names]
                     active_tool_names.update(activated)
-                    newly_activated_skills = [key for key in matched_groups if key not in activated_skill_keys]
                     activated_skill_keys.update(matched_groups)
                     active_skill_keys.update(matched_groups)
                     load_selected_skills(candidates, matched_groups)
                     for group in tool_groups:
                         if group.get("key") in matched_groups and group.get("requires_tool_evidence"):
                             required_evidence_tools.update(group.get("required") or group.get("tools") or [])
-                    instructions = _full_skill_prompt(tool_groups, newly_activated_skills)
-                    if instructions:
-                        messages.append({"role": "system", "content": instructions})
+                    # Persist only the selected skill keys. ``model_messages``
+                    # rebuilds their compact, authorized instructions on every
+                    # provider call. Persisting the full bodies here duplicated
+                    # those same instructions on the next turn and could make
+                    # a narrow ToolSearch result exceed the context window.
                     if activated:
                         # ToolSearch promises that newly activated tools are
                         # available on the next model turn. Context-pressure

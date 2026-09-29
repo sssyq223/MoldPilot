@@ -28,6 +28,38 @@ FORM_CATEGORY_NAMES={
 }
 
 
+def _contact_detail_model_context(details):
+    """Project contact detail to facts needed for the next model turn."""
+    if not isinstance(details, dict):
+        return {'case': None}
+    progress = details.get('progress_summary') if isinstance(details.get('progress_summary'), dict) else {}
+    tasks = []
+    for task in details.get('tasks') or []:
+        if not isinstance(task, dict):
+            continue
+        tasks.append({key: task.get(key) for key in (
+            'id', 'title', 'department_name', 'assignee_name', 'status',
+            'affected_type', 'affected_ref', 'planned_action',
+            'delivery_impact_days', 'verified_plan_id',
+        ) if task.get(key) is not None})
+    return {
+        'case': {key: details.get(key) for key in (
+            'id', 'project_id', 'title', 'mode', 'revision', 'collaboration_status',
+            'problem_source', 'current_stage', 'change_type', 'urgency',
+            'customer_name', 'customer_ref', 'mold_number', 'product_ref',
+            'closed_at', 'reviewer_name',
+        ) if details.get(key) is not None},
+        'progress': {key: progress.get(key) for key in (
+            'state', 'active_task_count', 'latest_resolution', 'blockers', 'next_actions',
+        ) if progress.get(key) is not None},
+        'tasks': tasks,
+        'task_count': len(tasks),
+        'record_count': len(details.get('records') or []),
+        'attachment_count': len(details.get('attachments') or []),
+        'resolution_count': len(details.get('resolutions') or []),
+    }
+
+
 class ContextInput(StrictModel):
     case_id:str=Field(min_length=1,max_length=36)
     task_id:str|None=Field(default=None,max_length=36)
@@ -205,7 +237,9 @@ def execute_tool(db,user,key,arguments,run=None):
         details=c.serialize(db,case,True,user)
         if details['can_coordinate']:details['departments']=c.departments(case.id,user,db)
         if data.task_id:details['candidates']=c.candidates(case.id,data.task_id,user,db)
-        return jsonable_encoder({'data':[details],'source':'agent_db','as_of':now(),
+        return jsonable_encoder({'data':[details],
+            'model_context':_contact_detail_model_context(details),
+            'source':'agent_db','as_of':now(),
             'limitations':['只有当前有权查询的资料；讨论、反馈和历史补录不是正式审批']})
     action=key.removeprefix('prepare_contact_')
     allowed=set(schema(action)['properties'])

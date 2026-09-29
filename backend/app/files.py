@@ -299,16 +299,22 @@ def content(fid:str,preview:bool=False,render:str|None=Query(default=None),user=
         render='table'
     data=object_storage.read(blob);media_type=blob.media_type;filename=blob.filename
     if render:
-        if not preview or render!='pdf' or blob.media_type!='application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-            if not preview or render!='table' or not is_spreadsheet:
-                raise DomainError('PREVIEW_RENDER_UNSUPPORTED','当前文件不支持此在线预览格式')
+        if not preview:
+            raise DomainError('PREVIEW_RENDER_UNSUPPORTED','当前文件不支持此在线预览格式')
+        if render=='table' and is_spreadsheet:
             table=document_preview.spreadsheet_to_preview(data,blob.media_type,blob.filename)
             record(db,user,'file.previewed',blob.id);db.commit()
             return JSONResponse(table,headers={
                 'Content-Disposition': 'inline; filename*=UTF-8\'\''+quote(PurePath(blob.filename).stem+'.json',safe=''),
                 'Content-Security-Policy':'sandbox; default-src \'none\'',
                 'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
-        data=document_preview.docx_to_pdf(data,blob.sha256);media_type='application/pdf';filename=PurePath(blob.filename).stem+'.pdf'
+        if render=='pdf' and is_spreadsheet and filename_suffix in {'.xlsx','.xls'}:
+            data=document_preview.spreadsheet_to_pdf(data,blob.filename,blob.sha256)
+        elif render=='pdf' and blob.media_type=='application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            data=document_preview.docx_to_pdf(data,blob.sha256)
+        else:
+            raise DomainError('PREVIEW_RENDER_UNSUPPORTED','当前文件不支持此在线预览格式')
+        media_type='application/pdf';filename=PurePath(blob.filename).stem+'.pdf'
     record(db,user,'file.previewed' if preview else 'file.downloaded',blob.id);db.commit()
     return Response(data,media_type=media_type,headers={
         'Content-Disposition':('inline' if preview else 'attachment')+"; filename*=UTF-8''"+quote(filename,safe=''),

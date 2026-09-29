@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 from datetime import timedelta, datetime
 from functools import lru_cache
 import json
+import logging
 import re
 import secrets
+from uuid import uuid4
 from fastapi import FastAPI, APIRouter, Depends, Request, Response, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -27,6 +29,7 @@ from domain_packs.mold import models as mold_models
 active_manifest = load_domain_manifest()
 app = FastAPI(title=active_manifest.APP_TITLE, version="0.1.0")
 domain_router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -279,6 +282,21 @@ async def domain_error(request, error):
 @app.exception_handler(IntegrityError)
 async def integrity_error(request, error):
     return JSONResponse({"error": {"code": "CONFLICT", "message": "记录重复或关联数据已变化"}}, status_code=409)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request, error):
+    """Keep unexpected API failures diagnosable without exposing internals."""
+    request_id = uuid4().hex[:16]
+    log.exception("Unhandled API exception request_id=%s method=%s path=%s",
+                  request_id, request.method, request.url.path)
+    return JSONResponse(
+        {"error": {"code": "INTERNAL_SERVER_ERROR",
+                    "message": "服务内部异常，请稍后重试",
+                    "request_id": request_id}},
+        status_code=500,
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.middleware("http")

@@ -19,6 +19,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 from .upload_projection import DEFAULT_UPLOAD_FIELDS, UploadField, project_upload_rows
 from uuid import UUID, uuid4
 
@@ -1018,11 +1019,46 @@ def tool_schema(key: str) -> dict:
 
 def _failure(message: str, status: int = 502):
     message = " ".join(str(message).split())[:1000]
-    if "fetch failed" in message.lower() or "econnrefused" in message.lower():
-        raise DomainError("ERP_DESIGN_MCP_UNAVAILABLE", "ERP 设计服务不可达，请确认 management-system ERP 后端已启动且 MCP 地址可访问", 503)
+    lower_message = message.lower()
+    if any(marker in lower_message for marker in (
+        "fetch failed", "econnrefused", "enotfound", "timed out", "timeout",
+        "连接被拒绝", "无法连接", "连接超时",
+    )):
+        raise DomainError(
+            "ERP_DESIGN_MCP_UNAVAILABLE",
+            "ERP 设计服务不可达或响应超时，请先启动 management-system ERP 后端，并确认 MCP 地址 "
+            f"{_erp_design_base_url()} 可访问",
+            503,
+        )
+    if any(marker in lower_message for marker in (
+        "not configured", "配置未", "base url is invalid", "token is not configured",
+        "access token is not configured", "未找到 node", "无法启动 erp 设计 mcp",
+    )):
+        raise DomainError("ERP_DESIGN_MCP_CONFIG_INVALID", "ERP 设计 MCP 配置无效，请检查 ERP 地址和访问令牌", 503)
     if "重复上传" in message:
         raise DomainError("ERP_DUPLICATE_CONFIRMATION_REQUIRED", message, 409)
     raise DomainError("ERP_DESIGN_MCP_FAILED", message or "ERP 设计 MCP 调用失败", status)
+
+
+def _erp_design_base_url() -> str:
+    """Return the configured ERP origin without exposing credentials."""
+    try:
+        for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ERP_DESIGN_UPLOAD_BASE_URL="):
+                value = line.split("=", 1)[1].strip().strip('"\'')
+                parsed = urlsplit(value)
+                if parsed.scheme and parsed.hostname:
+                    host = parsed.hostname
+                    if ":" in host and not host.startswith("["):
+                        host = f"[{host}]"
+                    netloc = host
+                    if parsed.port:
+                        netloc += f":{parsed.port}"
+                    return urlunsplit((parsed.scheme, netloc, "", "", "")).rstrip("/")
+                return "未配置"
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return "未配置"
 
 
 def _read_line(stream, output: Queue):
@@ -1036,7 +1072,11 @@ def _read_line(stream, output: Queue):
 def _call_server(server_file: Path, name: str, arguments: dict) -> dict | list:
     """Call exactly one code-registered MCP tool over stdio."""
     if not _ENV_FILE.is_file() or not server_file.is_file():
-        _failure("ERP 设计 MCP 尚未安装或本地配置不完整", 503)
+        raise DomainError(
+            "ERP_DESIGN_MCP_NOT_INSTALLED",
+            "ERP 设计 MCP 未安装或本地配置不完整，请检查业务包 MCP 运行时目录",
+            503,
+        )
     if not shutil.which("node"):
         _failure("未找到 Node.js，无法启动 ERP 设计 MCP", 503)
     try:

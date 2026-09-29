@@ -166,6 +166,50 @@ def test_docx_pdf_preview_reuses_digest_cache(tmp_path,monkeypatch):
     assert len(calls)==1
 
 
+def test_excel_pdf_preview_preserves_original_and_table_access(client,monkeypatch):
+    sign_in(client)
+    workbook=Workbook()
+    workbook.active.append(['零件号','数量'])
+    workbook.active.append(['P-001',4])
+    source=BytesIO();workbook.save(source)
+    original=source.getvalue()
+    blob=upload(client,original,'清单.xlsx').json()
+    calls=[]
+    def convert(data,filename,digest):
+        calls.append((data,filename,digest));return PDF
+    monkeypatch.setattr(document_preview,'spreadsheet_to_pdf',convert)
+    url='/api/files/'+blob['id']+'/content'
+    preview=client.get(url+'?preview=true&render=pdf')
+    assert preview.status_code==200 and preview.content==PDF
+    assert preview.headers['content-type'].startswith('application/pdf')
+    assert preview.headers['content-disposition'].startswith('inline;')
+    assert calls==[(original,'清单.xlsx',sha256(original).hexdigest())]
+    assert client.get(url).content==original
+    assert client.get(url+'?preview=true&render=table').json()['sheets'][0]['rows'][1]==['P-001',4]
+    assert client.get(url+'?render=pdf').status_code==400
+    sign_in(client,'test_buyer')
+    assert client.get(url+'?preview=true&render=pdf').status_code==404
+
+
+def test_excel_pdf_cache_and_failed_conversion(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings(),'file_local_root',str(tmp_path/'objects'))
+    calls=[]
+    def convert(source,target,work):
+        calls.append(source.suffix);target.write_bytes(PDF)
+    monkeypatch.setattr(document_preview,'_excel_to_pdf',convert)
+    monkeypatch.setattr(document_preview,'_libreoffice_to_pdf',convert)
+    assert document_preview.spreadsheet_to_pdf(b'workbook','清单.xlsx')==PDF
+    assert document_preview.spreadsheet_to_pdf(b'workbook','清单.xlsx')==PDF
+    assert calls==['.xlsx']
+    def invalid(source,target,work):
+        target.write_bytes(b'invalid')
+    monkeypatch.setattr(document_preview,'_excel_to_pdf',invalid)
+    monkeypatch.setattr(document_preview,'_libreoffice_to_pdf',invalid)
+    with pytest.raises(DomainError,match='Excel'):
+        document_preview.spreadsheet_to_pdf(b'broken','清单.xls')
+    assert not document_preview._cached_pdf('excel-v1-'+sha256(b'broken').hexdigest()).exists()
+
+
 def test_upload_accepts_legacy_xls_and_standard_hardware_sources(client):
     sign_in(client)
     legacy=b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'+b'\x00'*504

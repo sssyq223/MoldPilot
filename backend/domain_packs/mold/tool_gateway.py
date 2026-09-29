@@ -35,6 +35,39 @@ def local_change_schema_available(db):
         return False
 
 
+def _contact_cases_model_context(rows):
+    """Return the small semantic projection used in the model transcript.
+
+    The durable tool receipt keeps the complete case rows for the UI and
+    audit trail.  The model only needs identifiers, lifecycle state and the
+    current blockers/actions; sending every recent task field through every
+    turn needlessly consumes the provider window.
+    """
+    cases = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        progress = row.get('progress_summary') if isinstance(row.get('progress_summary'), dict) else {}
+        cases.append({
+            key: row.get(key)
+            for key in ('id', 'title', 'project_id', 'category', 'mode', 'revision',
+                        'collaboration_status', 'problem_source', 'current_stage',
+                        'change_type', 'urgency', 'customer_name', 'mold_number',
+                        'product_ref')
+            if row.get(key) is not None
+        } | {
+            'progress': {
+                key: progress.get(key)
+                for key in ('state', 'active_task_count', 'latest_resolution',
+                            'blockers', 'next_actions')
+                if progress.get(key) is not None
+            },
+            'recent_task_count': len(row.get('recent_tasks') or []),
+            'tasks_truncated': bool(row.get('tasks_truncated')),
+        })
+    return {'cases': cases, 'count': len(cases)}
+
+
 def skill_agent_description(content: str) -> str:
     lines = [line.strip() for line in content.splitlines()]
     useful = []
@@ -2170,7 +2203,8 @@ def execute(db, user, key, arguments, run=None):
                 'problem_source':c.problem_source,'current_stage':c.current_stage,'change_type':c.change_type,'urgency':c.urgency,
                 'revision':c.revision,'collaboration_status':'CLOSED' if c.closed_at else 'HISTORY_RECORD' if c.mode=='HISTORY' else 'OPEN',
                 'task_counts':counts,'progress_summary':progress_summary(db,c),'recent_tasks':tasks,'tasks_truncated':sum(counts.values())>20})
-        return {'data':data,'source':'agent_db','as_of':now().isoformat(),'limit':100,
+        return {'data':data,'model_context':_contact_cases_model_context(data),
+            'source':'agent_db','as_of':now().isoformat(),'limit':100,
             'limitations':['仅当前用户可见范围','最多最新100张联络单，每单最多展示最近20项协作事项，计数包含全部事项',
                 '反馈或历史补录不是正式审批，不据此认定整改验收或联络单关闭','本工具只查询，不分派、不审批、不执行业务动作']}
     elif key=='query_purchase_orders':

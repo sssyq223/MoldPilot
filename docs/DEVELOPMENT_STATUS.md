@@ -1,5 +1,12 @@
 # 开发覆盖情况
 
+## ERP 设计上传 MCP 可用性诊断（2026-09-28，代码验证状态）
+
+- 设计上传仍由 `management-system` ERP 的现有解析、图纸处理和请购接口负责，MoldPilot 不在 Agent 内复制 Excel 解析或 ERP 台账。截图中的 `ERP_DESIGN_MCP_UNAVAILABLE` 已确认是 ERP 后端未监听 MCP 配置的 `ERP_DESIGN_UPLOAD_BASE_URL`，不是 Harness 或模型输出问题。
+- ERP MCP 桥接现在区分服务不可达、MCP 配置无效、运行时未安装和一般 ERP 失败；服务不可达提示会显示脱敏后的 ERP origin，不回显访问令牌或 URL 凭据。工作台针对这些错误码给出启动 ERP、检查配置或检查 MCP 运行时的具体提示。
+- 已按现有 ERP 工程脚本启动本机 ERP 后端并只读验证 `http://127.0.0.1:9099/health` 返回 200；通过同一 MCP 桥接查询 `M250238-P4` 设计订单返回 7 条 ERP 原始记录。未执行设计清单上传、导入请购或审批写入。
+- 定向回归：MCP 错误分类与设计上传入口相关测试通过；Python 编译和差异检查通过。前端未运行构建或浏览器验收，完整设计上传闭环仍需用户在 ERP 服务保持运行时用真实附件确认。
+
 ## 交接基线与工作区治理（2026-09-27）
 - 启动编排已改为 `scripts/start_services.ps1` 直接启动隐藏、独立的 Python/Node 进程，避免可见 `cmd` 窗口的中文方框和父脚本退出时回收服务；API、Agent Worker、消息 Worker、Vite 已验证持续存活，日志写入 `.local/logs/*-detached-*.log`。未配置 `AGENT_OCR_SERVICE_TOKEN` 时文档 Worker 明确跳过。`一键启动.bat --check`、8001 健康检查、5173 页面和当前管理员浏览器中文 AX 文本均通过。
 - 当前只读黄金路径复测：`BROWSER-START-CONTRACT-001` 为“启动与基线阶段”，主线阻塞是 ERP 项目/模具人工映射，基线计划缺少设计、采购、加工、装配、试模、交付六类节点，销售合同保留为并行跟进；没有确认卡、审批或写入动作。

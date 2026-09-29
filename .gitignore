@@ -1,4 +1,6 @@
 .venv/
+.ocr-venv/
+.ocr310-venv/
 .worktrees/
 __pycache__/
 .pytest_cache/

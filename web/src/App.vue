@@ -191,6 +191,10 @@ const runErrorMessages:Record<string,string>={
  MODEL_CONNECT_TIMEOUT:'连接模型服务超时。',
  MODEL_READ_TIMEOUT:'等待模型回复超时。',
  MODEL_NETWORK_ERROR:'模型服务网络连接异常。',
+ ERP_DESIGN_MCP_UNAVAILABLE:'ERP 设计服务当前不可达或响应超时，请启动 management-system ERP 后端并确认 MCP 地址可访问后重试。',
+ ERP_DESIGN_MCP_CONFIG_INVALID:'ERP 设计 MCP 配置无效，请检查 ERP 地址和访问令牌。',
+ ERP_DESIGN_MCP_NOT_INSTALLED:'ERP 设计 MCP 运行时未安装或配置不完整，请检查 Mold 业务包的 MCP 目录。',
+ ERP_DESIGN_MCP_FAILED:'ERP 设计 MCP 返回了失败结果，请查看 ERP 服务日志和本轮工具回执。',
  CONTEXT_BUDGET_EXCEEDED:'上下文压缩后仍超过模型安全窗口。',
  BUDGET_EXCEEDED:'本轮执行已达到时间、回合或工具预算上限。',
 }

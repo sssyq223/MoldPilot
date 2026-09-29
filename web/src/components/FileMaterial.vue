@@ -11,8 +11,10 @@ const CSV='text/csv'
 const props=defineProps<{file:any,reusable?:boolean}>()
 const isDocx=computed(()=>props.file.media_type===DOCX||String(props.file.filename||'').toLowerCase().endsWith('.docx'))
 const isSpreadsheet=computed(()=>[XLSX,XLS,CSV].includes(props.file.media_type)||/\.(xlsx|xls|csv)$/i.test(String(props.file.filename||'')))
+const isExcel=computed(()=>/\.(xlsx|xls)$/i.test(String(props.file.filename||'')))
+const spreadsheetView=ref<'pages'|'table'>('pages')
 const emit=defineEmits<{error:[message:string],reuse:[file:any]}>()
-const busy=ref(false),previewOpen=ref(false),previewBusy=ref(false),previewError=ref('')
+const busy=ref(false),previewOpen=ref(false),previewBusy=ref(false),previewError=ref(''),previewNotice=ref('')
 const previewKind=ref<'docx'|'image'|'pdf'|'spreadsheet'|''>(''),previewUrl=ref('')
 type SpreadsheetCell={column:number;value:string|number|boolean|null;row_span?:number;column_span?:number;style?:{
  font?:{name?:string;size?:number;bold?:boolean;italic?:boolean;color?:string};fill?:string;
@@ -41,7 +43,7 @@ function releasePreviewUrl(){
 
 function closePreview(){
  previewOpen.value=false
- previewError.value=''
+ previewError.value='';previewNotice.value=''
  previewKind.value=''
  spreadsheetPreview.value=null;spreadsheetSheetIndex.value=0
  releasePreviewUrl()
@@ -160,10 +162,26 @@ async function downloadOriginal(){
  }catch(e:any){if(alive)emit('error',e.message)}finally{busy.value=false}
 }
 
-async function openPreview(){
- previewOpen.value=true;previewBusy.value=true;previewError.value='';previewKind.value='';releasePreviewUrl();await clearPdf()
+async function openPreview(view:'pages'|'table'='pages'){
+ spreadsheetView.value=view
+ previewOpen.value=true;previewBusy.value=true;previewError.value='';previewNotice.value='';previewKind.value='';releasePreviewUrl();await clearPdf()
  try{
-  if(isSpreadsheet.value){
+  if(isExcel.value&&view==='pages'){
+   try{
+    const data=await responseBlob(true,'pdf')
+    if(!alive)return
+    if(data.type!=='application/pdf')throw new Error('Excel 页面预览格式无效')
+    pdfZoom.value=100
+    await loadPdf(data)
+   }catch(pageError){
+    // Office automation is optional on the API host. Keep the attachment
+    // usable by switching to the safe cell preview when page export fails.
+    spreadsheetView.value='table'
+    const result=await responseJson('table') as SpreadsheetPreview
+    if(!result||result.kind!=='spreadsheet'||!Array.isArray(result.sheets))throw pageError
+    spreadsheetPreview.value=result;spreadsheetSheetIndex.value=0;previewKind.value='spreadsheet';previewNotice.value='原文件排版暂时不可用，已切换到工作表预览';resetSpreadsheetScroll()
+   }
+  }else if(isSpreadsheet.value){
    const result=await responseJson('table') as SpreadsheetPreview
    if(!result||result.kind!=='spreadsheet'||!Array.isArray(result.sheets))throw new Error('表格预览格式无效')
    spreadsheetPreview.value=result;spreadsheetSheetIndex.value=0;previewKind.value='spreadsheet';resetSpreadsheetScroll()
@@ -198,15 +216,17 @@ async function openPreview(){
 <article class="file-material">
  <div class="file-material-main">
   <div class="file-material-heading"><FileText :size="18"/><div><strong>{{file.title||file.filename}}</strong><small>{{file.title?file.filename+' · ':''}}{{Math.ceil(file.size/1024)}} KB<span v-if="file.version"> · 第 {{file.version}} 版 · {{file.is_current?'当前版本':'历史版本'}}</span></small></div></div>
-  <div class="file-material-actions"><button type="button" :disabled="busy" @click="openPreview"><Eye :size="14"/>在线预览</button><button v-if="reusable" type="button" :disabled="busy" @click="emit('reuse',file)"><Paperclip :size="14"/>引用到新消息</button></div>
+  <div class="file-material-actions"><button type="button" :disabled="busy" @click="openPreview()"><Eye :size="14"/>在线预览</button><button v-if="reusable" type="button" :disabled="busy" @click="emit('reuse',file)"><Paperclip :size="14"/>引用到新消息</button></div>
  </div>
  <Teleport to="body">
   <div v-if="previewOpen" class="approval-file-preview-shade" @click.self="closePreview">
    <section class="approval-file-preview-modal file-material-preview-modal" role="dialog" aria-modal="true" :aria-label="(file.title||file.filename)+'在线预览'">
     <header><div><small>附件在线预览</small><strong>{{file.title||file.filename}}</strong></div><div><button type="button" :disabled="busy" @click="downloadOriginal"><Download :size="14"/>下载原件</button><button type="button" class="icon-button" aria-label="关闭附件预览" @click="closePreview"><X :size="18"/></button></div></header>
+    <div v-if="isExcel" class="file-excel-views" role="group" aria-label="Excel 预览方式"><button type="button" :disabled="previewBusy" :aria-pressed="spreadsheetView==='pages'" @click="openPreview('pages')">原文件排版</button><button type="button" :disabled="previewBusy" :aria-pressed="spreadsheetView==='table'" @click="openPreview('table')">工作表</button><small>{{spreadsheetView==='pages'?'按文件打印设置显示页面':'查看单元格及切换工作表'}}</small></div>
     <div class="approval-file-preview-body file-material-preview-body" :class="{'is-spreadsheet-body':previewKind==='spreadsheet'}">
-     <div v-if="previewBusy" class="approval-file-preview-status"><span/>{{isDocx?'正在生成高保真预览…':'正在加载附件…'}}</div>
-     <div v-else-if="previewError" class="approval-file-preview-status is-error"><strong>暂时无法预览</strong><p>{{previewError}}</p><button type="button" @click="openPreview">重新加载</button></div>
+     <div v-if="previewNotice" class="file-preview-notice">{{previewNotice}}</div>
+     <div v-if="previewBusy" class="approval-file-preview-status"><span/>{{isDocx||(isExcel&&spreadsheetView==='pages')?'正在生成原文件排版预览…':'正在加载附件…'}}</div>
+     <div v-else-if="previewError" class="approval-file-preview-status is-error"><strong>暂时无法预览</strong><p>{{previewError}}</p><button type="button" @click="openPreview(spreadsheetView)">重新加载</button></div>
      <div v-else-if="previewKind==='pdf'&&pdfDocument" class="approval-pdf-viewer"><div class="approval-pdf-toolbar"><span>共 {{pdfPageCount}} 页<template v-if="pdfRenderedPages<pdfPageCount"> · 已加载 {{pdfRenderedPages}} 页</template></span><div><button type="button" aria-label="缩小 PDF" :disabled="pdfZoom<=70" @click="pdfZoom-=10"><Minus :size="14"/></button><button type="button" class="approval-pdf-zoom" title="恢复 100%" @click="pdfZoom=100">{{pdfZoom}}%</button><button type="button" aria-label="放大 PDF" :disabled="pdfZoom>=160" @click="pdfZoom+=10"><Plus :size="14"/></button></div></div><div ref="pdfHost" class="approval-pdf-pages"/></div>
      <img v-else-if="previewKind==='image'&&previewUrl" :src="previewUrl" :alt="file.filename"/>
      <div v-else-if="previewKind==='spreadsheet'&&activeSpreadsheetSheet" class="file-spreadsheet-preview">
@@ -228,6 +248,7 @@ async function openPreview(){
 </article>
 </template>
 <style scoped>
+.file-excel-views{display:flex;flex-shrink:0;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid var(--border)}.file-excel-views button{font-size:12px;padding:5px 10px}.file-excel-views button[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}.file-excel-views small{color:var(--muted);margin-left:auto}.file-preview-notice{flex:0 0 auto;padding:7px 20px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--border)}
 .file-material{border:1px solid var(--border);border-radius:7px;padding:10px 12px;margin:10px 0;min-width:0}.file-material-main{display:flex;align-items:center;justify-content:space-between;gap:16px;min-width:0}.file-material-heading{display:flex;flex:1;align-items:center;gap:10px;min-width:0}.file-material-heading>div{display:flex;flex:1;align-items:center;gap:8px;min-width:0;white-space:nowrap}.file-material-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.file-material-heading small{flex:0 0 auto;color:var(--muted);font-size:11px;white-space:nowrap}.file-material-actions{display:flex;flex:0 0 auto;gap:10px;justify-content:flex-end}.file-material-actions button{font-size:12px;padding:5px 10px}.approval-file-preview-modal.file-material-preview-modal{width:min(1240px,calc(100vw - 32px));height:min(92vh,940px)}.approval-file-preview-modal.file-material-preview-modal>header{flex-wrap:nowrap}.approval-file-preview-modal.file-material-preview-modal>header>div:first-child{display:flex;align-items:center;gap:10px;min-width:0;white-space:nowrap}.approval-file-preview-modal.file-material-preview-modal>header small{flex:0 0 auto;margin:0}.approval-file-preview-modal.file-material-preview-modal>header strong{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.approval-file-preview-body.file-material-preview-body{display:block;overflow:auto;padding:20px}.file-material-preview-body>img{display:block;margin:auto}.file-docx-preview{min-height:100%}.file-docx-preview:deep(.docx-wrapper){min-width:max-content;min-height:100%;padding:0;background:transparent}.file-docx-preview:deep(section.docx-page){margin:0 auto 20px;box-shadow:0 4px 22px #0003}
 .file-material-preview-body.is-spreadsheet-body{display:flex!important;flex:1 1 auto;flex-direction:column;align-items:stretch;justify-content:stretch;box-sizing:border-box;min-height:0;height:100%;padding:0!important;overflow:hidden!important}.file-spreadsheet-preview{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;height:auto;background:var(--surface)}.file-spreadsheet-summary{display:flex;flex:0 0 auto;align-items:center;gap:12px;min-height:30px;padding:0 10px;border-bottom:1px solid var(--border);font-size:11px}.file-spreadsheet-summary strong{font-size:12px}.file-spreadsheet-summary span{margin-left:auto;color:var(--muted);white-space:nowrap}.file-spreadsheet-scroll{flex:1 1 auto;width:100%;height:0;min-height:0;max-height:100%;overflow:scroll!important;scrollbar-gutter:stable;scrollbar-width:auto}.file-spreadsheet-scroll::-webkit-scrollbar{width:12px;height:12px}.file-spreadsheet-scroll::-webkit-scrollbar-track{background:color-mix(in srgb,var(--bg) 88%,var(--surface))}.file-spreadsheet-scroll::-webkit-scrollbar-thumb{border:3px solid transparent;border-radius:8px;background:color-mix(in srgb,var(--muted) 55%,transparent);background-clip:padding-box}.file-spreadsheet-grid{width:max-content;min-width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:11px}.file-spreadsheet-grid th,.file-spreadsheet-grid td{box-sizing:border-box;padding:2px 4px;border-right:1px solid color-mix(in srgb,var(--border) 78%,transparent);border-bottom:1px solid color-mix(in srgb,var(--border) 78%,transparent);text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:top}.file-spreadsheet-grid .file-spreadsheet-row-number{width:44px}.file-spreadsheet-grid thead th{position:sticky;top:0;height:24px;z-index:3;background:color-mix(in srgb,var(--bg) 86%,var(--surface));color:var(--muted);font-weight:600;text-align:center}.file-spreadsheet-grid tbody th{position:sticky;left:0;z-index:2;width:44px;background:color-mix(in srgb,var(--bg) 86%,var(--surface));color:var(--muted);font-weight:500;text-align:center}.file-spreadsheet-grid .file-spreadsheet-corner{left:0;z-index:4;width:44px}.file-spreadsheet-grid.is-rich td{overflow:hidden}.file-spreadsheet-tabs{display:flex;flex:0 0 auto;align-items:center;gap:3px;min-height:30px;padding:3px 8px 0;border-top:1px solid var(--border);overflow-x:auto}.file-spreadsheet-tabs button{height:26px;padding:0 12px;border:0;border-radius:6px 6px 0 0;background:transparent;color:var(--muted);font-size:10px;white-space:nowrap}.file-spreadsheet-tabs button.active{background:var(--surface);color:var(--accent);box-shadow:inset 0 2px var(--accent)}
 @media(max-width:520px){.file-material-main{align-items:center;flex-direction:row}.file-material-heading>div{gap:5px}.file-material-heading strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-material-actions{align-self:auto}.approval-file-preview-modal.file-material-preview-modal{width:100vw;height:100dvh}.approval-file-preview-modal.file-material-preview-modal>header>div:first-child small{display:none}.approval-file-preview-body.file-material-preview-body{padding:10px}}

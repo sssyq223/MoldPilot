@@ -29,6 +29,57 @@ SPREADSHEET_PREVIEW_MAX_CELL_LENGTH = 2000
 SPREADSHEET_PREVIEW_MAX_SHEETS = 20
 
 
+_EXCEL_EXPORT_SCRIPT = r"""
+param([string]$InputPath, [string]$OutputPath)
+$ErrorActionPreference = 'Stop'
+$excel = $null
+$books = $null
+$book = $null
+try {
+    $excel = New-Object -ComObject Excel.Application
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    $excel.EnableEvents = $false
+    $excel.AskToUpdateLinks = $false
+    $excel.AutomationSecurity = 3
+    $books = $excel.Workbooks
+    # UpdateLinks=0, ReadOnly=true. Use the workbook's existing print layout.
+    Start-Sleep -Milliseconds 500
+    for ($attempt = 0; $attempt -lt 8 -and $null -eq $book; $attempt++) {
+        try { $book = $books.Open($InputPath, 0, $true) }
+        catch {
+            if ($_.Exception.HResult -ne -2147418111 -or $attempt -eq 7) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    # The workbook is opened read-only and never saved. Avoid changing the
+    # global Excel calculation mode, which Office can reject while starting.
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        try { $book.ExportAsFixedFormat(0, $OutputPath); break }
+        catch {
+            if ($_.Exception.HResult -ne -2147418111 -or $attempt -eq 7) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+finally {
+    if ($null -ne $book) {
+        try { $book.Close($false) } catch { }
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($book) } catch { }
+    }
+    if ($null -ne $books) {
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($books) } catch { }
+    }
+    if ($null -ne $excel) {
+        try { $excel.Quit() } catch { }
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($excel) } catch { }
+    }
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+}
+"""
+
+
 _WORD_EXPORT_SCRIPT = r"""
 param([string]$InputPath, [string]$OutputPath)
 $ErrorActionPreference = 'Stop'
@@ -70,7 +121,7 @@ finally {
 
 def _run(command: list[str], timeout: int = 60) -> None:
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+    result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=timeout,
                             check=False, creationflags=flags)
     if result.returncode:
         detail = (result.stderr or result.stdout or "document converter failed").strip()
@@ -83,7 +134,17 @@ def _word_to_pdf(source: Path, target: Path, work: Path) -> None:
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     if not powershell:
         raise RuntimeError("Microsoft Word preview converter is unavailable")
-    _run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    _run([powershell, "-STA", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+          "-File", str(script), str(source), str(target)])
+
+
+def _excel_to_pdf(source: Path, target: Path, work: Path) -> None:
+    script = work / "export-excel-preview.ps1"
+    script.write_text(_EXCEL_EXPORT_SCRIPT, encoding="utf-8")
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        raise RuntimeError("Microsoft Excel preview converter is unavailable")
+    _run([powershell, "-STA", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
           "-File", str(script), str(source), str(target)])
 
 
@@ -134,6 +195,39 @@ def docx_to_pdf(data: bytes, digest: str | None = None) -> bytes:
                 return rendered
     except (OSError, subprocess.SubprocessError, RuntimeError):
         raise DomainError("PREVIEW_RENDER_FAILED", "Word 文档暂时无法高保真预览，请下载原件查看", 503)
+
+
+def spreadsheet_to_pdf(data: bytes, filename: str, digest: str | None = None) -> bytes:
+    """Render Excel print pages without saving changes to the source workbook."""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise DomainError("PREVIEW_RENDER_UNSUPPORTED", "当前文件不支持 Excel 页面预览", 415)
+    key = "excel-v1-" + (digest or sha256(data).hexdigest())
+    cache = _cached_pdf(key)
+    try:
+        with _lock_for(key):
+            if cache.exists():
+                rendered = cache.read_bytes()
+                if rendered.startswith(b"%PDF-"):
+                    return rendered
+            with TemporaryDirectory(prefix="moldpilot-excel-preview-") as directory:
+                work = Path(directory)
+                source, target = work / ("source" + suffix), work / "preview.pdf"
+                source.write_bytes(data)
+                if os.name == "nt":
+                    _excel_to_pdf(source, target, work)
+                else:
+                    _libreoffice_to_pdf(source, target, work)
+                rendered = target.read_bytes()
+                if not rendered.startswith(b"%PDF-"):
+                    raise RuntimeError("converter did not produce a valid PDF")
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache.with_suffix(f".{os.getpid()}.tmp")
+                temporary.write_bytes(rendered)
+                temporary.replace(cache)
+                return rendered
+    except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+        raise DomainError("PREVIEW_RENDER_FAILED", "Excel 页面预览生成失败，请检查服务器的 Excel 或 LibreOffice，或切换工作表查看", 503) from error
 
 
 def _preview_value(value: object) -> str | int | float | bool | None:

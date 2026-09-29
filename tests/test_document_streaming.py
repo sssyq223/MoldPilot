@@ -57,6 +57,7 @@ def test_document_classification_uses_deterministic_temperature():
     def handler(request):
         payload=json.loads(request.content)
         assert payload['temperature'] == 0
+        assert payload['response_format'] == {'type':'json_object'}
         return stream({'document_type':'OTHER','event_type':'UNKNOWN','confidence':0.9,
                        'evidence':[],'conflicts':[],'extracted':{},'bid_fields':[],
                        'classifier_version':'test','needs_human_confirmation':True})

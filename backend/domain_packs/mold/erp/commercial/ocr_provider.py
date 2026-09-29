@@ -206,8 +206,11 @@ class _DocumentAdapter(ModelAdapter):
             raise ValueError('Unsupported document reasoning effort')
         self.reasoning_effort = reasoning_effort
 
-    def _payload(self, messages, tools, stream=False):
-        payload = super()._payload(messages, tools, stream)
+    def _payload(self, messages, tools, stream=False, json_mode=True):
+        # ModelAdapter passes json_mode for both streamed and non-streamed
+        # requests. Keep the document adapter's deterministic overrides while
+        # preserving the shared harness JSON-mode contract.
+        payload = super()._payload(messages, tools, stream, json_mode=json_mode)
         # 文档字段抽取必须可复现；同一份文字层不能因采样导致字段时有时无。
         if self._token_parameter == 'max_tokens':
             payload['temperature'] = 0

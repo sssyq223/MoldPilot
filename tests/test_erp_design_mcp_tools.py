@@ -44,6 +44,27 @@ def test_erp_design_write_tools_require_host_confirmed_dispatch(monkeypatch):
         assert write_keys.isdisjoint(skill["activation_tools"] or [])
 
 
+def test_erp_design_mcp_failure_classifies_unavailable_and_keeps_endpoint_safe(monkeypatch, tmp_path):
+    from domain_packs.mold.tools.erp.design import erp_design_mcp
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "ERP_DESIGN_UPLOAD_BASE_URL=http://user:password@127.0.0.1:9099\n"
+        "ERP_DESIGN_UPLOAD_TOKEN=secret-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(erp_design_mcp, "_ENV_FILE", env_file)
+
+    with pytest.raises(DomainError) as caught:
+        erp_design_mcp._failure("TypeError: fetch failed")
+
+    assert caught.value.code == "ERP_DESIGN_MCP_UNAVAILABLE"
+    assert caught.value.status == 503
+    assert "127.0.0.1:9099" in caught.value.message
+    assert "user:password" not in caught.value.message
+    assert "secret-token" not in caught.value.message
+
+
 def test_new_mold_design_upload_accepts_csv_attachment(monkeypatch, tmp_path):
     from domain_packs.mold import erp_design_mcp
 
