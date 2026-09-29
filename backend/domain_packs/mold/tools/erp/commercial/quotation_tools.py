@@ -299,6 +299,7 @@ def preview_quotation_form(db, user, data, run):
         "files": [{"id": blob.id, "filename": blob.filename, "sha256": blob.sha256} for blob in blobs],
         "existing_quotations": existing,
         "existing_quotations_truncated": truncated,
+        "workflow_options": workflow_options(db, user, project),
         "next_step": "补齐报价编号、版本、成本/工艺/工期、价格、交期、收款条件后再准备正式报价版本。",
     }
 

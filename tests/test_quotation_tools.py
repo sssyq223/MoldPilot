@@ -152,6 +152,7 @@ def test_quotation_form_seed_is_registered_and_does_not_write_a_quote():
                 "file_ids": [blob.id],
             }, run=run)
             assert evidence["proposal"]["display"]["form_status"] == "NEEDS_HUMAN_SELECTION"
+            assert evidence["proposal"]["display"]["workflow_options"] == []
             assert db.scalar(select(m.BusinessSubject).where(m.BusinessSubject.kind == "quotation")) is None
     finally:
         engine.dispose()
