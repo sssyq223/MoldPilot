@@ -12,23 +12,23 @@
   ├─ 【质检】领取  PUT /quality/inspection/{taskId}/claim
   │    状态变为 inspecting，再提交合格
   └─ 【质检】直接合格  PUT /quality/inspection/{taskId}/submit
-       ERP 允许 pending 直接提交，并同时记录当前人为领取人
+       全检合格：每行 qualifiedQty = inboundQty；ERP 允许 pending 直接提交并同时记录领取人
   → 合格数量进入成品库或半成品库存
 ```
 
-用户说「领取质检」时只 prepare 领取；用户明确要办合格（「判合格 / 确认合格 / 检验通过 / 提交合格」）时，pending 或 inspecting 都可 prepare 合格。「检验合格 / 质检合格」单独出现多是查状态（“质检合格的有几条”），不算办理。两种动作都必须经过确认卡，不能口头宣布已完成。
+用户说「领取质检」时只 prepare 领取；用户明确要办合格（「判合格 / 确认合格 / 检验通过 / 提交合格 / 提交质检合格」）时，pending 或 inspecting 都可 prepare 合格。「检验合格 / 质检合格」单独出现多是查状态（“质检合格的有几条”），不算办理。两种动作都必须经过确认卡，不能口头宣布已完成。
 
 不合格、部分合格、拒收退货本期只澄清，不 prepare。
 
 ## 工作流
 
-对象清楚就直接查。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_quality_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。办理时按用户明确意图选择领取或合格。
+对象清楚就直接查。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_quality_tasks`，禁止 `CONVERSATION`。只问数量或「查看待办 / 查询待办」时不要 prepare。用户说「领取质检 / 领取质检任务」立刻 `prepare_erp_outsource_quality_claim`，说「判合格 / 确认合格 / 提交合格 / 提交质检合格」立刻 `prepare_erp_outsource_quality_pass`，不要再 query 一遍后说没有待办。领取成功后任务已是质检中，再说提交合格必须直接出确认卡，禁止再报「未找到」。
 
 | 意图 | 工具 |
 | --- | --- |
 | 质检待办、领取、合格 | `query_erp_outsource_quality_tasks` |
 | 领取 | `prepare_erp_outsource_quality_claim`（要 taskId） |
-| 全检合格（判合格 / 确认合格 / 检验通过） | `prepare_erp_outsource_quality_pass`（要 taskId） |
+| 全检合格（判合格 / 确认合格 / 检验通过 / 提交质检合格） | `prepare_erp_outsource_quality_pass`（要 taskId；确认后按行提交 inboundQty 为合格数） |
 
 同一模具多单时列出候选。用户否认确认卡则停。
 

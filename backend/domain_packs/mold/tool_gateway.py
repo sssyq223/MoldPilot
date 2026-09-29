@@ -832,6 +832,52 @@ def assigned(db, user, kind, key):
     return bool(db.scalar(select(Capability.id).where(Capability.user_id == user.id, Capability.kind == kind, Capability.key == key, Capability.enabled.is_(True))))
 
 
+def _grant_allows(db, user, permission: str) -> bool:
+    if getattr(user, "super_admin", False):
+        return True
+    return any(grant.effect == "ALLOW" for grant in grants_for(db, user, permission))
+
+
+# 加工商权限本身就是这些技能和工具的授权，不再要求再单独分配一遍 Capability。
+PROCESSOR_SKILL_KEYS = (
+    "outsource_processor_query",
+    "outsource_processor_ops",
+    "outsource_processor_fulfillment",
+    "outsource_processor_product_ship",
+)
+
+
+# 仓管权限本身就是待发货和回厂入库技能、工具的授权。
+WAREHOUSE_SKILL_KEYS = (
+    "outsource_warehouse_ops",
+    "outsource_warehouse_inbound",
+)
+
+
+def implied_warehouse_tool_keys(db, user) -> list[str]:
+    keys: list[str] = []
+    if _grant_allows(db, user, "erp_outsource_warehouse.read"):
+        keys.extend(erp_outsource_warehouse_tools.QUERY_TOOL_KEYS)
+        keys.extend(erp_outsource_warehouse_inbound_tools.QUERY_TOOL_KEYS)
+    if _grant_allows(db, user, "erp_outsource_warehouse.execute"):
+        keys.extend(erp_outsource_warehouse_tools.PREPARE_TOOL_KEYS)
+        keys.extend(erp_outsource_warehouse_inbound_tools.PREPARE_TOOL_KEYS)
+    return keys
+
+
+def implied_processor_tool_keys(db, user) -> list[str]:
+    keys: list[str] = []
+    if _grant_allows(db, user, "erp_outsource_processor.read"):
+        keys.extend(erp_outsource_query_tools.PROCESSOR_TOOL_KEYS)
+        keys.extend(erp_outsource_processor_fulfillment_tools.QUERY_TOOL_KEYS)
+        keys.extend(erp_outsource_processor_ship_tools.QUERY_TOOL_KEYS)
+    if _grant_allows(db, user, "erp_outsource_processor.execute"):
+        keys.extend(erp_outsource_processor_tools.TOOL_SPECS)
+        keys.extend(erp_outsource_processor_fulfillment_tools.PREPARE_TOOL_KEYS)
+        keys.extend(erp_outsource_processor_ship_tools.PREPARE_TOOL_KEYS)
+    return keys
+
+
 def available_tools(db, user):
     allowed = [key for key, tool in TOOLS.items() if assigned(db, user, "TOOL", key) and
                (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"])))]
@@ -892,6 +938,9 @@ def available_tools(db, user):
                 for grant in grants_for(db, user, TOOLS[technical_requirements_reader]["permission"])
             ))):
         allowed.append(technical_requirements_reader)
+    for key in (*implied_processor_tool_keys(db, user), *implied_warehouse_tool_keys(db, user)):
+        if key not in allowed and key in TOOLS:
+            allowed.append(key)
     return allowed
 
 
@@ -1046,9 +1095,11 @@ def tool_schema(key):
 
 def skill_context(db, user):
     allowed = set(available_tools(db, user))
+    processor_skills = set(PROCESSOR_SKILL_KEYS) if _grant_allows(db, user, "erp_outsource_processor.read") else set()
+    warehouse_skills = set(WAREHOUSE_SKILL_KEYS) if _grant_allows(db, user, "erp_outsource_warehouse.read") else set()
     result = []
     for key, spec in SKILLS.items():
-        enabled = assigned(db, user, "SKILL", key)
+        enabled = assigned(db, user, "SKILL", key) or key in processor_skills or key in warehouse_skills
         # Preserve existing design-master-data assignments while splitting the
         # authoritative density and keyword readers into narrowly routed skills.
         if (not enabled and key in {"erp_design_density_review", "erp_design_group_keyword_review"}):

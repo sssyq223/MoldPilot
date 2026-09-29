@@ -225,14 +225,21 @@ def _compact_board_items(items: list[Any], *, limit: int = 8) -> list[dict[str, 
         details = str(item.get("partDetails") or item.get("parts") or "")
         if len(details) > 36:
             details = details[:36] + "…"
-        compact.append({
+        row = {
             "orderNo": item.get("orderNo") or "",
             "mold": item.get("moldFamily") or item.get("mold") or item.get("moldNo") or "",
             "batch": item.get("moldBatch") or item.get("batch") or item.get("moldNo") or "",
             "station": item.get("stationLabel") or item.get("station"),
             "kind": item.get("outsourceTypeLabel") or item.get("kind") or item.get("outsourceType"),
             "parts": details,
-        })
+        }
+        if item.get("processNames"):
+            row["process"] = item.get("processNames")
+        if item.get("buyerQuoteAmount") is not None:
+            row["buyerQuote"] = item.get("buyerQuoteAmount")
+        if item.get("referenceTotal") is not None:
+            row["referenceTotal"] = item.get("referenceTotal")
+        compact.append(row)
     return compact
 
 
@@ -267,7 +274,12 @@ def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
         elif "待发询价" in stations:
             summary = (summary + " 用户要发询价时本轮立刻 prepare 发询价确认卡，不要再口头确认下一步。").strip()
         elif "待报价" in stations:
-            summary = (summary + " 本轮 prepare 报价确认卡。").strip()
+            if payload.get("audience") == "processor":
+                summary = (summary + " 零件/模具行的 buyerQuote 是采购报价，回答时要说出金额。不要报核算价、接单上限、成交价。工序委外没有采购报价，只办接单或拒单。").strip()
+            else:
+                summary = (summary + " 本轮 prepare 报价确认卡。").strip()
+        if "待收料" in stations:
+            summary = (summary + " 待收料表示仓库已经发料，请加工商确认收货，不要说没有收料待办。").strip()
     return {
         "summary": summary[:240],
         "item_count": len(items),

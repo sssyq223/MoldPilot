@@ -419,9 +419,23 @@ def product_item(row: dict[str, Any]) -> dict[str, Any] | None:
     )
     if warnings:
         hint = f"{hint} {'；'.join(dict.fromkeys(warnings))}"
+    details = []
+    remain_qty = 0
+    for part in parts:
+        remain = int(part.get("remainQty") or 0)
+        remain_qty += remain
+        name = " ".join(piece for piece in (part.get("partNo"), part.get("partName")) if piece)
+        target = str(part.get("inboundTargetLabel") or "").strip()
+        extra = f"可发{remain}" + (f"→{target}" if target else "")
+        details.append(f"{name}（{extra}）" if name else extra)
     item = {
         "action": "product_ship",
         "actionLabel": "成品发货",
+        "station": "待成品发货",
+        "stationLabel": "待成品发货",
+        "partDetails": "；".join(details),
+        "lineCount": len(parts),
+        "remainQty": remain_qty,
         "orderId": row.get("order_id"),
         "orderNo": row.get("order_no") or "",
         "moldNo": row.get("mold_no") or "",
@@ -591,4 +605,6 @@ def run(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) ->
 def run_product(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) -> dict[str, Any]:
     scoped = dict(parsed)
     scoped["tab"] = "product_ship"
-    return present(scoped, query_items(scoped, processor_tokens=processor_tokens))
+    payload = present(scoped, query_items(scoped, processor_tokens=processor_tokens))
+    payload["scope"] = "可成品发货"
+    return payload

@@ -31,6 +31,13 @@ AUTH_ABORT_CODES = frozenset({
 })
 
 
+def _business_reject_message(payload):
+    reason = str((payload or {}).get('msg') or (payload or {}).get('message') or '').strip()
+    if reason and len(reason) <= 200 and '\n' not in reason:
+        return 'ERP 未接受本次请求：' + reason
+    return 'ERP 未接受本次请求，请核对原系统业务条件'
+
+
 def _clean_encryption_key(value):
     return str(value or "").strip().strip('"').strip("'")
 
@@ -121,7 +128,7 @@ class ERPClient:
         if not isinstance(payload,dict) or payload.get('code')!=200:
             if isinstance(payload,dict) and payload.get('code') in {401,403}:
                 raise DomainError('ERP_LOGIN_REQUIRED','ERP 登录已失效，请重新验证本人 ERP 账号后再确认办理',401)
-            raise DomainError('ERP_BUSINESS_REJECTED','ERP 未接受本次请求，请核对原系统业务条件',409)
+            raise DomainError('ERP_BUSINESS_REJECTED',_business_reject_message(payload),409)
         return payload
 
     def info(self):return self.request('GET','getInfo')

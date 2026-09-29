@@ -126,8 +126,10 @@ class _BuyerIdentity(CamelModel):
 
     @model_validator(mode="after")
     def require_identity(self):
+        if getattr(self, "board_row", None):
+            return self
         if not self.order_no and not self.mold and not self.batch and not self.part:
-            raise ValueError("请用订单号、模具号、批次号或零件号定位，不要使用内部数字编号")
+            raise ValueError("请用订单号、模具号、批次号、零件号或表格 NO. 定位，不要使用内部数字编号")
         return self
 
 
@@ -154,7 +156,7 @@ class BuyerQuoteInput(_BuyerIdentity):
         ge=1,
         le=200,
         validation_alias=AliasChoices("board_row", "boardRow"),
-        description="用户说的待填价看板第N行。同一零件多张询价时按行锁定。",
+        description="查看完整表格第一列的 NO.。批次号重复时用它锁定那一行，不要改到同批次的另一张。",
     )
 
 
@@ -164,7 +166,7 @@ class InquirySendInput(_BuyerIdentity):
         ge=1,
         le=200,
         validation_alias=AliasChoices("board_row", "boardRow"),
-        description="用户说的待发询价看板第N行。同一模具多张询价时按行锁定。",
+        description="查看完整表格第一列的 NO.。同一批次多张询价时用它锁定那一行。",
     )
     suppliers: list[str] = Field(
         default_factory=list,
@@ -252,12 +254,13 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
     board_row = getattr(data, "board_row", None)
     part = getattr(data, "part", None)
     if board_row:
-        item = buyer_todo.find_item_by_board_row(
-            board_row,
-            mold=getattr(data, "mold", None),
-            batch=getattr(data, "batch", None),
-            station=expected_station,
-        )
+        item = buyer_todo.item_from_visible_board_row(int(board_row))
+        if not item or not item.get("inquiryId"):
+            raise DomainError(
+                "NOT_FOUND",
+                f"完整表格没有 NO.{board_row}，请重新打开待办后再按第一列行号点名",
+                404,
+            )
     if item is None:
         try:
             item = buyer_todo.find_item_by_identity(
@@ -281,9 +284,10 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
     if item.get("outsourceType") == "operation" and expected_station in {"buyer_quote", "inquiry_send", "place_order"}:
         raise DomainError("STATE_BLOCKED", "工序委外不走填价、发询价或成交价", 409)
     if item.get("station") != expected_station:
+        where = f"NO.{board_row} " if board_row else ""
         raise DomainError(
             "STATE_BLOCKED",
-            f"当前是{item.get('stationLabel') or item.get('station')}，不能做这一步",
+            f"{where}当前是{item.get('stationLabel') or item.get('station')}，不能做这一步",
             409,
         )
     return item
@@ -357,7 +361,11 @@ def preview(key: str, data, db=None, user=None, *, allow_live_match=True) -> tup
             "说明": data.note,
             "注意事项": "ERP 没有独立重选接口。确认后请用发询价把新加工商发出，或到 ERP 待办重选。本次确认不改 ERP。",
         }
-    return item, _card(item, extra)
+    display = _card(item, extra)
+    row_no = getattr(data, "board_row", None)
+    if row_no:
+        display["行号"] = f"NO.{row_no}"
+    return item, display
 
 
 def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[str, Any]:

@@ -26,7 +26,7 @@
 | 意图 | 工具 |
 | --- | --- |
 | 我的收料、履约待办 | `query_erp_outsource_processor_fulfillment` |
-| 确认来料 | `prepare_erp_outsource_processor_receipt`（要 shipmentId） |
+| 确认来料、确认收货、NO.N确认收货 | `prepare_erp_outsource_processor_receipt`。说了待办 NO. 或订单号就填 board_row / order_no，不要向用户要内部编号。 |
 | 成品发货 | 转 `outsource_processor_product_ship`，不在本 Skill prepare |
 
 同一模具多单时列出候选，用户选定后再 prepare。工序单拿来收货时说明原因，不 prepare。用户否认确认卡则停。

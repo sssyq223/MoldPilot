@@ -103,3 +103,16 @@ def handler_for_action(action: str):
 
 def handler_for_tool(tool: str):
     return next((handler for handler in HANDLERS if handler.matches(tool)), None)
+
+
+def handler_for_intent(action: str, tool: str | None = None):
+    """Pick the card handler for a shared permission action.
+
+    加工商报价、收料、成品发货都登记为 erp_outsource_processor.execute。
+    只按权限动作取第一条会把收料确认派到报价模块。有工具名时按工具取。
+    """
+    if tool:
+        matched = handler_for_tool(tool)
+        if matched is not None and matched.action == action:
+            return matched
+    return handler_for_action(action)

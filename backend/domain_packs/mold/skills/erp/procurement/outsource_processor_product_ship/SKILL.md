@@ -59,14 +59,13 @@
 
 ```text
 加工商成品发货（本 Skill）
-  → 仓管到货确认  POST /entrust/arrival-confirm/{shipmentId}/confirm
-  → 仓管入库确认  POST /entrust/arrival-confirm/{shipmentId}/confirm-inbound
-      ├─ 成品库 → 成品库存
-      └─ 半成品库 → 半成品库存 → 再转临时库
+  → 仓管入库确认  POST /material/inbound  inboundType=3
+      ├─ 成品库 → 质检合格后入成品库存
+      └─ 半成品库 → 质检合格后入半成品库存
   → 质检
 ```
 
-仓管用 `outsource_warehouse_inbound` 做到货再入库。质检用 `outsource_quality_ops` 领取或直接提交合格。入库目标按上表（`processor-inbound-v1`）。ERP 发货行会固化 `is_end_operation`，仓库入库只读这份快照。
+仓管用 `outsource_warehouse_inbound` 办一次入库确认。质检用 `outsource_quality_ops` 领取或直接提交合格。入库目标按上表（`processor-inbound-v1`）。ERP 发货行会固化 `is_end_operation`，仓库入库只读这份快照。
 
 ## 边界
 

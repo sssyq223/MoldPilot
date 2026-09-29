@@ -157,6 +157,24 @@ def find_tasks(task_ids: list[int]) -> list[dict[str, Any]]:
     return items
 
 
+def supply_status_counts(order_no: str) -> dict[str, int]:
+    order_no = str(order_no or "").strip()
+    if not order_no:
+        return {}
+    rows = fetch_all(
+        """
+        SELECT lower(coalesce(status, '')) AS status, count(*)::int AS n
+        FROM entrust_material_supply_tasks
+        WHERE upper(coalesce(order_no, '')) = upper(%(order_no)s)
+          AND lower(coalesce(responsible_type, '')) = 'warehouse'
+          AND lower(coalesce(source_type, '')) IN ('material_stock', 'semi_finished_stock')
+        GROUP BY 1
+        """,
+        {"order_no": order_no},
+    )
+    return {str(row.get("status") or ""): int(row.get("n") or 0) for row in rows}
+
+
 def find_pending_by_identity(*, order_no: str | None = None, mold: str | None = None, batch: str | None = None) -> list[dict[str, Any]]:
     from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import item_matches_identity
 
@@ -167,36 +185,102 @@ def find_pending_by_identity(*, order_no: str | None = None, mold: str | None = 
     return matched
 
 
+def _join_unique(values: list[Any]) -> str:
+    seen: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+    return "、".join(seen)
+
+
+def format_supply_lines(items: list[dict[str, Any]]) -> str:
+    labels = []
+    for item in items:
+        part_no = str(item.get("partNo") or "").strip()
+        name = str(item.get("partName") or "").strip()
+        head = " ".join(piece for piece in (part_no, name) if piece) or "零件"
+        extras = []
+        if item.get("qty") not in (None, ""):
+            extras.append(f"×{item.get('qty')}")
+        process = str(item.get("processName") or "").strip()
+        if process:
+            extras.append(process)
+        labels.append(f"{head}（{' '.join(extras)}）" if extras else head)
+    return "；".join(labels)
+
+
+def group_orders(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One warehouse task is one order. Part rows are ship lines inside that order."""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for item in items:
+        key = (
+            str(item.get("orderNo") or ""),
+            str(item.get("sourceType") or ""),
+            str(item.get("action") or ""),
+        )
+        grouped.setdefault(key, []).append(item)
+    orders = []
+    for lines in grouped.values():
+        first = lines[0]
+        qty = sum(int(line.get("qty") or 0) for line in lines)
+        orders.append({
+            "action": first.get("action"),
+            "actionLabel": first.get("actionLabel"),
+            "outsourceType": first.get("outsourceType"),
+            "outsourceTypeLabel": first.get("outsourceTypeLabel"),
+            "orderNo": first.get("orderNo") or "",
+            "moldFamily": _join_unique([line.get("moldFamily") for line in lines]),
+            "moldBatch": _join_unique([line.get("moldBatch") for line in lines]),
+            "moldNo": _join_unique([line.get("moldNo") for line in lines]),
+            "partDetails": format_supply_lines(lines),
+            "lineCount": len(lines),
+            "qty": qty,
+            "processName": _join_unique([line.get("processName") for line in lines]),
+            "sourceType": first.get("sourceType"),
+            "sourceTypeLabel": first.get("sourceTypeLabel"),
+            "processorName": first.get("processorName") or "",
+            "status": first.get("status") or "",
+        })
+    return orders
+
+
 def present(items: list[dict[str, Any]], *, mold_family: str = "", mold_batch: str = "") -> dict[str, Any]:
     truncated = len(items) > ROW_LIMIT
     visible = items[:ROW_LIMIT]
-    part_count = sum(1 for item in visible if item.get("outsourceType") != "operation")
-    operation_count = sum(1 for item in visible if item.get("outsourceType") == "operation")
+    orders = group_orders(visible)
+    part_orders = [row for row in orders if row.get("outsourceType") != "operation"]
+    operation_orders = [row for row in orders if row.get("outsourceType") == "operation"]
     scope = mold_batch or mold_family or "仓库委外待办"
-    summary = f"{scope} 待仓库办理共 {len(visible)} 条。"
-    if part_count:
-        summary += f"\n- 零件/模具原料发货：{part_count} 条"
-    if operation_count:
-        summary += f"\n- 工序备料完成：{operation_count} 条"
+    summary = f"{scope} 待仓库办理共 {len(orders)} 单，{len(visible)} 个零件明细。"
+    if part_orders:
+        part_lines = sum(int(row.get("lineCount") or 0) for row in part_orders)
+        summary += f"\n- 零件/模具原料发货：{len(part_orders)} 单，{part_lines} 个零件"
+    if operation_orders:
+        operation_lines = sum(int(row.get("lineCount") or 0) for row in operation_orders)
+        summary += f"\n- 工序备料完成：{len(operation_orders)} 单，{operation_lines} 个零件"
     if not visible:
-        summary += "\n本次查询结果是 0 条。采购直发不在本待办。"
+        summary += "\n本次查询结果是 0 单。采购直发不在本待办。"
     else:
         lines = []
-        for item in visible[:30]:
+        for row in orders[:30]:
             lines.append(
-                f"{item['actionLabel']} {item['outsourceTypeLabel']} {item['moldNo']} "
-                f"{item['partNo']} {item['partName']} ×{item['qty']} {item['orderNo']}"
+                f"{row['actionLabel']} {row['outsourceTypeLabel']} {row['orderNo']} "
+                f"{row['moldBatch'] or row['moldNo']} {row['lineCount']} 个零件 {row['processorName']}"
             )
         summary += "\n" + "\n".join(f"- {line}".rstrip() for line in lines)
-        if len(visible) > 30:
-            summary += "\n明细只展开前 30 条，完整列表在 items。"
+        if len(orders) > 30:
+            summary += "\n订单只展开前 30 单，完整列表在 orders。"
     if truncated:
-        summary += f"\n结果超过 {ROW_LIMIT} 条，只返回前 {ROW_LIMIT} 条。"
+        summary += f"\n零件明细超过 {ROW_LIMIT} 条，只返回前 {ROW_LIMIT} 条。"
     return {
         "scope": scope,
         "database": "erp",
         "truncated": truncated,
         "summary": summary,
+        "orderCount": len(orders),
+        "lineCount": len(visible),
+        "orders": orders,
         "items": visible,
     }
 

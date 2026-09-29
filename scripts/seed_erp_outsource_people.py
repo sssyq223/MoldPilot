@@ -6,7 +6,8 @@ People mapping (requested):
 - gm: 李辉
 - warehouse: 薛海峰
 - quality: 赵殿烨
-- processor: ERP supplier SUP000001 (demo), SUP000496 (PU-03), SUP000237 (ZKR accept todo)
+- processor: ERP supplier SUP000001 / SUP000496 / SUP000237 / SUP000114
+  展示名用 ERP partner.partner_name（公司全称），不用编号+「加工商」
 
 Password is intentionally short when --password is provided; API user-create
 still requires 12+ characters, but these accounts are written directly.
@@ -27,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.authorization import PERMISSIONS
 from app.db import make_engine
-from app.models import AssignmentGroup, AssignmentMember, Grant, User
+from app.models import AssignmentGroup, AssignmentMember, Capability, Grant, User
 from app.security import hasher, normalize_username
 from domain_packs.mold import models as m
 from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_one
@@ -37,6 +38,7 @@ from domain_packs.mold.erp.procurement.erp_outsource_roles import (
     role_by_key,
 )
 from domain_packs.mold.ports.errors import DomainError
+from domain_packs.mold.tool_gateway import PROCESSOR_SKILL_KEYS, implied_processor_tool_keys
 
 
 DEFAULT_PASSWORD = "123456"
@@ -78,23 +80,30 @@ PEOPLE = (
     {
         "role_key": "erp_outsource_processor",
         "username": "SUP000001",
-        "display_name": "SUP000001加工商",
+        "display_name": "青岛铂锐迪精密机械有限公司",
         "supplier_code": "SUP000001",
-        "supplier_name": "ERP加工商 SUP000001",
+        "supplier_name": "青岛铂锐迪精密机械有限公司",
     },
     {
         "role_key": "erp_outsource_processor",
         "username": "SUP000496",
-        "display_name": "SUP000496加工商",
+        "display_name": "青岛华欣泽机械模具有限公司",
         "supplier_code": "SUP000496",
-        "supplier_name": "ERP加工商 SUP000496",
+        "supplier_name": "青岛华欣泽机械模具有限公司",
     },
     {
         "role_key": "erp_outsource_processor",
         "username": "SUP000237",
-        "display_name": "SUP000237加工商",
+        "display_name": "苏州元茂精密机械有限公司",
         "supplier_code": "SUP000237",
-        "supplier_name": "ERP加工商 SUP000237",
+        "supplier_name": "苏州元茂精密机械有限公司",
+    },
+    {
+        "role_key": "erp_outsource_processor",
+        "username": "SUP000114",
+        "display_name": "青岛和兴嘉业金属制品有限公司",
+        "supplier_code": "SUP000114",
+        "supplier_name": "青岛和兴嘉业金属制品有限公司",
     },
 )
 
@@ -114,6 +123,31 @@ def _require_postgresql(url: str) -> None:
         raise SystemExit("PostgreSQL DSN is required.")
     if not parsed.scheme.startswith("postgresql"):
         raise SystemExit(f"Unsupported database scheme: {parsed.scheme}")
+
+
+ERP_PARTNER_NAME_SQL = """
+SELECT partner_name
+FROM partner
+WHERE upper(btrim(coalesce(partner_code, ''))) = upper(btrim(%(code)s))
+LIMIT 1
+"""
+
+
+def _erp_partner_name(code: str) -> str:
+    try:
+        row = fetch_one(ERP_PARTNER_NAME_SQL, {"code": code})
+    except DomainError:
+        return ""
+    return str((row or {}).get("partner_name") or "").strip()
+
+
+def _processor_person(person: dict) -> dict:
+    resolved = dict(person)
+    code = str(resolved.get("supplier_code") or "")
+    company = _erp_partner_name(code) or resolved.get("supplier_name") or resolved.get("display_name") or code
+    resolved["display_name"] = company
+    resolved["supplier_name"] = company
+    return resolved
 
 
 ERP_BUYER_IDENTITY_SQL = """
@@ -180,6 +214,20 @@ def _ensure_member(db, group: AssignmentGroup, user: User) -> None:
         db.add(AssignmentMember(group_id=group.id, user_id=user.id, is_head=False))
 
 
+def _ensure_capability(db, user: User, kind: str, key: str) -> None:
+    row = db.scalar(
+        select(Capability).where(
+            Capability.user_id == user.id,
+            Capability.kind == kind,
+            Capability.key == key,
+        )
+    )
+    if row is None:
+        db.add(Capability(user_id=user.id, kind=kind, key=key, enabled=True))
+    elif not row.enabled:
+        row.enabled = True
+
+
 def _ensure_grant(db, *, user: User, permission: str, scope: dict, granted_by: User, reason: str) -> None:
     if permission not in PERMISSIONS:
         raise SystemExit(f"Permission not registered: {permission}")
@@ -224,7 +272,7 @@ def _ensure_supplier(db, code: str, name: str) -> m.Supplier:
     return row
 
 
-def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
+def seed(db, *, password: str, deactivate_synthetic: bool, only: list[str] | None = None, names_only: bool = False) -> dict:
     admin = db.scalar(select(User).where(User.super_admin.is_(True), User.active.is_(True)).limit(1))
     if admin is None:
         raise SystemExit("No active super admin found; bootstrap an administrator first.")
@@ -232,12 +280,23 @@ def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
     departments = {name: _ensure_group(db, "DEPARTMENT", name) for name in ERP_OUTSOURCE_DEPARTMENTS}
     roles = {role["role_name"]: _ensure_group(db, "ROLE", role["role_name"]) for role in ERP_OUTSOURCE_ROLES}
 
+    people = PEOPLE
+    if only:
+        wanted = {normalize_username(item) for item in only}
+        people = [person for person in PEOPLE if normalize_username(person["username"]) in wanted]
+        missing = wanted - {normalize_username(person["username"]) for person in people}
+        if missing:
+            raise SystemExit(f"Unknown account: {', '.join(sorted(missing))}")
     created = []
-    for person in PEOPLE:
+    for person in people:
+        if person.get("supplier_code"):
+            person = _processor_person(person)
         role = role_by_key(person["role_key"])
         username = normalize_username(person["username"])
         user = db.scalar(select(User).where(User.username == username))
         if user is None:
+            if names_only:
+                continue
             user = User(
                 username=username,
                 display_name=person["display_name"],
@@ -252,7 +311,22 @@ def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
             user.display_name = person["display_name"]
             user.department = role["department_name"]
             user.active = True
-            user.password_hash = hasher.hash(password)
+            if not names_only:
+                user.password_hash = hasher.hash(password)
+
+        if names_only:
+            if person.get("supplier_code"):
+                _ensure_supplier(db, person["supplier_code"], person["supplier_name"])
+            created.append(
+                {
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "role": role["role_name"],
+                    "department": user.department,
+                    "erp_user_id": None,
+                }
+            )
+            continue
 
         _ensure_member(db, departments[role["department_name"]], user)
         _ensure_member(db, roles[role["role_name"]], user)
@@ -287,6 +361,12 @@ def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
             erp_user_id = _bind_erp_buyer_identity(
                 db, user, display_name=person["display_name"], username=person["username"]
             )
+        if person["role_key"] == "erp_outsource_processor":
+            db.flush()
+            for key in implied_processor_tool_keys(db, user):
+                _ensure_capability(db, user, "TOOL", key)
+            for key in PROCESSOR_SKILL_KEYS:
+                _ensure_capability(db, user, "SKILL", key)
 
         created.append(
             {
@@ -299,7 +379,7 @@ def seed(db, *, password: str, deactivate_synthetic: bool) -> dict:
         )
 
     deactivated = []
-    if deactivate_synthetic:
+    if deactivate_synthetic and not names_only:
         for username in sorted(SYNTHETIC_USERNAMES):
             user = db.scalar(select(User).where(User.username == username))
             if user and user.active:
@@ -321,13 +401,30 @@ def main() -> None:
         action="store_true",
         help="Do not deactivate previous outsource_* test accounts.",
     )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="Create or refresh only these usernames. Skips the other accounts.",
+    )
+    parser.add_argument(
+        "--names-only",
+        action="store_true",
+        help="只把加工商展示名改成 ERP 公司全称，不改密码、不重建授权。",
+    )
     args = parser.parse_args()
     url = _database_url(args.env_file, args.database_url)
     _require_postgresql(url)
     engine = make_engine(url)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     with Session.begin() as db:
-        result = seed(db, password=args.password, deactivate_synthetic=not args.keep_synthetic)
+        result = seed(
+            db,
+            password=args.password,
+            deactivate_synthetic=not args.keep_synthetic and not args.only and not args.names_only,
+            only=args.only,
+            names_only=args.names_only,
+        )
     print("ERP outsource people accounts ready.")
     for account in result["accounts"]:
         print(

@@ -31,14 +31,19 @@ SKILL_SPECS = {
         "optional_tools": list(PREPARE_TOOL_KEYS),
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
-            "仓库收货", "确认收货", "到货确认", "回厂入库", "成品入库", "半成品入库",
+            "仓库收货", "确认收货", "到货确认", "确认到货", "办到货",
+            "回厂入库", "成品入库", "半成品入库", "确认入库", "入库确认", "办入库",
             "收货待办", "入库待办", "回厂待办",
         ],
         "auto_activation_queries": [
-            "仓库收货", "确认收货", "到货确认", "回厂入库", "成品入库",
+            "仓库收货", "确认收货", "到货确认", "确认到货", "办到货",
+            "回厂入库", "成品入库", "确认入库", "入库确认", "办入库",
             "收货待办", "入库待办", "回厂待办",
         ],
-        "priority_patterns": ["仓库收货|确认收货|到货确认|回厂入库|成品入库|收货待办|入库待办|回厂待办"],
+        "priority_patterns": [
+            "仓库收货|确认收货|到货确认|确认到货|办到货|回厂入库|成品入库|"
+            "确认入库|入库确认|办入库|收货待办|入库待办|回厂待办"
+        ],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -48,15 +53,15 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     TODO_TOOL: {
-        "description": "只读查询加工商成品发货后的仓库待办：待到货确认、待入库。入库目标按业务规则：零件/模具及工序末道 T 进成品库，非末道工序进半成品库。",
+        "description": "只读查询加工商成品发货后的仓库待入库。发货即可办理，不必先到货确认。入库目标按业务规则：零件/模具及工序末道 T 进成品库，非末道工序进半成品库。",
         "permission": "erp_outsource_warehouse.read",
     },
     ARRIVAL_TOOL: {
-        "description": "准备仓库到货确认（确认收货）。必须已锁定 shipmentId。未指定行则按待到货数量全确认。本人确认后才写入 ERP。",
+        "description": "已停用：仓管成品回厂只办一次入库确认。请改用 prepare_erp_outsource_warehouse_inbound。",
         "permission": "erp_outsource_warehouse.execute",
     },
     INBOUND_TOOL: {
-        "description": "准备仓储入库确认。必须已锁定 shipmentId。数量不能超过待入库。本人确认后才写入 ERP。",
+        "description": "准备仓储入库确认。加工商成品发货后即可办，必须已锁定 shipmentId。数量不能超过待入库。本人确认后写入 ERP 物料入库单，再交给质检。",
         "permission": "erp_outsource_warehouse.execute",
     },
 }
@@ -66,6 +71,62 @@ TOOL_NAMES = {
     ARRIVAL_TOOL: "准备仓库到货确认",
     INBOUND_TOOL: "准备仓储入库确认",
 }
+
+ARRIVAL_SPEECH = ("确认到货", "到货确认", "办到货")
+INBOUND_SPEECH = ("确认入库", "入库确认", "办入库")
+RECEIPT_SPEECH = ("确认收货", "收货确认", "办收货")
+RETURN_SPEECH = ARRIVAL_SPEECH + INBOUND_SPEECH + RECEIPT_SPEECH
+
+
+def spoken_return_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse 入库确认 / 确认到货 into warehouse arrival or inbound prepare arguments."""
+    text = prompt or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要确认", "不确认")):
+        return None
+    if "待办" in text and not any(token in text for token in RETURN_SPEECH):
+        return None
+    if not any(token in text for token in RETURN_SPEECH):
+        return None
+    source = f"{text}\n{context_text or ''}"
+    arguments: dict[str, Any] = {}
+    shipment = warehouse_inbound.SHIPMENT_NO.search(source)
+    if shipment:
+        arguments["shipment_no"] = shipment.group(1).upper()
+    order = warehouse_inbound.ORDER_NO.search(source)
+    if order:
+        arguments["order_no"] = order.group(1).upper()
+    parsed = warehouse_inbound.parse_question(source)
+    if parsed.get("mold_batch"):
+        arguments["mold"] = parsed["mold_batch"]
+    elif parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    return arguments
+
+
+def spoken_return_invoke(
+    prompt: str,
+    context_text: str = "",
+    active_tool_names=None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Host prepare: 确认收货 / 入库确认 always opens the inbound card."""
+    arguments = spoken_return_arguments(prompt, context_text)
+    if arguments is None:
+        return None
+    names = set(active_tool_names or ())
+    if INBOUND_TOOL not in names:
+        return None
+    items = []
+    try:
+        items = warehouse_inbound.find_pending_by_identity(
+            order_no=str(arguments.get("order_no") or ""),
+            shipment_no=str(arguments.get("shipment_no") or ""),
+            mold=str(arguments.get("mold") or ""),
+        )
+    except Exception:
+        items = []
+    if len(items) == 1 and items[0].get("shipmentId"):
+        arguments["shipment_id"] = int(items[0]["shipmentId"])
+    return INBOUND_TOOL, arguments
 
 
 class InboundTodoInput(StrictModel):
@@ -89,24 +150,28 @@ class InboundLineInput(StrictModel):
 
 
 class WarehouseArrivalInput(StrictModel):
-    shipment_id: int = Field(ge=1, description="查询结果中的 shipmentId。")
+    shipment_id: int | None = Field(default=None, ge=1, description="查询结果中的 shipmentId。上一轮已锁定发货单或订单时可以不填。")
+    shipment_no: str | None = Field(default=None, max_length=40)
+    order_no: str | None = Field(default=None, max_length=80)
     mold: str | None = Field(default=None, max_length=40)
     lines: list[ArrivalLineInput] = Field(default_factory=list, description="空则按各行待到货数量全部确认。")
     remark: str | None = Field(default=None, max_length=400)
 
-    @field_validator("mold", "remark")
+    @field_validator("shipment_no", "order_no", "mold", "remark")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
 
 class WarehouseInboundInput(StrictModel):
-    shipment_id: int = Field(ge=1, description="查询结果中的 shipmentId。")
+    shipment_id: int | None = Field(default=None, ge=1, description="查询结果中的 shipmentId。上一轮已锁定发货单或订单时可以不填。")
+    shipment_no: str | None = Field(default=None, max_length=40)
+    order_no: str | None = Field(default=None, max_length=80)
     mold: str | None = Field(default=None, max_length=40)
     lines: list[InboundLineInput] = Field(default_factory=list, description="空则按各行待入库数量全部入库。")
     remark: str | None = Field(default=None, max_length=400)
 
-    @field_validator("mold", "remark")
+    @field_validator("shipment_no", "order_no", "mold", "remark")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
@@ -163,16 +228,33 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
         "source": "management-system ERP 仓库回厂收货入库只读查询",
         "as_of": now().isoformat(),
         "limitations": [
-            "只读。到货确认与仓储入库是两步。拒收/破损本期不办。",
+            "只读。仓管成品回厂只办一次入库确认，发货后即可办理。拒收/破损本期不办。",
             "入库目标按 ERP processor-inbound-v1：零件/模具及明确末道进成品库；非末道或末道缺失进半成品库并提示。缺目标禁止提交入库。",
         ],
     }
 
 
+def _resolve_shipment(data) -> dict[str, Any]:
+    if getattr(data, "shipment_id", None):
+        item = warehouse_inbound.find_shipment(int(data.shipment_id))
+        if item:
+            return item
+    items = warehouse_inbound.find_pending_by_identity(
+        order_no=getattr(data, "order_no", None) or "",
+        shipment_no=getattr(data, "shipment_no", None) or "",
+        mold=getattr(data, "mold", None) or "",
+    )
+    if not items:
+        raise DomainError("NOT_FOUND", "没有找到待入库的成品发货单", 404)
+    if len(items) > 1:
+        raise DomainError("AMBIGUOUS", "有多张回厂待办，请说发货单号或订单号", 409)
+    return items[0]
+
+
 def _require_shipment(shipment_id: int) -> dict[str, Any]:
     item = warehouse_inbound.find_shipment(shipment_id)
     if not item:
-        raise DomainError("NOT_FOUND", "没有找到待收货或待入库的成品发货单", 404)
+        raise DomainError("NOT_FOUND", "没有找到待入库的成品发货单", 404)
     return item
 
 
@@ -205,27 +287,87 @@ def _resolved_lines(data, item: dict[str, Any], *, field: str) -> list[dict[str,
     return chosen
 
 
-def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
-    item = _require_shipment(data.shipment_id)
-    field = "pendingArrivalQty" if key == ARRIVAL_TOOL else "pendingInboundQty"
-    if key == ARRIVAL_TOOL and int(item.get("pendingArrivalQty") or 0) <= 0:
-        raise DomainError("STATE_BLOCKED", "该发货单已无待到货数量，若还需入库请办仓储入库", 409)
-    if key == INBOUND_TOOL and int(item.get("pendingInboundQty") or 0) <= 0:
-        raise DomainError("STATE_BLOCKED", "该发货单已无待入库数量", 409)
-    lines = _resolved_lines(data, item, field=field)
+WAREHOUSE_BY_TARGET = {"finished": "成品仓库", "semi_finished": "半成品仓库"}
+
+
+def _is_last_operation(line: dict[str, Any]) -> int:
+    value = line.get("isEndOperation")
+    if value is True or value == 1 or str(value).strip().upper() in {"T", "TRUE", "1"}:
+        return 1
+    return 0
+
+
+def _line_target(line: dict[str, Any]) -> str:
+    return str(line.get("inboundTarget") or "").strip().lower()
+
+
+def build_material_inbound_payload(
+    item: dict[str, Any],
+    lines: list[dict[str, Any]],
+    remark: str | None = None,
+) -> dict[str, Any]:
     parts = {int(line.get("lineId") or 0): line for line in item.get("lines") or []}
-    if key == INBOUND_TOOL:
-        missing = [
-            line["shipment_line_id"]
-            for line in lines
-            if not (parts.get(line["shipment_line_id"]) or {}).get("inboundTarget")
-        ]
-        if missing:
-            raise DomainError(
-                "STATE_BLOCKED",
-                "ERP 未返回入库目标，不能提交入库。请重新查询发货明细后再办理",
-                409,
-            )
+    targets = {_line_target(parts.get(line["shipment_line_id"]) or {}) for line in lines}
+    targets.discard("")
+    if len(targets) != 1:
+        raise DomainError("STATE_BLOCKED", "一张入库确认只能入同一目标库，请分次办理成品库和半成品库", 409)
+    target = next(iter(targets))
+    shipment_id = int(item.get("shipmentId") or 0)
+    details = []
+    for line in lines:
+        part = parts.get(line["shipment_line_id"]) or {}
+        details.append({
+            "processorDeliveryId": shipment_id,
+            "processorDeliveryDetailId": line["shipment_line_id"],
+            "outsourceOrderId": item.get("orderId"),
+            "outsourceScope": item.get("outsourceType"),
+            "processorInboundTarget": target,
+            "isLastOperation": _is_last_operation(part),
+            "materialNo": part.get("partNo"),
+            "materialName": part.get("partName"),
+            "moldNo": part.get("moldNo") or item.get("moldNo"),
+            "boardPartCode": part.get("partNo"),
+            "boardPartName": part.get("partName"),
+            "unit": "件",
+            "inboundQuantity": line["qty"],
+        })
+    payload = {
+        "inboundType": 3,
+        "inspectResult": 0,
+        "deliveryId": shipment_id,
+        "warehouse": WAREHOUSE_BY_TARGET.get(target),
+        "remark": remark,
+        "processorInboundTarget": target,
+        "partnerId": item.get("supplierId"),
+        "partnerName": item.get("supplierName"),
+        "processorId": item.get("supplierId"),
+        "processorName": item.get("supplierName"),
+        "orderId": item.get("orderId"),
+        "orderNo": item.get("orderNo"),
+        "detailList": details,
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
+    item = _resolve_shipment(data)
+    data.shipment_id = int(item.get("shipmentId") or 0)
+    if int(item.get("pendingInboundQty") or 0) <= 0:
+        raise DomainError("STATE_BLOCKED", "该发货单已无待入库数量", 409)
+    lines = _resolved_lines(data, item, field="pendingInboundQty")
+    parts = {int(line.get("lineId") or 0): line for line in item.get("lines") or []}
+    missing = [
+        line["shipment_line_id"]
+        for line in lines
+        if not (parts.get(line["shipment_line_id"]) or {}).get("inboundTarget")
+    ]
+    if missing:
+        raise DomainError(
+            "STATE_BLOCKED",
+            "ERP 未返回入库目标，不能提交入库。请重新查询发货明细后再办理",
+            409,
+        )
+    build_material_inbound_payload(item, lines, getattr(data, "remark", None))
     details = []
     warnings = []
     for line in lines:
@@ -246,14 +388,13 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
         **identity_display(item),
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType"),
         "发货单": item.get("shipmentNo") or item.get("shipmentId"),
-        "操作": "仓库收货" if key == ARRIVAL_TOOL else "仓储入库",
+        "操作": "仓储入库",
         "入库目标": "、".join(dict.fromkeys(target for target in targets if target)) or "未返回",
         "规则版本": item.get("inboundRuleVersion") or warehouse_inbound.PROCESSOR_INBOUND_RULE_VERSION,
         "明细": "；".join(details),
         "说明": (
-            "本人确认后写入 ERP 到货确认。下一步再办仓储入库。"
-            if key == ARRIVAL_TOOL
-            else "确认卡展示 ERP processor-inbound-v1 行级库别，不以整单默认成品库。本人确认后写入 ERP 入库。"
+            "确认卡展示 ERP processor-inbound-v1 行级库别，不以整单默认成品库。"
+            "本人确认后写入物料入库单（inboundType=3），再交给质检领取；合格后才入账库存。"
         ),
     }
     if warnings:
@@ -268,14 +409,14 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
         return execute_query(db, user, arguments, run=run)
     _require_execute(db, user)
     data = parse(key, arguments)
-    _, display = preview(db, user, key, data)
+    item, display = preview(db, user, key, data)
     return {
         "data": [],
         "source": "agent_proposal",
         "as_of": now().isoformat(),
         "proposal": {
-            "kind": KIND_BY_TOOL[key],
-            "action": ACTION_BY_TOOL[key],
+            "kind": KIND_BY_TOOL[INBOUND_TOOL],
+            "action": ACTION_BY_TOOL[INBOUND_TOOL],
             "requires_approval": False,
             "input": data.model_dump(mode="json"),
             "display": display,
@@ -313,50 +454,26 @@ def validate_intent(db, user, payload):
     data = parse(key, proposal["input"])
     _, display = preview(db, user, key, data)
     if content_hash(display) != content_hash(proposal["display"]):
-        raise DomainError("VERSION_CONFLICT", "到货或入库数量已变化，请重新查询后准备", 409)
+        raise DomainError("VERSION_CONFLICT", "待入库数量已变化，请重新查询后准备", 409)
     return proposal, data, key
 
 
 def confirm(db, user, payload):
-    _, data, key = validate_intent(db, user, payload)
+    _, data, _key = validate_intent(db, user, payload)
     item = _require_shipment(data.shipment_id)
-    field = "pendingArrivalQty" if key == ARRIVAL_TOOL else "pendingInboundQty"
-    lines = _resolved_lines(data, item, field=field)
-    if key == ARRIVAL_TOOL:
-        result = post_erp(db, user, f"entrust/arrival-confirm/{data.shipment_id}/confirm", {
-            "remark": data.remark,
-            "confirmDetails": [
-                {
-                    "shipmentLineId": line["shipment_line_id"],
-                    "confirmedArrivalQty": line["qty"],
-                    "missingQty": 0,
-                    "damagedQty": 0,
-                }
-                for line in lines
-            ],
-        }, intent_id=payload.get("_intent_id"), action="warehouse_arrival",
-            native_id=f"product-shipment:{data.shipment_id}")
-        return {
-            "shipment_id": data.shipment_id,
-            "action": "warehouse_arrival",
-            "status": "CONFIRMED",
-            "erp": result,
-            "nextHint": "到货已确认。下一步办理仓储入库，再交给质检领取。",
-        }
-    result = post_erp(db, user, f"entrust/arrival-confirm/{data.shipment_id}/confirm-inbound", {
-        "remark": data.remark,
-        "inboundDetails": [
-            {"shipmentLineId": line["shipment_line_id"], "inboundQty": line["qty"]}
-            for line in lines
-        ],
-    }, intent_id=payload.get("_intent_id"), action="warehouse_inbound",
-        native_id=f"product-shipment:{data.shipment_id}")
+    lines = _resolved_lines(data, item, field="pendingInboundQty")
+    body = build_material_inbound_payload(item, lines, data.remark)
+    result = post_erp(
+        db, user, "material/inbound", body,
+        intent_id=payload.get("_intent_id"), action="warehouse_inbound",
+        native_id=f"product-shipment:{data.shipment_id}",
+    )
     erp_lines = warehouse_inbound.erp_inbound_confirm_lines(result)
     targets = [line["inboundTargetLabel"] for line in erp_lines if line.get("inboundTarget")]
     warnings = [line["inboundTargetWarning"] for line in erp_lines if line.get("inboundTargetWarning")]
-    hint = "已入库。下一步质检领取任务并提交合格。"
+    hint = "已提交物料入库单。下一步质检领取任务并提交合格；合格后才入账库存。"
     if not erp_lines or not targets:
-        hint = "已提交入库。ERP 回执未给出行级库别，不能按成品库理解，请重新查询入库结果。"
+        hint = "已提交物料入库单。ERP 回执未给出行级库别，不能按成品库理解，请重新查询入库结果。"
     elif warnings:
         hint = f"{hint} {'；'.join(dict.fromkeys(str(item) for item in warnings))}"
     return {

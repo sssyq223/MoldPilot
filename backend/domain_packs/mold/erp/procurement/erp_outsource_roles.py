@@ -85,7 +85,7 @@ ERP_OUTSOURCE_ROLES: tuple[OutsourceRoleSpec, ...] = (
         "key": "erp_outsource_processor",
         "role_name": "委外加工商",
         "department_name": "加工商",
-        "description": "加工商侧：报价、接单拒单、收料、成品发货与异常上报（数据范围限本供应商）。",
+        "description": "加工商侧：报价、接单拒单、收料、成品发货。read/execute 权限直接包含对应查询和办理技能，不需要再单独分配一遍。",
         "permissions": [
             *_COMMON_READ,
             "erp_outsource_processor.read",

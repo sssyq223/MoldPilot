@@ -550,3 +550,36 @@ def test_buyer_scope_without_active_erp_scope_is_forbidden(monkeypatch):
         assert error.code == "FORBIDDEN"
     else:
         raise AssertionError("expected FORBIDDEN")
+
+
+def test_processor_board_shows_receipt_after_warehouse_ship(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [])
+
+    def fake_receipts(parsed, processor_tokens=None):
+        assert parsed["tab"] == "receipt"
+        assert processor_tokens == ["SUP000114"]
+        return [{
+            "outsourceType": "part",
+            "outsourceTypeLabel": "零件委外",
+            "orderNo": "EO-260928-WE11",
+            "moldNo": "M260063",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "shipmentNo": "SU-5136-82970",
+            "supplierCode": "SUP000114",
+            "pendingLines": [
+                {"partNo": "UP-01", "partName": "上模座", "qty": 1},
+                {"partNo": "U2-03", "partName": "防护垫脚", "qty": 6},
+            ],
+        }]
+
+    from domain_packs.mold.tools.erp.procurement.outsource_queries import processor_fulfillment
+    monkeypatch.setattr(processor_fulfillment, "query_items", fake_receipts)
+    payload = buyer_todo.run({}, processor_tokens=["SUP000114"])
+    assert [item["stationLabel"] for item in payload["items"]] == ["待收料"]
+    assert payload["items"][0]["orderNo"] == "EO-260928-WE11"
+    assert payload["items"][0]["lineCount"] == 2
+    assert "UP-01 上模座" in payload["items"][0]["partDetails"]
+    assert "待收料：1 条" in payload["summary"]
+    filtered = buyer_todo.run({"station": "accept"}, processor_tokens=["SUP000114"])
+    assert filtered["items"] == []

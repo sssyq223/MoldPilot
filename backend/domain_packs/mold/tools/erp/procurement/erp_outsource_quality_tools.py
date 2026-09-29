@@ -1,9 +1,10 @@
 """Quality claim and qualified submit after warehouse inbound."""
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -14,7 +15,7 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
-from domain_packs.mold.tools.erp.procurement.outsource_queries import quality_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, quality_todo
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_quality_tasks"
@@ -65,6 +66,103 @@ TOOL_NAMES = {
     PASS_TOOL: "准备提交质检合格",
 }
 
+CLAIM_SPEECH = ("领取质检", "领取任务", "办领取")
+PASS_SPEECH = ("判合格", "判定合格", "确认合格", "提交合格", "提交质检合格", "检验通过", "办合格")
+QUALITY_SPEECH = CLAIM_SPEECH + PASS_SPEECH
+
+
+def _is_quality_claim_speech(text: str) -> bool:
+    if any(token in text for token in CLAIM_SPEECH):
+        return True
+    return "领取" in text and any(token in text for token in ("质检", "任务"))
+
+
+def _is_quality_pass_speech(text: str) -> bool:
+    if any(token in text for token in PASS_SPEECH):
+        return True
+    if "合格" not in text or "不合格" in text:
+        return False
+    return any(token in text for token in ("提交", "判定", "判合", "确认合", "检验通过"))
+
+
+def spoken_quality_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    text = prompt or ""
+    if any(token in text for token in (
+        "有几个", "有哪些", "有没有", "不要领取", "不领取", "不要合格", "不合格", "查询", "查看",
+    )):
+        return None
+    if "待办" in text and not (_is_quality_claim_speech(text) or _is_quality_pass_speech(text)):
+        return None
+    if not (_is_quality_claim_speech(text) or _is_quality_pass_speech(text)):
+        return None
+    source = f"{text}\n{context_text or ''}"
+    arguments: dict[str, Any] = {}
+    row_no = buyer_todo.spoken_board_row_number(text)
+    if row_no:
+        arguments["board_row"] = row_no
+    inspection = quality_todo.INSPECTION_NO.search(source)
+    if inspection:
+        arguments["inspection_no"] = inspection.group(1).upper()
+    order = quality_todo.ORDER_NO.search(source)
+    if order:
+        arguments["order_no"] = order.group(1).upper()
+    parsed = quality_todo.parse_question(source)
+    if parsed.get("mold_batch"):
+        arguments["mold"] = parsed["mold_batch"]
+    elif parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    return arguments
+
+
+def _pending_quality_items() -> list[dict[str, Any]]:
+    return quality_todo.query_items({"mold_family": "", "mold_batch": "", "tab": ""})
+
+
+def _prefer_inspecting(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    inspecting = [item for item in items if item.get("status") == "inspecting"]
+    return inspecting or items
+
+
+def spoken_quality_invoke(
+    prompt: str,
+    context_text: str = "",
+    active_tool_names=None,
+) -> tuple[str, dict[str, Any]] | None:
+    arguments = spoken_quality_arguments(prompt, context_text)
+    if arguments is None:
+        return None
+    names = set(active_tool_names or ())
+    want_pass = _is_quality_pass_speech(prompt or "")
+    tool = PASS_TOOL if want_pass and PASS_TOOL in names else CLAIM_TOOL
+    if tool not in names:
+        fallback = PASS_TOOL if tool == CLAIM_TOOL else CLAIM_TOOL
+        if fallback not in names:
+            return None
+        tool = fallback
+    items = []
+    try:
+        if arguments.get("board_row"):
+            items = _pending_quality_items()
+            row = int(arguments["board_row"])
+            if 1 <= row <= len(items) and items[row - 1].get("taskId"):
+                arguments["task_id"] = int(items[row - 1]["taskId"])
+                return tool, arguments
+        items = quality_todo.find_pending_by_identity(
+            order_no=str(arguments.get("order_no") or ""),
+            inspection_no=str(arguments.get("inspection_no") or ""),
+            mold=str(arguments.get("mold") or ""),
+        )
+        if want_pass:
+            items = _prefer_inspecting(items)
+        if len(items) != 1:
+            fallback_items = _pending_quality_items() if not items else items
+            items = _prefer_inspecting(fallback_items) if want_pass else fallback_items
+    except Exception:
+        items = []
+    if len(items) == 1 and items[0].get("taskId"):
+        arguments["task_id"] = int(items[0]["taskId"])
+    return tool, arguments
+
 
 class QualityTodoInput(StrictModel):
     question: str | None = Field(default=None, max_length=500)
@@ -77,11 +175,50 @@ class QualityTodoInput(StrictModel):
 
 
 class QualityTaskInput(StrictModel):
-    task_id: int = Field(ge=1, description="查询结果中的 taskId。")
+    task_id: int | None = Field(default=None, ge=1, description="查询结果中的 taskId。说了表格 NO.、质检单号或订单号时可以不填。")
+    board_row: int | None = Field(default=None, ge=1, description="质检待办第一列 NO.。说第N行或 NO.N 时填这个。")
+    inspection_no: str | None = Field(default=None, max_length=40)
+    order_no: str | None = Field(default=None, max_length=80)
     mold: str | None = Field(default=None, max_length=40)
     remark: str | None = Field(default=None, max_length=400)
 
-    @field_validator("mold", "remark")
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_task_identity(cls, value):
+        if not isinstance(value, dict):
+            return value
+        raw = dict(value)
+        for key in ("taskId", "task_id"):
+            token = raw.get(key)
+            if token is None or isinstance(token, int):
+                continue
+            text = str(token).strip()
+            if text.isdigit():
+                raw[key] = int(text)
+                continue
+            row = buyer_todo.spoken_board_row_number(text)
+            if row:
+                raw.setdefault("board_row", row)
+                raw[key] = None
+                continue
+            inspection = quality_todo.INSPECTION_NO.search(text)
+            if inspection:
+                raw.setdefault("inspection_no", inspection.group(1).upper())
+                raw[key] = None
+                continue
+            order = quality_todo.ORDER_NO.search(text)
+            if order:
+                raw.setdefault("order_no", order.group(1).upper())
+                raw[key] = None
+                continue
+            raw[key] = None
+        row = raw.get("board_row") or raw.get("boardRow")
+        if row is not None and not isinstance(row, int):
+            number = buyer_todo.spoken_board_row_number(str(row))
+            raw["board_row"] = number
+        return raw
+
+    @field_validator("inspection_no", "order_no", "mold", "remark")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
@@ -148,8 +285,36 @@ def _require_task(task_id: int) -> dict[str, Any]:
     return item
 
 
+def _resolve_task(data, prefer_inspecting: bool = False) -> dict[str, Any]:
+    if getattr(data, "task_id", None):
+        item = quality_todo.find_task(int(data.task_id))
+        if item:
+            return item
+    row = getattr(data, "board_row", None)
+    if row:
+        items = _pending_quality_items()
+        if 1 <= int(row) <= len(items):
+            return items[int(row) - 1]
+        raise DomainError("NOT_FOUND", "没有找到对应行的质检任务", 404)
+    items = quality_todo.find_pending_by_identity(
+        order_no=getattr(data, "order_no", None) or "",
+        inspection_no=getattr(data, "inspection_no", None) or "",
+        mold=getattr(data, "mold", None) or "",
+    )
+    if not items:
+        items = _pending_quality_items()
+    if prefer_inspecting:
+        items = _prefer_inspecting(items)
+    if not items:
+        raise DomainError("NOT_FOUND", "没有找到待领取或质检中的委外质检任务", 404)
+    if len(items) > 1:
+        raise DomainError("AMBIGUOUS", "有多条质检待办，请说质检单号、订单号或表格 NO.", 409)
+    return items[0]
+
+
 def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
-    item = _require_task(data.task_id)
+    item = _resolve_task(data, prefer_inspecting=(key == PASS_TOOL))
+    data.task_id = int(item.get("taskId") or 0)
     status = item.get("status")
     if key == CLAIM_TOOL and status != "pending":
         if status == "inspecting":
@@ -159,6 +324,7 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
         raise DomainError("STATE_BLOCKED", "当前状态不能提交合格", 409)
     details = "、".join(
         f"{line.get('partNo') or line.get('inboundDetailId')}×{line.get('inboundQty')}"
+        + ("全检合格" if key == PASS_TOOL else "")
         for line in item.get("details") or []
     )
     display = {
@@ -232,6 +398,49 @@ def validate_intent(db, user, payload):
     return proposal, data, key
 
 
+def _as_qty(value: Any) -> int | float:
+    number = Decimal(str(value if value is not None else "0"))
+    if number == number.to_integral_value():
+        return int(number)
+    return float(number)
+
+
+def _pass_details(item: dict[str, Any]) -> list[dict[str, Any]]:
+    lines = []
+    for line in item.get("details") or []:
+        detail_id = line.get("detailId") or line.get("id")
+        if not detail_id or line.get("inboundQty") is None:
+            continue
+        qty = _as_qty(line.get("inboundQty"))
+        payload = {
+            "id": int(detail_id),
+            "qualifiedQty": qty,
+            "unqualifiedQty": 0,
+            "sampleQty": qty,
+            "result": "qualified",
+            "handlingAction": "inbound",
+        }
+        if line.get("inboundDetailId"):
+            payload["inboundDetailId"] = int(line["inboundDetailId"])
+        lines.append(payload)
+    return lines
+
+
+def _pass_payload(item: dict[str, Any], remark: str | None) -> dict[str, Any]:
+    details = _pass_details(item)
+    if not details:
+        raise DomainError("STATE_BLOCKED", "该质检任务没有检验明细，不能提交合格", 409)
+    body: dict[str, Any] = {
+        "inspectionType": "full",
+        "result": "qualified",
+        "handlingAction": "inbound",
+        "details": details,
+    }
+    if remark:
+        body["remark"] = remark
+    return body
+
+
 def confirm(db, user, payload):
     _, data, key = validate_intent(db, user, payload)
     if key == CLAIM_TOOL:
@@ -246,13 +455,12 @@ def confirm(db, user, payload):
             "erp": result,
             "nextHint": "已领取。下一步由同一质检员提交合格。",
         }
-    result = put_erp(db, user, f"quality/inspection/{data.task_id}/submit", {
-        "inspectionType": "full",
-        "result": "qualified",
-        "handlingAction": "inbound",
-        "remark": data.remark,
-        "details": [],
-    }, intent_id=payload.get("_intent_id"), action="quality_pass", native_id=f"quality-task:{data.task_id}")
+    item = _resolve_task(data, prefer_inspecting=True)
+    result = put_erp(
+        db, user, f"quality/inspection/{data.task_id}/submit",
+        _pass_payload(item, data.remark),
+        intent_id=payload.get("_intent_id"), action="quality_pass", native_id=f"quality-task:{data.task_id}",
+    )
     return {
         "task_id": data.task_id,
         "action": "quality_pass",

@@ -14,7 +14,7 @@ from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.events import record
 from domain_packs.mold.ports.security import digest
 from domain_packs.mold.ports.proposal_registry import handler_for_action
-from agent_core.domain_pack import resource_contract
+from agent_core.domain_pack import component, resource_contract
 from agent_core.workflow_timers import (
     cancel_instance_timers,
     cancel_stage_timers,
@@ -978,6 +978,16 @@ def retry_workflow_incident(db, user, instance_id, expected_version, reason):
             "incident": instance.incident, "version": instance.version}
 
 
+def proposal_handler(db, action, payload):
+    tool = None
+    step_id = payload.get("step_id") if isinstance(payload, dict) else None
+    if step_id:
+        from domain_packs.mold.models import Step
+        step = db.get(Step, step_id)
+        tool = step.tool if step is not None else None
+    return component("proposal_handlers").handler_for_intent(action, tool)
+
+
 def create_intent(db, user, action, resource_id, payload):
     if action == "approval.decide":
         instance = db.get(ApprovalInstance, resource_id)
@@ -1030,7 +1040,7 @@ def create_intent(db, user, action, resource_id, payload):
         authorize(db,user,subject,'submit')
         from domain_packs.mold.erp.core.workflow_selection import require_template
         require_template(db, user, subject, payload['definition_id'], payload.get('material_review_id'))
-    elif (handler := handler_for_action(action)) is not None:
+    elif (handler := proposal_handler(db, action, payload)) is not None:
         handler.implementation().validate_intent(db,user,payload)
     elif action.startswith('domain.'):
         from domain_packs.mold.erp.core.domain_commands import validate_command
@@ -1056,7 +1066,7 @@ def confirm_intent(db, user, intent_id, challenge, agent_permission_mode="ask"):
     elif intent.action == "approval.seat.add_sign": result = add_sign_approval_seat(db, user, intent.payload)
     elif intent.action=='purchase.submit': result = submit_request(db, user, intent.resource_id, **intent.payload, agent_permission_mode=agent_permission_mode)
     elif intent.action=='business.submit': result=submit_subject(db,user,intent.resource_id,**intent.payload,agent_permission_mode=agent_permission_mode)
-    elif (handler := handler_for_action(intent.action)) is not None:
+    elif (handler := proposal_handler(db, intent.action, intent.payload)) is not None:
         handler_payload = intent.payload
         if intent.action.startswith("erp_outsource_"):
             handler_payload = {**intent.payload, "_intent_id": intent.id}

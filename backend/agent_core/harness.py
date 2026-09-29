@@ -328,7 +328,9 @@ def _situational_protocol_close(
         actionable = _actionable_board_close(messages)
         if actionable:
             kind = "CLARIFICATION" if formal_action_requested else "BUSINESS"
-            summary = last_summary or actionable["summary"]
+            summary = actionable["summary"] if (
+                not last_summary or last_summary == QUERIED_FALLBACK_SUMMARY
+            ) else last_summary
             return {
                 "response_kind": kind,
                 "summary": summary,
@@ -476,6 +478,10 @@ def _board_actionable_items(messages):
                 if not isinstance(item, dict):
                     continue
                 station = str(item.get("station") or item.get("stationLabel") or "").strip()
+                if not station and (
+                    item.get("action") == "product_ship" or item.get("actionLabel") == "成品发货"
+                ):
+                    station = "待成品发货"
                 if not station:
                     continue
                 identity = (
@@ -1404,7 +1410,13 @@ def _spoken_identity_context(context):
             continue
         user = turn.get("user") if isinstance(turn.get("user"), dict) else {}
         assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
-        for value in (user.get("content"), assistant.get("content"), turn.get("content")):
+        for value in (
+            user.get("content"),
+            assistant.get("content"),
+            assistant.get("summary"),
+            turn.get("content"),
+            turn.get("summary"),
+        ):
             if isinstance(value, str) and value.strip():
                 parts.append(value)
     for message in context.get("messages") or []:
@@ -1786,6 +1798,13 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         name, arguments = spoken_write
         tool = all_tools.get(name)
         if name in active_tool_names and isinstance(arguments, dict) and tool:
+            # A locked prepare must not drag every other write schema into the
+            # model window. On an 8k context those extra schemas exceed the
+            # safe budget and the run closes before this call is executed.
+            active_tool_names.clear()
+            active_tool_names.add(name)
+            deferred_tools = {key: value for key, value in all_tools.items() if key != name}
+            suppress_tool_search = True
             call_id = "host_auto_" + hashlib.sha256(
                 (name + "\n" + json.dumps(arguments, ensure_ascii=False, sort_keys=True)).encode("utf-8")
             ).hexdigest()[:20]
@@ -1796,12 +1815,26 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             }]
             pending_index = 0
             stage = "正在准备报价确认表，请核对模具号、订单号和金额。"
-            if name == "prepare_erp_outsource_processor_accept":
+            if name == "prepare_erp_outsource_processor_quote":
+                stage = "正在准备加工商报价确认卡，请核对模具号、批次号、金额和交期。"
+            elif name == "prepare_erp_outsource_processor_accept":
                 stage = "正在准备接单确认表，请核对订单号、模具号和批次号。"
             elif name == "prepare_erp_outsource_warehouse_ship":
                 stage = "正在准备仓库发料/备料确认表，请核对订单号、模具号和批次号。"
+            elif name == "prepare_erp_outsource_processor_receipt":
+                stage = "正在准备原料收货确认卡，请核对订单号、模具号和零件明细。"
+            elif name == "prepare_erp_outsource_processor_product_ship":
+                stage = "正在准备成品发货确认卡，请核对订单号、可发数量和入库目标。"
             elif name == "prepare_erp_outsource_inquiry_send":
                 stage = "正在准备发询价确认表，请核对模具号、批次号和加工商。"
+            elif name == "prepare_erp_outsource_warehouse_arrival":
+                stage = "正在准备仓库到货确认卡，请核对发货单和待收数量。"
+            elif name == "prepare_erp_outsource_warehouse_inbound":
+                stage = "正在准备仓储入库确认卡，请核对发货单、待入数量和入库目标。"
+            elif name == "prepare_erp_outsource_quality_claim":
+                stage = "正在准备领取质检确认卡，请核对质检单、订单号和入库单。"
+            elif name == "prepare_erp_outsource_quality_pass":
+                stage = "正在准备质检合格确认卡，请核对质检单和全检结论。"
             host_spoken_write_name = name
             host_spoken_write_summary = stage
             # Identity is already locked in speech; the prepare tool looks up
@@ -1892,6 +1925,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         return False
 
     def station_write_names():
+        # A look-up such as「查看待办」must not unlock prepare_* in the same
+        # run. Station shortcuts are for a later 办理 turn, or a spoken write
+        # already detected on this prompt.
+        if _is_read_only_request(current_prompt) and not formal_action_requested:
+            return []
         return _station_prepare_names(_board_actionable_items(messages), set(all_tools))
 
     def activate_named_tools(names):
@@ -2124,7 +2162,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         }]
                         pending_index = 0
                         stage = "正在准备发询价确认表，请核对模具号、批次号和加工商。"
-                        if name == "prepare_erp_outsource_buyer_quote":
+                        if name == "prepare_erp_outsource_processor_quote":
+                            stage = "正在准备加工商报价确认卡，请核对模具号、批次号、金额和交期。"
+                        elif name == "prepare_erp_outsource_buyer_quote":
                             stage = "正在准备报价确认表，请核对模具号、订单号和金额。"
                         host_spoken_write_name = name
                         host_spoken_write_summary = stage
@@ -2149,17 +2189,20 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             # answered the user's read-only question. Close the tool stage
             # before asking for the final envelope so providers cannot repeat
             # the same call, hallucinate a similarly named tool, or emit a
-            # truncated second set of arguments. Formal action flows and
-            # authorized-route skills still continue: their read evidence is
-            # only a prerequisite, and the model must still choose prepare_*.
+            # truncated second set of arguments. Formal action flows still
+            # continue: their read evidence is only a prerequisite, and the
+            # model must still choose prepare_*. Authorized-route skills used
+            # to always continue after the read; that made「查看待办」unlock
+            # prepare_* and start a write. A look-up must finalize.
             authorized_active = any(
                 (group.get("activation_route") or "") == "authorized"
                 and group["key"] in active_skill_keys
                 for group in tool_groups
             )
+            lookup_only = _is_read_only_request(current_prompt)
             if (not finalizing
                     and not formal_action_requested
-                    and not authorized_active
+                    and (not authorized_active or lookup_only)
                     and required_evidence_tools
                     and required_evidence_tools <= evidence_tools):
                 finalizing = True

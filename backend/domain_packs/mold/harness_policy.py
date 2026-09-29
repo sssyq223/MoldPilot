@@ -24,9 +24,10 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
     # 加工商 收料 / 成品回厂
     "确认收料", "确认来料", "发成品", "发半成品", "确认成品发货", "办成品发货",
     # 仓管 回厂
-    "确认到货", "确认收货", "确认入库", "办到货", "办入库",
+    "确认到货", "确认收货", "确认入库", "入库确认", "办到货", "办入库",
+    "收货确认",
     # 质检
-    "领取质检", "判合格", "判定合格", "确认合格", "提交合格", "检验通过",
+    "领取质检", "判合格", "判定合格", "确认合格", "提交合格", "提交质检合格", "检验通过",
     # 审批
     "通过这单", "驳回这单",
 )
@@ -111,10 +112,12 @@ STATION_PREPARE_TOOLS = {
     ),
     "待领取": ("prepare_erp_outsource_quality_claim",),
     "待检验": ("prepare_erp_outsource_quality_pass",),
-    "待仓库收货": ("prepare_erp_outsource_warehouse_arrival",),
+    "质检中": ("prepare_erp_outsource_quality_pass",),
+    "待仓库收货": ("prepare_erp_outsource_warehouse_inbound",),
     "待入库": ("prepare_erp_outsource_warehouse_inbound",),
     "待发料": ("prepare_erp_outsource_warehouse_ship",),
     "待备料": ("prepare_erp_outsource_warehouse_ship",),
+    "待收料": ("prepare_erp_outsource_processor_receipt",),
     "待确认来料": ("prepare_erp_outsource_processor_receipt",),
     "待成品发货": ("prepare_erp_outsource_processor_product_ship",),
 }
@@ -127,11 +130,13 @@ STATION_NEXT_SUGGESTIONS = {
     "全部拒单": ("重选加工商",),
     "审批中": ("通过这单", "驳回这单"),
     "待领取": ("领取质检",),
-    "待检验": ("提交合格",),
-    "待仓库收货": ("确认到货",),
+    "待检验": ("提交质检合格",),
+    "质检中": ("提交质检合格",),
+    "待仓库收货": ("确认入库",),
     "待入库": ("确认入库",),
     "待发料": ("确认发料",),
     "待备料": ("确认备料",),
+    "待收料": ("确认收货",),
     "待确认来料": ("确认来料",),
     "待成品发货": ("确认成品发货",),
 }
@@ -360,10 +365,32 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             ACCEPT_TOOL,
+            QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
             spoken_accept_arguments,
+            spoken_quote_arguments as spoken_processor_quote_arguments,
         )
+        if PROCESSOR_QUOTE_TOOL in names and spoken_processor_quote_arguments(prompt, context_text):
+            extra.add(PROCESSOR_QUOTE_TOOL)
         if ACCEPT_TOOL in names and spoken_accept_arguments(prompt, context_text):
             extra.add(ACCEPT_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_fulfillment_tools import (
+            RECEIPT_TOOL,
+            spoken_receipt_arguments,
+        )
+        if RECEIPT_TOOL in names and spoken_receipt_arguments(prompt, context_text) is not None:
+            extra.add(RECEIPT_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools import (
+            SHIP_TOOL as PRODUCT_SHIP_TOOL,
+            spoken_product_ship_arguments,
+        )
+        if PRODUCT_SHIP_TOOL in names and spoken_product_ship_arguments(prompt, context_text) is not None:
+            extra.add(PRODUCT_SHIP_TOOL)
     except ImportError:
         pass
     try:
@@ -373,6 +400,29 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
         )
         if SHIP_TOOL in names and spoken_ship_arguments(prompt, context_text):
             extra.add(SHIP_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_inbound_tools import (
+            INBOUND_TOOL,
+            spoken_return_arguments,
+        )
+        if spoken_return_arguments(prompt, context_text) is not None:
+            if INBOUND_TOOL in names:
+                extra.add(INBOUND_TOOL)
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_quality_tools import (
+            CLAIM_TOOL,
+            PASS_TOOL,
+            spoken_quality_arguments,
+        )
+        if spoken_quality_arguments(prompt, context_text) is not None:
+            if CLAIM_TOOL in names:
+                extra.add(CLAIM_TOOL)
+            if PASS_TOOL in names:
+                extra.add(PASS_TOOL)
     except ImportError:
         pass
     return extra
@@ -430,6 +480,18 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
         if arguments:
             return SEND_TOOL, arguments
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
+            spoken_quote_arguments as spoken_processor_quote_arguments,
+        )
+    except ImportError:
+        PROCESSOR_QUOTE_TOOL = ""
+        spoken_processor_quote_arguments = None
+    if PROCESSOR_QUOTE_TOOL in names and spoken_processor_quote_arguments:
+        arguments = spoken_processor_quote_arguments(prompt, context_text)
+        if arguments:
+            return PROCESSOR_QUOTE_TOOL, arguments
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_tools import (
             SHIP_TOOL,
             spoken_ship_arguments,
@@ -438,6 +500,46 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
             arguments = spoken_ship_arguments(prompt, context_text)
             if arguments:
                 return SHIP_TOOL, arguments
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_fulfillment_tools import (
+            RECEIPT_TOOL,
+            spoken_receipt_arguments,
+        )
+        if RECEIPT_TOOL in names:
+            arguments = spoken_receipt_arguments(prompt, context_text)
+            if arguments is not None:
+                return RECEIPT_TOOL, arguments
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools import (
+            SHIP_TOOL as PRODUCT_SHIP_TOOL,
+            spoken_product_ship_arguments,
+        )
+        if PRODUCT_SHIP_TOOL in names:
+            arguments = spoken_product_ship_arguments(prompt, context_text)
+            if arguments is not None:
+                return PRODUCT_SHIP_TOOL, arguments
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_warehouse_inbound_tools import (
+            spoken_return_invoke,
+        )
+        invoked = spoken_return_invoke(prompt, context_text, names)
+        if invoked:
+            return invoked
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_quality_tools import (
+            spoken_quality_invoke,
+        )
+        invoked = spoken_quality_invoke(prompt, context_text, names)
+        if invoked:
+            return invoked
     except ImportError:
         pass
     try:
@@ -458,6 +560,17 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
 def spoken_write_from_board(prompt: str, items, active_tool_names):
     """After a board hit, lock the matching prepare when speech already asked to quote or send."""
     names = set(active_tool_names or ())
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
+            spoken_quote_arguments as spoken_processor_quote_arguments,
+        )
+        if PROCESSOR_QUOTE_TOOL in names:
+            arguments = spoken_processor_quote_arguments(prompt)
+            if arguments:
+                return PROCESSOR_QUOTE_TOOL, arguments
+    except ImportError:
+        pass
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
             QUOTE_TOOL,

@@ -22,7 +22,10 @@ PART_NO = re.compile(r"(?i)(?:零件\s*(?:是|为|:|：)?)([A-Z]{1,8}-?\d{1,4}[A
 QUOTE_AMOUNT = re.compile(r"(?:我方报价|填报价|报价|总价格|总价)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
 MAX_AMOUNT = re.compile(r"(?:上限区间|接单上限|上限)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
 ROW_INDEX = re.compile(r"第\s*(\d+)\s*行")
-ROW_SPOKEN = re.compile(r"第\s*(\d+|[一二三四五六七八九十])\s*行")
+ROW_SPOKEN = re.compile(
+    r"(?:第\s*(\d+|[一二三四五六七八九十])\s*行|(?<![A-Za-z0-9])NO\.?\s*(\d+))",
+    re.IGNORECASE,
+)
 CN_ROW = {
     "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
     "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
@@ -75,6 +78,7 @@ SELECT
     inquiry.our_quote_amount,
     inquiry.auto_accept_max_amount,
     inquiry.final_deal_amount,
+    inquiry.delivery_date,
     coalesce(invite.invitation_count, 0) AS invitation_count,
     coalesce(invite.quoted_count, 0) AS quoted_count,
     invite.invitations,
@@ -253,6 +257,15 @@ WHERE coalesce(project.status, '') IN ('confirmed', 'in_progress')
   )
 ORDER BY project.project_no
 """
+
+
+def iso_date(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())[:10]
+    text = str(value).strip()[:10]
+    return text if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
 
 
 def money(value: Any) -> float | None:
@@ -741,7 +754,15 @@ def is_spoken_buyer_quote(question: str) -> bool:
     text = question or ""
     if any(token in text for token in ("有几个", "有哪些", "有没有", "不要填", "不填报价", "不填价格")):
         return False
-    return any(token in text for token in BUYER_QUOTE_SPEECH)
+    if any(token in text for token in BUYER_QUOTE_SPEECH):
+        return True
+    # 「第6行报价300」没有「填写报价」这几个词，仍按完整表 NO. 办理填价。
+    return bool(
+        spoken_board_row_number(text)
+        and "报价" in text
+        and "询价" not in text
+        and "发询" not in text
+    )
 
 
 def is_spoken_inquiry_send(question: str) -> bool:
@@ -866,7 +887,7 @@ def parse_spoken_inquiry_send(question: str, context_text: str = "") -> dict[str
     if not is_spoken_inquiry_send(question):
         return None
     row_no = spoken_board_row_number(question)
-    if row_no and not _question_locks_identity(question):
+    if row_no:
         item = item_from_visible_board_row(row_no)
         if item and _item_is_station(item, "inquiry_send"):
             filled = _arguments_from_send_item(item)
@@ -891,8 +912,9 @@ def parse_spoken_inquiry_send(question: str, context_text: str = "") -> dict[str
 
 
 def _visible_row_item_for_station(question: str, station: str) -> tuple[int, dict[str, Any]] | None:
+    """NO.N is the full-table row, even when the sentence also names a mold or batch."""
     row_no = spoken_board_row_number(question)
-    if not row_no or _question_locks_identity(question):
+    if not row_no:
         return None
     item = item_from_visible_board_row(row_no)
     if not item or not _item_is_station(item, station):
@@ -903,8 +925,10 @@ def _visible_row_item_for_station(question: str, station: str) -> tuple[int, dic
 def send_arguments_from_board(question: str, items: list[Any] | None) -> dict[str, Any] | None:
     if not is_spoken_inquiry_send(question):
         return None
-    visible = _visible_row_item_for_station(question, "inquiry_send")
-    if visible:
+    if spoken_board_row_number(question):
+        visible = _visible_row_item_for_station(question, "inquiry_send")
+        if not visible:
+            return None
         row_no, chosen = visible
         arguments = _arguments_from_send_item(chosen)
         arguments["board_row"] = row_no
@@ -1010,10 +1034,15 @@ def quote_arguments_from_board(question: str, items: list[Any] | None) -> dict[s
         "our_quote_amount": float(quote.group(1)),
         "auto_accept_max_amount": float(ceiling.group(1)),
     }
-    visible = _visible_row_item_for_station(question, "buyer_quote")
-    if visible:
+    if spoken_board_row_number(question):
+        visible = _visible_row_item_for_station(question, "buyer_quote")
+        if not visible:
+            return None
         row_no, chosen = visible
         filled = _arguments_from_quote_item(chosen, amounts)
+        full_batch = str(chosen.get("moldBatch") or chosen.get("batch") or "").strip()
+        if full_batch:
+            filled["batch"] = full_batch
         filled["board_row"] = row_no
         return filled if buyer_quote_identity_locked(filled) else None
     quoteable = _quoteable_board_items(items)
@@ -1076,7 +1105,7 @@ def spoken_board_row_number(question: str) -> int | None:
     match = ROW_SPOKEN.search(question or "")
     if not match:
         return None
-    token = match.group(1)
+    token = next((group for group in match.groups() if group), "")
     if token.isdigit():
         return int(token)
     return CN_ROW.get(token)
@@ -1167,10 +1196,13 @@ def parse_spoken_buyer_quote(question: str, context_text: str = "") -> dict[str,
         "auto_accept_max_amount": float(ceiling.group(1)),
     }
     row_no = spoken_board_row_number(question)
-    if row_no and not _question_locks_identity(question):
+    if row_no:
         item = item_from_visible_board_row(row_no)
         if item and _item_is_station(item, "buyer_quote"):
             filled = _arguments_from_quote_item(item, amounts)
+            full_batch = str(item.get("moldBatch") or item.get("batch") or "").strip()
+            if full_batch:
+                filled["batch"] = full_batch
             filled["board_row"] = row_no
             return filled if buyer_quote_identity_locked(filled) else None
         return None
@@ -1290,6 +1322,7 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "supplierName": row.get("supplier_name") or "",
         "supplierId": row.get("supplier_id"),
         "supplierCode": row.get("supplier_code") or "",
+        "deliveryDate": iso_date(row.get("delivery_date")),
         "invitations": invitations,
     }
 
@@ -1314,7 +1347,9 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
     counts = {label: 0 for label in STATIONS.values()}
     type_counts = {label: 0 for label in OUTSOURCE_TYPE_LABELS.values()}
     for item in visible:
-        counts[item["stationLabel"]] += 1
+        label = str(item.get("stationLabel") or "")
+        if label:
+            counts[label] = counts.get(label, 0) + 1
         type_counts[item.get("outsourceTypeLabel") or ""] = type_counts.get(item.get("outsourceTypeLabel") or "", 0) + 1
     scoped = query_params(parsed)
     scope = scoped["order_no"] or scoped["project_no"] or scoped["mold_batch"] or scoped["mold_family"] or "ERP 委外待办"
@@ -1406,7 +1441,7 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
     if station == "supplier_quote":
         return {
             "action": "quote",
-            "hint": "提交本加工商报价。提交后重新查询：出现待接单则提醒接单；仍待下单或审批中则等采购填成交价、主管和总经理审批。",
+            "hint": "提交本加工商报价。提交后重新查询：变成待接单就可以接单；还不是待接单就等待采购处理。不要向加工商提区间、成交价或审批人。",
         }
     if station == "accept":
         if outsource_type == "operation":
@@ -1424,7 +1459,7 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
     if station in {"place_order", "order_approval"}:
         return {
             "action": "wait",
-            "hint": "报价已超出直接接单区间。等采购员填成交价，再等主管、总经理审批。不要自己接单或改成交价。",
+            "hint": "当前还不能接单。请等待采购处理，不要自己接单或改价。不要向加工商解释区间、成交价或审批人。",
         }
     if station == "exhausted":
         return {"action": "wait", "hint": "候选加工商已全部拒单，等采购员重派。"}
@@ -1432,7 +1467,15 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def clip_for_processor(item: dict[str, Any], tokens: list[str] | None) -> dict[str, Any]:
+    # 零件/模具：加工商看见采购报价，不看核算价、接单上限、成交价。
+    # 工序委外没有询价，也没有采购报价；核算价在订单零件上，加工商要看见。
+    outsource_type = str(item.get("outsourceType") or "")
+    operation = outsource_type == "operation"
+    buyer_quote = None if operation else item.get("ourQuoteAmount")
     visible = strip_internal_prices(item)
+    visible["buyerQuoteAmount"] = buyer_quote
+    if operation:
+        visible["referenceTotal"] = item.get("referenceTotal")
     invitations = [
         invitation for invitation in item.get("invitations") or []
         if invitation_matches_processor(invitation, tokens)
@@ -1440,8 +1483,11 @@ def clip_for_processor(item: dict[str, Any], tokens: list[str] | None) -> dict[s
     visible["invitations"] = invitations
     if invitations:
         visible["pendingQuoteSuppliers"] = pending_quote_suppliers(invitations)
-        visible["supplierQuotes"] = format_quotes(invitations)
         visible["supplierName"] = invitations[0].get("supplierName") or visible.get("supplierName")
+        if not operation:
+            visible["supplierQuotes"] = format_quotes(invitations)
+    if operation:
+        visible["supplierQuotes"] = format_quotes(invitations)
     visible["nextAction"] = processor_next_action(visible)
     return visible
 
@@ -1584,6 +1630,48 @@ def find_invitation(invitation_id: int, *, mold: str | None = None) -> tuple[dic
     return None, None
 
 
+def _processor_receipt_rows(parsed: dict[str, str], tokens: list[str] | None) -> list[dict[str, Any]]:
+    """Warehouse-shipped part orders are receipt todos, not quote/accept rows."""
+    from domain_packs.mold.tools.erp.procurement.outsource_queries.processor_fulfillment import query_items
+
+    scoped = {
+        "mold_family": parsed.get("mold_family") or "",
+        "mold_batch": parsed.get("mold_batch") or "",
+        "tab": "receipt",
+    }
+    rows = []
+    for item in query_items(scoped, processor_tokens=tokens):
+        labels = []
+        for line in item.get("pendingLines") or []:
+            if not isinstance(line, dict):
+                continue
+            head = " ".join(piece for piece in (line.get("partNo"), line.get("partName")) if piece) or "零件"
+            qty = line.get("qty")
+            labels.append(f"{head}（×{qty}）" if qty not in (None, "") else head)
+        rows.append({
+            "station": "待收料",
+            "stationLabel": "待收料",
+            "outsourceType": item.get("outsourceType") or "",
+            "outsourceTypeLabel": item.get("outsourceTypeLabel") or "",
+            "orderNo": item.get("orderNo") or "",
+            "moldNo": item.get("moldNo") or "",
+            "moldFamily": item.get("moldFamily") or "",
+            "moldBatch": item.get("moldBatch") or "",
+            "partDetails": "；".join(labels),
+            "shipmentNo": item.get("shipmentNo") or "",
+            "supplierName": item.get("supplierName") or "",
+            "supplierCode": item.get("supplierCode") or "",
+            "lineCount": len(labels),
+            "nextAction": {
+                "action": "receipt",
+                "orderNo": item.get("orderNo") or "",
+                "shipmentNo": item.get("shipmentNo") or "",
+                "hint": "仓库已经发料。确认原料收货后进入生产。",
+            },
+        })
+    return rows
+
+
 def run(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) -> dict[str, Any]:
     items = query_items(parsed)
     order_no = str(parsed.get("order_no") or "").strip()
@@ -1595,4 +1683,12 @@ def run(parsed: dict[str, str], *, processor_tokens: list[str] | None = None) ->
             for item in items
             if item_mentions_processor(item, processor_tokens)
         ]
-    return present(parsed, items)
+        if not str(parsed.get("station") or "").strip():
+            receipts = _processor_receipt_rows(parsed, processor_tokens)
+            if order_no:
+                receipts = [item for item in receipts if item_matches_identity(item, order_no=order_no)]
+            items.extend(receipts)
+    payload = present(parsed, items)
+    if processor_tokens is not None:
+        payload["audience"] = "processor"
+    return payload

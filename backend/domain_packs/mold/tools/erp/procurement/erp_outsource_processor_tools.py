@@ -1,9 +1,10 @@
 """Processor-side outsource prepare tools: quote, accept, reject."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -55,7 +56,7 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     QUOTE_TOOL: {
-        "description": "准备提交本加工商报价。必须已用查询锁定 invitationId，且当前分站是待报价。工序委外不走报价。本人确认后才写入 ERP。",
+        "description": "准备提交本加工商报价确认卡。用户说 NO.几或第N行并给出金额时，用 board_row 锁定「我的委外待办」那一行，不要改去查采购看板，也不要口头请用户确认。交期未说时用询价单交期；含税未说按含税，都写在确认卡上。工序委外不走报价。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
     ACCEPT_TOOL: {
@@ -75,6 +76,108 @@ TOOL_NAMES = {
 }
 
 ACCEPT_SPEECH = ("我接了", "这单我接了", "确认接单", "我要接单", "接这单")
+CONFIRM_ONLY = re.compile(r"^(?:确认|是的|好的|可以|同意|对|嗯|行|好)(?:吧|了)?$")
+QUOTE_FOLLOWUP = ("提交报价", "办理报价", "确认办理", "确认报价", "办理提交", "填报价")
+QUOTE_UTTERANCE = re.compile(
+    r"(?:NO\.?\s*\d+|第\s*(?:\d+|[一二三四五六七八九十])\s*行)[^\n]{0,80}",
+    re.IGNORECASE,
+)
+SPOKEN_DATE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
+# 上限 / 我方报价属于采购员填价。加工商说「NO.1填报价 3000」仍是本角色报价。
+PROCESSOR_QUOTE_BLOCK = (
+    "上限", "我方报价", "发询价", "发送询价",
+    "有几个", "有哪些", "有没有", "不要报价", "不报价",
+)
+PRICE_ALIASES = ("unitPrice", "quote_amount", "quoteAmount", "amount", "price", "报价金额")
+
+
+def _plain_int(value: Any) -> int | None:
+    if value is None or value is False or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip().replace(",", "")
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    return None
+
+
+def _board_row_value(value: Any) -> int | None:
+    number = _plain_int(value)
+    if number is not None:
+        return number
+    if value is None or value == "":
+        return None
+    return buyer_todo.spoken_board_row_number(str(value))
+
+
+def _looks_like_row_label(value: Any) -> bool:
+    return buyer_todo.spoken_board_row_number(str(value or "")) is not None and not str(value).strip().isdigit()
+
+
+def is_spoken_processor_quote(text: str) -> bool:
+    """Processor quote locked to 我的委外待办 NO. Buyer ceiling quotes stay out."""
+    if any(token in text for token in PROCESSOR_QUOTE_BLOCK):
+        return False
+    if "报价" not in text or "询价" in text:
+        return False
+    return buyer_todo.QUOTE_AMOUNT.search(text) is not None and (
+        buyer_todo.spoken_board_row_number(text) is not None
+    )
+
+
+def _is_quote_followup(text: str) -> bool:
+    stripped = (text or "").strip()
+    if CONFIRM_ONLY.match(stripped):
+        return True
+    if any(token in stripped for token in ("不要", "不报价", "有几个", "有哪些", "有没有")):
+        return False
+    return any(token in stripped for token in QUOTE_FOLLOWUP)
+
+
+def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse NO.n / 第N行报价 into prepare_erp_outsource_processor_quote arguments.
+
+    Row number is the processor board NO., not the buyer follow-up board.
+    A bare 确认 reuses the previous quote sentence, not a date the model invented.
+    """
+    text = (prompt or "").strip()
+    source = text
+    extra = text
+    if not is_spoken_processor_quote(text):
+        if not _is_quote_followup(text):
+            return None
+        found = None
+        for match in QUOTE_UTTERANCE.finditer(context_text or ""):
+            if is_spoken_processor_quote(match.group(0)):
+                found = match.group(0)
+        if not found:
+            return None
+        source = found
+    amount = buyer_todo.QUOTE_AMOUNT.search(source)
+    row_no = buyer_todo.spoken_board_row_number(source)
+    if amount is None or row_no is None:
+        return None
+    arguments: dict[str, Any] = {
+        "board_row": row_no,
+        "unit_price": float(amount.group(1)),
+        "tax_included": "不含税" not in source and "不含税" not in extra,
+    }
+    spoken_date = SPOKEN_DATE.search(source)
+    if spoken_date is None and extra != source:
+        spoken_date = SPOKEN_DATE.search(extra)
+    if spoken_date:
+        arguments["delivery_date"] = spoken_date.group(1)
+    parsed = buyer_todo.parse_question(source)
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    elif parsed.get("mold_batch"):
+        arguments["mold"] = parsed["mold_batch"].split("-P", 1)[0]
+    return arguments
 
 
 def spoken_accept_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
@@ -99,18 +202,58 @@ def spoken_accept_arguments(prompt: str, context_text: str = "") -> dict[str, An
 
 
 class ProcessorQuoteInput(StrictModel):
-    invitation_id: int = Field(ge=1, description="查询结果中本加工商的 invitationId。")
+    invitation_id: int | None = Field(default=None, ge=1, description="查询结果中本加工商的 invitationId。说了表格 NO. 时可以不填。")
+    board_row: int | None = Field(default=None, ge=1, description="我的委外待办第一列 NO.。加工商说第N行或 NO.N 时填这个，不要用采购员完整表的行号。")
     mold: str | None = Field(default=None, max_length=40)
     unit_price: float = Field(gt=0, description="本加工商报价（订单总额）。")
-    delivery_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="承诺交付日期 YYYY-MM-DD。")
-    tax_included: bool = Field(description="报价是否含税。")
+    delivery_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="承诺交付日期 YYYY-MM-DD。没说时用询价单交期。")
+    tax_included: bool = Field(default=True, description="报价是否含税。用户没说时按含税，并写在确认卡上。")
     note: str | None = Field(default=None, max_length=400)
     lead_time_days: int | None = Field(default=None, ge=1, le=365)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_row_and_price(cls, value):
+        """Accept NO.1 / 第1行 and empty invitation ids the model often sends."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        for alias in PRICE_ALIASES:
+            if data.get("unit_price") in (None, "") and data.get(alias) not in (None, ""):
+                data["unit_price"] = data[alias]
+            data.pop(alias, None)
+        row = _board_row_value(data.get("board_row"))
+        invite_raw = data.get("invitation_id")
+        if row is None and _looks_like_row_label(invite_raw):
+            row = _board_row_value(invite_raw)
+            invite_raw = None
+        data["board_row"] = row
+        data["invitation_id"] = None if invite_raw in (None, "") else _plain_int(invite_raw)
+        if isinstance(data.get("tax_included"), str):
+            tax = data["tax_included"].strip()
+            if tax in {"含税", "是", "true", "True", "1"}:
+                data["tax_included"] = True
+            elif tax in {"不含税", "否", "false", "False", "0"}:
+                data["tax_included"] = False
+        return data
 
     @field_validator("mold", "note")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("delivery_date", mode="before")
+    @classmethod
+    def empty_date(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def need_target(self):
+        if not self.invitation_id and not self.board_row:
+            raise ValueError("请用我的委外待办 NO. 或 invitationId 定位待报价行")
+        return self
 
 
 class ProcessorAcceptInput(CamelModel):
@@ -160,7 +303,7 @@ ACTION_BY_TOOL = {
 }
 
 LIMIT_BY_TOOL = {
-    QUOTE_TOOL: "仅准备本加工商报价；本人确认后才调用 ERP。提交后必须重新查询，再决定提醒接单还是等待采购/审批。",
+    QUOTE_TOOL: "仅准备本加工商报价；本人确认后才调用 ERP。提交后重新查询。对加工商只说：待接单可以接单，否则等待采购处理。不要提区间、成交价、主管或总经理。",
     ACCEPT_TOOL: "仅准备确认接单；本人确认后才调用 ERP。",
     REJECT_TOOL: "仅准备拒绝接单；本人确认后才调用 ERP。工序委外拒单后由 ERP 自动转下一家，不要自己选下一家。",
 }
@@ -181,7 +324,12 @@ def parse(key: str, arguments: dict | None):
     try:
         return INPUT_MODELS[key].model_validate(arguments or {})
     except ValidationError as error:
-        raise DomainError("INVALID_TOOL_INPUT", "加工商办理参数无效：" + error.errors()[0]["msg"]) from None
+        detail = error.errors()[0]
+        loc = ".".join(str(part) for part in detail.get("loc") or [])
+        message = detail.get("msg") or "参数无效"
+        if loc:
+            message = f"{loc}：{message}"
+        raise DomainError("INVALID_TOOL_INPUT", "加工商办理参数无效：" + message) from None
 
 
 def _require_processor(db, user) -> None:
@@ -204,6 +352,73 @@ def _guard_scope(item: dict[str, Any], invitation: dict[str, Any] | None, tokens
         return
     if not buyer_todo.item_mentions_processor(item, tokens):
         raise DomainError("FORBIDDEN", "这张工单不属于本加工商", 403)
+
+
+def _item_from_processor_board(tokens: list[str] | None, row_no: int) -> dict[str, Any]:
+    """NO. on 我的委外待办, already limited to this processor."""
+    payload = buyer_todo.run(
+        {
+            "station": "",
+            "mold_family": "",
+            "mold_batch": "",
+            "project_no": "",
+            "outsource_type": "",
+        },
+        processor_tokens=tokens,
+    )
+    items = payload.get("items") or []
+    if row_no < 1 or row_no > len(items):
+        raise DomainError(
+            "NOT_FOUND",
+            f"我的委外待办没有 NO.{row_no}。请按当前表格第一列的 NO. 再说一次。",
+            404,
+        )
+    return items[row_no - 1]
+
+
+def _quoteable_invitation(item: dict[str, Any], tokens: list[str] | None) -> dict[str, Any] | None:
+    for invitation in item.get("invitations") or []:
+        if not isinstance(invitation, dict):
+            continue
+        if tokens is not None and not buyer_todo.invitation_matches_processor(invitation, tokens):
+            continue
+        if str(invitation.get("status") or "") in QUOTEABLE:
+            return invitation
+    return None
+
+
+def _resolve_processor_quote(data, tokens: list[str] | None):
+    """Turn 我的委外待办 NO. into invitationId, and fill a missing due date from the inquiry."""
+    updates: dict[str, Any] = {}
+    item = None
+    if not data.invitation_id:
+        item = _item_from_processor_board(tokens, int(data.board_row))
+        row_no = int(data.board_row)
+        if item.get("outsourceType") == "operation":
+            raise DomainError("STATE_BLOCKED", f"NO.{row_no} 是工序委外，不走报价，只办接单或拒单", 409)
+        if item.get("station") != "supplier_quote":
+            raise DomainError(
+                "STATE_BLOCKED",
+                f"NO.{row_no} 当前是{item.get('stationLabel') or item.get('station')}，不能报价",
+                409,
+            )
+        invitation = _quoteable_invitation(item, tokens)
+        if not invitation or not invitation.get("invitationId"):
+            raise DomainError("STATE_BLOCKED", f"NO.{row_no} 已报过价或没有待报价邀请，不能再报", 409)
+        updates["invitation_id"] = int(invitation["invitationId"])
+    if not data.delivery_date:
+        if item is None and data.invitation_id:
+            item, _invitation = buyer_todo.find_invitation(data.invitation_id, mold=data.mold)
+        due = buyer_todo.iso_date((item or {}).get("deliveryDate"))
+        if not due:
+            raise DomainError(
+                "INVALID_TOOL_INPUT",
+                "这张询价单没有交期。请在报价时写上承诺交期，例如 NO.1报价3000，交期2026-10-15。",
+            )
+        updates["delivery_date"] = due
+    if updates:
+        data = data.model_copy(update=updates)
+    return data
 
 
 def _lookup_quote(data, tokens: list[str] | None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -256,14 +471,17 @@ def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
 def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
     tokens = _tokens(db, user)
     if key == QUOTE_TOOL:
+        data = _resolve_processor_quote(data, tokens)
         item, invitation = _lookup_quote(data, tokens)
         extra = {
             "操作": "提交本加工商报价",
             "报价金额": data.unit_price,
             "承诺交期": data.delivery_date,
             "是否含税": "含税" if data.tax_included else "不含税",
-            "说明": "本人确认后写入 ERP。区间内会免审待接单；超区间则等采购填成交价、主管和总经理审批。",
+            "说明": "本人确认后写入 ERP。提交后再查待办：变成待接单就可以接单；还不是待接单就等待采购处理。",
         }
+        if item.get("ourQuoteAmount") is not None:
+            extra["采购报价"] = item["ourQuoteAmount"]
         if invitation.get("supplierName"):
             extra["加工商"] = invitation["supplierName"]
         return item, _card(item, extra)
@@ -289,6 +507,8 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
 def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[str, Any]:
     _require_processor(db, user)
     data = parse(key, arguments)
+    if key == QUOTE_TOOL:
+        data = _resolve_processor_quote(data, _tokens(db, user))
     _, display = preview(db, user, key, data)
     proposal = {
         "kind": KIND_BY_TOOL[key],
@@ -340,7 +560,7 @@ def validate_intent(db, user, payload):
 
 
 def _quote_hint() -> str:
-    return "请立即重新查询本加工商待办。若出现待接单，提醒接单；若变为待下单或审批中，说明报价超区间，等采购填成交价、主管和总经理审批。"
+    return "报价已提交。请重新查询待办。变成待接单就可以接单或拒单。如果还不是待接单，请等待采购处理，不要自己接单。"
 
 
 def _reject_hint(item: dict[str, Any]) -> str:

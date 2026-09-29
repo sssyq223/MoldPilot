@@ -44,6 +44,53 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].columns.some((column) => /项目|工单/.test(column.label))).toBe(false)
   })
 
+  it('renders the processor board without buyer price columns', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_processor_board',
+        data: {
+          scope: 'ERP 委外待办',
+          items: [{
+            stationLabel: '待报价',
+            outsourceTypeLabel: '零件委外',
+            moldFamily: 'M260063',
+            moldBatch: 'M260063-P1',
+            partDetails: 'B1-01 下托板 (S-Z 850×1200×30)',
+            processNames: '',
+            buyerQuoteAmount: 18000,
+            referenceTotal: null,
+            ourQuoteAmount: null,
+            autoAcceptMaxAmount: null,
+            finalDealAmount: null,
+            supplierQuotes: '',
+            supplierName: '青岛和兴嘉业金属制品有限公司',
+          }, {
+            stationLabel: '待接单',
+            outsourceTypeLabel: '工序委外',
+            moldFamily: 'M260063',
+            moldBatch: 'M260063-P5',
+            partDetails: 'DIE-BL1',
+            processNames: 'CNC',
+            referenceTotal: 267,
+            buyerQuoteAmount: null,
+          }],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('我的委外待办')
+    expect(tables[0].columns.map((column) => column.label)).toEqual([
+      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '工序', '核算价', '采购报价', '我的报价',
+    ])
+    expect(tables[0].sourceNote).toContain('采购报价')
+    expect(tables[0].rows[0].buyerQuoteAmount).toBe(18000)
+    expect(tables[0].rows[1].buyerQuoteAmount).toBeNull()
+    expect(tables[0].rows[1].referenceTotal).toBe(267)
+    expect(tables[0].rows[0].referenceTotal ?? null).toBeNull()
+  })
+
   it('keeps one board table when the same tool returns an empty pass then rows', () => {
     const tables = erpOutsourceResultTablesFromRun({
       status: 'SUCCEEDED',
@@ -137,6 +184,146 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[1].ourQuoteAmount).toBeNull()
   })
 
+  it('renders one warehouse order instead of one row per part', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_warehouse_tasks',
+        data: {
+          scope: '仓库委外待办',
+          items: [
+            {
+              action: 'ship',
+              actionLabel: '原料发货',
+              outsourceTypeLabel: '零件委外',
+              orderNo: 'EO-260928-WE11',
+              moldFamily: 'M260063',
+              moldBatch: 'M260063-P1',
+              partNo: 'UP-01',
+              partName: '上模座',
+              qty: 1,
+              sourceType: 'material_stock',
+              sourceTypeLabel: '物料库',
+              processorName: '青岛和兴嘉业金属制品有限公司',
+            },
+            {
+              action: 'ship',
+              actionLabel: '原料发货',
+              outsourceTypeLabel: '零件委外',
+              orderNo: 'EO-260928-WE11',
+              moldFamily: 'M260063',
+              moldBatch: 'M260063-P1',
+              partNo: 'U2-03',
+              partName: '防护垫脚',
+              qty: 6,
+              sourceType: 'material_stock',
+              sourceTypeLabel: '物料库',
+              processorName: '青岛和兴嘉业金属制品有限公司',
+            },
+            {
+              action: 'ship',
+              actionLabel: '备料完成',
+              outsourceTypeLabel: '工序委外',
+              orderNo: 'EO-260928-8L2U',
+              moldFamily: 'M260063',
+              moldBatch: 'M260063-P5',
+              partNo: 'DIE-BL1',
+              partName: '下模',
+              qty: 1,
+              sourceType: 'semi_finished_stock',
+              sourceTypeLabel: '半成品库',
+              processorName: '另一家',
+            },
+          ],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('仓库委外待发货')
+    expect(tables[0].summary).toBe('仓库委外待办 共 2 单，3 个零件明细')
+    expect(tables[0].columns.map((column) => column.label)).toEqual([
+      '办理', '委外类型', '订单号', '模具号', '批次号', '零件明细', '明细数', '数量合计', '来源', '加工商',
+    ])
+    expect(tables[0].rows).toHaveLength(2)
+    expect(tables[0].rows[0].orderNo).toBe('EO-260928-WE11')
+    expect(tables[0].rows[0].lineCount).toBe(2)
+    expect(tables[0].rows[0].qty).toBe(7)
+    expect(String(tables[0].rows[0].partDetails)).toContain('UP-01 上模座')
+    expect(String(tables[0].rows[0].partDetails)).toContain('U2-03 防护垫脚')
+    expect(tables[0].rows[1].orderNo).toBe('EO-260928-8L2U')
+    expect(tables[0].rows[1].lineCount).toBe(1)
+  })
+
+  it('renders inbound todos from a generic warehouse query', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_warehouse_tasks',
+        data: {
+          scope: '仓库委外待办',
+          orders: [],
+          inboundItems: [{
+            actionLabel: '仓储入库',
+            stationLabel: '待入库',
+            outsourceTypeLabel: '零件委外',
+            orderNo: 'EO-260928-WE11',
+            moldNo: 'M260063-P5',
+            shipmentNo: 'PS-5136-441118',
+            pendingArrivalQty: 0,
+            pendingInboundQty: 19,
+            inboundTargets: ['成品库'],
+            supplierName: '青岛和兴嘉业金属制品有限公司',
+            lines: [{ partNo: 'B1-01', partName: '下托板', pendingInboundQty: 1 }],
+          }],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('仓库回厂收货入库')
+    expect(tables[0].rows).toHaveLength(1)
+    expect(tables[0].rows[0].shipmentNo).toBe('PS-5136-441118')
+    expect(tables[0].rows[0].inboundTargetText).toBe('成品库')
+    expect(String(tables[0].rows[0].partDetails)).toContain('B1-01')
+  })
+
+  it('renders quality inspection todos as a table', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_quality_tasks',
+        data: {
+          scope: '委外质检待办',
+          summary: '委外质检待办共 1 条。',
+          items: [{
+            actionLabel: '领取质检',
+            stationLabel: '待领取',
+            statusLabel: '待领取',
+            inspectionNo: 'QC202609290001',
+            orderNo: 'EO-260928-WE11',
+            inboundNo: 'IN202609290001',
+            inboundTargetLabel: '成品库',
+            partnerName: '青岛和兴嘉业金属制品有限公司',
+            details: [
+              { partNo: 'B1-01', partName: '下托板', inboundQty: 1 },
+              { partNo: 'B2-01', partName: '下垫脚', inboundQty: 2 },
+            ],
+          }],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('委外质检待办')
+    expect(tables[0].rows).toHaveLength(1)
+    expect(tables[0].rows[0].inspectionNo).toBe('QC202609290001')
+    expect(tables[0].rows[0].inboundNo).toBe('IN202609290001')
+    expect(tables[0].rows[0].lineCount).toBe(2)
+    expect(String(tables[0].rows[0].partDetails)).toContain('B1-01')
+    expect(String(tables[0].rows[0].partDetails)).toContain('下垫脚')
+  })
+
   it('fills pending buyer quote amounts by accounting price when part code is hidden', () => {
     const tables = erpOutsourceResultTablesFromRun({
       status: 'SUCCEEDED',
@@ -220,5 +407,36 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[1].ourQuoteAmount).toBe(12000)
     expect(tables[0].rows[1].autoAcceptMaxAmount).toBe(15000)
     expect(tables[0].rows[2].ourQuoteAmount).toBeNull()
+  })
+
+  it('renders shippable product orders as one row, not a todo board', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_processor_product_ship',
+        data: {
+          scope: '加工商履约待办',
+          items: [{
+            orderNo: 'EO-260928-WE11',
+            moldNo: 'M260063-P1',
+            outsourceTypeLabel: '零件委外',
+            inboundTargets: ['成品库'],
+            parts: [
+              { partNo: 'B1-01', partName: '下托板', remainQty: 1, inboundTargetLabel: '成品库' },
+              { partNo: 'B2-01', partName: '下垫脚', remainQty: 2, inboundTargetLabel: '成品库' },
+            ],
+          }],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('可成品发货')
+    expect(tables[0].rows).toHaveLength(1)
+    expect(tables[0].rows[0].orderNo).toBe('EO-260928-WE11')
+    expect(tables[0].rows[0].stationLabel).toBe('待成品发货')
+    expect(String(tables[0].rows[0].partDetails)).toContain('B1-01')
+    expect(tables[0].rows[0].remainQty).toBe(3)
+    expect(tables[0].rows[0].inboundTargetText).toBe('成品库')
   })
 })

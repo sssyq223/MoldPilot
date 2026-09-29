@@ -21,7 +21,7 @@ from domain_packs.mold.tools.erp.procurement.outsource_identity import (
     identity_order_no,
     identity_part,
 )
-from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, warehouse_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, warehouse_inbound, warehouse_todo
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_warehouse_tasks"
@@ -37,14 +37,18 @@ SKILL_SPECS = {
         "optional_tools": [SHIP_TOOL],
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
-            "仓库发料", "原料发货", "备料完成", "待备料", "待发料",
+            "仓库发料", "原料发货", "备料完成", "待备料", "待发料", "待发货", "委外待发货",
             "发料待办", "备料待办", "确认备料", "确认发料", "办发料", "办备料",
+            "待办任务", "有没有待办", "查看待办",
         ],
         "auto_activation_queries": [
-            "仓库发料", "原料发货", "备料完成", "待备料", "待发料",
+            "仓库发料", "原料发货", "备料完成", "待备料", "待发料", "待发货", "委外待发货",
             "发料待办", "备料待办", "确认备料", "确认发料", "办发料", "办备料",
+            "待办任务", "有没有待办", "查看待办",
         ],
-        "priority_patterns": ["仓库发料|原料发货|备料完成|待备料|待发料|发料待办|备料待办"],
+        "priority_patterns": [
+            "仓库发料|原料发货|备料完成|待备料|待发料|待发货|委外待发货|发料待办|备料待办|待办任务|有没有待办|查看待办|(?<!收货|入库|回厂)待办"
+        ],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -69,6 +73,17 @@ TOOL_NAMES = {
 }
 
 SHIP_SPEECH = ("确认备料", "确认发料", "确认原料发货", "办发料", "办备料")
+SUPPLY_ONLY_PHRASES = (
+    "待发料", "待备料", "发料待办", "备料待办", "待发货", "委外待发货",
+    "原料发货", "仓库发料", "确认发料", "确认备料", "办发料", "办备料",
+    "备料完成",
+)
+
+
+def include_inbound_on_warehouse_todo(question: str) -> bool:
+    """Generic 查询待办 covers inbound; 待发料/待备料 stays supply-only."""
+    text = question or ""
+    return not any(phrase in text for phrase in SUPPLY_ONLY_PHRASES)
 
 
 def spoken_ship_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
@@ -205,11 +220,138 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
         mold_family=parsed.get("mold_family") or "",
         mold_batch=parsed.get("mold_batch") or "",
     )
+    inbound_items = []
+    if include_inbound_on_warehouse_todo(question):
+        inbound_items = _query_inbound_for_todo(question, data, parsed)
+        payload["inboundItems"] = inbound_items
+        payload["inboundCount"] = len(inbound_items)
+        inbound_payload = warehouse_inbound.present(
+            {
+                "mold_family": parsed.get("mold_family") or "",
+                "mold_batch": parsed.get("mold_batch") or "",
+            },
+            inbound_items,
+        )
+        if inbound_items and payload.get("items"):
+            payload["summary"] = f"{payload.get('summary') or ''}\n{inbound_payload.get('summary') or ''}".strip()
+        elif inbound_items:
+            payload["items"] = inbound_items
+            payload["summary"] = (
+                f"{inbound_payload.get('summary') or ''}\n"
+                "待发料/待备料是 0 单，不代表没有仓库待办。回厂收货入库也是仓库待办。"
+            ).strip()
+        else:
+            payload["summary"] = (
+                "仓库待发料/待备料是 0 单，回厂收货入库也是 0 条。采购直发不在发料待办。"
+            )
+        limitations = [
+            "只读。泛化仓库待办同时含待发料/待备料和加工商成品发货后的回厂收货入库。",
+            "采购直发由物料供应商办理，不在发料待办。",
+        ]
+        source = "management-system ERP 仓库委外待办只读查询"
+    else:
+        limitations = ["只读查询仓库待发料/待备料。采购直发由物料供应商办理，不在本待办。"]
+        source = "management-system ERP 仓库委外待发料只读查询"
     return {
         "data": payload,
-        "source": "management-system ERP 仓库委外待发料只读查询",
+        "model_context": _model_context(payload),
+        "source": source,
         "as_of": now().isoformat(),
-        "limitations": ["只读查询仓库待发料/待备料。采购直发由物料供应商办理，不在本待办。"],
+        "limitations": limitations,
+    }
+
+
+def _query_inbound_for_todo(question: str, data, parsed: dict[str, str]) -> list[dict[str, Any]]:
+    inbound_parsed = warehouse_inbound.parse_question(
+        " ".join(part for part in (question, data.mold, data.order_no, data.batch) if part)
+    )
+    inbound_parsed["mold_family"] = inbound_parsed.get("mold_family") or parsed.get("mold_family") or ""
+    inbound_parsed["mold_batch"] = inbound_parsed.get("mold_batch") or parsed.get("mold_batch") or ""
+    inbound_parsed["tab"] = ""
+    items = warehouse_inbound.query_items(inbound_parsed)
+    if data.order_no:
+        token = str(data.order_no).strip().casefold()
+        items = [item for item in items if token in str(item.get("orderNo") or "").strip().casefold()]
+    return items
+
+
+def _inbound_part_details(item: dict[str, Any]) -> str:
+    labels = []
+    for line in item.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        head = " ".join(part for part in (line.get("partNo"), line.get("partName")) if part) or "零件"
+        qty = line.get("pendingInboundQty") or line.get("pendingArrivalQty") or line.get("qty")
+        labels.append(f"{head}×{qty}" if qty not in (None, "") else head)
+    return "；".join(labels)
+
+
+def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
+    orders = [item for item in (payload.get("orders") or []) if isinstance(item, dict)]
+    inbound_items = [item for item in (payload.get("inboundItems") or []) if isinstance(item, dict)]
+    line_count = int(payload.get("lineCount") or 0)
+    visible = [
+        {
+            "station": "待发料" if item.get("action") == "ship" else "待备料",
+            "action": item.get("actionLabel"),
+            "outsourceType": item.get("outsourceTypeLabel"),
+            "orderNo": item.get("orderNo"),
+            "mold": item.get("moldBatch") or item.get("moldNo"),
+            "lineCount": item.get("lineCount"),
+            "qty": item.get("qty"),
+            "partDetails": item.get("partDetails"),
+            "processor": item.get("processorName"),
+        }
+        for item in orders[:8]
+    ]
+    visible.extend(
+        {
+            "station": item.get("stationLabel") or item.get("station") or item.get("actionLabel"),
+            "action": item.get("actionLabel"),
+            "outsourceType": item.get("outsourceTypeLabel"),
+            "orderNo": item.get("orderNo"),
+            "mold": item.get("moldNo"),
+            "shipmentNo": item.get("shipmentNo"),
+            "pendingArrivalQty": item.get("pendingArrivalQty"),
+            "pendingInboundQty": item.get("pendingInboundQty"),
+            "partDetails": _inbound_part_details(item),
+            "processor": item.get("supplierName"),
+        }
+        for item in inbound_items[:8]
+    )
+    inbound_count = int(payload.get("inboundCount") or len(inbound_items))
+    if orders and inbound_items:
+        summary = (
+            f"仓库待办：待发料/待备料 {len(orders)} 单、{line_count} 个零件明细；"
+            f"回厂收货入库 {inbound_count} 条。两类都要报，不要只说发料。"
+            "不要改口索要项目号或合同号。"
+        )
+    elif orders:
+        summary = (
+            f"仓库委外待发货共 {len(orders)} 单、{line_count} 个零件明细。"
+            "按订单说明办理、订单号和零件明细。不要把零件行数说成待办单数，"
+            "也不要说未查询到或改口索要项目号、合同号。"
+        )
+        if "inboundItems" in payload:
+            summary += f"回厂收货入库是 {inbound_count} 条。"
+    elif inbound_items:
+        summary = (
+            f"仓库待发料和待备料是 0 单，但回厂收货入库待办有 {inbound_count} 条。"
+            "这是仓库待办，不要说没有待办或改口索要项目号、合同号。"
+        )
+    else:
+        summary = "仓库待发料和待备料是 0 单。采购直发不在本待办。不要改口索要项目号或合同号。"
+        if "inboundItems" in payload:
+            summary = (
+                "仓库待发料/待备料是 0 单，回厂收货入库也是 0 条。"
+                "采购直发不在发料待办。不要改口索要项目号或合同号。"
+            )
+    return {
+        "summary": summary,
+        "item_count": len(orders) + inbound_count,
+        "line_count": line_count,
+        "inbound_count": inbound_count,
+        "items": visible,
     }
 
 
@@ -218,6 +360,13 @@ def _lookup(data) -> list[dict[str, Any]]:
         order_no=data.order_no, mold=data.mold, batch=data.batch,
     )
     if not items:
+        counts = warehouse_todo.supply_status_counts(getattr(data, "order_no", "") or "")
+        if counts.get("shipped") and not counts.get("pending"):
+            raise DomainError(
+                "STATE_BLOCKED",
+                f"{data.order_no} 的原料已经发出，正在等加工商确认收货，不用再发一次。",
+                409,
+            )
         raise DomainError("NOT_FOUND", "没有找到这张仓库待发料/待备料，请用订单号重新查询", 404)
     for item in items:
         if item.get("status") != "pending" or item.get("sourceType") not in {"material_stock", "semi_finished_stock"}:

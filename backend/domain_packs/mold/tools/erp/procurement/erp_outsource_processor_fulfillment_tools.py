@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
@@ -14,7 +14,7 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
-from domain_packs.mold.tools.erp.procurement.outsource_queries import processor_fulfillment
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, processor_fulfillment
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_processor_fulfillment"
@@ -30,12 +30,12 @@ SKILL_SPECS = {
         "optional_tools": [RECEIPT_TOOL],
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
-            "确认收料", "确认来料", "原料收货", "收料待办", "待收料", "履约待办",
+            "确认收料", "确认来料", "确认收货", "原料收货", "收料待办", "待收料", "履约待办",
         ],
         "auto_activation_queries": [
-            "确认收料", "确认来料", "原料收货", "收料待办", "待收料", "履约待办",
+            "确认收料", "确认来料", "确认收货", "原料收货", "收料待办", "待收料", "履约待办",
         ],
-        "priority_patterns": ["确认收料|确认来料|原料收货|收料待办|待收料|履约待办"],
+        "priority_patterns": ["确认收料|确认来料|确认收货|原料收货|收料待办|待收料|履约待办"],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -59,6 +59,28 @@ TOOL_NAMES = {
     RECEIPT_TOOL: "准备确认原料收货",
 }
 
+RECEIPT_SPEECH = ("确认收料", "确认来料", "确认收货", "办收料")
+
+
+def spoken_receipt_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse 确认收货 / NO.n确认收货 into prepare_erp_outsource_processor_receipt arguments.
+
+    Row number is the processor board NO. 仓管回厂的到货、入库不走这里。
+    """
+    text = prompt or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要确认", "不确认", "到货", "入库", "回厂")):
+        return None
+    if not any(token in text for token in RECEIPT_SPEECH):
+        return None
+    row_no = buyer_todo.spoken_board_row_number(text)
+    if row_no:
+        return {"board_row": row_no}
+    identity_source = f"{text}\n{context_text or ''}"
+    order = buyer_todo.ORDER_NO.search(identity_source)
+    if order:
+        return {"order_no": order.group(1).upper()}
+    return {}
+
 
 class FulfillmentTodoInput(StrictModel):
     question: str | None = Field(default=None, max_length=500)
@@ -71,11 +93,32 @@ class FulfillmentTodoInput(StrictModel):
 
 
 class ProcessorReceiptInput(StrictModel):
-    shipment_id: int = Field(ge=1, description="查询结果中的 shipmentId。")
+    shipment_id: int | None = Field(default=None, ge=1, description="查询结果中的发货单。说了表格 NO. 或订单号时可以不填。")
+    board_row: int | None = Field(default=None, ge=1, description="我的委外待办第一列 NO.。加工商说第N行或 NO.N 时填这个。")
+    order_no: str | None = Field(default=None, max_length=80, description="待收料订单号。")
     mold: str | None = Field(default=None, max_length=40)
     line_ids: list[int] = Field(default_factory=list, description="待确认明细行，空则确认全部待收货行。")
 
-    @field_validator("mold")
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_row(cls, value):
+        if not isinstance(value, dict):
+            return value
+        raw = dict(value)
+        for key in ("shipmentId", "shipment_id"):
+            if key in raw and buyer_todo.spoken_board_row_number(str(raw.get(key) or "")):
+                raw.setdefault("board_row", raw.get(key))
+                raw[key] = None
+        row = raw.get("board_row") or raw.get("boardRow")
+        if row is not None and not isinstance(row, int):
+            number = buyer_todo.spoken_board_row_number(str(row))
+            if number:
+                raw["board_row"] = number
+        if raw.get("shipment_id") in ("", None) and "shipmentId" in raw and raw.get("shipmentId") in ("", None):
+            raw["shipment_id"] = None
+        return raw
+
+    @field_validator("mold", "order_no")
     @classmethod
     def strip_mold(cls, value):
         return value.strip() or None if isinstance(value, str) else value
@@ -157,7 +200,43 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
     }
 
 
+def _shipment_id_for_receipt(data, tokens: list[str] | None) -> int:
+    receipts = [
+        item for item in processor_fulfillment.query_items(
+            {"mold_family": "", "mold_batch": "", "tab": "receipt"},
+            processor_tokens=tokens,
+        )
+        if item.get("action") == "receipt"
+    ]
+    if data.board_row:
+        board = buyer_todo.run({}, processor_tokens=tokens).get("items") or []
+        index = int(data.board_row) - 1
+        if index < 0 or index >= len(board):
+            raise DomainError("NOT_FOUND", f"我的委外待办没有第 {data.board_row} 行", 404)
+        row = board[index]
+        station = str(row.get("stationLabel") or row.get("station") or "")
+        if station != "待收料":
+            raise DomainError("STATE_BLOCKED", f"第 {data.board_row} 行是{station or '其他待办'}，不是待收料", 409)
+        order_no = str(row.get("orderNo") or "")
+        hits = [item for item in receipts if str(item.get("orderNo") or "") == order_no]
+    elif data.order_no:
+        wanted = str(data.order_no).strip().upper()
+        hits = [item for item in receipts if str(item.get("orderNo") or "").strip().upper() == wanted]
+    else:
+        hits = receipts
+    if not hits:
+        raise DomainError("NOT_FOUND", "没有找到仍待确认收货的原料发货单，请重新查询", 404)
+    if len(hits) > 1:
+        raise DomainError("AMBIGUOUS", "有多张待收料，请说 NO.几 或订单号", 409)
+    shipment_id = hits[0].get("shipmentId")
+    if not shipment_id:
+        raise DomainError("NOT_FOUND", "没有找到仍待确认收货的原料发货单，请重新查询", 404)
+    return int(shipment_id)
+
+
 def _lookup_receipt(data, tokens: list[str] | None) -> dict[str, Any]:
+    if not data.shipment_id:
+        data.shipment_id = _shipment_id_for_receipt(data, tokens)
     item = processor_fulfillment.find_shipment(data.shipment_id)
     if not item:
         raise DomainError("NOT_FOUND", "没有找到仍待确认收货的原料发货单，请重新查询", 404)

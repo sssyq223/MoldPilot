@@ -8,6 +8,8 @@ from domain_packs.mold.erp.procurement.erp_outsource_db import fetch_all, fetch_
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
 MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
+ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
+INSPECTION_NO = re.compile(r"(?i)(?<![A-Z0-9])(QC-?\d{6,})(?![A-Z0-9])")
 ROW_LIMIT = 100
 STATUS_LABELS = {
     "pending": "待领取",
@@ -143,6 +145,7 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
     details = _as_list(row.get("details"))
     action = "claim" if status == "pending" else "pass"
+    station = "待领取" if action == "claim" else "待检验"
     hint = (
         "待领取。领取后由同一质检员提交合格。"
         if action == "claim"
@@ -151,6 +154,8 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "action": action,
         "actionLabel": "领取质检" if action == "claim" else "提交合格",
+        "station": station,
+        "stationLabel": station,
         "taskId": row.get("task_id"),
         "inspectionNo": row.get("inspection_no") or "",
         "inboundId": row.get("inbound_id"),
@@ -194,6 +199,35 @@ def query_items(parsed: dict[str, str]) -> list[dict[str, Any]]:
 def find_task(task_id: int) -> dict[str, Any] | None:
     row = fetch_one(FIND_SQL, {"task_id": int(task_id)})
     return item_from_row(row) if row else None
+
+
+def find_pending_by_identity(
+    *,
+    order_no: str = "",
+    inspection_no: str = "",
+    mold: str = "",
+) -> list[dict[str, Any]]:
+    items = query_items({"mold_family": "", "mold_batch": "", "tab": ""})
+    wanted_order = str(order_no or "").strip().upper()
+    wanted_qc = str(inspection_no or "").strip().upper().replace("-", "")
+    wanted_mold = str(mold or "").strip().upper()
+    matched = []
+    for item in items:
+        if wanted_qc:
+            current = str(item.get("inspectionNo") or "").upper().replace("-", "")
+            if wanted_qc not in current:
+                continue
+        if wanted_order and wanted_order not in str(item.get("orderNo") or "").upper():
+            continue
+        if wanted_mold:
+            haystack = " ".join(
+                str(item.get(key) or "")
+                for key in ("orderNo", "inboundNo", "inspectionNo")
+            ).upper()
+            if wanted_mold not in haystack:
+                continue
+        matched.append(item)
+    return matched
 
 
 def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, Any]:

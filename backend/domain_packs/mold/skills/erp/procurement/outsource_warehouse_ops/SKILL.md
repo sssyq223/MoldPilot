@@ -24,11 +24,11 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_tasks`，禁止 `CONVERSATION`。只问数量时不要 prepare。用户要发料或备料时用 `prepare_erp_outsource_warehouse_ship`。用户说「确认备料 / 确认发料」且已给出订单号时，立刻 prepare，不要只 query 看板，不要再追问订单号是否准确。
+对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_warehouse_tasks`，禁止 `CONVERSATION`。只问数量或「查看待办 / 查询待办」时不要 prepare，列出结果即可。待办按**订单**计数：同一订单里的多个零件是发货明细，不要把零件行数说成待办条数。泛化「查询待办 / 有没有待办」的回执同时含待发料/待备料和加工商成品发货后的回厂收货入库；发料 0 单时不要说没有待办。只问待发料或待备料时才只看供料。用户要发料或备料时用 `prepare_erp_outsource_warehouse_ship`。用户说「确认备料 / 确认发料」且已给出订单号时，立刻 prepare，不要只 query 看板，不要再追问订单号是否准确。
 
 | 意图 | 工具 |
 | --- | --- |
-| 仓库待办、待发料、待备料、有几个 | `query_erp_outsource_warehouse_tasks` |
+| 仓库待办、待发料、待备料、待发货、查看有没有待办、有几个 | `query_erp_outsource_warehouse_tasks`（泛化待办含回厂入库） |
 | 确认发料 / 确认备料 / 办发料（「备料完成的有哪些」是查询，不是办理） | `prepare_erp_outsource_warehouse_ship`（订单号，必要时加模具号、批次号） |
 
 1. 先查询锁定 **订单号**，必要时加模具号、批次号。同一工单多行一次确认，但不能跨工单或跨来源。禁止使用内部数字 id。

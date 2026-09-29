@@ -126,6 +126,7 @@ def test_write_tools_follow_spoken_context_not_whitelist_verbs():
     assert not harness._has_formal_action_intent("把PH-01这一笔的价钱写成400，上限600")
     assert not harness._allows_write_tools("待填价有几个")
     assert not harness._allows_write_tools("帮我看一下委外待办")
+    assert not harness._allows_write_tools("查看待办任务")
     assert not harness._allows_write_tools("只读查询 BROWSER-OUT-001 的资料交接，不要准备或执行任何操作。")
 
 
@@ -234,7 +235,7 @@ def test_outsource_operation_phrases_are_formal_actions():
         "我要报价", "我要接单", "帮我接单", "确认接单", "拒绝接单", "接这单", "订单 EO-1 我接了",
         "确认发料", "确认备料", "确认原料发货", "确认收料", "确认来料",
         "发成品", "发半成品", "确认成品发货",
-        "确认到货", "确认收货", "确认入库", "办入库",
+        "确认到货", "确认收货", "确认入库", "入库确认", "入库确认吧", "办入库",
         "领取质检", "判合格", "确认合格", "检验通过",
         "通过这单", "驳回这单",
         "待发询价的这单帮我发询价",
@@ -934,6 +935,626 @@ def test_host_spoken_warehouse_ship_closes_without_board_or_model():
     assert result['response_kind'] == 'AWAITING_APPROVAL'
     assert result['evidence_ids'] == ['e1']
     assert gateway.physical_calls == 1
+    assert model.tool_names == []
+
+
+def test_host_spoken_warehouse_inbound_confirm_prepares_inbound(monkeypatch):
+    from domain_packs.mold.tools.erp.procurement.outsource_queries import warehouse_inbound
+
+    monkeypatch.setattr(warehouse_inbound, "find_pending_by_identity", lambda **kwargs: [{
+        "shipmentId": 9,
+        "shipmentNo": "PS-5136-441118",
+        "orderNo": "EO-260928-WE11",
+        "pendingArrivalQty": 30,
+        "pendingInboundQty": 30,
+    }])
+    arrival = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_warehouse_arrival',
+        'description': '准备仓库到货确认',
+        'parameters': {'type': 'object', 'properties': {'shipment_id': {'type': 'integer'}}},
+    }}
+    inbound = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_warehouse_inbound',
+        'description': '准备仓储入库确认',
+        'parameters': {'type': 'object', 'properties': {'shipment_id': {'type': 'integer'}}},
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_warehouse_inbound',
+                        'action': 'confirm_erp_outsource_warehouse_inbound',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='入库确认吧',
+        core_tool_names=[],
+        tools=[arrival, inbound],
+        conversation_history=[{
+            'user': {'content': '有多少待办任务'},
+            'assistant': {'summary': '当前有1条待办：订单 EO-260928-WE11，发货单号 PS-5136-441118，待入库。'},
+        }],
+        skills=[{
+            'key': 'outsource_warehouse_inbound',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_warehouse_inbound'],
+            'optional_tools': [
+                'prepare_erp_outsource_warehouse_arrival',
+                'prepare_erp_outsource_warehouse_inbound',
+            ],
+            'priority_patterns': ['入库确认|确认入库'],
+            'auto_activation_queries': ['入库确认', '确认入库'],
+            'requires_tool_evidence': True,
+        }],
+        tool_annotations={
+            'prepare_erp_outsource_warehouse_arrival': {'readOnlyHint': False},
+            'prepare_erp_outsource_warehouse_inbound': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.calls[0][0] == 'prepare_erp_outsource_warehouse_inbound'
+    assert gateway.physical_calls == 1
+    assert model.tool_names == []
+
+
+def test_host_spoken_quality_claim_prepares_card(monkeypatch):
+    from domain_packs.mold.tools.erp.procurement.outsource_queries import quality_todo
+
+    monkeypatch.setattr(quality_todo, "find_pending_by_identity", lambda **kwargs: [{
+        "taskId": 15,
+        "inspectionNo": "QC202609290001",
+        "orderNo": "EO-260928-WE11",
+        "status": "pending",
+    }])
+    claim = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_quality_claim',
+        'description': '准备领取质检任务',
+        'parameters': {'type': 'object', 'properties': {'task_id': {'type': 'integer'}}},
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_quality_claim',
+                        'action': 'confirm_erp_outsource_quality_claim',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='领取质检任务',
+        core_tool_names=[],
+        tools=[claim],
+        conversation_history=[{
+            'user': {'content': '查询待办任务'},
+            'assistant': {'summary': '已经查到待领取 EO-260928-WE11。质检单 QC202609290001。'},
+        }],
+        skills=[{
+            'key': 'outsource_quality_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_quality_tasks'],
+            'optional_tools': ['prepare_erp_outsource_quality_claim', 'prepare_erp_outsource_quality_pass'],
+            'priority_patterns': ['领取质检|质检任务'],
+            'auto_activation_queries': ['领取质检', '质检任务'],
+            'requires_tool_evidence': True,
+        }],
+        tool_annotations={
+            'prepare_erp_outsource_quality_claim': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.calls[0][0] == 'prepare_erp_outsource_quality_claim'
+    assert gateway.calls[0][1]['task_id'] == 15
+    assert model.tool_names == []
+
+
+def test_host_spoken_quality_pass_prepares_card(monkeypatch):
+    from domain_packs.mold.tools.erp.procurement.outsource_queries import quality_todo
+
+    monkeypatch.setattr(quality_todo, "find_pending_by_identity", lambda **kwargs: [{
+        "taskId": 15,
+        "inspectionNo": "QC202609290001",
+        "orderNo": "EO-260928-WE11",
+        "status": "inspecting",
+    }])
+    claim = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_quality_claim',
+        'description': '准备领取质检任务',
+        'parameters': {'type': 'object', 'properties': {'task_id': {'type': 'integer'}}},
+    }}
+    pass_tool = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_quality_pass',
+        'description': '准备提交质检合格',
+        'parameters': {'type': 'object', 'properties': {'task_id': {'type': 'integer'}}},
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_quality_pass',
+                        'action': 'confirm_erp_outsource_quality_pass',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='提交质检合格',
+        core_tool_names=[],
+        tools=[claim, pass_tool],
+        conversation_history=[{
+            'user': {'content': '领取质检任务'},
+            'assistant': {'summary': '已成功领取质检任务：QC202609290001，订单号 EO-260928-WE11。当前状态为已领取。'},
+        }],
+        skills=[{
+            'key': 'outsource_quality_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_quality_tasks'],
+            'optional_tools': ['prepare_erp_outsource_quality_claim', 'prepare_erp_outsource_quality_pass'],
+            'priority_patterns': ['领取质检|质检任务|提交质检合格|提交合格'],
+            'auto_activation_queries': ['领取质检', '质检任务', '提交质检合格'],
+            'requires_tool_evidence': True,
+        }],
+        tool_annotations={
+            'prepare_erp_outsource_quality_claim': {'readOnlyHint': False},
+            'prepare_erp_outsource_quality_pass': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.calls[0][0] == 'prepare_erp_outsource_quality_pass'
+    assert gateway.calls[0][1]['task_id'] == 15
+    assert model.tool_names == []
+
+
+def test_warehouse_todo_phrase_opens_supply_tasks_not_inbound():
+    warehouse = {"priority_patterns": erp_outsource_warehouse_tools.SKILL_SPECS["outsource_warehouse_ops"]["priority_patterns"]}
+    inbound = {"priority_patterns": erp_outsource_warehouse_inbound_tools.SKILL_SPECS["outsource_warehouse_inbound"]["priority_patterns"]}
+    prompt = "查看有没有待办任务"
+    assert harness._group_priority_matches(prompt, warehouse)
+    assert not harness._group_priority_matches(prompt, inbound)
+    assert harness._group_priority_matches("委外待发货", warehouse)
+    assert harness._group_priority_matches("入库待办", inbound)
+    assert not harness._group_priority_matches("入库待办", warehouse)
+    assert not harness._group_priority_matches("收货待办", warehouse)
+
+    supply = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_warehouse_tasks',
+        'description': '查询仓库委外待发料',
+        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+    }}
+    inbound_tool = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_warehouse_inbound',
+        'description': '查询仓库回厂收货入库待办',
+        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '仓库委外待发货 1 条。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            return super().execute(seq, key, arguments)
+
+    gateway = RecordingGateway()
+    model = InspectingRepliesModel([final])
+    result = run_loop(context(
+        prompt=prompt,
+        core_tool_names=[],
+        tools=[supply, inbound_tool],
+        skills=[{
+            'key': 'outsource_warehouse_ops',
+            'tools': ['query_erp_outsource_warehouse_tasks'],
+        }, {
+            'key': 'outsource_warehouse_inbound',
+            'tools': ['query_erp_outsource_warehouse_inbound'],
+        }],
+    ), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert gateway.calls == [('query_erp_outsource_warehouse_tasks', {})]
+    assert gateway.physical_calls == 1
+
+
+def test_view_warehouse_todo_does_not_prepare_inbound():
+    supply = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_warehouse_tasks',
+        'description': '查询仓库委外待办',
+        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+    }}
+    inbound = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_warehouse_inbound',
+        'description': '准备仓储入库确认',
+        'parameters': {'type': 'object', 'properties': {'shipment_id': {'type': 'integer'}}},
+    }}
+    inbound_row = {
+        'station': '待入库',
+        'stationLabel': '待入库',
+        'actionLabel': '仓储入库',
+        'orderNo': 'EO-260928-WE11',
+        'shipmentNo': 'PS-5136-441118',
+        'pendingInboundQty': 30,
+    }
+
+    class BoardGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if key == 'query_erp_outsource_warehouse_tasks':
+                self.physical_calls += 1
+                return {
+                    'evidence_id': 'e1',
+                    'data': {'items': [inbound_row], 'inboundItems': [inbound_row], 'inboundCount': 1},
+                    'model_context': {'items': [inbound_row], 'item_count': 1},
+                }
+            self.physical_calls += 1
+            return {'evidence_id': 'e2', 'proposal': {'kind': 'erp_outsource_warehouse_inbound'}}
+
+    class GreedyPrepareModel(InspectingRepliesModel):
+        def generate(self, messages, tools):
+            names = [(tool.get('function') or {}).get('name') for tool in tools]
+            self.tool_names.append(names)
+            if 'prepare_erp_outsource_warehouse_inbound' in names:
+                return {'role': 'assistant', 'tool_calls': [{
+                    'id': 'p1', 'type': 'function',
+                    'function': {
+                        'name': 'prepare_erp_outsource_warehouse_inbound',
+                        'arguments': '{"shipment_id":"PS-5136-441118"}',
+                    },
+                }]}
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'BUSINESS',
+                'summary': '回厂待办 1 条。',
+                'evidence_ids': ['e1'],
+                'suggestions': [],
+            }, ensure_ascii=False)}
+
+    gateway = BoardGateway()
+    model = GreedyPrepareModel([])
+    result = run_loop(context(
+        prompt='查看待办任务',
+        core_tool_names=[],
+        tools=[supply, inbound],
+        skills=[{
+            'key': 'outsource_warehouse_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_warehouse_tasks'],
+            'optional_tools': [],
+            'activation_tools': ['query_erp_outsource_warehouse_tasks'],
+            'auto_activation_queries': ['查看待办', '待办任务'],
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }, {
+            'key': 'outsource_warehouse_inbound',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_warehouse_inbound'],
+            'optional_tools': ['prepare_erp_outsource_warehouse_inbound'],
+            'activation_tools': ['query_erp_outsource_warehouse_inbound'],
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+        tool_annotations={
+            'query_erp_outsource_warehouse_tasks': {'readOnlyHint': True},
+            'prepare_erp_outsource_warehouse_inbound': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'BUSINESS'
+    assert [name for name, _arguments in gateway.calls] == ['query_erp_outsource_warehouse_tasks']
+    assert all('prepare_erp_outsource_warehouse_inbound' not in names for names in model.tool_names)
+
+
+def test_host_spoken_processor_receipt_uses_visible_row():
+    receipt = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_receipt',
+        'description': '准备确认原料收货',
+        'parameters': {
+            'type': 'object',
+            'properties': {'board_row': {'type': 'integer'}},
+        },
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_processor_receipt',
+                        'action': 'confirm_erp_outsource_processor_receipt',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='NO.1确认收货',
+        core_tool_names=[],
+        tools=[receipt],
+        skills=[{
+            'key': 'outsource_processor_fulfillment',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_fulfillment'],
+            'optional_tools': ['prepare_erp_outsource_processor_receipt'],
+        }],
+        tool_annotations={
+            'prepare_erp_outsource_processor_receipt': {'readOnlyHint': False},
+        },
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert gateway.calls == [('prepare_erp_outsource_processor_receipt', {'board_row': 1})]
+    assert model.tool_names == []
+
+
+def test_host_spoken_receipt_followup_without_row_prepares_card():
+    receipt = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_receipt',
+        'description': '准备确认原料收货',
+        'parameters': {'type': 'object', 'properties': {'order_no': {'type': 'string'}}},
+    }}
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+        'parameters': {'type': 'object', 'properties': {}},
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {'kind': 'erp_outsource_processor_receipt'},
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='确认收货吧',
+        core_tool_names=[],
+        tools=[board, receipt],
+        conversation_history=[{
+            'user': {'content': '查看待办任务'},
+            'assistant': {'summary': '当前有1条待办任务：零件委外订单 EO-260928-WE11，状态为待收料。仓库已发料，请确认收货。'},
+        }],
+        skills=[{
+            'key': 'outsource_processor_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': [],
+        }, {
+            'key': 'outsource_processor_fulfillment',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_fulfillment'],
+            'optional_tools': ['prepare_erp_outsource_processor_receipt'],
+            'priority_patterns': ['确认收货'],
+            'auto_activation_queries': ['确认收货'],
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_receipt': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL', result
+    assert gateway.calls[0][0] == 'prepare_erp_outsource_processor_receipt'
+    assert model.tool_names == []
+
+
+def test_receipt_followup_fits_small_context_window():
+    """确认收货把 must not load every processor write schema into an 8k window."""
+    def tool(name, description):
+        return {'type': 'function', 'function': {
+            'name': name,
+            'description': description,
+            'parameters': {'type': 'object', 'properties': {}},
+        }}
+
+    receipt = tool('prepare_erp_outsource_processor_receipt', '准备确认原料收货')
+    extras = [
+        tool(name, 'schema ' * 2000)
+        for name in (
+            'prepare_erp_outsource_processor_accept',
+            'prepare_erp_outsource_processor_quote',
+            'prepare_erp_outsource_processor_reject',
+            'prepare_erp_outsource_processor_product_ship',
+            'query_erp_outsource_processor_board',
+            'query_erp_outsource_processor_fulfillment',
+            'query_erp_outsource_processor_product_ship',
+        )
+    ]
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {'kind': 'erp_outsource_processor_receipt'},
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    result = run_loop(context(
+        prompt='确认收货把',
+        core_tool_names=[],
+        tools=[receipt, *extras],
+        skills=[{
+            'key': 'outsource_processor_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': [
+                'prepare_erp_outsource_processor_accept',
+                'prepare_erp_outsource_processor_quote',
+                'prepare_erp_outsource_processor_reject',
+            ],
+        }, {
+            'key': 'outsource_processor_fulfillment',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_fulfillment'],
+            'optional_tools': ['prepare_erp_outsource_processor_receipt'],
+            'priority_patterns': ['确认收货'],
+            'auto_activation_queries': ['确认收货'],
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }, {
+            'key': 'outsource_processor_product_ship',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_product_ship'],
+            'optional_tools': ['prepare_erp_outsource_processor_product_ship'],
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_receipt': {'readOnlyHint': False}},
+    ), InspectingRepliesModel([]), gateway, context_window=8192, max_output_tokens=2048)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL', result
+    assert gateway.calls == [('prepare_erp_outsource_processor_receipt', {})]
+
+
+def test_product_ship_lookup_is_not_told_to_reread_the_todo_board():
+    result = harness._situational_protocol_close(
+        prompt='有没有可以成品发货的订单？',
+        messages=[{
+            'role': 'tool',
+            'content': json.dumps({
+                'model_context': {
+                    'summary': '成品发货 1 条',
+                    'items': [{
+                        'station': '待成品发货',
+                        'orderNo': 'EO-260928-WE11',
+                        'moldNo': 'M260063-P1',
+                    }],
+                },
+            }, ensure_ascii=False),
+        }],
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_product_ship'},
+        formal_action_requested=False,
+    )
+    assert '待成品发货' in result['summary']
+    assert 'EO-260928-WE11' in result['summary']
+    assert result['summary'] != harness.QUERIED_FALLBACK_SUMMARY
+    assert '确认成品发货' in result['suggestions']
+
+
+def test_product_ship_close_replaces_generic_lookup_sentence():
+    result = harness._situational_protocol_close(
+        prompt='成品发货',
+        messages=[{
+            'role': 'tool',
+            'content': json.dumps({
+                'data': {
+                    'items': [{
+                        'action': 'product_ship',
+                        'actionLabel': '成品发货',
+                        'orderNo': 'EO-260928-WE11',
+                        'moldNo': 'M260063-P1',
+                    }],
+                },
+            }, ensure_ascii=False),
+        }],
+        evidence_ids=['e1'],
+        attempted_tools={'query_erp_outsource_processor_product_ship'},
+        formal_action_requested=False,
+        last_model_message={'content': json.dumps({'summary': harness.QUERIED_FALLBACK_SUMMARY}, ensure_ascii=False)},
+    )
+    assert result['summary'] == '已经查到待成品发货 EO-260928-WE11 M260063-P1。请确认下一步办理。'
+    assert '确认成品发货' in result['suggestions']
+
+
+def test_host_spoken_product_ship_prepares_card():
+    prepare = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_product_ship',
+        'description': '准备成品发货',
+        'parameters': {'type': 'object', 'properties': {'order_no': {'type': 'string'}}},
+    }}
+    query = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_product_ship',
+        'description': '查询可成品发货',
+        'parameters': {'type': 'object', 'properties': {}},
+    }}
+
+    class ProposalGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.calls = getattr(self, 'calls', [])
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {'kind': 'erp_outsource_processor_product_ship'},
+                }
+            return self.receipts[seq]
+
+    gateway = ProposalGateway()
+    model = InspectingRepliesModel([])
+    result = run_loop(context(
+        prompt='确认成品发货',
+        core_tool_names=[],
+        tools=[query, prepare],
+        conversation_history=[{
+            'user': {'content': '成品发货'},
+            'assistant': {'summary': '可成品发货 EO-260928-WE11 M260063-P1'},
+        }],
+        skills=[{
+            'key': 'outsource_processor_product_ship',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_product_ship'],
+            'optional_tools': ['prepare_erp_outsource_processor_product_ship'],
+            'priority_patterns': ['成品发货'],
+            'auto_activation_queries': ['成品发货'],
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_product_ship': {'readOnlyHint': False}},
+    ), model, gateway)
+
+    assert result['response_kind'] == 'AWAITING_APPROVAL', result
+    assert gateway.calls[0][0] == 'prepare_erp_outsource_processor_product_ship'
+    assert gateway.calls[0][1]['order_no'] == 'EO-260928-WE11'
     assert model.tool_names == []
 
 

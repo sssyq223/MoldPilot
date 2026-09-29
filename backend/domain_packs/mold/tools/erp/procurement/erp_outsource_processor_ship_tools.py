@@ -14,7 +14,7 @@ from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_po
 from domain_packs.mold.ports.db import now
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.ports.schemas import StrictModel
-from domain_packs.mold.tools.erp.procurement.outsource_queries import processor_fulfillment
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, processor_fulfillment
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_processor_product_ship"
@@ -62,6 +62,48 @@ TOOL_NAMES = {
 }
 
 
+PRODUCT_SHIP_SPEECH = ("确认成品发货", "办成品发货", "发成品", "发半成品", "回厂发货")
+
+
+def _latest_order_no(text: str) -> str | None:
+    found = None
+    for match in buyer_todo.ORDER_NO.finditer(text or ""):
+        found = match.group(1).upper()
+    return found
+
+
+def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    """Parse 确认成品发货 / NO.n成品发货 into prepare arguments.
+
+    「成品发货」单独出现、以及「有没有/有几个」是查询，不准备确认卡。
+    NO. 是可成品发货表的行号，不是待办表。
+    """
+    text = prompt or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要发", "不发货", "查询", "查一下", "看看")):
+        return None
+    if any(token in text for token in ("收货", "收料", "来料", "原料发货", "备料", "发料")):
+        return None
+    row_no = buyer_todo.spoken_board_row_number(text)
+    named = any(token in text for token in PRODUCT_SHIP_SPEECH)
+    row_ship = bool(row_no) and "成品发货" in text
+    if not named and not row_ship:
+        return None
+    arguments: dict[str, Any] = {}
+    if row_no:
+        arguments["board_row"] = row_no
+    order_no = _latest_order_no(text)
+    if not order_no and not row_no:
+        order_no = _latest_order_no(context_text)
+    if order_no:
+        arguments["order_no"] = order_no
+    parsed = buyer_todo.parse_question(f"{text}\n{context_text or ''}")
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    return arguments
+
+
 class ProductShipTodoInput(StrictModel):
     question: str | None = Field(default=None, max_length=500)
     mold: str | None = Field(default=None, max_length=40)
@@ -78,7 +120,8 @@ class ProductShipLineInput(StrictModel):
 
 
 class ProcessorProductShipInput(StrictModel):
-    order_no: str = Field(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
+    order_no: str | None = Field(default=None, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。只剩一张可发货订单时可以不填。")
+    board_row: int | None = Field(default=None, ge=1, description="可成品发货表第一列 NO.。说第N行或 NO.N 时填这个，不要用待办表行号。")
     mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = Field(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
     lines: list[ProductShipLineInput] = Field(default_factory=list, description="空则按各零件剩余可发数量全部发出。")
@@ -145,6 +188,31 @@ def _guard(item: dict[str, Any], tokens: list[str] | None) -> None:
         raise DomainError("FORBIDDEN", "这张工单不属于本加工商", 403)
 
 
+def _product_model_context(payload: dict[str, Any]) -> dict[str, Any]:
+    items = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "station": item.get("station") or "待成品发货",
+            "stationLabel": item.get("stationLabel") or "待成品发货",
+            "orderNo": item.get("orderNo") or "",
+            "moldNo": item.get("moldNo") or "",
+            "moldFamily": item.get("moldFamily") or "",
+            "moldBatch": item.get("moldBatch") or "",
+            "outsourceTypeLabel": item.get("outsourceTypeLabel") or "",
+            "partDetails": item.get("partDetails") or "",
+            "inboundTargets": item.get("inboundTargets") or [],
+            "lineCount": item.get("lineCount") or 0,
+            "remainQty": item.get("remainQty") or 0,
+        })
+    return {
+        "summary": payload.get("summary") or "",
+        "item_count": len(items),
+        "items": items,
+    }
+
+
 def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
     _require_read(db, user)
     data = parse(TODO_TOOL, arguments)
@@ -157,6 +225,8 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
         payload = processor_fulfillment.run_product(parsed, processor_tokens=tokens)
     return {
         "data": payload,
+        "model_context": _product_model_context(payload),
+        "model_context_complete": True,
         "source": "management-system ERP 加工商成品发货只读查询",
         "as_of": now().isoformat(),
         "limitations": [
@@ -196,14 +266,36 @@ def _resolved_lines(data, item: dict[str, Any]) -> list[dict[str, Any]]:
     return chosen
 
 
-def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    item = processor_fulfillment.find_product_order_by_identity(
-        order_no=getattr(data, "order_no", None),
-        mold=getattr(data, "mold", None),
-        batch=getattr(data, "batch", None),
+def _shippable(tokens: list[str] | None) -> list[dict[str, Any]]:
+    return processor_fulfillment.query_product_items(
+        processor_fulfillment.parse_question(""),
+        processor_tokens=tokens,
     )
-    if not item:
-        raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请用订单号、模具号和批次号重新查询", 404)
+
+
+def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    item = None
+    if getattr(data, "board_row", None):
+        items = _shippable(tokens)
+        index = int(data.board_row) - 1
+        if index < 0 or index >= len(items):
+            raise DomainError("NOT_FOUND", f"可成品发货没有第 {data.board_row} 行", 404)
+        item = items[index]
+    elif getattr(data, "order_no", None) or getattr(data, "mold", None) or getattr(data, "batch", None):
+        item = processor_fulfillment.find_product_order_by_identity(
+            order_no=getattr(data, "order_no", None),
+            mold=getattr(data, "mold", None),
+            batch=getattr(data, "batch", None),
+        )
+        if not item:
+            raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请用订单号、模具号和批次号重新查询", 404)
+    else:
+        items = _shippable(tokens)
+        if not items:
+            raise DomainError("NOT_FOUND", "当前没有可成品发货的订单", 404)
+        if len(items) > 1:
+            raise DomainError("AMBIGUOUS", "有多张可成品发货，请说 NO.几 或订单号", 409)
+        item = items[0]
     _guard(item, tokens)
     return item, _resolved_lines(data, item)
 

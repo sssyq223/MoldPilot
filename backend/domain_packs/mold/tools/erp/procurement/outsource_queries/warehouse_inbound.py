@@ -1,4 +1,4 @@
-"""Read-only warehouse product arrival / inbound todos from ERP."""
+"""Read-only warehouse product inbound todos from ERP after processor shipment."""
 from __future__ import annotations
 
 import re
@@ -13,6 +13,13 @@ from domain_packs.mold.tools.erp.procurement.outsource_queries.processor_fulfill
 
 MOLD_FAMILY = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,})(?!-P\d+)(?![A-Z0-9])")
 MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
+SHIPMENT_NO = re.compile(r"(?i)(?<![A-Z0-9])(P[S5]-\d{3,}(?:-\d+)?)(?![A-Z0-9])")
+ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
+ACTION_PHRASES = (
+    "确认入库", "入库确认", "办入库",
+    "确认到货", "到货确认", "办到货",
+    "确认收货", "收货确认", "办收货",
+)
 ROW_LIMIT = 100
 OUTSOURCE_LABELS = {"part": "零件委外", "mold": "模具委外", "operation": "工序委外"}
 ARRIVAL_LABELS = {
@@ -21,6 +28,16 @@ ARRIVAL_LABELS = {
     "arrival_confirmed": "已收货",
     "arrival_rejected": "已拒收",
 }
+# ERP pending_inbound = delivery − inbound_received − return − exception.
+# Warehouse official path does not wait for arrival-confirm.
+PENDING_INBOUND_SQL = """
+                greatest(
+                    0,
+                    coalesce(line.qty, 0)
+                    - coalesce(line.inbound_received_qty, 0)
+                    - coalesce(line.return_qty, 0)
+                    - coalesce(line.arrival_exception_qty, 0)
+                )"""
 
 SQL = """
 SELECT
@@ -28,6 +45,7 @@ SELECT
     shipment.shipment_no,
     shipment.order_id,
     order_row.order_no,
+    order_row.supplier_id,
     lower(coalesce(shipment.outsource_type, order_row.outsource_type, project.outsource_type, 'part')) AS outsource_type,
     lower(coalesce(shipment.arrival_status, '')) AS arrival_status,
     lower(coalesce(shipment.status, '')) AS shipment_status,
@@ -51,12 +69,7 @@ SELECT
                 - coalesce(line.arrival_confirmed_qty, 0)
                 - coalesce(line.arrival_exception_qty, 0)
             ),
-            'pendingInboundQty', greatest(
-                0,
-                coalesce(line.arrival_confirmed_qty, 0)
-                - coalesce(line.inbound_received_qty, 0)
-                - coalesce(line.return_qty, 0)
-            )
+            'pendingInboundQty',""" + PENDING_INBOUND_SQL + """
         )
         ORDER BY line.id
     ) AS lines
@@ -84,18 +97,10 @@ WHERE lower(coalesce(shipment.status, '')) <> 'cancelled'
   )
 GROUP BY
     shipment.id, shipment.shipment_no, shipment.order_id, order_row.order_no,
-    shipment.outsource_type, order_row.outsource_type, project.outsource_type,
+    order_row.supplier_id, shipment.outsource_type, order_row.outsource_type, project.outsource_type,
     shipment.arrival_status, shipment.status, supplier.partner_name, molds.mold_no
 HAVING
-    coalesce(sum(greatest(
-        0,
-        coalesce(line.qty, 0) - coalesce(line.arrival_confirmed_qty, 0) - coalesce(line.arrival_exception_qty, 0)
-    )), 0) > 0
-    OR coalesce(sum(greatest(
-        0,
-        coalesce(line.arrival_confirmed_qty, 0) - coalesce(line.inbound_received_qty, 0)
-        - coalesce(line.return_qty, 0)
-    )), 0) > 0
+    coalesce(sum(""" + PENDING_INBOUND_SQL + """), 0) > 0
 ORDER BY shipment.id DESC
 LIMIT 200
 """
@@ -106,6 +111,7 @@ SELECT
     shipment.shipment_no,
     shipment.order_id,
     order_row.order_no,
+    order_row.supplier_id,
     lower(coalesce(shipment.outsource_type, order_row.outsource_type, project.outsource_type, 'part')) AS outsource_type,
     lower(coalesce(shipment.arrival_status, '')) AS arrival_status,
     lower(coalesce(shipment.status, '')) AS shipment_status,
@@ -129,12 +135,7 @@ SELECT
                 - coalesce(line.arrival_confirmed_qty, 0)
                 - coalesce(line.arrival_exception_qty, 0)
             ),
-            'pendingInboundQty', greatest(
-                0,
-                coalesce(line.arrival_confirmed_qty, 0)
-                - coalesce(line.inbound_received_qty, 0)
-                - coalesce(line.return_qty, 0)
-            )
+            'pendingInboundQty',""" + PENDING_INBOUND_SQL + """
         )
         ORDER BY line.id
     ) AS lines
@@ -152,7 +153,7 @@ WHERE shipment.id = %(shipment_id)s
   AND lower(coalesce(shipment.status, '')) <> 'cancelled'
 GROUP BY
     shipment.id, shipment.shipment_no, shipment.order_id, order_row.order_no,
-    shipment.outsource_type, order_row.outsource_type, project.outsource_type,
+    order_row.supplier_id, shipment.outsource_type, order_row.outsource_type, project.outsource_type,
     shipment.arrival_status, shipment.status, supplier.partner_name, molds.mold_no
 """
 
@@ -162,7 +163,9 @@ def parse_question(question: str) -> dict[str, str]:
     batch = MOLD_BATCH.search(text)
     family = None if batch else MOLD_FAMILY.search(text)
     tab = ""
-    if any(word in text for word in ("入库",)):
+    if any(word in text for word in ACTION_PHRASES):
+        tab = ""
+    elif any(word in text for word in ("入库待办", "待入库", "成品入库", "回厂入库")):
         tab = "inbound"
     elif any(word in text for word in ("到货", "收货", "确认收货")):
         tab = "arrival"
@@ -199,14 +202,13 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
     lines = [_enrich_line(outsource_type, line) for line in _as_list(row.get("lines"))]
     pending_arrival = sum(int(line.get("pendingArrivalQty") or 0) for line in lines)
     pending_inbound = sum(int(line.get("pendingInboundQty") or 0) for line in lines)
-    if pending_arrival <= 0 and pending_inbound <= 0:
+    if pending_inbound <= 0:
         return None
-    if pending_arrival > 0:
-        action, label = "arrival", "仓库收货"
-        hint = "先做到货确认。确认后同一发货单再办理仓储入库。"
-    else:
-        action, label = "inbound", "仓储入库"
-        hint = "到货已确认。入库目标按 ERP processor-inbound-v1 行级结果，一张发货单可同时含成品库和半成品库。入库后质检领取任务。"
+    action, label, station = "inbound", "仓储入库", "待入库"
+    hint = (
+        "加工商成品发货后即可办理入库确认。入库目标按 ERP processor-inbound-v1 行级结果，"
+        "一张发货单可同时含成品库和半成品库。本人确认后写入物料入库单，再交给质检领取；合格后才入账库存。"
+    )
     targets = list(dict.fromkeys(line["inboundTargetLabel"] for line in lines if line.get("inboundTarget")))
     warnings = [line["inboundTargetWarning"] for line in lines if line.get("inboundTargetWarning")]
     if warnings:
@@ -214,6 +216,8 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "action": action,
         "actionLabel": label,
+        "station": station,
+        "stationLabel": station,
         "shipmentId": row.get("shipment_id"),
         "shipmentNo": row.get("shipment_no") or "",
         "orderId": row.get("order_id"),
@@ -223,6 +227,7 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "outsourceTypeLabel": OUTSOURCE_LABELS.get(outsource_type, outsource_type),
         "arrivalStatus": row.get("arrival_status") or "",
         "arrivalStatusLabel": ARRIVAL_LABELS.get(str(row.get("arrival_status") or ""), row.get("arrival_status") or ""),
+        "supplierId": row.get("supplier_id"),
         "supplierName": row.get("supplier_name") or "",
         "pendingArrivalQty": pending_arrival,
         "pendingInboundQty": pending_inbound,
@@ -249,38 +254,82 @@ def query_items(parsed: dict[str, str]) -> list[dict[str, Any]]:
         if not item:
             continue
         tab = parsed.get("tab") or ""
-        if tab == "arrival" and int(item.get("pendingArrivalQty") or 0) <= 0:
-            continue
-        if tab == "inbound" and int(item.get("pendingInboundQty") or 0) <= 0:
+        if tab in {"arrival", "inbound"} and int(item.get("pendingInboundQty") or 0) <= 0:
             continue
         items.append(item)
     return items
 
 
 def erp_inbound_confirm_lines(payload: Any) -> list[dict[str, Any]]:
-    """Read per-line warehouse results from ERP confirm-inbound (processor-inbound-v1)."""
+    """Read per-line warehouse results from ERP material inbound / confirm-inbound."""
     if not isinstance(payload, dict):
         return []
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    raw = data.get("inboundDetails") or data.get("inbound_details") or []
+    raw = (
+        data.get("inboundDetails")
+        or data.get("inbound_details")
+        or data.get("detailList")
+        or data.get("detail_list")
+        or []
+    )
+    header_target = data.get("processorInboundTarget") or data.get("processor_inbound_target")
     lines = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
-        target = item.get("processorInboundTarget") or item.get("processor_inbound_target")
+        target = (
+            item.get("processorInboundTarget")
+            or item.get("processor_inbound_target")
+            or header_target
+        )
         label = item.get("targetWarehouseName") or item.get("target_warehouse_name")
         if target and not label:
             label = "成品库" if target == "finished" else "半成品库" if target == "semi_finished" else None
         lines.append({
-            "shipmentLineId": item.get("shipmentLineId") or item.get("shipment_line_id"),
+            "shipmentLineId": (
+                item.get("shipmentLineId")
+                or item.get("shipment_line_id")
+                or item.get("processorDeliveryDetailId")
+                or item.get("processor_delivery_detail_id")
+            ),
             "inboundTarget": target,
             "inboundTargetLabel": label,
             "inboundRuleVersion": item.get("targetRuleVersion") or item.get("target_rule_version"),
             "inboundTargetWarning": item.get("targetWarning") or item.get("target_warning"),
             "isEndOperation": item.get("isEndOperation") if "isEndOperation" in item else item.get("is_end_operation"),
-            "inboundQty": item.get("inboundQty") or item.get("inbound_qty"),
+            "inboundQty": (
+                item.get("inboundQty")
+                or item.get("inbound_qty")
+                or item.get("inboundQuantity")
+                or item.get("inbound_quantity")
+            ),
         })
     return lines
+
+
+def find_pending_by_identity(
+    *,
+    order_no: str = "",
+    shipment_no: str = "",
+    mold: str = "",
+) -> list[dict[str, Any]]:
+    items = query_items({"mold_family": "", "mold_batch": "", "tab": ""})
+    wanted_order = str(order_no or "").strip().upper()
+    wanted_ship = str(shipment_no or "").strip().upper()
+    wanted_mold = str(mold or "").strip().upper()
+    matched = []
+    for item in items:
+        if wanted_ship and wanted_ship not in str(item.get("shipmentNo") or "").upper():
+            continue
+        if wanted_order and wanted_order not in str(item.get("orderNo") or "").upper():
+            continue
+        if wanted_mold:
+            mold_no = str(item.get("moldNo") or "").upper()
+            family = mold_no.split("-P", 1)[0]
+            if wanted_mold not in mold_no and wanted_mold != family:
+                continue
+        matched.append(item)
+    return matched
 
 
 def find_shipment(shipment_id: int) -> dict[str, Any] | None:
@@ -291,7 +340,7 @@ def find_shipment(shipment_id: int) -> dict[str, Any] | None:
 def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, Any]:
     truncated = len(items) > ROW_LIMIT
     visible = items[:ROW_LIMIT]
-    counts = {"仓库收货": 0, "仓储入库": 0}
+    counts = {"仓储入库": 0}
     for item in visible:
         label = item.get("actionLabel") or ""
         if label in counts:
@@ -306,7 +355,7 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
         for item in visible[:30]:
             lines.append(
                 f"{item['actionLabel']} {item['outsourceTypeLabel']} {item.get('moldNo') or ''} "
-                f"{item.get('shipmentNo') or ''} 待收{item.get('pendingArrivalQty')} 待入{item.get('pendingInboundQty')}"
+                f"{item.get('shipmentNo') or ''} 待入{item.get('pendingInboundQty')}"
             )
         summary += "\n" + "\n".join(f"- {line}".rstrip() for line in lines)
     if truncated:

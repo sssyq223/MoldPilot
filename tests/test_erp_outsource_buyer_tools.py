@@ -109,6 +109,7 @@ def test_spoken_quote_requires_mold_and_order_or_batch_part(monkeypatch):
     )
     assert follow_up["mold"] == "M260063"
     assert follow_up["part"] == "PH-01"
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [])
     assert buyer_todo.parse_spoken_buyer_quote(
         "就第1行零件 PH-01 这一张，准备填写我方报价 300、上限 380，出确认卡",
     ) is None
@@ -361,6 +362,57 @@ def test_board_row_locks_duplicate_part_quote(monkeypatch):
     })
     assert result["proposal"]["display"]["报价表"][0]["金额"] == 104576.58
     assert result["proposal"]["input"]["board_row"] == 1
+
+
+def test_visible_no_locks_duplicate_batch(monkeypatch):
+    def row(inquiry_id, batch, station="buyer_quote"):
+        return {
+            "inquiryId": inquiry_id,
+            "station": station,
+            "stationLabel": "待报价" if station == "supplier_quote" else "待采购填报价",
+            "outsourceType": "part",
+            "outsourceTypeLabel": "零件委外",
+            "orderNo": "",
+            "moldFamily": "M260063",
+            "moldBatch": batch,
+            "moldNo": batch,
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "referenceTotal": 17995.66,
+        }
+
+    full = [row(1, "M260063-P4", "supplier_quote")]
+    full.append(row(2, "M260063-P1"))
+    for inquiry_id in range(3, 9):
+        full.append(row(inquiry_id, "M260063-P2"))
+    full.append(row(9, "M260063-P1"))
+
+    def fake_query(parsed):
+        station = parsed.get("station") or ""
+        if not station:
+            return list(full)
+        return [item for item in full if item["station"] == station]
+
+    monkeypatch.setattr(buyer_todo, "query_items", fake_query)
+    monkeypatch.setattr(buyer_todo, "_scan_items", lambda mold=None: list(full))
+    data = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.QUOTE_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P1",
+        "part": "B1-01",
+        "board_row": 9,
+        "our_quote_amount": 300,
+        "auto_accept_max_amount": 40000,
+    })
+    item, display = erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.QUOTE_TOOL, data)
+    assert item["inquiryId"] == 9
+    assert display["行号"] == "NO.9"
+    spoken = buyer_todo.parse_spoken_buyer_quote("NO.2填写报价，总价300，上限40000")
+    assert spoken["board_row"] == 2
+    assert spoken["batch"] == "M260063-P1"
+    bare = buyer_todo.parse_spoken_buyer_quote("第9行报价300上限40000")
+    assert bare["board_row"] == 9
+    assert bare["batch"] == "M260063-P1"
+    assert buyer_todo.parse_spoken_buyer_quote("第1行报价300上限40000") is None
 
 
 def test_shared_batch_is_disambiguated_by_part(monkeypatch):
@@ -710,11 +762,24 @@ def test_send_lookup_ignores_same_batch_fill_quote_rows(monkeypatch):
         "mold": "M260063",
         "batch": "M260063-P5",
         "part": "B1-01",
-        "board_row": 1,
+        "board_row": 3,
     })
     item, display = erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.SEND_TOOL, data)
     assert item["inquiryId"] == 160
     assert display["当前分站"] == "待发询价"
+    assert display["行号"] == "NO.3"
+    wrong_row = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.SEND_TOOL, {
+        "mold": "M260063",
+        "batch": "M260063-P5",
+        "board_row": 1,
+    })
+    try:
+        erp_outsource_buyer_tools.preview(erp_outsource_buyer_tools.SEND_TOOL, wrong_row)
+    except DomainError as error:
+        assert error.code == "STATE_BLOCKED"
+        assert "NO.1" in error.message
+    else:
+        raise AssertionError("NO.1 is a fill-quote row and must not be sent")
     stale = erp_outsource_buyer_tools.parse(erp_outsource_buyer_tools.SEND_TOOL, {
         "mold": "M260063",
         "batch": "M260063-P4",
