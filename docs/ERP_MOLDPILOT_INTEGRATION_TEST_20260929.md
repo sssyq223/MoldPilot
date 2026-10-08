@@ -16,7 +16,7 @@ MoldPilot 工程：`D:\mold-agent\MoldPilot`
 - [x] ERP 的 17 条审批定义已导入 MoldPilot `workflow_definition`，各生成一个 `version=1` 的已发布定义；导入脚本为 `scripts/migrate_erp_workflows.py --publish`。
 - [x] 17 条模板全部通过 BPM DSL 校验和 BPMN 编译校验。
 - [x] 有效人员组已按部门同步，停用账号已从审批候选池排除；设计类同序审批已拆成独立审批池。
-- [ ] 按用户要求，T01-T08 的 ERP↔MoldPilot 实际联动测试在上述发布前置完成后再执行；本次没有重复执行 ERP 写入或联动测试。
+- [ ] 按用户要求，T01-T08 的 ERP↔MoldPilot 实际联动测试在流程发布后执行；流程发布前本次没有执行 ERP 写入或联动测试。
 
 ## 测试边界
 
