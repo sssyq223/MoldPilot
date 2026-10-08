@@ -822,6 +822,56 @@ def _may_host_auto_authorized_read(prompt):
     return _contains_any(prompt, (*OUTSOURCE_BOARD_NOUNS, "待办", "工单", "单子"))
 
 
+def _is_progress_query_tool(name):
+    text = str(name or "")
+    return text.endswith("_progress") or text.endswith("_timeline")
+
+
+def _wants_progress_query(prompt):
+    text = str(prompt or "")
+    return any(token in text for token in ("到哪一步", "时间线", "这一票", "这一单到哪"))
+
+
+def _without_progress_tools(names, prompt):
+    names = [name for name in names if name]
+    if _wants_progress_query(prompt):
+        return names
+    return [name for name in names if not _is_progress_query_tool(name)]
+
+
+def _choose_host_auto_invoke(prompt, names):
+    """Pick one listing reader. Progress tools are not a count/board answer."""
+    preferred = _without_progress_tools(names, prompt)
+    boards = [
+        name for name in preferred
+        if str(name).endswith(("_board", "_todos", "_tasks"))
+    ]
+    candidates = boards or preferred
+    if len(candidates) == 1:
+        return candidates[0]
+    text = str(prompt or "")
+    hints = {
+        "query_erp_outsource_followup_board": ("委外单子", "委外订单", "有没有委外", "有委外", "几个委外"),
+        "query_erp_outsource_processor_board": ("我的委外", "加工商"),
+        "query_erp_outsource_warehouse_tasks": ("仓库", "备料", "发料"),
+        "query_erp_outsource_warehouse_inbound": ("到货", "入库", "回厂"),
+        "query_erp_outsource_quality_tasks": ("质检", "领取质检"),
+        "query_erp_outsource_approval_todos": ("审批", "待我审批"),
+    }
+    scored = []
+    for name in candidates:
+        score = sum(len(hint) for hint in hints.get(name, ()) if hint in text)
+        scored.append((score, name))
+    scored.sort(reverse=True)
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1]
+    if "query_erp_outsource_followup_board" in candidates and any(
+        token in text for token in ("委外", "单子", "订单")
+    ):
+        return "query_erp_outsource_followup_board"
+    return None
+
+
 def _tool_search_schema():
     return {"type": "function", "function": {
         "name": TOOL_SEARCH_NAME,
@@ -989,6 +1039,8 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
         if not tool:
             continue
         if _is_write_capable_tool(name, tool_annotations) and not has_action_intent:
+            continue
+        if _is_progress_query_tool(name) and not _wants_progress_query(current_prompt or ranking_text):
             continue
         score = _score_search_candidate(normalized, terms, name, _tool_description(tool))
         searchable = (name + " " + _tool_description(tool)).lower()
@@ -1245,7 +1297,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
     if normalized in deferred_tools:
         if _is_write_capable_tool(normalized, tool_annotations) and not action_intent:
             return [], [], []
-        return [normalized], [normalized], []
+        if not (_is_progress_query_tool(normalized) and not _wants_progress_query(current_prompt)):
+            return [normalized], [normalized], []
     alias_scores = []
     for group in tool_groups:
         aliases = [str(alias).strip().lower() for alias in group.get("activation_queries", []) if str(alias).strip()]
@@ -1292,6 +1345,8 @@ def _find_deferred_tools(query, deferred_tools, tool_groups=None, action_intent=
     scored = []
     for name, tool in deferred_tools.items():
         if _is_write_capable_tool(name, tool_annotations) and not action_intent:
+            continue
+        if _is_progress_query_tool(name) and not _wants_progress_query(current_prompt):
             continue
         lname = name.lower()
         description = _tool_description(tool).lower()
@@ -1604,7 +1659,11 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             authorized_route = (group.get("activation_route") or "") == "authorized"
             aliases = [str(alias).strip().lower() for alias in group.get("auto_activation_queries", [])
                        if str(alias).strip()]
-            if not authorized_route and not any(alias in normalized_prompt for alias in aliases):
+            prompt_relevant = (
+                _group_priority_matches(auto_prompt, group)
+                or any(alias in normalized_prompt for alias in aliases)
+            )
+            if not authorized_route and not prompt_relevant:
                 continue
             group_already_active = any(name in active_tool_names for name in group["tools"])
             if authorized_route:
@@ -1634,15 +1693,14 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         name for name in (required or group["tools"])
                         if name in all_tools and not _is_write_capable_tool(name, tool_annotations)
                     ]
-                    if is_board_group:
+                    reads = _without_progress_tools(reads, auto_prompt)
+                    required = _without_progress_tools(required, auto_prompt)
+                    if not prompt_relevant:
+                        selected = []
+                    elif is_board_group:
                         selected = required
-                    elif _group_priority_matches(auto_prompt, group):
-                        selected = reads
                     else:
-                        selected = [
-                            name for name in reads
-                            if name.endswith("_board") or name.endswith("_todos")
-                        ]
+                        selected = reads
             else:
                 selected = _rank_group_tools(
                     normalized_prompt, group, auto_deferred,
@@ -1658,10 +1716,6 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 # 收料/发货 evidence obligations just because those skills are
                 # assigned.  Only demand reads from skills this prompt actually
                 # named, or from non-authorized groups that already matched.
-                prompt_relevant = (
-                    _group_priority_matches(auto_prompt, group)
-                    or any(alias in normalized_prompt for alias in aliases)
-                )
                 if (not authorized_route) or prompt_relevant:
                     required_evidence_tools.update(group.get("required") or selected)
             host_auto_queries = [str(alias).strip().lower()
@@ -1669,7 +1723,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                  if str(alias).strip()]
             host_auto_ok = bool(group.get("host_auto_invoke_empty_arguments"))
             if host_auto_ok and authorized_route:
-                host_auto_ok = _may_host_auto_authorized_read(auto_prompt)
+                host_auto_ok = (
+                    not _has_formal_action_intent(auto_prompt)
+                    and (_may_host_auto_authorized_read(auto_prompt) or prompt_relevant)
+                )
             elif host_auto_ok:
                 host_auto_ok = (not host_auto_queries
                                 or any(alias in normalized_prompt for alias in host_auto_queries))
@@ -1873,8 +1930,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             and not evidence_ids
             and not attempted_tools
             and not executed_tool_signatures
-            and len(host_auto_invoke_candidates) == 1):
-        name = next(iter(host_auto_invoke_candidates))
+            and (name := _choose_host_auto_invoke(
+                context.get("prompt") or "", host_auto_invoke_candidates
+            ))):
         tool = all_tools.get(name)
         if (name in active_tool_names
                 and not _is_write_capable_tool(name, tool_annotations)

@@ -150,14 +150,14 @@ STATION_NEXT_SUGGESTIONS = {
 OUTSOURCE_BOARD_NOUNS = (
     *OUTSOURCE_STATUS_PHRASES,
     "待填价", "待报价", "待下单", "待填成交价", "待接单", "待采购填报价",
-    "委外待办", "采购待办", "待办", "工单",
+    "委外待办", "采购待办", "待办", "工单", "单子", "委外单子", "委外订单",
 )
 # Look-up questions.  These hide write tools.  They do not decide whether the
 # model understood a spoken write such as “把价钱写成400”.
 READ_ONLY_QUESTION_TERMS = (
     "有几个", "有没有", "有哪些", "多少条", "几条", "是多少", "是什么", "什么是",
     "查一下", "查询", "查看", "看看", "看下", "待办", "怎么样", "情况", "进度",
-    "确认一下", "什么状态",
+    "确认一下", "什么状态", "有委外", "委外单子", "有单子",
 )
 # Spoken write signals that are not in the formal-receipt whitelist.
 # Visibility of prepare_* tools uses these; the receipt invariant does not.

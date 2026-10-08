@@ -57,7 +57,7 @@ Object.assign(capabilityNames,{
  prepare_erp_outsource_quality_claim:'准备领取质检任务',
  prepare_erp_outsource_quality_pass:'准备提交质检合格',
  outsource_quality_ops:'委外质检领取与合格',
- outsource_followup_query:'委外跟单进度查询',
+ outsource_followup_query:'委外跟单待办查询',
  outsource_processor_query:'委外加工商待办查询',
  outsource_processor_ops:'委外加工商办理',
  outsource_buyer_ops:'委外采购办理',

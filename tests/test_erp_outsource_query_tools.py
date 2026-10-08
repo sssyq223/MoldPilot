@@ -16,10 +16,10 @@ def test_outsource_query_skills_are_registered_under_erp_procurement():
     spec = erp_outsource_query_tools.SKILL_SPECS["outsource_followup_query"]
     assert spec["tools"] == [erp_outsource_query_tools.BOARD_TOOL]
     assert spec["optional_tools"] == [erp_outsource_query_tools.PROGRESS_TOOL]
-    assert spec["activation_tools"] == list(erp_outsource_query_tools.BUYER_TOOL_KEYS)
+    assert spec["activation_tools"] == [erp_outsource_query_tools.BOARD_TOOL]
     processor = erp_outsource_query_tools.SKILL_SPECS["outsource_processor_query"]
     assert processor["tools"] == [erp_outsource_query_tools.PROCESSOR_BOARD_TOOL]
-    assert processor["activation_tools"] == list(erp_outsource_query_tools.PROCESSOR_TOOL_KEYS)
+    assert processor["activation_tools"] == [erp_outsource_query_tools.PROCESSOR_BOARD_TOOL]
     for key in erp_outsource_query_tools.SKILL_SPECS:
         assert key in tool_gateway.SKILLS
         assert paths[key]["layer"] == "erp"
@@ -44,11 +44,11 @@ def test_followup_skill_catalog_keeps_query_tools_optional():
         "outsource_followup_query",
         tool_gateway.SKILLS["outsource_followup_query"],
     )
-    assert item["name"] == "委外跟单进度查询"
+    assert item["name"] == "委外跟单待办查询"
     assert item["department"] == "purchase"
     assert item["dependencies"] == [erp_outsource_query_tools.BOARD_TOOL]
     assert item["optional_dependencies"] == [erp_outsource_query_tools.PROGRESS_TOOL]
-    assert item["activation_dependencies"] == list(erp_outsource_query_tools.BUYER_TOOL_KEYS)
+    assert item["activation_dependencies"] == [erp_outsource_query_tools.BOARD_TOOL]
 
 
 def test_outsource_query_tools_use_role_read_permission():

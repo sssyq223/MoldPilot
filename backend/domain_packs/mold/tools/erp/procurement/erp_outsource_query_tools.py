@@ -36,10 +36,10 @@ RETIRED_TOOLS = (
 
 SKILL_SPECS = {
     "outsource_followup_query": {
-        "name": "委外跟单进度查询",
+        "name": "委外跟单待办查询",
         "tools": [BOARD_TOOL],
         "optional_tools": [PROGRESS_TOOL],
-        "activation_tools": list(BUYER_TOOL_KEYS),
+        "activation_tools": [BOARD_TOOL],
         "activation_queries": [
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单", "委外单子",
             "待采购填报价", "待填价", "待发询价", "待报价", "待填成交价", "待下单",
@@ -64,7 +64,7 @@ SKILL_SPECS = {
         "name": "委外加工商待办查询",
         "tools": [PROCESSOR_BOARD_TOOL],
         "optional_tools": [PROCESSOR_PROGRESS_TOOL],
-        "activation_tools": list(PROCESSOR_TOOL_KEYS),
+        "activation_tools": [PROCESSOR_BOARD_TOOL],
         "activation_queries": [
             "我的委外", "待报价", "待接单", "加工商待办", "有几个", "有没有", "待办",
         ],
@@ -81,7 +81,7 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     BOARD_TOOL: {
-        "description": "只读读取 ERP 委外待办看板：进度、委外类型、模具号、零件明细和价格。有没有委外、几个订单、全部待办都直接查责任域看板；有模具号则只过滤该模具。不要先追问模具号。采购员/主管使用。",
+        "description": "只读读取 ERP 委外待办看板：委外类型、模具号、零件明细和价格。有没有委外、几个订单、全部待办都直接查责任域看板；有模具号则只过滤该模具。不要先追问模具号。采购员/主管使用。",
         "permission": "erp_outsource_buyer.read",
     },
     PROGRESS_TOOL: {

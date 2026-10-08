@@ -1847,13 +1847,75 @@ def test_authorized_processor_todo_question_loads_board_without_order_keyword():
             'activation_route': 'authorized',
             'tools': ['query_erp_outsource_processor_board'],
             'optional_tools': [],
-            'auto_activation_queries': ['我的委外'],
+            'auto_activation_queries': ['我的委外', '待办'],
             'host_auto_invoke_empty_arguments': False,
         }],
         {'prepare_erp_outsource_processor_quote': {'readOnlyHint': False}},
     )
     assert 'query_erp_outsource_processor_board' in names
     assert 'prepare_erp_outsource_processor_quote' not in names
+
+
+def test_listing_question_host_invokes_board_not_progress():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_followup_board',
+        'description': '查询委外采购待办',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    progress = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_order_progress',
+        'description': '查询委外单进度',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    processor = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '当前委外待办已列出。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.names = []
+
+        def execute(self, seq, key, arguments):
+            self.names.append(key)
+            return super().execute(seq, key, arguments)
+
+    gateway = RecordingGateway()
+    model = InspectingRepliesModel([final, final, final, final])
+    run_loop(context(
+        prompt='现在有委外单子吗',
+        core_tool_names=[],
+        tools=[board, progress, processor],
+        skills=[
+            {
+                'key': 'outsource_followup_query',
+                'activation_route': 'authorized',
+                'tools': ['query_erp_outsource_followup_board'],
+                'optional_tools': ['query_erp_outsource_order_progress'],
+                'auto_activation_queries': ['委外单子', '有委外', '有几个'],
+                'priority_patterns': ['委外单子|有几个委外'],
+                'host_auto_invoke_empty_arguments': True,
+                'requires_tool_evidence': True,
+            },
+            {
+                'key': 'outsource_processor_query',
+                'activation_route': 'authorized',
+                'tools': ['query_erp_outsource_processor_board'],
+                'optional_tools': [],
+                'auto_activation_queries': ['我的委外', '待办'],
+                'host_auto_invoke_empty_arguments': True,
+            },
+        ],
+    ), model, gateway)
+    assert gateway.names == ['query_erp_outsource_followup_board']
+    assert 'query_erp_outsource_order_progress' not in (model.tool_names[0] if model.tool_names else [])
 
 
 def test_authorized_write_turn_does_not_preload_progress():
