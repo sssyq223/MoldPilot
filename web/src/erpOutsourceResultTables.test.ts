@@ -41,6 +41,8 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].columns.map((column) => column.label)).toEqual([
       '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '核算价', '我方报价', '接单上限', '加工商报价', '成交价', '加工商',
     ])
+    expect(tables[0].columns.find((column) => column.key === 'supplierQuotes')?.kind).toBe('wrap')
+    expect(tables[0].columns.find((column) => column.key === 'pending')?.kind).toBe('wrap')
     expect(tables[0].columns.some((column) => /项目|工单/.test(column.label))).toBe(false)
   })
 
@@ -63,7 +65,7 @@ describe('ERP outsource result tables', () => {
             referenceTotal: null,
             ourQuoteAmount: null,
             autoAcceptMaxAmount: null,
-            finalDealAmount: null,
+            finalDealAmount: 50000,
             supplierQuotes: '',
             supplierName: '青岛和兴嘉业金属制品有限公司',
           }, {
@@ -82,10 +84,11 @@ describe('ERP outsource result tables', () => {
     expect(tables).toHaveLength(1)
     expect(tables[0].title).toBe('我的委外待办')
     expect(tables[0].columns.map((column) => column.label)).toEqual([
-      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '工序', '核算价', '采购报价', '我的报价',
+      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '工序', '核算价', '采购报价', '我的报价', '成交价',
     ])
     expect(tables[0].sourceNote).toContain('采购报价')
     expect(tables[0].rows[0].buyerQuoteAmount).toBe(18000)
+    expect(tables[0].rows[0].finalDealAmount).toBe(50000)
     expect(tables[0].rows[1].buyerQuoteAmount).toBeNull()
     expect(tables[0].rows[1].referenceTotal).toBe(267)
     expect(tables[0].rows[0].referenceTotal ?? null).toBeNull()
@@ -286,6 +289,38 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[0].shipmentNo).toBe('PS-5136-441118')
     expect(tables[0].rows[0].inboundTargetText).toBe('成品库')
     expect(String(tables[0].rows[0].partDetails)).toContain('B1-01')
+  })
+
+  it('renders outsource approval todos as a table', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_approval_todos',
+        data: {
+          nodeLens: ['采购主管'],
+          summary: '委外下单审批待办（采购主管）共 1 条。',
+          items: [{
+            actionLabel: '通过或驳回',
+            stationLabel: '审批中',
+            nodeName: '采购主管审批',
+            orderNo: 'EO-260930-R77L',
+            moldFamily: 'M260063',
+            moldBatch: 'M260063-P2',
+            supplierName: '青岛和兴嘉业金属制品有限公司',
+            amount: 50000,
+            assigneeName: '王群',
+          }],
+        },
+      }],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].title).toBe('委外下单审批待办')
+    expect(tables[0].rows).toHaveLength(1)
+    expect(tables[0].rows[0].orderNo).toBe('EO-260930-R77L')
+    expect(tables[0].rows[0].nodeName).toBe('采购主管审批')
+    expect(tables[0].columns.map((column) => column.label)).toContain('当前节点')
+    expect(tables[0].columns.find((column) => column.key === 'processor')?.kind).toBe('wrap')
   })
 
   it('renders quality inspection todos as a table', () => {

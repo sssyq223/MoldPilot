@@ -49,15 +49,22 @@ SKILL_SPECS = {
             "报报价", "报个价", "帮我报价",
             "发询价", "发送询价", "办理发询价", "办理发送询价",
             "确认发询价", "确认发送询价", "确认办理发送询价", "选加工商",
-            "填成交价", "成交价", "重选加工商", "拒单重选",
+            "发给加工商", "发给厂家", "可以发给",
+            "填成交价", "填写成交价", "成交价", "重选加工商", "拒单重选",
         ],
         "auto_activation_queries": [
             "填我方报价", "填价格", "帮我填报价", "帮我填价格",
             "报报价", "报个价", "帮我报价",
             "发询价", "发送询价", "办理发送询价", "确认办理发送询价",
-            "填成交价", "成交价", "重选加工商",
+            "发给加工商", "发给厂家", "可以发给",
+            "填成交价", "填写成交价", "成交价", "重选加工商",
         ],
-        "priority_patterns": ["填我方报价|填价格|帮我填报价|帮我填价格|报报价|报个价|帮我报价|发询价|发送询价|办理发送询价|填成交价|成交价|重选加工商|拒单重选"],
+        "priority_patterns": [
+            r"填我方报价|(?<!已经)(?<!已)填价格|帮我填报价|帮我填价格|报报价|报个价|帮我报价"
+            r"|发询价|发送询价|办理发送询价"
+            r"|发给?.{0,12}(?:加工商|厂家|供应商)|可以发"
+            r"|填成交价|填写成交价|成交价|重选加工商|拒单重选"
+        ],
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
@@ -73,7 +80,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_buyer.execute",
     },
     DEAL_TOOL: {
-        "description": "准备填写超区间成交价并提交定标审批。用订单号或模具号+批次号定位，并提供要定标的报价单。当前分站必须是待下单。禁止使用内部工单数字 id。本人确认后才写入 ERP。",
+        "description": "准备填写超区间成交价并提交定标审批。用户说 NO.N / 第N行并给出成交价时，用 board_row 锁定完整表格那一行，不要问联络号、采购号或订单号。报价单 id 由该行已报加工商报价自动带出，禁止向用户要内部数字 id。当前分站必须是待填成交价。本人确认后才写入 ERP。",
         "permission": "erp_outsource_buyer.execute",
     },
     RESELECT_TOOL: {
@@ -96,6 +103,14 @@ def send_arguments_from_board(prompt: str, items) -> dict[str, Any] | None:
 
 def quote_arguments_from_board(prompt: str, items) -> dict[str, Any] | None:
     return buyer_todo.quote_arguments_from_board(prompt, items)
+
+
+def spoken_deal_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    return buyer_todo.parse_spoken_final_deal(prompt, context_text)
+
+
+def deal_arguments_from_board(prompt: str, items) -> dict[str, Any] | None:
+    return buyer_todo.deal_arguments_from_board(prompt, items)
 
 
 TOOL_NAMES = {
@@ -127,6 +142,8 @@ class _BuyerIdentity(CamelModel):
     @model_validator(mode="after")
     def require_identity(self):
         if getattr(self, "board_row", None):
+            return self
+        if getattr(self, "final_deal_amount", None):
             return self
         if not self.order_no and not self.mold and not self.batch and not self.part:
             raise ValueError("请用订单号、模具号、批次号、零件号或表格 NO. 定位，不要使用内部数字编号")
@@ -183,8 +200,19 @@ class InquirySendInput(_BuyerIdentity):
 
 
 class FinalDealInput(_BuyerIdentity):
-    quotation_id: int = Field(ge=1, description="要定标的报价单 ID。")
+    quotation_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="要定标的报价单 ID。说了表格 NO. 时省略，系统用该行已报加工商报价。禁止向用户要这个内部编号。",
+    )
     final_deal_amount: float = Field(gt=0)
+    board_row: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        validation_alias=AliasChoices("board_row", "boardRow"),
+        description="查看完整表格第一列的 NO.。说第N行或 NO.N 时填这个。",
+    )
 
 
 class ReselectInput(_BuyerIdentity):
@@ -248,6 +276,13 @@ def _require_buyer(db, user) -> None:
     require_outsource_buyer_scope(db, user)
 
 
+def _resolve_deal_quotation(item: dict[str, Any], data) -> int:
+    quote_id = getattr(data, "quotation_id", None) or buyer_todo.quotation_id_from_item(item)
+    if not quote_id:
+        raise DomainError("NOT_FOUND", "这张询价还没有可定标的加工商报价，不能填成交价", 404)
+    return int(quote_id)
+
+
 def _lookup(data, expected_station: str) -> dict[str, Any]:
     item = None
     ambiguous_error = None
@@ -277,6 +312,8 @@ def _lookup(data, expected_station: str) -> dict[str, Any]:
             ambiguous_error = error
     if item is None and expected_station == "inquiry_send":
         item = buyer_todo.find_unique_station_item("inquiry_send")
+    if item is None and expected_station == "place_order":
+        item = buyer_todo.find_unique_station_item("place_order")
     if not item:
         if ambiguous_error:
             raise ambiguous_error
@@ -349,9 +386,11 @@ def preview(key: str, data, db=None, user=None, *, allow_live_match=True) -> tup
             "说明": "本人确认后调用 ERP 发询价。加工商来自该单 ERP 已匹配名单，不是口头改写。",
         }
     elif key == DEAL_TOOL:
+        data.quotation_id = _resolve_deal_quotation(item, data)
         extra = {
             "操作": "填写成交价并提交定标审批",
-            "报价单": data.quotation_id,
+            "加工商": buyer_todo.quoted_supplier_label(item) or item.get("pendingQuoteSuppliers") or "已报价加工商",
+            "加工商报价": item.get("supplierQuotes") or "",
             "成交价": data.final_deal_amount,
             "说明": "本人确认后写入 ERP 并提交下单审批，审批通过前加工商不能接单。",
         }

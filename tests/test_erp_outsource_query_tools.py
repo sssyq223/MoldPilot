@@ -133,6 +133,12 @@ def test_buyer_todo_question_picks_station():
     assert parsed["mold_batch"] == "M260063-P4"
 
 
+def test_buyer_todo_question_picks_final_deal_station():
+    parsed = buyer_todo.parse_question("查一下待填成交价")
+    assert parsed["station"] == "place_order"
+    assert buyer_todo.parse_question("待下单有几条")["station"] == "place_order"
+
+
 def test_buyer_todo_question_picks_operation_type():
     parsed = buyer_todo.parse_question("查一下 M260063 工序委外待报价")
     assert parsed["outsource_type"] == "operation"
@@ -167,8 +173,33 @@ def test_buyer_todo_item_hides_project_and_shows_pending_quoters():
     assert item["outsourceTypeLabel"] == "零件委外"
     assert "PU-06" in item["partDetails"]
     assert item["pendingQuoteSuppliers"] == "铂锐"
-    assert "精工 330" in item["supplierQuotes"]
+    assert "330.00" in item["supplierQuotes"]
+    assert "超上限" not in item["supplierQuotes"]
     assert item["ourQuoteAmount"] == 320
+
+
+def test_place_order_item_shows_quoted_supplier_and_over_ceiling_amount():
+    item = buyer_todo.item_from_row(
+        {
+            "outsource_type": "part",
+            "mold_no": "M260063-P2",
+            "our_quote_amount": 300,
+            "auto_accept_max_amount": 55555,
+            "reference_total": 9979.4,
+            "final_deal_amount": None,
+            "parts": [{"partNo": "PU-06", "partName": "上垫板", "qty": 1}],
+            "invitations": [{
+                "supplierName": "青岛和兴嘉业金属制品有限公司",
+                "status": "quoted",
+                "quoteAmount": 66666,
+            }],
+        },
+        "place_order",
+    )
+    assert item["stationLabel"] == "待填成交价"
+    assert item["pendingQuoteSuppliers"] == "青岛和兴嘉业金属制品有限公司"
+    assert item["supplierQuotes"] == "66666.00（超上限）"
+    assert item["finalDealAmount"] is None
 
 
 def test_inquiry_send_item_shows_matched_suppliers_even_without_pending_status():
@@ -243,6 +274,52 @@ def test_buyer_todo_question_picks_approval_station():
     assert parsed["station"] == "order_approval"
     assert parsed["mold_family"] == ""
     assert parsed["mold_batch"] == ""
+
+
+def test_rejected_order_number_hidden_after_inquiry_reopens():
+    item = buyer_todo.item_from_row(
+        {
+            "outsource_type": "part",
+            "awarded_status": "rejected",
+            "awarded_order_id": 5159,
+            "awarded_order_no": "EO-260930-R77L",
+            "mold_no": "M260063-P2",
+            "inquiry_id": 177,
+            "invitations": [{"invitationId": 52, "status": "sent", "supplierCode": "SUP000001"}],
+        },
+        "supplier_quote",
+    )
+    assert item["orderNo"] == ""
+    assert item["orderId"] is None
+    assert item["rejectedOrderNo"] == "EO-260930-R77L"
+    assert buyer_todo.item_matches_identity(item, order_no="EO-260930-R77L")
+
+
+def test_part_rejected_order_is_resend_not_pending_accept():
+    assert buyer_todo.classify({
+        "awarded_stage": "pending_accept",
+        "awarded_status": "rejected",
+        "outsource_type": "part",
+        "inquiry_id": 177,
+        "inquiry_status": "draft",
+        "our_quote_amount": 300,
+        "auto_accept_max_amount": 55555,
+        "final_deal_amount": None,
+        "invitation_count": 0,
+        "quoted_count": 0,
+    }) == "inquiry_send"
+    assert buyer_todo.classify({
+        "awarded_stage": "pending_accept",
+        "awarded_status": "rejected",
+        "outsource_type": "part",
+        "inquiry_id": 177,
+        "inquiry_status": "sent",
+        "our_quote_amount": 300,
+        "auto_accept_max_amount": 55555,
+        "final_deal_amount": None,
+        "invitation_count": 1,
+        "quoted_count": 0,
+    }) == "supplier_quote"
 
 
 def test_buyer_todo_classify_splits_approval_from_place_order():

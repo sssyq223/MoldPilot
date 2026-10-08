@@ -90,13 +90,18 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any]:
         family = MOLD_FAMILY.search(text)
         mold_no = (batch.group(1) if batch else family.group(1) if family else "") or ""
     mold_family, mold_batch = mold_labels(mold_no)
+    order_no = row.get("order_no") or row.get("business_no") or ""
+    node_name = row.get("node_name") or row.get("current_node_name") or ""
     return {
         "taskId": task_id,
         "instanceId": row.get("instance_id"),
         "orderId": row.get("order_id"),
-        "orderNo": row.get("order_no") or row.get("business_no") or "",
+        "orderNo": order_no,
         "title": row.get("title") or "",
-        "nodeName": row.get("node_name") or row.get("current_node_name") or "",
+        "nodeName": node_name,
+        "station": "审批中",
+        "stationLabel": "审批中",
+        "actionLabel": "通过或驳回",
         "assigneeName": row.get("assignee_name") or "",
         "moldNo": mold_no,
         "moldFamily": mold_family,
@@ -107,12 +112,22 @@ def item_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "stage": row.get("stage") or "",
         "nextAction": {
             "action": "pass_or_reject",
-            "orderNo": row.get("order_no") or row.get("business_no") or "",
+            "orderNo": order_no,
             "mold": mold_family,
             "batch": mold_batch,
-            "hint": "只批自己节点。用订单号定位，必要时加模具号和批次号。禁止使用内部数字 id。",
+            "hint": "只批自己节点。说通过/驳回，或用表格 NO.、订单号定位。禁止使用内部数字 id。",
         },
     }
+
+
+def item_from_visible_row(row_no: int, *, node_tokens: list[str] | None) -> dict[str, Any] | None:
+    try:
+        items = query_items(node_tokens=node_tokens)
+    except Exception:
+        return None
+    if row_no < 1 or row_no > len(items):
+        return None
+    return items[row_no - 1]
 
 
 def query_items(*, node_tokens: list[str] | None = None, mold_family: str = "", mold_batch: str = "") -> list[dict[str, Any]]:

@@ -108,7 +108,7 @@ export type ErpDesignColumn = {
   fields: string[]
   width?: number
   decimals?: number
-  kind?: 'paint' | 'hardware-type' | 'preview'
+  kind?: 'paint' | 'hardware-type' | 'preview' | 'wrap'
 }
 
 const ERP_DESIGN_UPLOAD_PAGE = 'http://127.0.0.1:18080/design/upload/index'

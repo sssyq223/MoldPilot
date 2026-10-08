@@ -24,7 +24,7 @@ from domain_packs.mold.tools.erp.procurement.outsource_identity import (
     identity_mold,
     identity_order_no,
 )
-from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries import buyer_todo, processor_reject_reason
 
 QUOTE_TOOL = "prepare_erp_outsource_processor_quote"
 ACCEPT_TOOL = "prepare_erp_outsource_processor_accept"
@@ -41,7 +41,7 @@ SKILL_SPECS = {
         "activation_queries": [
             "提交报价", "我要报价", "加工商报价",
             "我要接单", "确认接单", "我接了", "这单我接了",
-            "拒绝接单", "我要拒单",
+            "拒绝接单", "我要拒单", "拒单",
         ],
         "auto_activation_queries": [
             "提交报价", "我要报价", "加工商报价",
@@ -56,7 +56,7 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     QUOTE_TOOL: {
-        "description": "准备提交本加工商报价确认卡。用户说 NO.几或第N行并给出金额时，用 board_row 锁定「我的委外待办」那一行，不要改去查采购看板，也不要口头请用户确认。交期未说时用询价单交期；含税未说按含税，都写在确认卡上。工序委外不走报价。本人确认后才写入 ERP。",
+        "description": "准备提交本加工商报价确认卡。用户说 NO.几、第N行或订单号并给出金额时立刻锁定待报价行，不要口头请用户确认。交期未说时用询价单交期；含税未说按含税，都写在确认卡上。工序委外不走报价。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
     ACCEPT_TOOL: {
@@ -64,7 +64,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_processor.execute",
     },
     REJECT_TOOL: {
-        "description": "准备拒绝接单。用查询结果中的订单号，必要时加模具号、批次号定位，并提供 ERP 拒单原因编码。工序委外拒单后 ERP 自动转下一家。禁止使用内部数字 id。本人确认后才写入 ERP。",
+        "description": "准备拒绝接单。用查询结果中的订单号，必要时加模具号、批次号定位。拒单原因用 ERP 当前启用的中文名称或编码；没说原因时用第一条启用原因。禁止使用已停用原因或内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
 }
@@ -76,10 +76,15 @@ TOOL_NAMES = {
 }
 
 ACCEPT_SPEECH = ("我接了", "这单我接了", "确认接单", "我要接单", "接这单")
+REJECT_SPEECH = ("拒绝接单", "我要拒单", "拒这单", "这单我拒了", "拒单吧", "拒单")
+REJECT_LOOK_UP = ("有几个", "有哪些", "有没有", "不要拒", "不拒单", "全部拒单")
+REJECT_REASON = re.compile(r"(?:因为|原因|由于)[:：,\s]*(.+)$")
 CONFIRM_ONLY = re.compile(r"^(?:确认|是的|好的|可以|同意|对|嗯|行|好)(?:吧|了)?$")
 QUOTE_FOLLOWUP = ("提交报价", "办理报价", "确认办理", "确认报价", "办理提交", "填报价")
 QUOTE_UTTERANCE = re.compile(
-    r"(?:NO\.?\s*\d+|第\s*(?:\d+|[一二三四五六七八九十])\s*行)[^\n]{0,80}",
+    r"(?:NO\.?\s*\d+|第\s*(?:\d+|[一二三四五六七八九十])\s*行|"
+    r"EO[\-\u2010-\u2015\u2212\uff0d]\d{6}[\-\u2010-\u2015\u2212\uff0d][A-Z0-9]+)"
+    r"[^\n]{0,80}",
     re.IGNORECASE,
 )
 SPOKEN_DATE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
@@ -120,13 +125,16 @@ def _looks_like_row_label(value: Any) -> bool:
 
 
 def is_spoken_processor_quote(text: str) -> bool:
-    """Processor quote locked to 我的委外待办 NO. Buyer ceiling quotes stay out."""
+    """Processor quote locked to 我的委外待办 NO. or 订单号 + 金额."""
     if any(token in text for token in PROCESSOR_QUOTE_BLOCK):
         return False
     if "报价" not in text or "询价" in text:
         return False
-    return buyer_todo.QUOTE_AMOUNT.search(text) is not None and (
-        buyer_todo.spoken_board_row_number(text) is not None
+    if buyer_todo.QUOTE_AMOUNT.search(text) is None:
+        return False
+    return bool(
+        buyer_todo.spoken_board_row_number(text)
+        or buyer_todo.ORDER_NO.search(text or "")
     )
 
 
@@ -160,13 +168,17 @@ def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any
         source = found
     amount = buyer_todo.QUOTE_AMOUNT.search(source)
     row_no = buyer_todo.spoken_board_row_number(source)
-    if amount is None or row_no is None:
+    order = buyer_todo.ORDER_NO.search(source)
+    if amount is None or (row_no is None and order is None):
         return None
     arguments: dict[str, Any] = {
-        "board_row": row_no,
         "unit_price": float(amount.group(1)),
         "tax_included": "不含税" not in source and "不含税" not in extra,
     }
+    if row_no:
+        arguments["board_row"] = row_no
+    if order:
+        arguments["order_no"] = buyer_todo.normalize_order_no(order.group(1))
     spoken_date = SPOKEN_DATE.search(source)
     if spoken_date is None and extra != source:
         spoken_date = SPOKEN_DATE.search(extra)
@@ -177,6 +189,37 @@ def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any
         arguments["mold"] = parsed["mold_family"]
     elif parsed.get("mold_batch"):
         arguments["mold"] = parsed["mold_batch"].split("-P", 1)[0]
+    return arguments
+
+
+def spoken_quote_from_board(prompt: str, items) -> dict[str, Any] | None:
+    """Lock 报价+金额 to the only 待报价 row when speech omitted NO./订单号."""
+    locked = spoken_quote_arguments(prompt)
+    if locked:
+        return locked
+    if any(token in (prompt or "") for token in PROCESSOR_QUOTE_BLOCK):
+        return None
+    if "报价" not in (prompt or "") or "询价" in (prompt or ""):
+        return None
+    amount = buyer_todo.QUOTE_AMOUNT.search(prompt or "")
+    if amount is None:
+        return None
+    quote_rows = [
+        item for item in (items or [])
+        if isinstance(item, dict) and str(item.get("station") or "") == "supplier_quote"
+    ]
+    if len(quote_rows) != 1:
+        return None
+    item = quote_rows[0]
+    arguments: dict[str, Any] = {
+        "unit_price": float(amount.group(1)),
+        "tax_included": "不含税" not in (prompt or ""),
+    }
+    order = item.get("orderNo") or item.get("rejectedOrderNo")
+    if order:
+        arguments["order_no"] = buyer_todo.normalize_order_no(order)
+    else:
+        arguments["board_row"] = 1
     return arguments
 
 
@@ -201,9 +244,42 @@ def spoken_accept_arguments(prompt: str, context_text: str = "") -> dict[str, An
     return arguments
 
 
+def is_spoken_processor_reject(text: str) -> bool:
+    prompt = text or ""
+    if any(token in prompt for token in REJECT_LOOK_UP):
+        return False
+    return any(token in prompt for token in REJECT_SPEECH)
+
+
+def spoken_reject_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    text = prompt or ""
+    if not is_spoken_processor_reject(text):
+        return None
+    identity_source = f"{text}\n{context_text or ''}"
+    order = buyer_todo.ORDER_NO.search(identity_source)
+    if not order:
+        return None
+    arguments: dict[str, Any] = {"order_no": order.group(1).upper()}
+    parsed = buyer_todo.parse_question(identity_source)
+    if parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    reason = REJECT_REASON.search(text)
+    if reason:
+        arguments["reason_code"] = reason.group(1).strip()
+    elif "报价过高" in text:
+        arguments["reason_code"] = "报价过高"
+    elif "产能" in text:
+        arguments["reason_code"] = "产能"
+    return arguments
+
+
 class ProcessorQuoteInput(StrictModel):
-    invitation_id: int | None = Field(default=None, ge=1, description="查询结果中本加工商的 invitationId。说了表格 NO. 时可以不填。")
+    invitation_id: int | None = Field(default=None, ge=1, description="查询结果中本加工商的 invitationId。说了表格 NO. 或订单号时可以不填。")
     board_row: int | None = Field(default=None, ge=1, description="我的委外待办第一列 NO.。加工商说第N行或 NO.N 时填这个，不要用采购员完整表的行号。")
+    order_no: str | None = Field(default=None, max_length=80, description="查询结果或拒单后重发询价仍沿用的订单号。说 EO- 加金额时填这个。")
     mold: str | None = Field(default=None, max_length=40)
     unit_price: float = Field(gt=0, description="本加工商报价（订单总额）。")
     delivery_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="承诺交付日期 YYYY-MM-DD。没说时用询价单交期。")
@@ -229,6 +305,9 @@ class ProcessorQuoteInput(StrictModel):
             invite_raw = None
         data["board_row"] = row
         data["invitation_id"] = None if invite_raw in (None, "") else _plain_int(invite_raw)
+        order_raw = data.get("order_no") or data.get("orderNo")
+        data["order_no"] = str(order_raw).strip().upper() or None if order_raw not in (None, "") else None
+        data.pop("orderNo", None)
         if isinstance(data.get("tax_included"), str):
             tax = data["tax_included"].strip()
             if tax in {"含税", "是", "true", "True", "1"}:
@@ -242,6 +321,11 @@ class ProcessorQuoteInput(StrictModel):
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
+    @field_validator("order_no")
+    @classmethod
+    def strip_order(cls, value):
+        return value.strip().upper() or None if isinstance(value, str) else value
+
     @field_validator("delivery_date", mode="before")
     @classmethod
     def empty_date(cls, value):
@@ -251,8 +335,8 @@ class ProcessorQuoteInput(StrictModel):
 
     @model_validator(mode="after")
     def need_target(self):
-        if not self.invitation_id and not self.board_row:
-            raise ValueError("请用我的委外待办 NO. 或 invitationId 定位待报价行")
+        if not self.invitation_id and not self.board_row and not self.order_no:
+            raise ValueError("请用我的委外待办 NO.、订单号或 invitationId 定位待报价行")
         return self
 
 
@@ -271,7 +355,7 @@ class ProcessorRejectInput(CamelModel):
     order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = identity_batch(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
-    reason_code: str = Field(min_length=1, max_length=80, description="ERP 拒单原因编码。")
+    reason_code: str | None = Field(default=None, max_length=80, description="ERP 当前启用的拒单原因编码或中文名称。没说时用第一条启用原因。")
 
     @field_validator("order_no", "mold", "batch")
     @classmethod
@@ -281,7 +365,7 @@ class ProcessorRejectInput(CamelModel):
     @field_validator("reason_code")
     @classmethod
     def strip_reason(cls, value):
-        return value.strip()
+        return value.strip() or None if isinstance(value, str) else value
 
 
 INPUT_MODELS = {
@@ -304,7 +388,7 @@ ACTION_BY_TOOL = {
 
 LIMIT_BY_TOOL = {
     QUOTE_TOOL: "仅准备本加工商报价；本人确认后才调用 ERP。提交后重新查询。对加工商只说：待接单可以接单，否则等待采购处理。不要提区间、成交价、主管或总经理。",
-    ACCEPT_TOOL: "仅准备确认接单；本人确认后才调用 ERP。",
+    ACCEPT_TOOL: "仅准备确认接单；本人确认后才调用 ERP。接单成功后只说接单结果和下一步，不要引用历史拒单原因或备注。",
     REJECT_TOOL: "仅准备拒绝接单；本人确认后才调用 ERP。工序委外拒单后由 ERP 自动转下一家，不要自己选下一家。",
 }
 
@@ -387,24 +471,42 @@ def _quoteable_invitation(item: dict[str, Any], tokens: list[str] | None) -> dic
     return None
 
 
+def _item_from_processor_order(tokens: list[str] | None, order_no: str, mold: str | None = None) -> dict[str, Any]:
+    item = buyer_todo.find_item_by_identity(
+        order_no=order_no,
+        mold=mold,
+        station="supplier_quote",
+    )
+    if not item:
+        item = buyer_todo.find_item_by_identity(order_no=order_no, mold=mold)
+    if not item:
+        raise DomainError("NOT_FOUND", "没有找到这张仍待报价的询价，请用表格 NO. 或订单号重新查询", 404)
+    _guard_scope(item, None, tokens)
+    return item
+
+
 def _resolve_processor_quote(data, tokens: list[str] | None):
-    """Turn 我的委外待办 NO. into invitationId, and fill a missing due date from the inquiry."""
+    """Turn 我的委外待办 NO. / 订单号 into invitationId, and fill a missing due date from the inquiry."""
     updates: dict[str, Any] = {}
     item = None
     if not data.invitation_id:
-        item = _item_from_processor_board(tokens, int(data.board_row))
-        row_no = int(data.board_row)
+        if data.board_row:
+            item = _item_from_processor_board(tokens, int(data.board_row))
+            label = f"NO.{int(data.board_row)}"
+        else:
+            item = _item_from_processor_order(tokens, str(data.order_no or ""), data.mold)
+            label = str(data.order_no or "该行")
         if item.get("outsourceType") == "operation":
-            raise DomainError("STATE_BLOCKED", f"NO.{row_no} 是工序委外，不走报价，只办接单或拒单", 409)
+            raise DomainError("STATE_BLOCKED", f"{label} 是工序委外，不走报价，只办接单或拒单", 409)
         if item.get("station") != "supplier_quote":
             raise DomainError(
                 "STATE_BLOCKED",
-                f"NO.{row_no} 当前是{item.get('stationLabel') or item.get('station')}，不能报价",
+                f"{label} 当前是{item.get('stationLabel') or item.get('station')}，不能报价",
                 409,
             )
         invitation = _quoteable_invitation(item, tokens)
         if not invitation or not invitation.get("invitationId"):
-            raise DomainError("STATE_BLOCKED", f"NO.{row_no} 已报过价或没有待报价邀请，不能再报", 409)
+            raise DomainError("STATE_BLOCKED", f"{label} 已报过价或没有待报价邀请，不能再报", 409)
         updates["invitation_id"] = int(invitation["invitationId"])
     if not data.delivery_date:
         if item is None and data.invitation_id:
@@ -492,9 +594,10 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             "说明": "本人确认后调用 ERP 接单。",
         }
     else:
+        reason = processor_reject_reason.resolve(data.reason_code, db, user)
         extra = {
             "操作": "拒绝接单",
-            "拒单原因编码": data.reason_code,
+            "拒单原因": reason["reason_label"],
             "说明": (
                 "本人确认后调用 ERP 拒单。工序委外会自动转下一家；零件/模具委外由采购员重选加工商。"
                 if item.get("outsourceType") == "operation"
@@ -509,6 +612,9 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
     data = parse(key, arguments)
     if key == QUOTE_TOOL:
         data = _resolve_processor_quote(data, _tokens(db, user))
+    if key == REJECT_TOOL:
+        reason = processor_reject_reason.resolve(data.reason_code, db, user)
+        data = data.model_copy(update={"reason_code": reason["reason_code"]})
     _, display = preview(db, user, key, data)
     proposal = {
         "kind": KIND_BY_TOOL[key],
@@ -563,10 +669,49 @@ def _quote_hint() -> str:
     return "报价已提交。请重新查询待办。变成待接单就可以接单或拒单。如果还不是待接单，请等待采购处理，不要自己接单。"
 
 
+def _accept_hint() -> str:
+    return "接单已写入 ERP。请重新查询待办，只按查到的分站说话。不要引用这张单历史上的拒单原因或备注。"
+
+
 def _reject_hint(item: dict[str, Any]) -> str:
     if item.get("outsourceType") == "operation":
         return "工序委外拒单后 ERP 会自动把同一张单转给下一家。本加工商不要再操作；下一家用同一套接单/拒单办理。"
     return "零件/模具委外拒单后由采购员重选加工商再发询价。"
+
+
+REJECT_ERP_KEY_MARKERS = ("reject", "declin")
+REJECT_ERP_EXACT_KEYS = {"reasoncode", "reasonlabel", "reasonname"}
+REJECT_REMARK_MARKERS = ("无法接单", "拒单", "产能不足")
+
+
+def _folded_key(key: str) -> str:
+    return re.sub(r"[^a-z]", "", str(key or "").lower())
+
+
+def _looks_like_reject_text(value: Any) -> bool:
+    text = str(value or "")
+    return any(marker in text for marker in REJECT_REMARK_MARKERS)
+
+
+def clip_accept_erp(payload: Any) -> Any:
+    """Drop leftover reject-reason fields from an accept receipt.
+
+    ERP often keeps the previous 拒单原因 on the same EO- number after
+    the buyer re-awards. That text must not appear on a successful 接单.
+    """
+    if isinstance(payload, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in payload.items():
+            folded = _folded_key(key)
+            if any(marker in folded for marker in REJECT_ERP_KEY_MARKERS) or folded in REJECT_ERP_EXACT_KEYS:
+                continue
+            if folded in {"remark", "note", "comment", "memo", "message"} and _looks_like_reject_text(value):
+                continue
+            cleaned[key] = clip_accept_erp(value)
+        return cleaned
+    if isinstance(payload, list):
+        return [clip_accept_erp(item) for item in payload]
+    return payload
 
 
 def confirm(db, user, payload):
@@ -608,17 +753,29 @@ def confirm(db, user, payload):
             intent_id=payload.get("_intent_id"), action="processor_accept",
             native_id=f"order:{order_id}",
         )
+        hint = _accept_hint()
         return {
             **identity,
             "action": "processor_accept",
             "status": "CONFIRMED",
-            "erp": result,
+            "erp": clip_accept_erp(result),
+            "nextHint": hint,
+            "model_context": {
+                "action": "processor_accept",
+                "status": "CONFIRMED",
+                "orderNo": identity["order_no"],
+                "mold": identity["mold"],
+                "batch": identity["batch"],
+                "nextHint": hint,
+            },
         }
+    reason = processor_reject_reason.resolve(data.reason_code, db, user)
     result = post_erp(
         db,
         user,
         f"entrust/inquiry/order/{order_id}/reject",
-        params={"reasonCode": data.reason_code},
+        {"reasonCode": reason["reason_code"]},
+        params={"reasonCode": reason["reason_code"]},
         intent_id=payload.get("_intent_id"),
         action="processor_reject",
         native_id=f"order:{order_id}",

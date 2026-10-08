@@ -1,6 +1,7 @@
 """Outsource order approval: query pending tasks, then prepare pass/reject."""
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
@@ -23,7 +24,7 @@ from domain_packs.mold.tools.erp.procurement.outsource_identity import (
     identity_mold,
     identity_order_no,
 )
-from domain_packs.mold.tools.erp.procurement.outsource_queries import approval_todo
+from domain_packs.mold.tools.erp.procurement.outsource_queries import approval_todo, buyer_todo
 from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import identity_display
 
 TODO_TOOL = "query_erp_outsource_approval_todos"
@@ -41,12 +42,17 @@ SKILL_SPECS = {
         "activation_tools": list(QUERY_TOOL_KEYS),
         "activation_queries": [
             "下单审批", "委外审批", "审批中", "待我审批", "通过这单", "驳回这单",
-            "采购主管审批", "总经理审批", "审批待办",
+            "通过", "驳回", "审批通过", "审批驳回",
+            "采购主管审批", "总经理审批", "审批待办", "查看待办", "查待办",
         ],
         "auto_activation_queries": [
-            "下单审批", "委外审批", "待我审批", "采购主管审批", "总经理审批", "审批待办", "现在有审批吗",
+            "下单审批", "委外审批", "待我审批", "采购主管审批", "总经理审批",
+            "审批待办", "现在有审批吗", "查看待办", "查待办",
+            "通过这单", "驳回这单", "审批通过", "审批驳回",
         ],
-        "priority_patterns": ["下单审批|委外审批|待我审批|采购主管审批|总经理审批|审批待办|现在有审批"],
+        "priority_patterns": [
+            "下单审批|委外审批|待我审批|采购主管审批|总经理审批|审批待办|现在有审批|通过这单|驳回这单|查看待办",
+        ],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -60,11 +66,11 @@ TOOL_SPECS = {
         "permission": "erp_outsource_approval.read",
     },
     PASS_TOOL: {
-        "description": "准备通过一张委外下单审批。用查询结果中的订单号定位，必要时加模具号、批次号。当前节点必须仍是本角色待办。禁止使用内部数字 id。本人确认后才调用 ERP。",
+        "description": "准备通过一张委外下单审批。用查询结果中的表格 NO. 或订单号定位，必要时加模具号、批次号。本节点只有一条待办时可省略。当前节点必须仍是本角色待办。禁止使用内部数字 id。本人确认后才调用 ERP。",
         "permission": "erp_outsource_approval.approve",
     },
     REJECT_TOOL: {
-        "description": "准备驳回一张委外下单审批。用订单号定位，必要时加模具号、批次号，并写明驳回原因。禁止使用内部数字 id。本人确认后才调用 ERP。",
+        "description": "准备驳回一张委外下单审批。用表格 NO. 或订单号定位，必要时加模具号、批次号，并写明驳回原因。本节点只有一条待办时可省略订单号。禁止使用内部数字 id。本人确认后才调用 ERP。",
         "permission": "erp_outsource_approval.approve",
     },
 }
@@ -82,9 +88,10 @@ class ApprovalTodoInput(StrictModel):
 
 
 class ApprovalPassInput(CamelModel):
-    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260922-2RHX。禁止使用内部数字 id。")
+    order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号，例如 EO-260922-2RHX。表格 NO. 或本节点只有一条待办时可省略。禁止使用内部数字 id。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = identity_batch(default=None, max_length=80, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
+    board_row: int | None = Field(default=None, ge=1, description="审批待办第一列 NO。说第N行或 NO.N 时填这个。")
     comment: str = Field(default="同意", max_length=400)
 
     @field_validator("order_no", "mold", "batch")
@@ -94,10 +101,11 @@ class ApprovalPassInput(CamelModel):
 
 
 class ApprovalRejectInput(CamelModel):
-    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260922-2RHX。禁止使用内部数字 id。")
+    order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号，例如 EO-260922-2RHX。表格 NO. 或本节点只有一条待办时可省略。禁止使用内部数字 id。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = identity_batch(default=None, max_length=80, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
-    comment: str = Field(min_length=1, max_length=400, description="驳回原因。")
+    board_row: int | None = Field(default=None, ge=1, description="审批待办第一列 NO。说第N行或 NO.N 时填这个。")
+    comment: str = Field(default="驳回", max_length=400, description="驳回原因。")
 
     @field_validator("order_no", "mold", "batch", "comment")
     @classmethod
@@ -158,16 +166,129 @@ def _task_allowed(item: dict[str, Any], tokens: list[str] | None) -> bool:
     return any(token in name for token in tokens)
 
 
+LOOK_UP = ("有几个", "有哪些", "有没有", "查询", "查看待办", "查待办", "看看待办")
+PASS_SPEECH = (
+    "通过这单", "通过这张", "审批通过", "批过", "同意这单",
+    "过了这单", "这单过了", "这单先过了",
+)
+REJECT_SPEECH = ("驳回这单", "驳回这张", "审批驳回", "不同意这单")
+REJECT_COMMENT = re.compile(r"(?:驳回(?:这单|这张)?|原因)[：:，,\s]*(.+)$")
+
+
+def is_spoken_approval_reject(text: str) -> bool:
+    prompt = text or ""
+    if any(token in prompt for token in ("不要驳回", "不驳回")):
+        return False
+    if any(token in prompt for token in REJECT_SPEECH):
+        return True
+    return "驳回" in prompt and not any(token in prompt for token in LOOK_UP)
+
+
+def is_spoken_approval_pass(text: str) -> bool:
+    prompt = text or ""
+    if is_spoken_approval_reject(prompt):
+        return False
+    if any(token in prompt for token in ("不要通过", "不通过", "未通过")):
+        return False
+    if any(token in prompt for token in PASS_SPEECH):
+        return True
+    return "通过" in prompt
+
+
+def _spoken_reject_comment(text: str) -> str:
+    match = REJECT_COMMENT.search(text or "")
+    comment = (match.group(1) if match else "").strip()
+    if comment and comment not in {"这单", "这张", "吧", "了", "了吧"}:
+        return comment[:400]
+    return "驳回"
+
+
+def spoken_approval_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
+    text = prompt or ""
+    if not (is_spoken_approval_pass(text) or is_spoken_approval_reject(text)):
+        return None
+    source = f"{text}\n{context_text or ''}"
+    arguments: dict[str, Any] = {
+        "comment": _spoken_reject_comment(text) if is_spoken_approval_reject(text) else "同意",
+    }
+    row_no = buyer_todo.spoken_board_row_number(text)
+    if row_no:
+        arguments["board_row"] = row_no
+    order = buyer_todo.ORDER_NO.search(source)
+    if order:
+        arguments["order_no"] = order.group(1).upper()
+    parsed = approval_todo.parse_question(source)
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments["mold"] = parsed["mold_batch"].split("-P", 1)[0]
+    elif parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
+    return arguments
+
+
+def spoken_approval_invoke(
+    prompt: str,
+    context_text: str = "",
+    active_tool_names=None,
+) -> tuple[str, dict[str, Any]] | None:
+    arguments = spoken_approval_arguments(prompt, context_text)
+    if arguments is None:
+        return None
+    names = set(active_tool_names or ())
+    tool = REJECT_TOOL if is_spoken_approval_reject(prompt or "") else PASS_TOOL
+    if tool not in names:
+        return None
+    return tool, arguments
+
+
+def spoken_approval_from_board(prompt: str, items, active_tool_names):
+    invoked = spoken_approval_invoke(prompt, "", active_tool_names)
+    if invoked is None:
+        return None
+    tool, arguments = invoked
+    visible = [item for item in (items or []) if isinstance(item, dict)]
+    row = arguments.get("board_row")
+    if row and 1 <= int(row) <= len(visible):
+        item = visible[int(row) - 1]
+    elif arguments.get("order_no"):
+        return tool, arguments
+    elif len(visible) == 1:
+        item = visible[0]
+    else:
+        return tool, arguments
+    if item.get("orderNo"):
+        arguments["order_no"] = item["orderNo"]
+    if item.get("moldFamily") or item.get("mold"):
+        arguments.setdefault("mold", item.get("moldFamily") or item.get("mold"))
+    if item.get("moldBatch") or item.get("batch"):
+        arguments.setdefault("batch", item.get("moldBatch") or item.get("batch"))
+    return tool, arguments
+
+
 def _lookup(db, user, data) -> dict[str, Any]:
-    item = approval_todo.find_task_by_identity(
-        order_no=getattr(data, "order_no", None),
-        mold=getattr(data, "mold", None),
-        batch=getattr(data, "batch", None),
-        node_tokens=approval_node_tokens(db, user),
-    )
-    if not item:
-        raise DomainError("NOT_FOUND", "没有找到仍待审的委外下单审批，请用订单号、模具号和批次号重新查询", 404)
-    if not _task_allowed(item, approval_node_tokens(db, user)):
+    tokens = approval_node_tokens(db, user)
+    row = getattr(data, "board_row", None)
+    if row:
+        item = approval_todo.item_from_visible_row(int(row), node_tokens=tokens)
+        if not item:
+            raise DomainError("NOT_FOUND", "没有找到该行仍待审的委外下单审批，请先查看待办后再用表格 NO. 指定", 404)
+    elif getattr(data, "order_no", None) or getattr(data, "mold", None) or getattr(data, "batch", None):
+        item = approval_todo.find_task_by_identity(
+            order_no=getattr(data, "order_no", None),
+            mold=getattr(data, "mold", None),
+            batch=getattr(data, "batch", None),
+            node_tokens=tokens,
+        )
+        if not item:
+            raise DomainError("NOT_FOUND", "没有找到仍待审的委外下单审批，请用订单号、模具号和批次号重新查询", 404)
+    else:
+        items = approval_todo.query_items(node_tokens=tokens)
+        if len(items) > 1:
+            raise DomainError("AMBIGUOUS", "本节点有多张审批待办，请说表格 NO. 或订单号", 409)
+        if not items:
+            raise DomainError("NOT_FOUND", "没有找到仍待审的委外下单审批，请先查看待办", 404)
+        item = items[0]
+    if not _task_allowed(item, tokens):
         raise DomainError("FORBIDDEN", "当前节点不是本角色可批的委外下单审批", 403)
     return item
 
@@ -207,6 +328,8 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
                 "item_count": len(items),
                 "items": [
                     {
+                        "station": "审批中",
+                        "stationLabel": "审批中",
                         "orderNo": item.get("orderNo") or "",
                         "mold": item.get("moldFamily") or item.get("moldNo") or "",
                         "batch": item.get("moldBatch") or item.get("moldNo") or "",

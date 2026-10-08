@@ -56,13 +56,13 @@ const boardColumns: ErpDesignColumn[] = [
   { key: 'referenceTotal', label: '核算价', fields: ['referenceTotal', 'reference_total'], width: 100, decimals: 2 },
   { key: 'ourQuote', label: '我方报价', fields: ['ourQuoteAmount', 'our_quote_amount', 'ourQuote'], width: 100, decimals: 2 },
   { key: 'ceiling', label: '接单上限', fields: ['autoAcceptMaxAmount', 'auto_accept_max_amount', 'ceiling'], width: 100, decimals: 2 },
-  { key: 'supplierQuotes', label: '加工商报价', fields: ['supplierQuotes', 'supplier_quotes'], width: 160 },
+  { key: 'supplierQuotes', label: '加工商报价', fields: ['supplierQuotes', 'supplier_quotes'], width: 220, kind: 'wrap' },
   { key: 'finalDeal', label: '成交价', fields: ['finalDealAmount', 'final_deal_amount'], width: 100, decimals: 2 },
-  { key: 'pending', label: '加工商', fields: ['pendingQuoteSuppliers', 'pending_quote_suppliers', 'supplierName', 'supplier_name'], width: 200 },
+  { key: 'pending', label: '加工商', fields: ['pendingQuoteSuppliers', 'pending_quote_suppliers', 'supplierName', 'supplier_name'], width: 240, kind: 'wrap' },
 ]
 
 // 加工商看板对齐 ERP：零件/模具能看见采购报价；工序委外没有询价，不展示采购报价。
-// 核算价、接单上限、成交价仍只在采购员看板上。
+// 核算价、接单上限仍只在采购员看板上。已定成交价在加工商待接单可见。
 const processorBoardColumns: ErpDesignColumn[] = [
   ...boardColumns.filter((column) => (
     !['referenceTotal', 'ourQuote', 'ceiling', 'supplierQuotes', 'finalDeal', 'pending'].includes(column.key)
@@ -71,6 +71,7 @@ const processorBoardColumns: ErpDesignColumn[] = [
   { key: 'referenceTotal', label: '核算价', fields: ['referenceTotal', 'reference_total'], width: 100, decimals: 2 },
   { key: 'buyerQuote', label: '采购报价', fields: ['buyerQuoteAmount', 'buyer_quote_amount'], width: 110, decimals: 2 },
   { key: 'myQuote', label: '我的报价', fields: ['supplierQuotes', 'supplier_quotes'], width: 140 },
+  { key: 'finalDeal', label: '成交价', fields: ['finalDealAmount', 'final_deal_amount'], width: 100, decimals: 2 },
 ]
 
 const stepColumns: ErpDesignColumn[] = [
@@ -200,6 +201,7 @@ const WAREHOUSE_TOOLS = new Set(['query_erp_outsource_warehouse_tasks'])
 const WAREHOUSE_INBOUND_TOOLS = new Set(['query_erp_outsource_warehouse_inbound'])
 const PRODUCT_SHIP_TOOLS = new Set(['query_erp_outsource_processor_product_ship'])
 const QUALITY_TOOLS = new Set(['query_erp_outsource_quality_tasks'])
+const APPROVAL_TOOLS = new Set(['query_erp_outsource_approval_todos'])
 
 const warehouseColumns: ErpDesignColumn[] = [
   { key: 'action', label: '办理', fields: ['actionLabel', 'action'], width: 110 },
@@ -280,6 +282,27 @@ const productShipColumns: ErpDesignColumn[] = [
   { key: 'remainQty', label: '可发合计', fields: ['remainQty', 'remain_qty'], width: 90 },
   { key: 'inbound', label: '入库目标', fields: ['inboundTargetText', 'inboundTargets'], width: 120 },
 ]
+
+const approvalColumns: ErpDesignColumn[] = [
+  { key: 'action', label: '办理', fields: ['actionLabel', 'action'], width: 110 },
+  { key: 'station', label: '进度', fields: ['stationLabel', 'station'], width: 90 },
+  { key: 'node', label: '当前节点', fields: ['nodeName', 'node'], width: 130 },
+  { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 160 },
+  { key: 'mold', label: '模具号', fields: ['moldFamily', 'moldNo', 'mold_no'], width: 120 },
+  { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'mold_batch'], width: 140 },
+  { key: 'amount', label: '金额', fields: ['amount'], width: 110, decimals: 2 },
+  { key: 'processor', label: '加工商', fields: ['supplierName', 'supplier_name'], width: 240, kind: 'wrap' },
+  { key: 'assignee', label: '办理人', fields: ['assigneeName', 'assignee'], width: 110 },
+]
+
+function approvalRows(items: unknown): ErpDesignRow[] {
+  return list(items).map((item) => ({
+    ...item,
+    stationLabel: item.stationLabel || item.station || '审批中',
+    actionLabel: item.actionLabel || '通过或驳回',
+    nodeName: item.nodeName || item.node || '',
+  }))
+}
 
 const qualityColumns: ErpDesignColumn[] = [
   { key: 'action', label: '办理', fields: ['actionLabel', 'action'], width: 110 },
@@ -378,7 +401,7 @@ export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuo
         `${scope || title} 共 ${rows.length} 条`,
         scope,
         processor
-          ? '工序委外显示核算价，没有采购报价。零件/模具显示采购报价，不显示核算价、接单上限和成交价'
+          ? '工序委外显示核算价，没有采购报价。零件/模具显示采购报价和已定成交价，不显示核算价、接单上限'
           : '数据来自 ERP 委外待办，仅供展示',
       )
       const existing = result.findIndex((item) => item.title === title)
@@ -426,6 +449,20 @@ export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuo
         String(data.summary || `回厂待办共 ${rows.length} 条`),
         String(data.scope || '仓库回厂待办'),
         '加工商成品发货后的到货确认和仓储入库。',
+      ))
+      continue
+    }
+    if (APPROVAL_TOOLS.has(tool)) {
+      const rows = approvalRows(data.items)
+      if (!rows.length) continue
+      result.push(table(
+        `${tool}:approval`,
+        '委外下单审批待办',
+        rows,
+        approvalColumns,
+        String(data.summary || `委外下单审批待办共 ${rows.length} 条`),
+        String((Array.isArray(data.nodeLens) ? data.nodeLens.join('、') : '') || data.scope || '委外下单审批'),
+        '采购主管只看主管节点，总经理只看总经理节点。说通过/驳回或表格 NO. 后会弹出确认卡，本人确认才写入 ERP。',
       ))
       continue
     }

@@ -24,13 +24,13 @@
 
 ## 工作流
 
-对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_approval_todos`，禁止 `CONVERSATION`。只问数量时不要 prepare。用户要过或驳时用对应 `prepare_*`。已经查过且待办为空时，明确说「现在是 0 条」。
+对象清楚就直接查，不必先复述。按用户本轮意图选工具，不要等特定口令。问待办或数量时本轮必须 `CALL_TOOL` `query_erp_outsource_approval_todos`，禁止 `CONVERSATION`。只问数量、查看待办时不要 prepare，等用户再说通过或驳回。用户要过或驳时立刻 `prepare_*`，本节点只有一条待办或说了表格 NO./订单号即可。已经查过且待办为空时，明确说「现在是 0 条」。
 
 | 意图 | 工具 |
 | --- | --- |
-| 待我审批、审批中有哪些 | `query_erp_outsource_approval_todos` |
-| 通过 | `prepare_erp_outsource_approval_pass`（订单号，必要时模具号/批次号） |
-| 驳回 | `prepare_erp_outsource_approval_reject`（订单号 + 原因） |
+| 待我审批、查看待办、审批中有哪些 | `query_erp_outsource_approval_todos` |
+| 通过、通过这单、NO.1通过 | `prepare_erp_outsource_approval_pass`（表格 NO. 或订单号；唯一一条可省略） |
+| 驳回、驳回这单 | `prepare_erp_outsource_approval_reject`（同上，口头未说原因时先用「驳回」出确认卡） |
 
 同一模具多单时列出候选的订单号、模具号、批次号，用户选定后再 prepare。禁止使用内部数字 id。状态已变或不是本节点只说明原因，不 prepare。用户否认确认卡则停。
 

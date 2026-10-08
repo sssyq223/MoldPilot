@@ -563,7 +563,7 @@ def test_spoken_inquiry_send_locks_batch_without_inventing_supplier(monkeypatch)
         {"station": "待发询价", "mold": "M260063", "batch": "M260063-P5"},
         {"station": "待发询价"},
     ])
-    assert from_board == {"mold": "M260063", "batch": "M260063-P5"}
+    assert from_board == {"mold": "M260063", "batch": "M260063-P5", "board_row": 2}
 
 
 def test_visible_board_row_locks_send_and_quote_separately(monkeypatch):
@@ -619,6 +619,51 @@ def test_visible_board_row_locks_send_and_quote_separately(monkeypatch):
     assert board_quote["board_row"] == 2
 
 
+def test_spoken_send_reads_already_filled_price_as_inquiry_send(monkeypatch):
+    rows = [
+        {
+            "inquiryId": 160,
+            "station": "inquiry_send",
+            "stationLabel": "待发询价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P2",
+            "moldNo": "M260063",
+            "parts": [{"partNo": "B1-01"}],
+            "partDetails": "B1-01 下托板",
+            "orderNo": "",
+        },
+        {
+            "inquiryId": 11,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1、M260063-P2",
+            "orderNo": "",
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    prompt = "NO.1已经填价格了呀 可以发给加工商了"
+    assert buyer_todo.is_spoken_inquiry_send(prompt)
+    assert not buyer_todo.is_spoken_buyer_quote(prompt)
+    assert buyer_todo.parse_spoken_buyer_quote(prompt) is None
+    parsed = buyer_todo.parse_spoken_inquiry_send(prompt)
+    assert parsed["board_row"] == 1
+    assert parsed["batch"] == "M260063-P2"
+    assert parsed["part"] == "B1-01"
+    for paraphrase in (
+        "第一行价格填好了可以发了",
+        "NO.1填完了发给厂家吧",
+        "这单已经填过价了，给加工商发一下",
+    ):
+        assert buyer_todo.is_spoken_inquiry_send(paraphrase), paraphrase
+        assert not buyer_todo.is_spoken_buyer_quote(paraphrase), paraphrase
+    assert buyer_todo.is_spoken_buyer_quote("PH-01这一笔订单帮我填价格：400，上限是600")
+    assert buyer_todo.is_spoken_buyer_quote("帮我填价格")
+    assert not buyer_todo.is_spoken_buyer_quote("待采购填报价有几个")
+    assert not buyer_todo.is_spoken_inquiry_send("确认发料")
+    assert not buyer_todo.is_spoken_inquiry_send("不可以发给加工商")
+
+
 def test_spoken_inquiry_send_locks_first_pending_row(monkeypatch):
     monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: [
         {
@@ -664,6 +709,49 @@ def test_spoken_inquiry_send_locks_first_pending_row(monkeypatch):
         "进度是待发询价的这个订单发送询价吧",
         "已经查到待发询价 M260063 M260063-P4",
     ) is None
+
+
+def test_named_send_station_locks_full_table_row_not_filtered_first(monkeypatch):
+    rows = [
+        {
+            "inquiryId": 11,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+            "moldNo": "M260063",
+            "parts": [{"partNo": "B1-01"}],
+        },
+        {
+            "inquiryId": 160,
+            "station": "inquiry_send",
+            "stationLabel": "待发询价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P2",
+            "moldNo": "M260063",
+            "parts": [{"partNo": "B1-01"}],
+        },
+        {
+            "inquiryId": 12,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P5",
+            "moldNo": "M260063",
+            "parts": [{"partNo": "B1-01"}],
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    prompt = "待发询价这个订单帮我给加工商发询价单"
+    assert buyer_todo.is_spoken_inquiry_send(prompt)
+    assert not buyer_todo.is_spoken_inquiry_send("待发询价")
+    parsed = buyer_todo.parse_spoken_inquiry_send(prompt)
+    assert parsed["board_row"] == 2
+    assert parsed["batch"] == "M260063-P2"
+    assert parsed["part"] == "B1-01"
+    from_board = buyer_todo.send_arguments_from_board(prompt, rows)
+    assert from_board["board_row"] == 2
+    assert from_board["batch"] == "M260063-P2"
 
 
 def test_send_identity_uses_station_not_same_part_on_other_tabs(monkeypatch):
@@ -891,3 +979,95 @@ def test_send_confirm_uses_locked_supplier_ids_when_live_match_empty(monkeypatch
     assert result["action"] == "inquiry_send"
     assert captured["path"] == "entrust/inquiry/160/send"
     assert captured["body"] == {"supplier_ids": [921159]}
+
+
+def test_spoken_final_deal_locks_full_table_row(monkeypatch):
+    rows = [
+        {
+            "inquiryId": 11,
+            "station": "buyer_quote",
+            "stationLabel": "待采购填报价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P4",
+        },
+        {
+            "inquiryId": 177,
+            "station": "place_order",
+            "stationLabel": "待填成交价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P2",
+            "moldNo": "M260063-P2",
+            "parts": [{"partNo": "B1-01"}],
+            "autoAcceptMaxAmount": 55555,
+            "invitations": [{
+                "supplierName": "青岛和兴嘉业金属制品有限公司",
+                "status": "quoted",
+                "quoteAmount": 66666,
+                "quoteId": 88,
+            }],
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    prompt = "NO.2成交价填写50000"
+    assert buyer_todo.is_spoken_final_deal(prompt)
+    assert not buyer_todo.is_spoken_buyer_quote(prompt)
+    parsed = buyer_todo.parse_spoken_final_deal(prompt)
+    assert parsed["board_row"] == 2
+    assert parsed["batch"] == "M260063-P2"
+    assert parsed["final_deal_amount"] == 50000
+    assert parsed["quotation_id"] == 88
+    from_board = buyer_todo.deal_arguments_from_board(prompt, rows)
+    assert from_board["board_row"] == 2
+    assert from_board["final_deal_amount"] == 50000
+    colon = buyer_todo.parse_spoken_final_deal("NO.2填成交价:50000")
+    assert colon["board_row"] == 2
+    assert colon["final_deal_amount"] == 50000
+    written = buyer_todo.parse_spoken_final_deal("NO.2填写成交价:50000")
+    assert written["board_row"] == 2
+    assert written["final_deal_amount"] == 50000
+    bare = buyer_todo.parse_spoken_final_deal("填写成交价:50000")
+    assert bare["final_deal_amount"] == 50000
+
+
+def test_spoken_final_deal_locks_row_without_live_quote_id(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "item_from_visible_board_row", lambda row_no: None)
+    parsed = buyer_todo.parse_spoken_final_deal("NO.2填成交价:50000")
+    assert parsed == {"board_row": 2, "final_deal_amount": 50000.0}
+    monkeypatch.setattr(buyer_todo, "find_unique_station_item", lambda station: None)
+    bare = buyer_todo.parse_spoken_final_deal("填写成交价:50000")
+    assert bare == {"final_deal_amount": 50000.0}
+
+
+def test_board_row_final_deal_prepares_confirmation_card(monkeypatch):
+    item = {
+        "inquiryId": 177,
+        "station": "place_order",
+        "stationLabel": "待填成交价",
+        "outsourceType": "part",
+        "outsourceTypeLabel": "零件委外",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P2",
+        "moldNo": "M260063-P2",
+        "partDetails": "B1-01 下托板",
+        "supplierQuotes": "66666.00（超上限）",
+        "pendingQuoteSuppliers": "青岛和兴嘉业金属制品有限公司",
+        "autoAcceptMaxAmount": 55555,
+        "invitations": [{
+            "supplierName": "青岛和兴嘉业金属制品有限公司",
+            "status": "quoted",
+            "quoteAmount": 66666,
+            "quoteId": 88,
+        }],
+    }
+    monkeypatch.setattr(buyer_todo, "item_from_visible_board_row", lambda row: item if row == 2 else None)
+    result = erp_outsource_buyer_tools.execute_tool(None, Admin(), erp_outsource_buyer_tools.DEAL_TOOL, {
+        "board_row": 2,
+        "final_deal_amount": 50000,
+    })
+    display = result["proposal"]["display"]
+    assert result["proposal"]["kind"] == "erp_outsource_final_deal"
+    assert display["成交价"] == 50000
+    assert display["行号"] == "NO.2"
+    assert "青岛和兴嘉业金属制品有限公司" in display["加工商"]
+    assert result["proposal"]["input"]["quotation_id"] == 88
+    assert result["proposal"]["input"]["board_row"] == 2

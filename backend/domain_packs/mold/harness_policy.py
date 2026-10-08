@@ -15,7 +15,8 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
     "准备填写我方报价", "出确认卡",
     "发询价", "发送询价", "办理发询价", "办理发送询价",
     "确认发询价", "确认发送询价", "确认办理发询价", "确认办理发送询价",
-    "填成交价", "重选加工商",
+    "发给加工商", "发给厂家",
+    "填成交价", "填写成交价", "重选加工商",
     # 加工商 报价 / 接单
     "我要接单", "帮我接单", "确认接单", "接这单", "我接了", "这单我接了",
     "拒绝接单", "我要拒单", "拒这单",
@@ -29,7 +30,8 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
     # 质检
     "领取质检", "判合格", "判定合格", "确认合格", "提交合格", "提交质检合格", "检验通过",
     # 审批
-    "通过这单", "驳回这单",
+    "通过这单", "通过这张", "审批通过", "批过", "同意这单", "过了这单", "这单过了", "这单先过了",
+    "驳回这单", "驳回这张", "审批驳回",
 )
 # Status wording that contains one of the imperatives above but describes a
 # to-do board (“待发询价有几个”).  Removing the complete scope first keeps the
@@ -56,6 +58,7 @@ OUTSOURCE_NEGATED_PHRASES = (
     "不要发成品", "不发成品", "不要确认入库", "不确认入库", "不要确认到货", "不确认到货",
     "不要领取质检", "不领取质检", "不要判合格", "不判合格", "不要确认合格", "不确认合格",
     "不要通过这单", "不通过这单", "不要驳回这单", "不驳回这单",
+    "不要审批通过", "不审批通过", "不要审批驳回", "不审批驳回",
 )
 # Strong wording that asks the workbench to prepare or carry out a formal
 # business action.  This list only drives the operation-receipt invariant
@@ -104,6 +107,7 @@ STATION_PREPARE_TOOLS = {
     "待报价": ("prepare_erp_outsource_processor_quote",),
     "待采购填报价": ("prepare_erp_outsource_buyer_quote",),
     "待发询价": ("prepare_erp_outsource_inquiry_send",),
+    "待填成交价": ("prepare_erp_outsource_final_deal",),
     "待下单": ("prepare_erp_outsource_final_deal",),
     "全部拒单": ("prepare_erp_outsource_reselect",),
     "审批中": (
@@ -126,6 +130,7 @@ STATION_NEXT_SUGGESTIONS = {
     "待报价": ("提交报价",),
     "待采购填报价": ("填写我方报价",),
     "待发询价": ("发询价",),
+    "待填成交价": ("填写成交价",),
     "待下单": ("填写成交价",),
     "全部拒单": ("重选加工商",),
     "审批中": ("通过这单", "驳回这单"),
@@ -144,7 +149,7 @@ STATION_NEXT_SUGGESTIONS = {
 # Stripped before deciding whether a turn may see write tools.
 OUTSOURCE_BOARD_NOUNS = (
     *OUTSOURCE_STATUS_PHRASES,
-    "待填价", "待报价", "待下单", "待接单", "待采购填报价",
+    "待填价", "待报价", "待下单", "待填成交价", "待接单", "待采购填报价",
     "委外待办", "采购待办", "待办", "工单",
 )
 # Look-up questions.  These hide write tools.  They do not decide whether the
@@ -329,14 +334,19 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
     names = set(all_tool_names or ())
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            DEAL_TOOL,
             QUOTE_TOOL,
+            spoken_deal_arguments,
             spoken_quote_arguments,
         )
         from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
             MAX_AMOUNT,
             QUOTE_AMOUNT,
             is_spoken_buyer_quote,
+            is_spoken_final_deal,
         )
+        if DEAL_TOOL in names and (spoken_deal_arguments(prompt, context_text) or is_spoken_final_deal(prompt)):
+            extra.add(DEAL_TOOL)
         if QUOTE_TOOL in names and (
             spoken_quote_arguments(prompt, context_text)
             or (
@@ -366,11 +376,15 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             ACCEPT_TOOL,
             QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
+            REJECT_TOOL as PROCESSOR_REJECT_TOOL,
             spoken_accept_arguments,
             spoken_quote_arguments as spoken_processor_quote_arguments,
+            spoken_reject_arguments,
         )
         if PROCESSOR_QUOTE_TOOL in names and spoken_processor_quote_arguments(prompt, context_text):
             extra.add(PROCESSOR_QUOTE_TOOL)
+        if PROCESSOR_REJECT_TOOL in names and spoken_reject_arguments(prompt, context_text):
+            extra.add(PROCESSOR_REJECT_TOOL)
         if ACCEPT_TOOL in names and spoken_accept_arguments(prompt, context_text):
             extra.add(ACCEPT_TOOL)
     except ImportError:
@@ -425,6 +439,19 @@ def spoken_write_ensure_tools(prompt: str, all_tool_names, context_text: str = "
                 extra.add(PASS_TOOL)
     except ImportError:
         pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools import (
+            PASS_TOOL as APPROVAL_PASS_TOOL,
+            REJECT_TOOL as APPROVAL_REJECT_TOOL,
+            spoken_approval_arguments,
+        )
+        if spoken_approval_arguments(prompt, context_text) is not None:
+            if APPROVAL_PASS_TOOL in names:
+                extra.add(APPROVAL_PASS_TOOL)
+            if APPROVAL_REJECT_TOOL in names:
+                extra.add(APPROVAL_REJECT_TOOL)
+    except ImportError:
+        pass
     return extra
 
 
@@ -452,33 +479,118 @@ def spoken_write_missing_capability(prompt: str, all_tool_names, context_text: s
     return None
 
 
+def is_spoken_write(prompt: str, context_text: str = "") -> bool:
+    """True when the current sentence already locks a prepare_* write."""
+    try:
+        from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+            is_spoken_final_deal,
+        )
+        if is_spoken_final_deal(prompt):
+            return True
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            is_spoken_processor_quote,
+            spoken_quote_arguments,
+        )
+        if is_spoken_processor_quote(prompt) or spoken_quote_arguments(prompt, context_text):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def spoken_write_rank_boost(prompt: str, tool_name: str) -> int:
+    """Prefer send over fill when the sentence is dispatching an already-filled quote."""
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            DEAL_TOOL,
+            QUOTE_TOOL,
+            SEND_TOOL,
+        )
+        from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+            is_spoken_buyer_quote,
+            is_spoken_final_deal,
+            is_spoken_inquiry_send,
+        )
+    except ImportError:
+        return 0
+    if is_spoken_final_deal(prompt):
+        if tool_name == DEAL_TOOL:
+            return 800
+        if tool_name == QUOTE_TOOL:
+            return -600
+    if is_spoken_inquiry_send(prompt):
+        if tool_name == SEND_TOOL:
+            return 800
+        if tool_name == QUOTE_TOOL:
+            return -600
+    if is_spoken_buyer_quote(prompt) and tool_name == QUOTE_TOOL:
+        return 800
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
+            is_spoken_processor_quote,
+        )
+        if is_spoken_processor_quote(prompt) and tool_name == PROCESSOR_QUOTE_TOOL:
+            return 800
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools import (
+            PASS_TOOL as APPROVAL_PASS_TOOL,
+            REJECT_TOOL as APPROVAL_REJECT_TOOL,
+            is_spoken_approval_pass,
+            is_spoken_approval_reject,
+        )
+        if is_spoken_approval_pass(prompt) and tool_name == APPROVAL_PASS_TOOL:
+            return 800
+        if is_spoken_approval_reject(prompt) and tool_name == APPROVAL_REJECT_TOOL:
+            return 800
+    except ImportError:
+        pass
+    return 0
+
+
 def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str = ""):
     """Host-side prepare when identity is already locked in speech."""
     names = set(active_tool_names or ())
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            DEAL_TOOL,
             QUOTE_TOOL,
+            SEND_TOOL,
+            spoken_deal_arguments,
             spoken_quote_arguments,
+            spoken_send_arguments,
+        )
+        from domain_packs.mold.tools.erp.procurement.outsource_queries.buyer_todo import (
+            is_spoken_inquiry_send,
         )
     except ImportError:
+        DEAL_TOOL = ""
         QUOTE_TOOL = ""
+        SEND_TOOL = ""
+        spoken_deal_arguments = None
         spoken_quote_arguments = None
+        spoken_send_arguments = None
+        is_spoken_inquiry_send = None
+    if DEAL_TOOL in names and spoken_deal_arguments:
+        arguments = spoken_deal_arguments(prompt, context_text)
+        if arguments:
+            return DEAL_TOOL, arguments
+    # Dispatch beats fill: 「已经填价格了可以发给加工商」 must not prepare quote.
+    if SEND_TOOL in names and spoken_send_arguments and (
+        not is_spoken_inquiry_send or is_spoken_inquiry_send(prompt)
+    ):
+        arguments = spoken_send_arguments(prompt, context_text)
+        if arguments:
+            return SEND_TOOL, arguments
     if QUOTE_TOOL in names and spoken_quote_arguments:
         arguments = spoken_quote_arguments(prompt, context_text)
         if arguments:
             return QUOTE_TOOL, arguments
-    try:
-        from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
-            SEND_TOOL,
-            spoken_send_arguments,
-        )
-    except ImportError:
-        SEND_TOOL = ""
-        spoken_send_arguments = None
-    if SEND_TOOL in names and spoken_send_arguments:
-        arguments = spoken_send_arguments(prompt, context_text)
-        if arguments:
-            return SEND_TOOL, arguments
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
@@ -543,12 +655,27 @@ def spoken_write_auto_invoke(prompt: str, active_tool_names, context_text: str =
     except ImportError:
         pass
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools import (
+            spoken_approval_invoke,
+        )
+        invoked = spoken_approval_invoke(prompt, context_text, names)
+        if invoked:
+            return invoked
+    except ImportError:
+        pass
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             ACCEPT_TOOL,
+            REJECT_TOOL as PROCESSOR_REJECT_TOOL,
             spoken_accept_arguments,
+            spoken_reject_arguments,
         )
     except ImportError:
         return None
+    if PROCESSOR_REJECT_TOOL in names:
+        reject_arguments = spoken_reject_arguments(prompt, context_text)
+        if reject_arguments:
+            return PROCESSOR_REJECT_TOOL, reject_arguments
     if ACCEPT_TOOL not in names:
         return None
     arguments = spoken_accept_arguments(prompt, context_text)
@@ -561,32 +688,46 @@ def spoken_write_from_board(prompt: str, items, active_tool_names):
     """After a board hit, lock the matching prepare when speech already asked to quote or send."""
     names = set(active_tool_names or ())
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools import (
+            spoken_approval_from_board,
+        )
+        invoked = spoken_approval_from_board(prompt, items, names)
+        if invoked:
+            return invoked
+    except ImportError:
+        pass
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
             QUOTE_TOOL as PROCESSOR_QUOTE_TOOL,
             spoken_quote_arguments as spoken_processor_quote_arguments,
+            spoken_quote_from_board,
         )
-        if PROCESSOR_QUOTE_TOOL in names:
-            arguments = spoken_processor_quote_arguments(prompt)
-            if arguments:
-                return PROCESSOR_QUOTE_TOOL, arguments
+        arguments = spoken_quote_from_board(prompt, items) or spoken_processor_quote_arguments(prompt)
+        if arguments and (PROCESSOR_QUOTE_TOOL in names or arguments):
+            return PROCESSOR_QUOTE_TOOL, arguments
     except ImportError:
         pass
     try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_buyer_tools import (
+            DEAL_TOOL,
             QUOTE_TOOL,
             SEND_TOOL,
+            deal_arguments_from_board,
             quote_arguments_from_board,
             send_arguments_from_board,
         )
     except ImportError:
         return None
+    if DEAL_TOOL in names:
+        arguments = deal_arguments_from_board(prompt, items)
+        if arguments:
+            return DEAL_TOOL, arguments
+    if SEND_TOOL in names:
+        arguments = send_arguments_from_board(prompt, items)
+        if arguments:
+            return SEND_TOOL, arguments
     if QUOTE_TOOL in names:
         arguments = quote_arguments_from_board(prompt, items)
         if arguments:
             return QUOTE_TOOL, arguments
-    if SEND_TOOL not in names:
-        return None
-    arguments = send_arguments_from_board(prompt, items)
-    if not arguments:
-        return None
-    return SEND_TOOL, arguments
+    return None

@@ -614,6 +614,9 @@ def _has_formal_action_intent(prompt):
     scope, a remaining positive action phrase still wins (for example
     "不要准备草稿，直接提交审批").
     """
+    spoken_write = getattr(_policy, "is_spoken_write", None)
+    if callable(spoken_write) and spoken_write(prompt):
+        return True
     original = _compact_intent_text(prompt)
     compact = original
     negated_scope = False
@@ -649,6 +652,9 @@ def _is_read_only_request(prompt):
     hide prepare_* only on an explicit read-only / count / status question.
     Spoken writes such as “把价钱写成400” therefore stay visible to the model.
     """
+    spoken_write = getattr(_policy, "is_spoken_write", None)
+    if callable(spoken_write) and spoken_write(prompt):
+        return False
     if _contains_any(prompt, READ_ONLY_INTENT_TERMS):
         return True
     if _has_formal_action_intent(prompt):
@@ -992,6 +998,9 @@ def _rank_group_tools(query, group, deferred_tools, action_intent=False, current
             score += 500
         if (("过了" in normalized or "先过" in normalized) and "通过" in searchable):
             score += 500
+        rank_boost = getattr(_policy, "spoken_write_rank_boost", None)
+        if callable(rank_boost):
+            score += int(rank_boost(ranking_text, name) or 0)
         if name in required and _is_read_query_tool(name):
             score += 240
         scored.append((score, position, name))
@@ -1827,6 +1836,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 stage = "正在准备成品发货确认卡，请核对订单号、可发数量和入库目标。"
             elif name == "prepare_erp_outsource_inquiry_send":
                 stage = "正在准备发询价确认表，请核对模具号、批次号和加工商。"
+            elif name == "prepare_erp_outsource_final_deal":
+                stage = "正在准备成交价确认表，请核对行号、加工商报价和成交价。"
             elif name == "prepare_erp_outsource_warehouse_arrival":
                 stage = "正在准备仓库到货确认卡，请核对发货单和待收数量。"
             elif name == "prepare_erp_outsource_warehouse_inbound":
@@ -1835,6 +1846,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 stage = "正在准备领取质检确认卡，请核对质检单、订单号和入库单。"
             elif name == "prepare_erp_outsource_quality_pass":
                 stage = "正在准备质检合格确认卡，请核对质检单和全检结论。"
+            elif name == "prepare_erp_outsource_approval_pass":
+                stage = "正在准备委外下单审批通过确认卡，请核对订单号和当前节点。"
+            elif name == "prepare_erp_outsource_approval_reject":
+                stage = "正在准备委外下单审批驳回确认卡，请核对订单号和驳回原因。"
             host_spoken_write_name = name
             host_spoken_write_summary = stage
             # Identity is already locked in speech; the prepare tool looks up
@@ -2151,6 +2166,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 if board_write:
                     name, arguments = board_write
                     tool = all_tools.get(name)
+                    if name not in active_tool_names and tool:
+                        activate_named_tools([name])
                     if name in active_tool_names and isinstance(arguments, dict) and tool:
                         call_id = "host_auto_" + hashlib.sha256(
                             (name + "\n" + json.dumps(arguments, ensure_ascii=False, sort_keys=True)).encode("utf-8")
@@ -2166,6 +2183,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             stage = "正在准备加工商报价确认卡，请核对模具号、批次号、金额和交期。"
                         elif name == "prepare_erp_outsource_buyer_quote":
                             stage = "正在准备报价确认表，请核对模具号、订单号和金额。"
+                        elif name == "prepare_erp_outsource_approval_pass":
+                            stage = "正在准备委外下单审批通过确认卡，请核对订单号和当前节点。"
+                        elif name == "prepare_erp_outsource_approval_reject":
+                            stage = "正在准备委外下单审批驳回确认卡，请核对订单号和驳回原因。"
                         host_spoken_write_name = name
                         host_spoken_write_summary = stage
                         required_evidence_tools.clear()
@@ -2460,7 +2481,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                          and result.get('proposal_decision') == 'approved')):
             result = {
                 "response_kind": "CLARIFICATION",
-                "summary": NOT_QUERIED_SUMMARY,
+                "summary": NOT_QUERIED_ACTION_SUMMARY if formal_action_requested else NOT_QUERIED_SUMMARY,
                 "evidence_ids": [],
                 "suggestions": [],
             }

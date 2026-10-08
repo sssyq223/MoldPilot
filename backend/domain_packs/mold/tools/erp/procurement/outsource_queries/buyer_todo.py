@@ -17,13 +17,19 @@ MOLD_BATCH = re.compile(r"(?i)(?<![A-Z0-9])(M\d{5,}-P\d+)(?![A-Z0-9])")
 MOLD_BATCH_CODE = re.compile(r"(?i)^M\d{5,}-P\d+$")
 MOLD_FAMILY_CODE = re.compile(r"(?i)^M\d{5,}$")
 PROJECT_NO = re.compile(r"(?i)(?<![A-Z0-9])(E\d+-\d+|ENT-BATCH-[A-Z0-9]+)(?![A-Z0-9])")
-ORDER_NO = re.compile(r"(?i)(?<![A-Z0-9])(EO-\d{6}-[A-Z0-9]+)(?![A-Z0-9])")
+ORDER_NO = re.compile(
+    r"(?i)(?<![A-Z0-9])(EO[\-\u2010-\u2015\u2212\uff0d]\d{6}[\-\u2010-\u2015\u2212\uff0d][A-Z0-9]+)(?![A-Z0-9])"
+)
 PART_NO = re.compile(r"(?i)(?:零件\s*(?:是|为|:|：)?)([A-Z]{1,8}-?\d{1,4}[A-Z]?)")
 QUOTE_AMOUNT = re.compile(r"(?:我方报价|填报价|报价|总价格|总价)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
 MAX_AMOUNT = re.compile(r"(?:上限区间|接单上限|上限)\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)")
+DEAL_AMOUNT = re.compile(
+    r"(?:成交价)\s*(?:填写|填|是|为|:|：)?\s*(\d+(?:\.\d+)?)"
+    r"|(?:填写|填)\s*成交价\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)"
+)
 ROW_INDEX = re.compile(r"第\s*(\d+)\s*行")
 ROW_SPOKEN = re.compile(
-    r"(?:第\s*(\d+|[一二三四五六七八九十])\s*行|(?<![A-Za-z0-9])NO\.?\s*(\d+))",
+    r"(?:第\s*(\d+|[一二三四五六七八九十])\s*行|(?<![A-Za-z0-9])NO[.\u3002\uff0e]?\s*(\d+))",
     re.IGNORECASE,
 )
 CN_ROW = {
@@ -34,22 +40,34 @@ FIRST_BOARD_ROW = re.compile(r"第\s*(?:1|一)\s*行")
 PENDING_FIRST_QUOTE = re.compile(r"(?:待排(?:列)?|排列)第\s*(?:1|一)")
 NAMED_SEND_STATION = re.compile(r"待发询价")
 THIS_ORDER = re.compile(r"这[一笔张]?[单订]|这个订单|这笔订单|这单")
-BUYER_QUOTE_SPEECH = (
-    "填我方报价", "填写我方报价", "填报价", "填写报价", "填价格",
-    "帮我填报价", "帮我填价格",
-    "准备填写我方报价", "准备填写报价",
-    "报报价", "报个价", "帮我报价",
+# Fill vs send is aspect + recipient, not a spoken-phrase whitelist.
+# 「已经填价格了」 contains 「填价格」 but is completed, not a fill request.
+COMPLETED_FILL_ASPECT = re.compile(
+    r"(?:已经|已)填"
+    r"|填(?:过|好|完)(?:价|价格|报价|了)?"
+    r"|(?:价格|报价)已经填"
 )
-INQUIRY_SEND_SPEECH = (
-    "发询价", "发送询价", "办理发询价", "办理发送询价",
-    "确认发询价", "确认发送询价", "确认办理发询价", "确认办理发送询价",
+FILL_REQUEST = re.compile(
+    r"(?:帮我)?(?:填|填写)(?:我方)?(?:报价|价格)"
+    r"|报报价|报个价|帮我报价"
 )
+WAREHOUSE_DISPATCH = re.compile(r"发(?:料|成品|半成品)")
+SEND_NEGATION = re.compile(r"(?:不要|别|不)(?:要)?发|不可以发|不能发|先别发")
+BOARD_FILL_NOUN = re.compile(r"待(?:采购)?填报价")
+# 发 as dispatch of 询价, or 发 toward a processor-like recipient.
+SEND_INQUIRY = re.compile(
+    r"(?:发|发送|发出)询价"
+    r"|询价.{0,8}(?:发出|发送|去发|发出去)"
+    r"|发(?:给|出|送)?.{0,12}(?:加工商|厂家|供应商|厂商)"
+    r"|给.{0,8}(?:加工商|厂家|供应商|厂商).{0,8}(?:发|送)"
+)
+SEND_READY = re.compile(r"可以发(?:出去|给)?|发出去")
 ROW_LIMIT = 200
 STATIONS = {
     "buyer_quote": "待采购填报价",
     "inquiry_send": "待发询价",
     "supplier_quote": "待报价",
-    "place_order": "待下单",
+    "place_order": "待填成交价",
     "order_approval": "审批中",
     "accept": "待接单",
     "exhausted": "全部拒单",
@@ -352,6 +370,11 @@ def _norm_code(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def normalize_order_no(value: Any) -> str:
+    text = _norm_code(value)
+    return re.sub(r"[\u2010-\u2015\u2212\uff0d]", "-", text)
+
+
 def item_identity(item: dict[str, Any]) -> tuple[str, str]:
     family = str(item.get("moldFamily") or "").strip()
     batch = str(item.get("moldBatch") or "").strip()
@@ -428,7 +451,8 @@ def item_matches_identity(
     wanted_mold, wanted_batch = _promote_batch_code(_norm_code(mold), _norm_code(batch))
     family, item_batch = item_identity(item)
     codes = mold_codes_from(" ".join(piece for piece in (item.get("moldNo"), family, item_batch) if piece), item.get("parts"))
-    if wanted_order and _norm_code(item.get("orderNo")) != wanted_order:
+    item_order = _norm_code(item.get("orderNo")) or _norm_code(item.get("rejectedOrderNo"))
+    if wanted_order and item_order != wanted_order:
         return False
     if wanted_batch:
         tokens = _batch_tokens(item_batch) or _batch_tokens(item.get("moldNo"))
@@ -484,8 +508,8 @@ def format_process_names(parts: list[Any], fallback: str = "") -> str:
     return "、".join(names)
 
 
-def format_quotes(invitations: list[Any]) -> str:
-    labels = []
+def format_quotes(invitations: list[Any], ceiling: float | None = None) -> str:
+    priced: list[tuple[str, float]] = []
     for invite in invitations:
         if not isinstance(invite, dict):
             continue
@@ -493,7 +517,16 @@ def format_quotes(invitations: list[Any]) -> str:
         if amount is None:
             continue
         name = str(invite.get("supplierName") or invite.get("supplier_name") or "").strip() or "加工商"
-        labels.append(f"{name} {amount}")
+        priced.append((name, amount))
+    labels = []
+    named = len(priced) > 1
+    for name, amount in priced:
+        label = f"{amount:.2f}"
+        if ceiling is not None and amount > ceiling:
+            label += "（超上限）"
+        if named:
+            label += f" {name}"
+        labels.append(label)
     return "；".join(labels)
 
 
@@ -545,6 +578,22 @@ def pending_quote_suppliers(invitations: list[Any], dispatch_pending: str = "") 
             if text and text not in seen:
                 seen.add(text)
                 names.append(text)
+    return "、".join(names)
+
+
+def quoted_supplier_names(invitations: list[Any]) -> str:
+    names = []
+    seen = set()
+    for invite in invitations:
+        if not isinstance(invite, dict):
+            continue
+        amount = money(invite.get("quoteAmount") if "quoteAmount" in invite else invite.get("quote_amount"))
+        if amount is None:
+            continue
+        name = invitation_supplier_label(invite)
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
     return "、".join(names)
 
 
@@ -722,7 +771,7 @@ def parse_question(question: str) -> dict[str, str]:
         station = "accept"
     elif any(word in text for word in ("审批中", "在审批", "下单审批", "待审批")):
         station = "order_approval"
-    elif any(word in text for word in ("待下单", "成交价")):
+    elif any(word in text for word in ("待填成交价", "待采购填成交价", "填成交价", "待下单", "成交价")):
         station = "place_order"
     elif any(word in text for word in ("待报价", "还没报价", "加工商报价")):
         station = "supplier_quote"
@@ -750,11 +799,68 @@ def parse_question(question: str) -> dict[str, str]:
     }
 
 
+def _is_completed_fill_aspect(text: str) -> bool:
+    return bool(COMPLETED_FILL_ASPECT.search(text or ""))
+
+
+def _has_fill_request(text: str) -> bool:
+    """True only when 填/报价格 is an instruction, not a completed-state mention."""
+    source = text or ""
+    for match in FILL_REQUEST.finditer(source):
+        window = source[max(0, match.start() - 6):match.end() + 4]
+        if COMPLETED_FILL_ASPECT.search(window):
+            continue
+        noun = source[max(0, match.start() - 4):match.end()]
+        if BOARD_FILL_NOUN.search(noun):
+            continue
+        return True
+    return False
+
+
+def is_spoken_inquiry_send(question: str) -> bool:
+    text = question or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有")):
+        return False
+    if SEND_NEGATION.search(text) or WAREHOUSE_DISPATCH.search(text):
+        return False
+    # 「待发询价」is the station noun; stripping it keeps 发询价 from matching the label.
+    remainder = NAMED_SEND_STATION.sub("", text)
+    if SEND_INQUIRY.search(remainder):
+        return True
+    if spoken_board_row_number(text) and SEND_READY.search(remainder):
+        return True
+    # 「价格填好了可以发了」has no 发询价 / 加工商, but the intent is dispatch.
+    if _is_completed_fill_aspect(text) and SEND_READY.search(remainder):
+        return True
+    return False
+
+
+def spoken_deal_amount(question: str) -> float | None:
+    match = DEAL_AMOUNT.search(question or "")
+    if not match:
+        return None
+    token = next((group for group in match.groups() if group), None)
+    return float(token) if token else None
+
+
+def is_spoken_final_deal(question: str) -> bool:
+    text = question or ""
+    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要填", "不填成交价")):
+        return False
+    if is_spoken_inquiry_send(text):
+        return False
+    return spoken_deal_amount(text) is not None
+
+
 def is_spoken_buyer_quote(question: str) -> bool:
     text = question or ""
+    if "成交价" in text or is_spoken_final_deal(text):
+        return False
     if any(token in text for token in ("有几个", "有哪些", "有没有", "不要填", "不填报价", "不填价格")):
         return False
-    if any(token in text for token in BUYER_QUOTE_SPEECH):
+    if is_spoken_inquiry_send(text) and not (QUOTE_AMOUNT.search(text) and MAX_AMOUNT.search(text)):
+        return False
+    if _has_fill_request(text):
         return True
     # 「第6行报价300」没有「填写报价」这几个词，仍按完整表 NO. 办理填价。
     return bool(
@@ -762,14 +868,8 @@ def is_spoken_buyer_quote(question: str) -> bool:
         and "报价" in text
         and "询价" not in text
         and "发询" not in text
+        and not _is_completed_fill_aspect(text)
     )
-
-
-def is_spoken_inquiry_send(question: str) -> bool:
-    text = question or ""
-    if any(token in text for token in ("有几个", "有哪些", "有没有", "不要发", "不发询价", "不发送询价")):
-        return False
-    return any(token in text for token in INQUIRY_SEND_SPEECH)
 
 
 def inquiry_send_identity_locked(arguments: dict[str, Any]) -> bool:
@@ -842,10 +942,18 @@ def _arguments_from_send_item(item: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
+def _indexed_sendable_board_items(items: list[Any] | None) -> list[tuple[int, dict[str, Any]]]:
+    indexed = []
+    for index, item in enumerate(items or []):
+        if _sendable_board_items([item]):
+            indexed.append((index, item))
+    return indexed
+
+
 def apply_first_pending_send_row(arguments: dict[str, Any], *, require_unique: bool = False) -> dict[str, Any]:
-    """Lock 第一行/唯一待发询价 to the first pending-send enquiry."""
+    """Lock the unique 待发询价 row using the full-table NO., not a station-filtered first row."""
     parsed = {
-        "station": "inquiry_send",
+        "station": "",
         "mold_family": str(arguments.get("mold") or ""),
         "mold_batch": str(arguments.get("batch") or ""),
         "project_no": "",
@@ -857,12 +965,14 @@ def apply_first_pending_send_row(arguments: dict[str, Any], *, require_unique: b
         items = query_items(parsed)
     except Exception:
         return arguments
-    if not items:
+    sendable = _indexed_sendable_board_items(items)
+    if not sendable:
         return arguments
-    if require_unique and len(items) != 1:
+    if require_unique and len(sendable) != 1:
         return arguments
-    filled = _arguments_from_send_item(items[0])
-    filled["board_row"] = 1
+    index, item = sendable[0]
+    filled = _arguments_from_send_item(item)
+    filled["board_row"] = index + 1
     return filled
 
 
@@ -933,7 +1043,7 @@ def send_arguments_from_board(question: str, items: list[Any] | None) -> dict[st
         arguments = _arguments_from_send_item(chosen)
         arguments["board_row"] = row_no
         return arguments if inquiry_send_identity_locked(arguments) else None
-    sendable = _sendable_board_items(items)
+    sendable = _indexed_sendable_board_items(items)
     first_row = bool(FIRST_BOARD_ROW.search(question or "") or PENDING_FIRST_QUOTE.search(question or ""))
     if first_row:
         chosen = sendable[0] if sendable else None
@@ -943,9 +1053,9 @@ def send_arguments_from_board(question: str, items: list[Any] | None) -> dict[st
         return None
     if chosen is None:
         return None
-    arguments = _arguments_from_send_item(chosen)
-    if first_row:
-        arguments["board_row"] = 1
+    index, item = chosen
+    arguments = _arguments_from_send_item(item)
+    arguments["board_row"] = index + 1
     if not inquiry_send_identity_locked(arguments):
         return None
     return arguments
@@ -1063,6 +1173,120 @@ def quote_arguments_from_board(question: str, items: list[Any] | None) -> dict[s
     return arguments
 
 
+def quotation_id_from_item(item: dict[str, Any]) -> int | None:
+    priced: list[tuple[int, float]] = []
+    ceiling = money(item.get("autoAcceptMaxAmount") or item.get("auto_accept_max_amount"))
+    for invite in item.get("invitations") or []:
+        if not isinstance(invite, dict):
+            continue
+        amount = money(invite.get("quoteAmount") if "quoteAmount" in invite else invite.get("quote_amount"))
+        quote_id = invite.get("quoteId") or invite.get("quote_id") or invite.get("quotationId") or invite.get("quotation_id")
+        if amount is None or quote_id in (None, ""):
+            continue
+        try:
+            priced.append((int(quote_id), amount))
+        except (TypeError, ValueError):
+            continue
+    if len(priced) == 1:
+        return priced[0][0]
+    over = [quote_id for quote_id, amount in priced if ceiling is not None and amount > ceiling]
+    if len(over) == 1:
+        return over[0]
+    return None
+
+
+def quoted_supplier_label(item: dict[str, Any]) -> str:
+    names = quoted_supplier_names(item.get("invitations") or [])
+    return names or str(item.get("pendingQuoteSuppliers") or item.get("supplierName") or "").strip()
+
+
+def _arguments_from_deal_item(item: dict[str, Any], amount: float) -> dict[str, Any]:
+    arguments = _arguments_from_quote_item(item, {})
+    arguments["final_deal_amount"] = amount
+    quote_id = quotation_id_from_item(item)
+    if quote_id is not None:
+        arguments["quotation_id"] = quote_id
+    return arguments
+
+
+def _board_row_for_item(item: dict[str, Any]) -> int | None:
+    inquiry_id = item.get("inquiryId") or item.get("inquiry_id")
+    parsed = {
+        "station": "",
+        "mold_family": "",
+        "mold_batch": "",
+        "project_no": "",
+        "outsource_type": "",
+    }
+    try:
+        rows = query_items(parsed)
+    except Exception:
+        return None
+    for index, row in enumerate(rows):
+        if (row.get("inquiryId") or row.get("inquiry_id")) == inquiry_id:
+            return index + 1
+    return None
+
+
+def parse_spoken_final_deal(question: str, context_text: str = "") -> dict[str, Any] | None:
+    if not is_spoken_final_deal(question):
+        return None
+    amount = spoken_deal_amount(question)
+    if amount is None:
+        return None
+    del context_text
+    arguments = {"final_deal_amount": amount}
+    row_no = spoken_board_row_number(question)
+    if row_no:
+        arguments["board_row"] = row_no
+        try:
+            item = item_from_visible_board_row(row_no)
+        except Exception:
+            item = None
+        if item:
+            filled = _arguments_from_deal_item(item, amount)
+            filled["board_row"] = row_no
+            return filled
+        return arguments
+    item = find_unique_station_item("place_order")
+    if item:
+        filled = _arguments_from_deal_item(item, amount)
+        board_row = _board_row_for_item(item)
+        if board_row:
+            filled["board_row"] = board_row
+        return filled
+    return arguments
+
+
+def deal_arguments_from_board(question: str, items: list[Any] | None) -> dict[str, Any] | None:
+    if not is_spoken_final_deal(question):
+        return None
+    amount = spoken_deal_amount(question)
+    if amount is None:
+        return None
+    row_no = spoken_board_row_number(question)
+    if row_no:
+        arguments = {"final_deal_amount": amount, "board_row": row_no}
+        visible = _visible_row_item_for_station(question, "place_order")
+        if not visible:
+            return arguments
+        _visible_row, chosen = visible
+        filled = _arguments_from_deal_item(chosen, amount)
+        filled["board_row"] = row_no
+        return filled
+    dealable = [
+        (index, item)
+        for index, item in enumerate(items or [])
+        if isinstance(item, dict) and _item_is_station(item, "place_order")
+    ]
+    if len(dealable) != 1:
+        return None
+    index, item = dealable[0]
+    filled = _arguments_from_deal_item(item, amount)
+    filled["board_row"] = index + 1
+    return filled
+
+
 def buyer_quote_identity_locked(arguments: dict[str, Any]) -> bool:
     """Fill-quote form only after mold is locked, plus order or batch+part."""
     mold = str(arguments.get("mold") or "").strip()
@@ -1144,7 +1368,9 @@ def _item_is_station(item: dict[str, Any], station: str) -> bool:
     label = str(item.get("stationLabel") or "").strip()
     if not raw and not label:
         return station == "buyer_quote"
-    labels = {station, STATIONS.get(station, "")}
+    labels = {station, STATIONS.get(station, ""), *{
+        "place_order": ("待下单", "待采购填成交价", "填成交价"),
+    }.get(station, ())}
     return raw in labels or label in labels
 
 
@@ -1239,6 +1465,10 @@ def classify(row: dict[str, Any]) -> str | None:
         return None
     if row.get("dispatch_exhausted") or (outsource_type == "operation" and order_status == "rejected"):
         return "exhausted"
+    if order_status == "rejected":
+        # 零件/模具拒单：ERP 把工单标 rejected，stage 常仍停在 pending_accept，
+        # 询价回到 draft、邀请 declined。不能再当待接单；按询价重走选商发询价。
+        awarded = ""
     if awarded in AWARDED_TODO_STAGES:
         return AWARDED_TODO_STAGES[awarded]
     # 已接单后的履约阶段（原料收货、生产、在途）不再算采购待办。
@@ -1286,18 +1516,27 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
     outsource_type = str(row.get("outsource_type") or "")
     parts = as_list(row.get("parts"))
     invitations = as_list(row.get("invitations"))
-    quotes = format_quotes(invitations)
+    ceiling = money(row.get("auto_accept_max_amount"))
+    quotes = format_quotes(invitations, ceiling)
     awarded_amount = money(row.get("awarded_amount"))
     pending = pending_quote_suppliers(invitations)
     if station == "inquiry_send":
         pending = invitation_supplier_names(invitations) or pending
     if not pending and station in {"inquiry_send", "supplier_quote", "exhausted"}:
         pending = invitation_supplier_names([], str(row.get("pending_dispatch_suppliers") or ""))
+    if not pending:
+        pending = quoted_supplier_names(invitations)
     if not quotes and awarded_amount is not None:
         supplier = str(row.get("supplier_name") or "").strip()
         quotes = f"{supplier} {awarded_amount}".strip() if supplier else str(awarded_amount)
     mold_no = row.get("mold_no") or ""
     mold_family, mold_batch = mold_labels(mold_no, parts)
+    awarded_order_no = str(row.get("awarded_order_no") or "").strip()
+    awarded_status = str(row.get("awarded_status") or "").strip().casefold()
+    # 拒单后询价重开：工单仍是 rejected，但当前待办是发询价/报价，不要再挂废单号。
+    stale_rejected = awarded_status == "rejected" and station in {
+        "buyer_quote", "inquiry_send", "supplier_quote", "place_order",
+    }
     return {
         "station": station,
         "stationLabel": STATIONS[station],
@@ -1305,8 +1544,9 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "outsourceTypeLabel": OUTSOURCE_TYPE_LABELS.get(outsource_type, outsource_type or "委外"),
         "projectId": row.get("project_id"),
         "inquiryId": row.get("inquiry_id"),
-        "orderId": row.get("awarded_order_id"),
-        "orderNo": row.get("awarded_order_no") or "",
+        "orderId": None if stale_rejected else row.get("awarded_order_id"),
+        "orderNo": "" if stale_rejected else awarded_order_no,
+        "rejectedOrderNo": awarded_order_no if stale_rejected else "",
         "moldNo": mold_no,
         "moldFamily": mold_family,
         "moldBatch": mold_batch,
@@ -1467,13 +1707,17 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def clip_for_processor(item: dict[str, Any], tokens: list[str] | None) -> dict[str, Any]:
-    # 零件/模具：加工商看见采购报价，不看核算价、接单上限、成交价。
+    # 零件/模具：加工商看见采购报价；核算价和接单上限仍不公开。
+    # 已定成交价（超区间审批通过后的合同价）要公开，否则待接单只看得到报价对不上合同。
     # 工序委外没有询价，也没有采购报价；核算价在订单零件上，加工商要看见。
     outsource_type = str(item.get("outsourceType") or "")
     operation = outsource_type == "operation"
     buyer_quote = None if operation else item.get("ourQuoteAmount")
+    deal = None if operation else item.get("finalDealAmount")
     visible = strip_internal_prices(item)
     visible["buyerQuoteAmount"] = buyer_quote
+    if deal is not None:
+        visible["finalDealAmount"] = deal
     if operation:
         visible["referenceTotal"] = item.get("referenceTotal")
     invitations = [
@@ -1489,6 +1733,7 @@ def clip_for_processor(item: dict[str, Any], tokens: list[str] | None) -> dict[s
     if operation:
         visible["supplierQuotes"] = format_quotes(invitations)
     visible["nextAction"] = processor_next_action(visible)
+    visible.pop("rejectedOrderNo", None)
     return visible
 
 

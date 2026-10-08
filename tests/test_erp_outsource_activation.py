@@ -15,7 +15,8 @@ from domain_packs.mold.tools.erp.procurement import (
     erp_outsource_warehouse_inbound_tools,
     erp_outsource_warehouse_tools,
 )
-from domain_packs.mold.tools.erp.procurement.outsource_queries import approval_todo, processor_fulfillment
+from domain_packs.mold.harness_policy import spoken_write_auto_invoke
+from domain_packs.mold.tools.erp.procurement.outsource_queries import approval_todo, buyer_todo, processor_fulfillment
 
 
 MIXED_QUERY_SKILLS = (
@@ -232,12 +233,13 @@ def test_outsource_operation_phrases_are_formal_actions():
         "填我方报价",
         "PH-01这一笔订单帮我填价格：400，上限是600",
         "发询价", "发送询价", "确认办理发送询价吧", "填成交价", "重选加工商",
+        "发给加工商", "NO.1已经填价格了呀 可以发给加工商了",
         "我要报价", "我要接单", "帮我接单", "确认接单", "拒绝接单", "接这单", "订单 EO-1 我接了",
         "确认发料", "确认备料", "确认原料发货", "确认收料", "确认来料",
         "发成品", "发半成品", "确认成品发货",
         "确认到货", "确认收货", "确认入库", "入库确认", "入库确认吧", "办入库",
         "领取质检", "判合格", "确认合格", "检验通过",
-        "通过这单", "驳回这单",
+        "通过这单", "驳回这单", "审批通过", "审批驳回",
         "待发询价的这单帮我发询价",
         *spoken_fill,
     )
@@ -248,13 +250,103 @@ def test_outsource_operation_phrases_are_formal_actions():
         assert harness._has_business_object(phrase), phrase
 
 
+def test_spoken_processor_quote_is_a_write_not_a_lookup():
+    prompt = "EO-260930-R77L报价88888元"
+    assert harness._has_formal_action_intent(prompt)
+    assert not harness._is_read_only_request(prompt)
+    from domain_packs.mold.harness_policy import spoken_write_ensure_tools, spoken_write_auto_invoke
+    catalog = [
+        "query_erp_outsource_processor_board",
+        "prepare_erp_outsource_processor_quote",
+    ]
+    assert "prepare_erp_outsource_processor_quote" in spoken_write_ensure_tools(prompt, catalog)
+    invoked = spoken_write_auto_invoke(prompt, catalog)
+    assert invoked is not None
+    assert invoked[0] == "prepare_erp_outsource_processor_quote"
+    assert invoked[1]["order_no"] == "EO-260930-R77L"
+    assert invoked[1]["unit_price"] == 88888
+
+
+def test_host_auto_invokes_processor_quote_from_order_speech():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+    }}
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_quote',
+        'description': '准备提交本加工商报价',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'order_no': {'type': 'string'},
+                'unit_price': {'type': 'number'},
+            },
+            'required': ['unit_price'],
+        },
+    }}
+    awaiting = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请核对报价确认卡后确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_processor_quote',
+                        'action': 'confirm_erp_outsource_processor_quote',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = RecordingGateway()
+    result = run_loop(context(
+        prompt='EO-260930-R77L报价88888元',
+        core_tool_names=[],
+        tools=[board, quote],
+        skills=[{
+            'key': 'outsource_processor_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': [],
+            'host_auto_invoke_empty_arguments': True,
+        }, {
+            'key': 'outsource_processor_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': ['prepare_erp_outsource_processor_quote'],
+            'activation_tools': ['query_erp_outsource_processor_board'],
+            'auto_activation_queries': ['提交报价', '我要报价'],
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_quote': {'readOnlyHint': False}},
+    ), InspectingRepliesModel([awaiting]), gateway)
+
+    assert gateway.calls, result
+    name, arguments = gateway.calls[0]
+    assert name == 'prepare_erp_outsource_processor_quote'
+    assert arguments['order_no'] == 'EO-260930-R77L'
+    assert arguments['unit_price'] == 88888
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
+    assert all(call[0] != 'query_erp_outsource_processor_board' for call in gateway.calls)
+
+
 def test_outsource_count_questions_are_not_formal_actions():
     # Station nouns double as to-do board names.  A count or list question
     # must stay read-only, otherwise the Harness demands an operation receipt
     # and refuses to answer with the board.
     phrases = (
         "待报价有几个", "有没有待接单", "质检待办有几条", "查一下入库待办",
-        "有需要我处理的待办任务吗",
+        "有需要我处理的待办任务吗", "查看待办",
         "成品发货待办有几个", "备料完成的有哪些", "原料发货待办", "待发询价有几个",
         "质检合格的有几条", "检验合格了没有", "到货确认待办", "回厂入库待办有几个",
         "成品入库的有哪些", "待发成品有几个", "待领取质检有几个",
@@ -410,7 +502,16 @@ def test_host_auto_invokes_buyer_quote_form_when_mold_and_batch_are_locked(monke
 
         def execute(self, seq, key, arguments):
             self.calls.append((key, arguments))
-            return super().execute(seq, key, arguments)
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_buyer_quote',
+                        'action': 'confirm_erp_outsource_buyer_quote',
+                    },
+                }
+            return self.receipts[seq]
 
     gateway = RecordingGateway()
     model = InspectingRepliesModel([awaiting])
@@ -451,6 +552,84 @@ def test_host_auto_invokes_buyer_quote_form_when_mold_and_batch_are_locked(monke
     assert arguments['auto_accept_max_amount'] == 380
     assert result['response_kind'] == 'AWAITING_APPROVAL'
     assert gateway.physical_calls == 1
+
+
+def test_host_auto_invokes_final_deal_for_board_row_speech(monkeypatch):
+    rows = [
+        {"inquiryId": 11, "station": "buyer_quote", "stationLabel": "待采购填报价", "moldFamily": "M260063", "moldBatch": "M260063-P4"},
+        {
+            "inquiryId": 177,
+            "station": "place_order",
+            "stationLabel": "待填成交价",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P2",
+            "moldNo": "M260063-P2",
+            "parts": [{"partNo": "B1-01"}],
+            "autoAcceptMaxAmount": 55555,
+            "invitations": [{
+                "supplierName": "青岛和兴嘉业金属制品有限公司",
+                "status": "quoted",
+                "quoteAmount": 66666,
+                "quoteId": 88,
+            }],
+        },
+    ]
+    monkeypatch.setattr(buyer_todo, "query_items", lambda parsed: rows)
+    monkeypatch.setattr(
+        buyer_todo,
+        "item_from_visible_board_row",
+        lambda row_no: rows[row_no - 1] if 1 <= row_no <= len(rows) else None,
+    )
+    invoked = spoken_write_auto_invoke(
+        "NO.2填成交价:50000",
+        ["prepare_erp_outsource_final_deal"],
+    )
+    assert invoked is not None
+    name, arguments = invoked
+    assert name == "prepare_erp_outsource_final_deal"
+    assert arguments["board_row"] == 2
+    assert arguments["final_deal_amount"] == 50000
+    assert arguments["quotation_id"] == 88
+    written = spoken_write_auto_invoke(
+        "NO.2填写成交价:50000",
+        ["prepare_erp_outsource_final_deal"],
+    )
+    assert written is not None
+    assert written[0] == "prepare_erp_outsource_final_deal"
+    assert written[1]["board_row"] == 2
+    assert written[1]["final_deal_amount"] == 50000
+    bare = spoken_write_auto_invoke(
+        "填写成交价:50000",
+        ["prepare_erp_outsource_final_deal"],
+    )
+    assert bare is not None
+    assert bare[0] == "prepare_erp_outsource_final_deal"
+    assert bare[1]["final_deal_amount"] == 50000
+    assert harness._has_formal_action_intent("填写成交价:50000")
+    assert not harness._is_read_only_request("NO.2填写成交价:50000")
+
+
+def test_host_auto_invokes_approval_pass_from_spoken_order(monkeypatch):
+    invoked = spoken_write_auto_invoke(
+        "通过这单",
+        [
+            "query_erp_outsource_approval_todos",
+            "prepare_erp_outsource_approval_pass",
+            "prepare_erp_outsource_approval_reject",
+        ],
+        "委外下单审批待办（采购主管）共 1 条。采购主管审批 M260063-P2 EO-260930-R77L",
+    )
+    assert invoked is not None
+    name, arguments = invoked
+    assert name == "prepare_erp_outsource_approval_pass"
+    assert arguments["order_no"] == "EO-260930-R77L"
+    assert spoken_write_auto_invoke(
+        "查看待办",
+        [
+            "query_erp_outsource_approval_todos",
+            "prepare_erp_outsource_approval_pass",
+        ],
+    ) is None
 
 
 def test_host_auto_invokes_buyer_quote_for_spoken_bao_quote(monkeypatch):
@@ -717,7 +896,16 @@ def test_host_auto_invokes_inquiry_send_for_first_row_speech(monkeypatch):
 
         def execute(self, seq, key, arguments):
             self.calls.append((key, arguments))
-            return super().execute(seq, key, arguments)
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_inquiry_send',
+                        'action': 'confirm_erp_outsource_inquiry_send',
+                    },
+                }
+            return self.receipts[seq]
 
     gateway = RecordingGateway()
     model = InspectingRepliesModel([awaiting])
@@ -1628,27 +1816,18 @@ def test_authorized_processor_and_approval_load_spoken_intents():
     )
     assert 'prepare_erp_outsource_processor_accept' in names
 
-    todos = {'type': 'function', 'function': {
-        'name': 'query_erp_outsource_approval_todos',
-        'description': '查询委外下单审批待办',
-    }}
-    passed = {'type': 'function', 'function': {
-        'name': 'prepare_erp_outsource_approval_pass',
-        'description': '准备通过下单审批',
-    }}
-    names = _authorized_run(
+    catalog = {
+        'query_erp_outsource_approval_todos',
+        'prepare_erp_outsource_approval_pass',
+    }
+    from domain_packs.mold.harness_policy import spoken_write_ensure_tools
+    assert 'prepare_erp_outsource_approval_pass' in spoken_write_ensure_tools(
         'M260063这单先过了吧',
-        [todos, passed],
-        [{
-            'key': 'outsource_approval_ops',
-            'activation_route': 'authorized',
-            'tools': ['query_erp_outsource_approval_todos'],
-            'optional_tools': ['prepare_erp_outsource_approval_pass'],
-            'auto_activation_queries': ['通过这单'],
-        }],
-        {'prepare_erp_outsource_approval_pass': {'readOnlyHint': False}},
+        catalog,
     )
-    assert 'prepare_erp_outsource_approval_pass' in names
+    invoked = spoken_write_auto_invoke('M260063这单先过了吧', catalog)
+    assert invoked is not None
+    assert invoked[0] == 'prepare_erp_outsource_approval_pass'
 
 
 def test_authorized_processor_todo_question_loads_board_without_order_keyword():

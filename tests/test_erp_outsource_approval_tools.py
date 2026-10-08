@@ -115,6 +115,124 @@ def test_approval_pass_accepts_order_no_alias():
     assert data.order_no == "EO-260922-2RHX"
 
 
+def test_spoken_view_todos_does_not_prepare():
+    assert erp_outsource_approval_tools.spoken_approval_arguments("查看待办") is None
+    assert erp_outsource_approval_tools.spoken_approval_invoke(
+        "查看待办",
+        "",
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    ) is None
+
+
+def test_spoken_pass_locks_order_from_context():
+    name, arguments = erp_outsource_approval_tools.spoken_approval_invoke(
+        "通过这单",
+        "委外下单审批待办（采购主管）共 1 条。\n- 采购主管审批 M260063-P2 EO-260930-R77L 青岛和兴嘉业金属制品有限公司",
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    )
+    assert name == erp_outsource_approval_tools.PASS_TOOL
+    assert arguments["order_no"] == "EO-260930-R77L"
+    assert arguments["comment"] == "同意"
+    assert arguments["mold"] == "M260063"
+    assert arguments["batch"] == "M260063-P2"
+
+
+def test_spoken_pass_accepts_board_row_and_bare_pass():
+    row_name, row_arguments = erp_outsource_approval_tools.spoken_approval_invoke(
+        "NO.1通过",
+        "",
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    )
+    assert row_name == erp_outsource_approval_tools.PASS_TOOL
+    assert row_arguments["board_row"] == 1
+    name, arguments = erp_outsource_approval_tools.spoken_approval_invoke(
+        "通过",
+        "采购主管审批 EO-260930-R77L",
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    )
+    assert name == erp_outsource_approval_tools.PASS_TOOL
+    assert arguments["order_no"] == "EO-260930-R77L"
+
+
+def test_spoken_reject_defaults_comment():
+    name, arguments = erp_outsource_approval_tools.spoken_approval_invoke(
+        "驳回这单，价格超了",
+        "订单 EO-260930-R77L",
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    )
+    assert name == erp_outsource_approval_tools.REJECT_TOOL
+    assert arguments["order_no"] == "EO-260930-R77L"
+    assert "价格超了" in arguments["comment"]
+
+
+def test_spoken_pass_from_unique_board_row():
+    invoked = erp_outsource_approval_tools.spoken_approval_from_board(
+        "通过这单",
+        [{
+            "station": "审批中",
+            "orderNo": "EO-260930-R77L",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P2",
+        }],
+        set(erp_outsource_approval_tools.PREPARE_TOOL_KEYS),
+    )
+    assert invoked is not None
+    name, arguments = invoked
+    assert name == erp_outsource_approval_tools.PASS_TOOL
+    assert arguments["order_no"] == "EO-260930-R77L"
+
+
+def test_approval_pass_prepare_by_board_row(monkeypatch):
+    monkeypatch.setattr(approval_todo, "item_from_visible_row", lambda row_no, **kwargs: {
+        "taskId": 12,
+        "nodeName": "采购主管审批",
+        "moldNo": "M260063-P2",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P2",
+        "orderNo": "EO-260930-R77L",
+        "supplierName": "青岛和兴嘉业金属制品有限公司",
+        "amount": 50000,
+    })
+    monkeypatch.setattr(erp_outsource_approval_tools, "approval_node_tokens", lambda db, user: ["采购主管"])
+    result = erp_outsource_approval_tools.execute_tool(None, Admin(), erp_outsource_approval_tools.PASS_TOOL, {
+        "board_row": 1,
+    })
+    assert result["proposal"]["kind"] == "erp_outsource_approval_pass"
+    assert result["proposal"]["display"]["订单号"] == "EO-260930-R77L"
+
+
+def test_approval_pass_unique_pending_without_order(monkeypatch):
+    monkeypatch.setattr(approval_todo, "query_items", lambda **kwargs: [{
+        "taskId": 12,
+        "nodeName": "采购主管审批",
+        "moldNo": "M260063-P2",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P2",
+        "orderNo": "EO-260930-R77L",
+        "supplierName": "青岛和兴嘉业金属制品有限公司",
+        "amount": 50000,
+    }])
+    monkeypatch.setattr(erp_outsource_approval_tools, "approval_node_tokens", lambda db, user: ["采购主管"])
+    result = erp_outsource_approval_tools.execute_tool(None, Admin(), erp_outsource_approval_tools.PASS_TOOL, {
+        "comment": "同意",
+    })
+    assert result["proposal"]["display"]["订单号"] == "EO-260930-R77L"
+
+
+def test_approval_pass_ambiguous_without_identity(monkeypatch):
+    monkeypatch.setattr(approval_todo, "query_items", lambda **kwargs: [
+        {"taskId": 12, "nodeName": "采购主管审批", "orderNo": "EO-1"},
+        {"taskId": 13, "nodeName": "采购主管审批", "orderNo": "EO-2"},
+    ])
+    monkeypatch.setattr(erp_outsource_approval_tools, "approval_node_tokens", lambda db, user: ["采购主管"])
+    try:
+        erp_outsource_approval_tools.execute_tool(None, Admin(), erp_outsource_approval_tools.PASS_TOOL, {})
+    except DomainError as error:
+        assert error.code == "AMBIGUOUS"
+    else:
+        raise AssertionError("expected AMBIGUOUS")
+
+
 def test_approval_item_fills_mold_from_title():
     item = approval_todo.item_from_row({
         "task_id": 1,
