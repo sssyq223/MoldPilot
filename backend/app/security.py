@@ -2,7 +2,7 @@ from datetime import timedelta
 import secrets
 from argon2.exceptions import VerificationError
 from fastapi import Request, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from .db import get_db, now
 from .models import User, LoginSession
 from .errors import DomainError
@@ -11,7 +11,9 @@ from agent_core.security import digest, hasher, normalize_username
 
 def login(db, username, password):
     login_name = str(username or '').strip()
-    user = db.scalar(select(User).where(User.username == normalize_username(login_name)))
+    # Account keys are canonicalized for lookup, while migrated ERP supplier
+    # and processor accounts retain their visible ``SUP000XXX`` casing.
+    user = db.scalar(select(User).where(func.lower(User.username) == normalize_username(login_name)))
     # The ERP roster commonly uses the person's Chinese name as the visible
     # identifier.  Keep the stored account key for compatibility, but allow a
     # unique display name to be used at login as well.
