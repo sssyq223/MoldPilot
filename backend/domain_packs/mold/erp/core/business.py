@@ -96,30 +96,63 @@ def assignment_context(db, req):
 def enter_stage(db, instance, definition, req):
     node = definition.config["nodes"][instance.stage_index]
     from domain_packs.mold.ports.assignments import resolve_users
-    sources=[];candidates=[]
-    try:candidates,sources=resolve_users(db,node,assignment_context(db, req))
-    except DomainError:
-        instance.incident='ASSIGNMENT_BLOCKED'
-    resolution={'node':node['key'],'mode':node['mode'],'resolved_at':now().isoformat(),'sources':sources,
-                'rule':node.get('assignment',{'users':node.get('users',[])}),'candidates':candidates}
-    eligible = []
-    for user_id in candidates:
-        candidate = db.get(User, user_id)
-        if not candidate or not candidate.active: continue
+    context = assignment_context(db, req)
+    sources=[];candidates=[];pool_requirements={}
+
+    def eligible_users(candidate_ids):
+        eligible = []
+        for user_id in candidate_ids:
+            candidate = db.get(User, user_id)
+            if not candidate or not candidate.active:
+                continue
+            try:
+                request_access(db, candidate, req, "purchase.approve")
+                fields=request_access(db, candidate, req, "purchase.read")
+                required={'project_id','detail','remark'} if isinstance(req,BusinessSubject) else {'project_id','material_id','quantity','due_date','remark'}
+                if '*' not in fields and not required<=fields:
+                    continue
+                eligible.append(user_id)
+            except DomainError:
+                continue
+        return eligible
+
+    if node.get("assignment_pools"):
+        for pool in node["assignment_pools"]:
+            try:
+                pool_candidates, pool_sources = resolve_users(
+                    db, {"assignment": pool["assignment"]}, context
+                )
+            except DomainError:
+                pool_candidates, pool_sources = [], []
+                instance.incident='ASSIGNMENT_BLOCKED'
+            pool_eligible = eligible_users(pool_candidates)
+            pool_requirements[pool["key"]] = {
+                "name": pool["name"], "mode": pool["mode"],
+                "candidates": pool_candidates, "eligible": pool_eligible,
+            }
+            candidates.extend(pool_eligible)
+            sources.extend(pool_sources)
+        candidates = list(dict.fromkeys(candidates))
+    else:
         try:
-            request_access(db, candidate, req, "purchase.approve")
-            fields=request_access(db, candidate, req, "purchase.read")
-            required={'project_id','detail','remark'} if isinstance(req,BusinessSubject) else {'project_id','material_id','quantity','due_date','remark'}
-            if '*' not in fields and not required<=fields:continue
-            eligible.append(user_id)
-        except DomainError: continue
+            candidates,sources=resolve_users(db,node,context)
+        except DomainError:
+            instance.incident='ASSIGNMENT_BLOCKED'
+    resolution={'node':node['key'],'mode':node['mode'],'resolved_at':now().isoformat(),'sources':sources,
+                'rule':({'assignment_pools': node['assignment_pools']}
+                        if node.get('assignment_pools') else node.get('assignment',{'users':node.get('users',[])})),
+                'candidates':candidates}
+    eligible = list(dict.fromkeys(candidates)) if node.get("assignment_pools") else eligible_users(candidates)
     resolution['eligible']=eligible
     resolution['total_seats']=len(eligible)
+    if pool_requirements:
+        resolution['pool_requirements'] = pool_requirements
     if node['mode'] == 'QUORUM':
         resolution['required_approvals']=node['required_approvals']
-    resolution['blocked']=(
-        not eligible
-        or (node['mode']=='ALL' and len(eligible)!=len(candidates))
+    resolution['blocked'] = (
+        (any(not pool['eligible'] or (pool['mode']=='ALL' and len(pool['eligible']) != len(pool['candidates']))
+             for pool in pool_requirements.values()) if pool_requirements else not eligible)
+        or (not pool_requirements and node['mode']=='ALL' and len(eligible)!=len(candidates))
         or (node['mode']=='QUORUM' and len(eligible)<node['required_approvals'])
     )
     if node['mode'] == 'CLAIM':
@@ -391,6 +424,7 @@ def approval_detail(db, user, instance):
                        "sla": n.get("sla"), "task_type": n.get("task_type", "approval"),
                        "parallel_group": n.get("parallel_group"),
                        "line_item_scope": n.get("line_item_scope", "document"),
+                       "assignment_pools": n.get("assignment_pools"),
                        "form_schema": n.get("form_schema", definition.config.get("form_schema"))}
                       for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
@@ -702,11 +736,22 @@ def _activate_after_approval(db, instance, seat):
         record(db, None, "approval.pending", instance.id, recipients=sorted(set(recipients)))
 
 
-def _stage_is_approved(node, peers):
+def _stage_is_approved(node, peers, pool_requirements=None):
     base = [seat for seat in peers if seat.parent_seat_id is None]
     additions = [seat for seat in peers if seat.parent_seat_id is not None]
     if any(seat.status != "APPROVE" for seat in additions):
         return False
+    if pool_requirements:
+        for pool in pool_requirements.values():
+            pool_users = set(pool.get("eligible", []))
+            pool_seats = [seat for seat in base if seat.user_id in pool_users]
+            if not pool_seats:
+                return False
+            if pool["mode"] == "ALL" and any(seat.status != "APPROVE" for seat in pool_seats):
+                return False
+            if pool["mode"] in {"ANY", "CLAIM"} and not any(seat.status == "APPROVE" for seat in pool_seats):
+                return False
+        return True
     if node["mode"] == "ANY":
         return any(seat.status == "APPROVE" for seat in base)
     if node["mode"] == "QUORUM":
@@ -856,7 +901,9 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
             ApprovalSeat.instance_id == instance.id,
             ApprovalSeat.stage_index == instance.stage_index,
         )))
-    if payload["decision"] == "APPROVE" and _stage_is_approved(node, peers):
+    pool_requirements = ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
+                         .get("pool_requirements"))
+    if payload["decision"] == "APPROVE" and _stage_is_approved(node, peers, pool_requirements):
         cancel_stage_timers(db, instance.id, instance.stage_index)
         for peer in peers:
             if peer.status in {"PENDING", "WAITING_COUNTERSIGN", "WAITING_PREDECESSOR"}: peer.status = "CANCELLED"

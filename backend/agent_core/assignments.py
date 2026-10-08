@@ -36,7 +36,7 @@ def validate_assignment(node):
     rule = node["assignment"]
     allowed_fields = {
         "roles", "departments", "department_heads_only", "domain_roles",
-        "domain_roles_any", "business_permissions", "responsibility_scope",
+        "domain_roles_any", "group_names_any", "business_permissions", "responsibility_scope",
     }
     if (
         ("users" in node and node["users"] != [])
@@ -46,11 +46,12 @@ def validate_assignment(node):
         or not valid_ids(rule.get("departments", []), True)
         or not valid_keys(rule.get("domain_roles", []), True)
         or not valid_keys(rule.get("domain_roles_any", []), True)
+        or not valid_keys(rule.get("group_names_any", []), True)
         or not valid_keys(rule.get("business_permissions", []), True)
         or not valid_keys(rule.get("responsibility_scope", []), True)
         or type(rule.get("department_heads_only")) is not bool
         or not (
-            rule.get("roles") or rule.get("departments") or rule.get("domain_roles") or rule.get("domain_roles_any")
+            rule.get("roles") or rule.get("departments") or rule.get("domain_roles") or rule.get("domain_roles_any") or rule.get("group_names_any")
             or rule.get("business_permissions")
         )
         or (rule["department_heads_only"] and not rule.get("departments"))
@@ -299,6 +300,21 @@ def _resolve_users(db, node, context=None, publish=False, explain=False):
         selections.append(set().union(*selections_any))
         basis_selections.append(set().union(*selections_any))
         sources.extend(any_sources)
+    if rule.get("group_names_any"):
+        models = host_ports().models
+        groups = list(db.scalars(select(models.AssignmentGroup).where(
+            models.AssignmentGroup.name.in_(rule["group_names_any"]),
+            models.AssignmentGroup.active.is_(True),
+        )))
+        if len({group.name for group in groups}) != len(set(rule["group_names_any"])):
+            raise DomainError("ASSIGNMENT_BLOCKED", "人员组规则引用了不存在或已停用的人员组")
+        selected = set(db.scalars(select(models.AssignmentMember.user_id).where(
+            models.AssignmentMember.group_id.in_([group.id for group in groups])
+        )))
+        selections.append(selected)
+        basis_selections.append(selected)
+        sources.extend({"id": group.id, "kind": group.kind, "name": group.name, "version": group.version}
+                       for group in groups)
     if rule.get("business_permissions"):
         capability_ids, capability_sources, capability_gaps = _capability_candidates(
             db,
@@ -342,15 +358,20 @@ def resolve_users_with_gaps(db, node, context=None):
 def check_publish(db, config):
     models = host_ports().models
     for node in config["nodes"]:
-        ids, _ = resolve_users(db, node, publish=True)
-        if not ids or any(
-            not (user := db.get(models.User, user_id)) or not user.active
-            for user_id in ids
+        checks = []
+        if node.get("assignment_pools"):
+            checks = [resolve_users(db, {"assignment": pool["assignment"]}, publish=True)[0]
+                      for pool in node["assignment_pools"]]
+        else:
+            checks = [resolve_users(db, node, publish=True)[0]]
+        if any(
+            not ids or any(not (user := db.get(models.User, user_id)) or not user.active for user_id in ids)
+            for ids in checks
         ):
-            raise DomainError(
-                "ASSIGNMENT_BLOCKED", "节点没有有效人员或包含停用人员，请维护人员规则"
-            )
-        if node["mode"] == "QUORUM" and len(ids) < node["required_approvals"]:
+            raise DomainError("ASSIGNMENT_BLOCKED", "节点没有有效人员或包含停用人员，请维护人员规则")
+        if node["mode"] == "QUORUM" and any(
+            len(candidate_ids) < node["required_approvals"] for candidate_ids in checks
+        ):
             raise DomainError(
                 "ASSIGNMENT_BLOCKED", "比例会签候选人数少于所需通过票数，请调整人员或票数"
             )

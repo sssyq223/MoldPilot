@@ -27,7 +27,7 @@ NODE_KEYS = {
     'reject_rules', 'routes', 'default_target', 'agent_auto_approval',
     'agent_auto_policy', 'allow_transfer', 'allow_proxy', 'add_sign_policy',
     'return_policy', 'sla', 'task_type', 'form_schema', 'parallel_group',
-    'line_item_scope', 'external_action',
+    'line_item_scope', 'external_action', 'assignment_pools',
 }
 FORM_TYPES = {'string', 'text', 'integer', 'decimal', 'date', 'datetime', 'boolean', 'enum'}
 
@@ -155,6 +155,31 @@ def validate(config):
         if 'external_action' in node and node.get('task_type', 'approval') != 'business_task':
             raise DomainError('INVALID_WORKFLOW', '只有业务任务节点可以配置外部动作')
         validate_form_schema(node.get('form_schema'), label=f'节点 {key} 表单')
+        if 'assignment_pools' in node:
+            pools = node['assignment_pools']
+            if (
+                not isinstance(pools, list) or not 1 <= len(pools) <= 10
+                or 'assignment' in node or 'users' in node
+            ):
+                raise DomainError('INVALID_WORKFLOW', '节点审批池配置无效，不能与单一人员规则混用')
+            pool_keys = set()
+            for pool in pools:
+                if not isinstance(pool, dict) or set(pool) - {'key', 'name', 'assignment', 'users', 'mode'}:
+                    raise DomainError('INVALID_WORKFLOW', '审批池配置包含未支持的属性')
+                if not isinstance(pool.get('key'), str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', pool['key']) or pool['key'] in pool_keys:
+                    raise DomainError('INVALID_WORKFLOW', '审批池标识不合法或重复')
+                pool_keys.add(pool['key'])
+                if not isinstance(pool.get('name'), str) or not 1 <= len(pool['name']) <= 150:
+                    raise DomainError('INVALID_WORKFLOW', '审批池必须设置名称')
+                if pool.get('mode') not in {'ALL', 'ANY', 'CLAIM'}:
+                    raise DomainError('INVALID_WORKFLOW', '审批池办理方式只支持 ALL、ANY 或 CLAIM')
+                if ('assignment' in pool) == ('users' in pool):
+                    raise DomainError('INVALID_WORKFLOW', '审批池必须且只能配置一种人员来源')
+                pool_node = ({'assignment': pool['assignment']}
+                             if 'assignment' in pool else {'users': pool['users']})
+                validate_assignment(pool_node)
+        elif 'assignment' not in node and 'users' not in node:
+            raise DomainError('INVALID_WORKFLOW', '节点必须配置人员或审批池')
         if 'parallel_group' in node and (
             not isinstance(node['parallel_group'], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', node['parallel_group'])
         ):
@@ -190,7 +215,8 @@ def validate(config):
             if not isinstance(node["agent_auto_policy"], dict) or set(node["agent_auto_policy"]) != {"condition"}:
                 raise DomainError("INVALID_WORKFLOW", "Agent 自动审批策略必须包含安全条件")
             validate_condition(node["agent_auto_policy"]["condition"], contract)
-        validate_assignment(node)
+        if 'assignment_pools' not in node:
+            validate_assignment(node)
         validate_add_sign_policy(node)
         if "sla" in node:
             sla = node["sla"]
@@ -356,6 +382,7 @@ def simulate(config, snapshot):
         node = config['nodes'][stage]
         matched, missing = reject_findings(node, snapshot,config.get('material_contract'))
         entry = {'key': node['key'], 'name': node['name'], 'users': node.get('users',[]), 'assignment': node.get('assignment'),
+                 'assignment_pools': node.get('assignment_pools'),
                  'mode': node['mode'], 'required_approvals': node.get('required_approvals'),
                  'task_type': node.get('task_type', 'approval'),
                  'parallel_group': node.get('parallel_group'),

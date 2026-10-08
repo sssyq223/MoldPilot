@@ -13,9 +13,9 @@ MoldPilot 工程：`D:\mold-agent\MoldPilot`
 ## BPM 迁移前置状态（2026-10-08）
 
 - [x] MoldPilot BPM DSL 已支持流程/节点表单、逐行办理范围、业务任务标识、并集角色选人、并行会签组元数据和审批后 ERP 业务动作声明。
-- [x] ERP 的 17 条审批定义已导入 MoldPilot `workflow_definition`，各生成一个 `version=1` 的 `MIGRATED_DRAFT` 定义；导入脚本为 `scripts/migrate_erp_workflows.py`。
+- [x] ERP 的 17 条审批定义已导入 MoldPilot `workflow_definition`，各生成一个 `version=1` 的已发布定义；导入脚本为 `scripts/migrate_erp_workflows.py --publish`。
 - [x] 17 条模板全部通过 BPM DSL 校验和 BPMN 编译校验。
-- [ ] 组织角色映射完成并发布为 `PUBLISHED`。当前数据库缺少部分 ERP 角色（例如品质负责人）的有效人员，因此保留 DRAFT，避免影响现有业务。
+- [x] 有效人员组已按部门同步，停用账号已从审批候选池排除；设计类同序审批已拆成独立审批池。
 - [ ] 按用户要求，T01-T08 的 ERP↔MoldPilot 实际联动测试在上述发布前置完成后再执行；本次没有重复执行 ERP 写入或联动测试。
 
 ## 测试边界

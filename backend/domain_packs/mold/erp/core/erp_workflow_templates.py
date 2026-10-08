@@ -17,9 +17,15 @@ def _any_roles(*roles):
     return {"assignment": {"domain_roles_any": list(roles), "department_heads_only": False}}
 
 
+def _pools(*roles):
+    return [{"key": role.lower(), "name": role, "mode": "ANY",
+             "assignment": {"domain_roles": [role], "department_heads_only": False}}
+            for role in roles]
+
+
 def _node(key, name, *, roles=None, any_roles=None, form_schema=None,
           line_item_scope="document", parallel_group=None, task_type="approval",
-          external_action=None):
+          external_action=None, assignment_pools=None):
     node = {
         "key": key,
         "name": name,
@@ -28,7 +34,9 @@ def _node(key, name, *, roles=None, any_roles=None, form_schema=None,
         "line_item_scope": line_item_scope,
         "task_type": task_type,
     }
-    if roles:
+    if assignment_pools:
+        node["assignment_pools"] = assignment_pools
+    elif roles:
         node.update(_role(roles[0]) if len(roles) == 1 else _any_roles(*roles))
     elif any_roles:
         node.update(_any_roles(*any_roles))
@@ -95,7 +103,7 @@ def templates():
         erp_action="design.new_model.commit", source_description="START→设计主管→采购主管→END"),
         _base("design_modify_model_approval", "修改模审批", [
             _node("design_review", "设计主管审批", roles=["DESIGN_OWNER"]),
-            _node("management_review", "总经理与模具主管会签", any_roles=["PROJECT_OWNER", "DESIGN_OWNER"], parallel_group="management_review"),
+            _node("management_review", "总经理与模具主管会签", assignment_pools=_pools("PROJECT_OWNER", "DESIGN_OWNER"), parallel_group="management_review"),
             _node("purchase_review", "采购主管审批", roles=["PURCHASE_OWNER"]),
         ], business_type="design_route", applicability={"design_types": ["MOLD_CHANGE"]},
         erp_action="design.modify_model.commit", source_description="设计主管→(总经理、模具主管)→采购主管"),
@@ -106,7 +114,7 @@ def templates():
             _node("manufacturing_review", "生管审批", roles=["MANUFACTURING_OWNER"]),
         ], erp_action="production.outsource.commit", source_description="生管审批"),
         _base("design_order_approval", "设计订单审批", [
-            _node("design_management_review", "设计主管与总经理会签", any_roles=["DESIGN_OWNER", "PROJECT_OWNER"], parallel_group="design_management_review"),
+            _node("design_management_review", "设计主管与总经理会签", assignment_pools=_pools("DESIGN_OWNER", "PROJECT_OWNER"), parallel_group="design_management_review"),
         ], business_type="design_route", erp_action="design.order.commit", source_description="设计主管与总经理同序会签"),
         _base("purchase_reconcile_internal_approval", "采购对账内部确认", [
             _node("internal_confirm", "品质、仓库确认", any_roles=["QUALITY_OWNER", "PURCHASE_OWNER"], parallel_group="internal_confirm"),
