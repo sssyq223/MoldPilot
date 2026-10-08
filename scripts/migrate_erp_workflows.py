@@ -98,6 +98,8 @@ def _materialize_fixed_design_users(db, process_key, node):
     if node.get("assignment_pools"):
         for pool in node["assignment_pools"]:
             name = DESIGN_POOL_USERS.get(pool["key"])
+            if process_key == "design_order_approval" and pool["key"] == "design_owner":
+                name = "于孟"
             if name:
                 pool.pop("assignment", None)
                 pool["users"] = [_user_for_name(db, name)]
