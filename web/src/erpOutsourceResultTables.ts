@@ -405,7 +405,9 @@ export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuo
           : '数据来自 ERP 委外待办，仅供展示',
       )
       const existing = result.findIndex((item) => item.title === title)
-      if (existing >= 0) result[existing] = next
+      if (existing >= 0) {
+        if (rows.length >= result[existing].rows.length) result[existing] = next
+      }
       else result.push(next)
       continue
     }

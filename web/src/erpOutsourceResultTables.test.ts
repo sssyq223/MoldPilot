@@ -94,6 +94,40 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[0].referenceTotal ?? null).toBeNull()
   })
 
+  it('keeps the fuller board when a later query narrows to one mold', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [
+        {
+          type: 'tool',
+          id: 'all',
+          tool: 'query_erp_outsource_followup_board',
+          data: {
+            scope: 'ERP 委外待办',
+            items: [
+              { stationLabel: '审批中', moldFamily: 'M260063', moldBatch: 'M260063-P3' },
+              { stationLabel: '待采购填报价', moldFamily: 'M260063', moldBatch: 'M260063-P5' },
+              { stationLabel: '待采购填报价', moldFamily: 'M260063', moldBatch: 'M260063-P1' },
+              { stationLabel: '待接单', moldFamily: 'M210236', moldBatch: 'M210236-P1' },
+            ],
+          },
+        },
+        {
+          type: 'tool',
+          id: 'one',
+          tool: 'query_erp_outsource_followup_board',
+          data: {
+            scope: 'M210236',
+            items: [{ stationLabel: '待接单', moldFamily: 'M210236', moldBatch: 'M210236-P1' }],
+          },
+        },
+      ],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].rows).toHaveLength(4)
+    expect(tables[0].summary).toBe('ERP 委外待办 共 4 条')
+  })
+
   it('keeps one board table when the same tool returns an empty pass then rows', () => {
     const tables = erpOutsourceResultTablesFromRun({
       status: 'SUCCEEDED',

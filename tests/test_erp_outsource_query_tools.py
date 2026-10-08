@@ -381,6 +381,37 @@ def test_all_board_question_does_not_need_mold():
     assert not erp_outsource_query_tools._asks_full_board("这一票到哪一步了")
 
 
+def test_view_all_todos_drops_leftover_mold_argument():
+    parsed = erp_outsource_query_tools.INPUT_MODELS[erp_outsource_query_tools.BOARD_TOOL].model_validate({
+        "question": "查看所有待办",
+        "mold": "M210236",
+        "batch": "M210236-P1",
+        "todo_tab": "accept",
+    })
+    scoped = erp_outsource_query_tools._scope(
+        parsed,
+        buyer_todo.parse_question(parsed.question),
+        spoken=parsed.question,
+    )
+    assert scoped["mold_family"] == ""
+    assert scoped["mold_batch"] == ""
+    assert not scoped.get("order_no")
+    assert erp_outsource_query_tools._clears_inherited_scope("查看所有待办")
+    context = erp_outsource_query_tools._model_context(
+        {
+            "summary": "ERP 委外待办共 4 条。",
+            "counts": {"审批中": 1, "待采购填报价": 2, "待接单": 1},
+            "items": [
+                {"stationLabel": "待接单", "moldFamily": "M210236", "moldBatch": "M210236-P1"},
+                {"stationLabel": "待采购填报价", "moldFamily": "M260063", "moldBatch": "M260063-P5"},
+            ],
+        },
+        question="查看所有待办",
+    )
+    assert "prepare" not in context["summary"]
+    assert context["item_count"] == 2
+
+
 def test_progress_without_mold_returns_need_mold_code():
     class Admin:
         super_admin = True

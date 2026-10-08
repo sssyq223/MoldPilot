@@ -48,7 +48,7 @@ SKILL_SPECS = {
             "我要接单", "确认接单", "我接了", "这单我接了",
             "拒绝接单", "我要拒单",
         ],
-        "priority_patterns": ["加工商报价|提交报价|我要报价|确认接单|我要接单|我接了|拒绝接单|我要拒单"],
+        "priority_patterns": ["加工商报价|提交报价|我要报价|报价\\s*\\d+|确认接单|我要接单|我接了|拒绝接单|我要拒单"],
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
@@ -56,7 +56,7 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     QUOTE_TOOL: {
-        "description": "准备提交本加工商报价确认卡。用户说 NO.几、第N行或订单号并给出金额时立刻锁定待报价行，不要口头请用户确认。交期未说时用询价单交期；含税未说按含税，都写在确认卡上。工序委外不走报价。本人确认后才写入 ERP。",
+        "description": "准备提交本加工商报价确认卡。用户说 NO.几、第N行、订单号或模具/批次号并给出金额时立刻锁定待报价行，不要要单价数量，不要口头请用户确认。交期未说时用询价单交期；含税未说按含税，都写在确认卡上。工序委外不走报价。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
     ACCEPT_TOOL: {
@@ -83,7 +83,8 @@ CONFIRM_ONLY = re.compile(r"^(?:确认|是的|好的|可以|同意|对|嗯|行|�
 QUOTE_FOLLOWUP = ("提交报价", "办理报价", "确认办理", "确认报价", "办理提交", "填报价")
 QUOTE_UTTERANCE = re.compile(
     r"(?:NO\.?\s*\d+|第\s*(?:\d+|[一二三四五六七八九十])\s*行|"
-    r"EO[\-\u2010-\u2015\u2212\uff0d]\d{6}[\-\u2010-\u2015\u2212\uff0d][A-Z0-9]+)"
+    r"EO[\-\u2010-\u2015\u2212\uff0d]\d{6}[\-\u2010-\u2015\u2212\uff0d][A-Z0-9]+|"
+    r"M\d{5,}(?:-P\d+)?)"
     r"[^\n]{0,80}",
     re.IGNORECASE,
 )
@@ -125,17 +126,12 @@ def _looks_like_row_label(value: Any) -> bool:
 
 
 def is_spoken_processor_quote(text: str) -> bool:
-    """Processor quote locked to 我的委外待办 NO. or 订单号 + 金额."""
+    """Processor quote locked to NO. / 订单号 / 模具批次 + 金额."""
     if any(token in text for token in PROCESSOR_QUOTE_BLOCK):
         return False
     if "报价" not in text or "询价" in text:
         return False
-    if buyer_todo.QUOTE_AMOUNT.search(text) is None:
-        return False
-    return bool(
-        buyer_todo.spoken_board_row_number(text)
-        or buyer_todo.ORDER_NO.search(text or "")
-    )
+    return buyer_todo.QUOTE_AMOUNT.search(text) is not None
 
 
 def _is_quote_followup(text: str) -> bool:
@@ -169,7 +165,8 @@ def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any
     amount = buyer_todo.QUOTE_AMOUNT.search(source)
     row_no = buyer_todo.spoken_board_row_number(source)
     order = buyer_todo.ORDER_NO.search(source)
-    if amount is None or (row_no is None and order is None):
+    parsed = buyer_todo.parse_question(source)
+    if amount is None:
         return None
     arguments: dict[str, Any] = {
         "unit_price": float(amount.group(1)),
@@ -179,46 +176,73 @@ def spoken_quote_arguments(prompt: str, context_text: str = "") -> dict[str, Any
         arguments["board_row"] = row_no
     if order:
         arguments["order_no"] = buyer_todo.normalize_order_no(order.group(1))
+    if parsed.get("mold_batch"):
+        arguments["batch"] = parsed["mold_batch"]
+        arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
+    elif parsed.get("mold_family"):
+        arguments["mold"] = parsed["mold_family"]
     spoken_date = SPOKEN_DATE.search(source)
     if spoken_date is None and extra != source:
         spoken_date = SPOKEN_DATE.search(extra)
     if spoken_date:
         arguments["delivery_date"] = spoken_date.group(1)
-    parsed = buyer_todo.parse_question(source)
-    if parsed.get("mold_family"):
-        arguments["mold"] = parsed["mold_family"]
-    elif parsed.get("mold_batch"):
-        arguments["mold"] = parsed["mold_batch"].split("-P", 1)[0]
+    return arguments
+
+
+def _has_quote_target(arguments: dict[str, Any] | None) -> bool:
+    return bool(
+        arguments
+        and (
+            arguments.get("board_row")
+            or arguments.get("order_no")
+            or arguments.get("batch")
+            or arguments.get("mold")
+        )
+    )
+
+
+def _quote_identity_from_item(item: dict[str, Any]) -> dict[str, Any]:
+    arguments: dict[str, Any] = {}
+    order = item.get("orderNo") or item.get("rejectedOrderNo") or item.get("order_no")
+    if order:
+        arguments["order_no"] = buyer_todo.normalize_order_no(order)
+    batch = item.get("moldBatch") or item.get("batch") or ""
+    if batch:
+        arguments["batch"] = batch
+        arguments.setdefault("mold", str(batch).split("-P", 1)[0])
+    else:
+        mold = item.get("moldFamily") or item.get("moldNo") or item.get("mold")
+        if mold:
+            arguments["mold"] = mold
     return arguments
 
 
 def spoken_quote_from_board(prompt: str, items) -> dict[str, Any] | None:
     """Lock 报价+金额 to the only 待报价 row when speech omitted NO./订单号."""
     locked = spoken_quote_arguments(prompt)
-    if locked:
+    if locked and _has_quote_target(locked):
         return locked
     if any(token in (prompt or "") for token in PROCESSOR_QUOTE_BLOCK):
         return None
     if "报价" not in (prompt or "") or "询价" in (prompt or ""):
         return None
     amount = buyer_todo.QUOTE_AMOUNT.search(prompt or "")
-    if amount is None:
+    if amount is None and not locked:
         return None
     quote_rows = [
         item for item in (items or [])
-        if isinstance(item, dict) and str(item.get("station") or "") == "supplier_quote"
+        if isinstance(item, dict)
+        and str(item.get("station") or item.get("stationLabel") or "") in {"supplier_quote", "待报价"}
     ]
     if len(quote_rows) != 1:
-        return None
+        return locked
     item = quote_rows[0]
-    arguments: dict[str, Any] = {
+    arguments: dict[str, Any] = dict(locked) if locked else {
         "unit_price": float(amount.group(1)),
         "tax_included": "不含税" not in (prompt or ""),
     }
-    order = item.get("orderNo") or item.get("rejectedOrderNo")
-    if order:
-        arguments["order_no"] = buyer_todo.normalize_order_no(order)
-    else:
+    arguments.update(_quote_identity_from_item(item))
+    if not _has_quote_target(arguments):
         arguments["board_row"] = 1
     return arguments
 
@@ -280,7 +304,8 @@ class ProcessorQuoteInput(StrictModel):
     invitation_id: int | None = Field(default=None, ge=1, description="查询结果中本加工商的 invitationId。说了表格 NO. 或订单号时可以不填。")
     board_row: int | None = Field(default=None, ge=1, description="我的委外待办第一列 NO.。加工商说第N行或 NO.N 时填这个，不要用采购员完整表的行号。")
     order_no: str | None = Field(default=None, max_length=80, description="查询结果或拒单后重发询价仍沿用的订单号。说 EO- 加金额时填这个。")
-    mold: str | None = Field(default=None, max_length=40)
+    mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。待报价尚未下单时用模具号或批次号锁定。")
+    batch: str | None = Field(default=None, max_length=40, description="批次号，例如 M260063-P4。")
     unit_price: float = Field(gt=0, description="本加工商报价（订单总额）。")
     delivery_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="承诺交付日期 YYYY-MM-DD。没说时用询价单交期。")
     tax_included: bool = Field(default=True, description="报价是否含税。用户没说时按含税，并写在确认卡上。")
@@ -316,7 +341,7 @@ class ProcessorQuoteInput(StrictModel):
                 data["tax_included"] = False
         return data
 
-    @field_validator("mold", "note")
+    @field_validator("mold", "batch", "note")
     @classmethod
     def strip_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
@@ -335,8 +360,6 @@ class ProcessorQuoteInput(StrictModel):
 
     @model_validator(mode="after")
     def need_target(self):
-        if not self.invitation_id and not self.board_row and not self.order_no:
-            raise ValueError("请用我的委外待办 NO.、订单号或 invitationId 定位待报价行")
         return self
 
 
@@ -471,16 +494,41 @@ def _quoteable_invitation(item: dict[str, Any], tokens: list[str] | None) -> dic
     return None
 
 
-def _item_from_processor_order(tokens: list[str] | None, order_no: str, mold: str | None = None) -> dict[str, Any]:
+def _unique_processor_quote_item(tokens: list[str] | None) -> dict[str, Any] | None:
+    payload = buyer_todo.run(
+        {
+            "station": "supplier_quote",
+            "mold_family": "",
+            "mold_batch": "",
+            "project_no": "",
+            "outsource_type": "",
+        },
+        processor_tokens=tokens,
+    )
+    rows = [
+        item for item in payload.get("items") or []
+        if isinstance(item, dict)
+        and str(item.get("station") or item.get("stationLabel") or "") in {"supplier_quote", "待报价"}
+    ]
+    return rows[0] if len(rows) == 1 else None
+
+
+def _item_from_processor_order(
+    tokens: list[str] | None,
+    order_no: str,
+    mold: str | None = None,
+    batch: str | None = None,
+) -> dict[str, Any]:
     item = buyer_todo.find_item_by_identity(
-        order_no=order_no,
+        order_no=order_no or None,
         mold=mold,
+        batch=batch,
         station="supplier_quote",
     )
     if not item:
-        item = buyer_todo.find_item_by_identity(order_no=order_no, mold=mold)
+        item = buyer_todo.find_item_by_identity(order_no=order_no or None, mold=mold, batch=batch)
     if not item:
-        raise DomainError("NOT_FOUND", "没有找到这张仍待报价的询价，请用表格 NO. 或订单号重新查询", 404)
+        raise DomainError("NOT_FOUND", "没有找到这张仍待报价的询价，请用表格 NO.、订单号或批次号重新查询", 404)
     _guard_scope(item, None, tokens)
     return item
 
@@ -493,9 +541,22 @@ def _resolve_processor_quote(data, tokens: list[str] | None):
         if data.board_row:
             item = _item_from_processor_board(tokens, int(data.board_row))
             label = f"NO.{int(data.board_row)}"
+        elif data.order_no or data.mold or getattr(data, "batch", None):
+            item = _item_from_processor_order(
+                tokens,
+                str(data.order_no or ""),
+                data.mold,
+                getattr(data, "batch", None),
+            )
+            label = str(data.order_no or data.batch or data.mold or "该行")
         else:
-            item = _item_from_processor_order(tokens, str(data.order_no or ""), data.mold)
-            label = str(data.order_no or "该行")
+            item = _unique_processor_quote_item(tokens)
+            if not item:
+                raise DomainError(
+                    "INVALID_TOOL_INPUT",
+                    "请用表格 NO.、订单号或批次号指定要报的那一行，例如 NO.1报价66666 或 M260063-P4报价66666。",
+                )
+            label = "当前唯一待报价"
         if item.get("outsourceType") == "operation":
             raise DomainError("STATE_BLOCKED", f"{label} 是工序委外，不走报价，只办接单或拒单", 409)
         if item.get("station") != "supplier_quote":

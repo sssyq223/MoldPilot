@@ -44,12 +44,13 @@ SKILL_SPECS = {
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单", "委外单子",
             "待采购填报价", "待填价", "待发询价", "待报价", "待填成交价", "待下单",
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "有没有委外", "有委外",
-            "几个委外", "有几个", "多少委外",
+            "几个委外", "有几个", "多少委外", "所有待办", "查看待办", "查看所有待办",
         ],
         "auto_activation_queries": [
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单",
             "待采购填报价", "待填价", "待发询价", "待报价", "待填成交价", "待下单",
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "所有委外", "全部委外",
+            "所有待办", "全部待办", "查看待办", "查看所有待办",
             "委外单子", "有没有委外", "有委外", "几个委外", "有几个", "多少委外",
         ],
         "priority_patterns": [
@@ -179,6 +180,26 @@ def _asks_full_board(text: str) -> bool:
     )
 
 
+def _clears_inherited_scope(text: str) -> bool:
+    """True when the user asked for the whole board, not the last mold."""
+    source = text or ""
+    if any(word in source for word in (
+        "所有委外", "全部委外", "所有待办", "全部待办",
+        "所有的委外", "全部的委外",
+    )):
+        return True
+    return ("所有" in source or "全部" in source) and any(
+        word in source for word in ("委外项目", "委外订单", "委外待办", "待办事项", "待办")
+    )
+
+
+def _looks_like_board_lookup(text: str) -> bool:
+    source = text or ""
+    if _clears_inherited_scope(source) or _asks_full_board(source):
+        return True
+    return any(word in source for word in ("查看待办", "查待办", "看看待办", "查询待办"))
+
+
 def _has_mold_scope(parsed: dict[str, str]) -> bool:
     return bool(str(parsed.get("mold_family") or "").strip() or str(parsed.get("mold_batch") or "").strip())
 
@@ -203,6 +224,11 @@ def _scope(data: Any, parsed: dict[str, str], *, spoken: str = "") -> dict[str, 
         result["outsource_type"] = parsed["outsource_type"]
     elif getattr(data, "outsource_kind", None) in {"part", "operation", "mold"}:
         result["outsource_type"] = data.outsource_kind
+    if _clears_inherited_scope(spoken_text):
+        result["mold_family"] = ""
+        result["mold_batch"] = ""
+        result["order_no"] = ""
+        return result
     batch = str(getattr(data, "batch", None) or "").strip().upper()
     mold = str(getattr(data, "mold", None) or "").strip().upper()
     if MOLD_BATCH_CODE.match(batch) or MOLD_BATCH_CODE.match(mold):
@@ -243,7 +269,7 @@ def _compact_board_items(items: list[Any], *, limit: int = 8) -> list[dict[str, 
     return compact
 
 
-def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
+def _model_context(payload: dict[str, Any], *, question: str = "") -> dict[str, Any]:
     if payload.get("status") == "NEED_MOLD_CODE":
         return {"status": "NEED_MOLD_CODE", "summary": payload.get("summary") or ""}
     if payload.get("steps") is not None:
@@ -269,14 +295,15 @@ def _model_context(payload: dict[str, Any]) -> dict[str, Any]:
             str(item.get("station") or item.get("stationLabel") or "")
             for item in items
         }
-        if "待接单" in stations:
+        lookup = _looks_like_board_lookup(question)
+        if "待接单" in stations and not lookup:
             summary = (summary + " 本轮 prepare 接单确认卡，并说明可拒单。").strip()
-        elif "待发询价" in stations:
+        elif "待发询价" in stations and not lookup:
             summary = (summary + " 用户要发询价时本轮立刻 prepare 发询价确认卡，不要再口头确认下一步。").strip()
         elif "待报价" in stations:
             if payload.get("audience") == "processor":
                 summary = (summary + " 零件/模具行的 buyerQuote 是采购报价，回答时要说出金额。不要报核算价、接单上限、成交价。工序委外没有采购报价，只办接单或拒单。").strip()
-            else:
+            elif not lookup:
                 summary = (summary + " 本轮 prepare 报价确认卡。").strip()
         if "待收料" in stations:
             summary = (summary + " 待收料表示仓库已经发料，请加工商确认收货，不要说没有收料待办。").strip()
@@ -334,7 +361,7 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
         payload = timeline.run(scoped)
     return {
         "data": payload,
-        "model_context": _model_context(payload),
+        "model_context": _model_context(payload, question=question),
         "source": "management-system ERP 委外待办只读查询",
         "as_of": now().isoformat(),
         "role_lens": "processor" if processor else "buyer",

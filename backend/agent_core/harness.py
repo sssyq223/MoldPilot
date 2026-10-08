@@ -1845,10 +1845,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
 
     # Spoken fill-quote / accept with locked identity injects prepare
     # so the confirmation card is a real proposal, not a Markdown board table.
+    # Prior board evidence must not block this: 「报价66666」 often follows 查看待办.
     spoken_write = None
+    spoken_write_locked = callable(getattr(_policy, "is_spoken_write", None)) and _policy.is_spoken_write(
+        context.get("prompt") or "",
+        _spoken_identity_context(context),
+    )
     if (turn == 0
             and not pending
-            and not evidence_ids
+            and (not evidence_ids or spoken_write_locked)
             and not attempted_tools
             and not executed_tool_signatures
             and callable(getattr(_policy, "spoken_write_auto_invoke", None))):

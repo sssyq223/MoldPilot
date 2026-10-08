@@ -458,12 +458,28 @@ def test_spoken_processor_quote_locks_visible_no_and_amount():
     dashed = tools.spoken_quote_arguments("EO－260930－R77L报价88888元")
     assert dashed["order_no"] == "EO-260930-R77L"
     assert dashed["unit_price"] == 88888
+    by_batch = tools.spoken_quote_arguments("M260063-P4报价66666")
+    assert by_batch["batch"] == "M260063-P4"
+    assert by_batch["mold"] == "M260063"
+    assert by_batch["unit_price"] == 66666
+    assert "board_row" not in by_batch
+    bare = tools.spoken_quote_arguments("报价66666")
+    assert bare["unit_price"] == 66666
     unique = tools.spoken_quote_from_board("报价88888元", [{
         **QUOTE_ITEM,
         "rejectedOrderNo": "EO-260930-R77L",
     }])
     assert unique["order_no"] == "EO-260930-R77L"
     assert unique["unit_price"] == 88888
+    visible = tools.spoken_quote_from_board("报价66666", [{
+        "station": "待报价",
+        "orderNo": "",
+        "mold": "M260063",
+        "batch": "M260063-P4",
+    }])
+    assert visible["batch"] == "M260063-P4"
+    assert visible["mold"] == "M260063"
+    assert visible["unit_price"] == 66666
     assert tools.spoken_quote_arguments("待办有几个") is None
     confirmed = tools.spoken_quote_arguments(
         "确认",
@@ -490,6 +506,26 @@ def test_processor_quote_resolves_rejected_order_no(monkeypatch):
     )
     assert data.invitation_id == 21
     assert data.delivery_date == "2026-10-15"
+    batch_data = erp_outsource_processor_tools._resolve_processor_quote(
+        erp_outsource_processor_tools.parse(erp_outsource_processor_tools.QUOTE_TOOL, {
+            "batch": "M260063-P4",
+            "unit_price": 66666,
+        }),
+        ["SUP000001"],
+    )
+    assert batch_data.invitation_id == 21
+    monkeypatch.setattr(
+        buyer_todo,
+        "run",
+        lambda parsed, processor_tokens=None: {"items": [item]},
+    )
+    unique_data = erp_outsource_processor_tools._resolve_processor_quote(
+        erp_outsource_processor_tools.parse(erp_outsource_processor_tools.QUOTE_TOOL, {
+            "unit_price": 66666,
+        }),
+        ["SUP000001"],
+    )
+    assert unique_data.invitation_id == 21
 
 
 def test_board_row_quote_prepares_confirmation_card(monkeypatch):
@@ -546,6 +582,13 @@ def test_host_invokes_processor_quote_card_from_row_speech():
     assert order_name == "prepare_erp_outsource_processor_quote"
     assert order_arguments["order_no"] == "EO-260930-R77L"
     assert order_arguments["unit_price"] == 88888
+    batch_name, batch_arguments = spoken_write_auto_invoke("M260063-P4报价66666", catalog)
+    assert batch_name == "prepare_erp_outsource_processor_quote"
+    assert batch_arguments["batch"] == "M260063-P4"
+    assert batch_arguments["unit_price"] == 66666
+    bare_name, bare_arguments = spoken_write_auto_invoke("报价66666", catalog)
+    assert bare_name == "prepare_erp_outsource_processor_quote"
+    assert bare_arguments["unit_price"] == 66666
 
 
 def test_quote_input_accepts_no_label_and_blank_invitation_id():

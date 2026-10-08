@@ -265,6 +265,14 @@ def test_spoken_processor_quote_is_a_write_not_a_lookup():
     assert invoked[0] == "prepare_erp_outsource_processor_quote"
     assert invoked[1]["order_no"] == "EO-260930-R77L"
     assert invoked[1]["unit_price"] == 88888
+    for spoken in ("M260063-P4报价66666", "报价66666"):
+        assert harness._has_formal_action_intent(spoken)
+        assert not harness._is_read_only_request(spoken)
+        assert "prepare_erp_outsource_processor_quote" in spoken_write_ensure_tools(spoken, catalog)
+        locked = spoken_write_auto_invoke(spoken, catalog)
+        assert locked is not None
+        assert locked[0] == "prepare_erp_outsource_processor_quote"
+        assert locked[1]["unit_price"] == 66666
 
 
 def test_host_auto_invokes_processor_quote_from_order_speech():
@@ -338,6 +346,79 @@ def test_host_auto_invokes_processor_quote_from_order_speech():
     assert arguments['unit_price'] == 88888
     assert result['response_kind'] == 'AWAITING_APPROVAL'
     assert all(call[0] != 'query_erp_outsource_processor_board' for call in gateway.calls)
+
+
+def test_host_auto_invokes_processor_quote_from_batch_speech_even_with_board_evidence():
+    board = {'type': 'function', 'function': {
+        'name': 'query_erp_outsource_processor_board',
+        'description': '查询本加工商委外待办',
+    }}
+    quote = {'type': 'function', 'function': {
+        'name': 'prepare_erp_outsource_processor_quote',
+        'description': '准备提交本加工商报价',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'batch': {'type': 'string'},
+                'unit_price': {'type': 'number'},
+            },
+            'required': ['unit_price'],
+        },
+    }}
+    awaiting = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '请核对报价确认卡后确认。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+
+    class RecordingGateway(Gateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, seq, key, arguments):
+            self.calls.append((key, arguments))
+            if seq not in self.receipts:
+                self.physical_calls += 1
+                self.receipts[seq] = {
+                    'evidence_id': 'e1',
+                    'proposal': {
+                        'kind': 'erp_outsource_processor_quote',
+                        'action': 'confirm_erp_outsource_processor_quote',
+                    },
+                }
+            return self.receipts[seq]
+
+    gateway = RecordingGateway()
+    result = run_loop(context(
+        prompt='M260063-P4报价66666',
+        evidence_ids=['prev-board'],
+        core_tool_names=[],
+        tools=[board, quote],
+        skills=[{
+            'key': 'outsource_processor_query',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': [],
+            'host_auto_invoke_empty_arguments': True,
+        }, {
+            'key': 'outsource_processor_ops',
+            'activation_route': 'authorized',
+            'tools': ['query_erp_outsource_processor_board'],
+            'optional_tools': ['prepare_erp_outsource_processor_quote'],
+            'activation_tools': ['query_erp_outsource_processor_board'],
+            'auto_activation_queries': ['提交报价', '我要报价'],
+        }],
+        tool_annotations={'prepare_erp_outsource_processor_quote': {'readOnlyHint': False}},
+    ), InspectingRepliesModel([awaiting]), gateway)
+
+    assert gateway.calls, result
+    name, arguments = gateway.calls[0]
+    assert name == 'prepare_erp_outsource_processor_quote'
+    assert arguments['batch'] == 'M260063-P4'
+    assert arguments['unit_price'] == 66666
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
 
 
 def test_outsource_count_questions_are_not_formal_actions():
