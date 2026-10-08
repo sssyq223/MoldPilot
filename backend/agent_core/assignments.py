@@ -360,7 +360,8 @@ def check_publish(db, config):
     for node in config["nodes"]:
         checks = []
         if node.get("assignment_pools"):
-            checks = [resolve_users(db, {"assignment": pool["assignment"]}, publish=True)[0]
+            checks = [resolve_users(db, ({"assignment": pool["assignment"]}
+                                         if "assignment" in pool else {"users": pool["users"]}), publish=True)[0]
                       for pool in node["assignment_pools"]]
         else:
             checks = [resolve_users(db, node, publish=True)[0]]
