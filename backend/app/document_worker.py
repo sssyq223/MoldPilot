@@ -118,6 +118,111 @@ def _refresh_full_ocr_status(db, group_id, intake_id):
         intake.row_version += 1
 
 
+def _finish_attachment_runs(db, intake, *, success, group_id=None, error_code=None):
+    """Close the host-owned attachment Run only after document processing ends.
+
+    Upload-triggered Runs are deliberately not sent through the general model
+    worker.  The document worker owns their visible tool trace and final
+    confirmation prompt, so the conversation never claims OCR is complete
+    before the persisted intake reaches a terminal state.
+    """
+    if not intake:
+        return
+    file_ids = list(db.scalars(select(m.DocumentIntakeFile.file_id).where(
+        m.DocumentIntakeFile.intake_id == intake.id,
+    )))
+    if not file_ids:
+        return
+    runs = db.scalars(select(m.Run).join(
+        m.RunFile, m.RunFile.run_id == m.Run.id,
+    ).where(
+        m.Run.conversation_id == intake.conversation_id,
+        m.Run.status == "WAITING_DOCUMENT",
+        m.RunFile.file_id.in_(file_ids),
+    ).distinct())
+    for run in runs:
+        checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+        if checkpoint.get("run_trigger") != "ATTACHMENT_UPLOAD":
+            continue
+        if success:
+            run.result = {
+                "trace": [{
+                    "type": "tool",
+                    "tool": "document_ocr",
+                    "data": [{
+                        "status": "AWAITING_FIELD_CONFIRMATION",
+                        "intake_id": intake.id,
+                        "contract_group_id": group_id,
+                        "fields_ready": True,
+                    }],
+                    "as_of": now().isoformat(),
+                }],
+                "summary": "合同 OCR 解析已完成，候选字段已提取。请打开右侧“文件识别”工作区，点击“二次确认合同字段”复核；确认后才会进入后续审批准备。未确认前仍可继续追问合同内容。",
+                "suggestions": ["打开右侧“文件识别”工作区进行二次确认", "如暂不确认，可直接追问合同金额、编号或项目内容"],
+            }
+            run.status = "SUCCEEDED"
+        else:
+            run.result = {
+                "trace": [{
+                    "type": "tool_error",
+                    "tool": "document_ocr",
+                    "code": error_code or "DOCUMENT_OCR_FAILED",
+                    "message": "合同 OCR 解析未完成，请在右侧文件识别工作区查看失败原因并重试。",
+                }],
+                "message": "合同解析未完成，尚未生成二次确认卡片。请先在右侧文件识别工作区重试解析。",
+                "error_code": error_code or "DOCUMENT_OCR_FAILED",
+            }
+            run.status = "FAILED"
+        run.lease_until = None
+        run.checkpoint = {**checkpoint, "completed_at": now().isoformat()}
+        from .run_events import publish_run_update
+        publish_run_update(run.conversation_id, run.id, run.status)
+
+
+def _auto_route_sales_contract(db, intake, intake_file, confidence):
+    """Start full contract OCR after a high-confidence upload classification.
+
+    Uploads are the user's explicit request to analyse the attachment.  A
+    high-confidence SALES_CONTRACT classification therefore advances directly
+    to field extraction; the human confirmation card is the field/project /
+    relationship review after OCR, not a second, redundant type gate.  Other
+    document types keep the existing type-confirmation gate.
+    """
+    if confidence is None or Decimal(str(confidence)) < Decimal('0.90'):
+        return False
+    existing = db.scalar(select(m.DocumentIntakeFile).where(
+        m.DocumentIntakeFile.id == intake_file.id,
+        m.DocumentIntakeFile.contract_group_id.is_not(None),
+    ))
+    if existing:
+        return False
+    group = m.ContractIntakeGroup(
+        intake_id=intake.id,
+        group_key='合同1',
+        status='FULL_OCR_QUEUED',
+    )
+    db.add(group)
+    db.flush()
+    intake_file.confirmed_type = 'SALES_CONTRACT'
+    intake_file.confirmed_role = 'MAIN'
+    intake_file.contract_group_id = group.id
+    db.add(m.DocumentOcrJob(
+        intake_file_id=intake_file.id,
+        phase='FULL_CONTRACT',
+        status='QUEUED',
+    ))
+    intake.status = 'FULL_OCR_QUEUED'
+    intake.row_version += 1
+    host_ports().record(db, None, 'document.type.auto_routed', intake.id, {
+        'document_intake_id': intake.id,
+        'intake_file_id': intake_file.id,
+        'document_type': 'SALES_CONTRACT',
+        'confidence': str(confidence),
+        'reason': 'UPLOAD_AUTO_ANALYSIS',
+    })
+    return True
+
+
 def _succeed(factory, job_id, lease_id, phase, intake_file_id, intake_id, group_id, provider, result, conversion=None):
     with factory.begin() as db:
         job = db.scalar(select(m.DocumentOcrJob).where(
@@ -171,8 +276,16 @@ def _succeed(factory, job_id, lease_id, phase, intake_file_id, intake_id, group_
         if phase == "PRECLASSIFY" and _all_preclassifications_done(db, intake_id):
             intake = db.get(m.DocumentIntake, intake_id)
             if intake:
-                intake.status = "AWAITING_TYPE_CONFIRMATION"
-                intake.row_version += 1
+                if result.document_type == 'SALES_CONTRACT' and _auto_route_sales_contract(
+                    db, intake, intake_file, result.confidence,
+                ):
+                    # The newly queued FULL_CONTRACT job is claimed by the
+                    # same worker loop on its next pass.  The UI will move
+                    # from "正在解析" to the field confirmation card.
+                    pass
+                else:
+                    intake.status = "AWAITING_TYPE_CONFIRMATION"
+                    intake.row_version += 1
         elif phase == "FULL_CONTRACT" and group_id:
             _refresh_full_ocr_status(db, group_id, intake_id)
         intake = db.get(m.DocumentIntake,intake_id)
@@ -220,6 +333,12 @@ def _succeed(factory, job_id, lease_id, phase, intake_file_id, intake_id, group_
                         db, owner, 'propose_start_contract_matches',
                         event_kind='contract.ocr.ready', resource_id=ready_event.id,
                     )
+        intake = db.get(m.DocumentIntake, intake_id)
+        if intake and (
+            (phase == "FULL_CONTRACT" and intake.status == "AWAITING_FIELD_CONFIRMATION")
+            or (phase == "PRECLASSIFY" and intake.status == "AWAITING_TYPE_CONFIRMATION")
+        ):
+            _finish_attachment_runs(db, intake, success=True, group_id=group_id)
 
 
 def _error_code(error):
@@ -268,6 +387,7 @@ def _fail(factory, job_id, lease_id, error):
                 "intake_file_id": job.intake_file_id,
                 "error_code": job.last_error,
             }, recipients=[intake.created_by] if intake else [])
+            _finish_attachment_runs(db, intake, success=False, error_code=job.last_error)
         else:
             job.status = "RETRY_WAIT"
             job.retry_at = now() + timedelta(seconds=min(300, 2 ** job.attempts))
@@ -492,6 +612,8 @@ def _prepare_document(data, media_type, config):
 
 
 def process_claim(factory, job_id, lease_id, provider, ocr_client=None):
+    recognized = None
+    phase = intake_file_id = intake_id = group_id = None
     try:
         work = _load_work(factory, job_id, lease_id)
         if not work:
@@ -541,6 +663,29 @@ def process_claim(factory, job_id, lease_id, provider, ocr_client=None):
             result,
             conversion=conversion,
         )
+    except DomainError as error:
+        # A malformed source-id response from an OpenAI-compatible document
+        # endpoint should not strand an upload forever.  Recover only the
+        # conservative, directly source-bound header fields and still leave
+        # them explicitly unconfirmed in the review card.
+        if (phase == 'FULL_CONTRACT' and recognized is not None
+                and error.code in {'DOCUMENT_FIELD_SOURCE_INVALID', 'DOCUMENT_MODEL_TOTAL_TIMEOUT',
+                                   'DOCUMENT_MODEL_READ_TIMEOUT', 'DOCUMENT_MODEL_NETWORK_ERROR',
+                                   'DOCUMENT_MODEL_CONNECT_TIMEOUT'}
+                and hasattr(provider, '_fallback_contract_fields')):
+            try:
+                fallback = provider._fallback_contract_fields(
+                    recognized.pages, recognized.page_count,
+                )
+                from domain_packs.mold.erp.commercial.ocr_provider import ContractExtraction
+                _succeed(
+                    factory, job_id, lease_id, phase, intake_file_id, intake_id,
+                    group_id, provider, ContractExtraction(tuple(fallback)),
+                )
+                return
+            except Exception:
+                pass
+        _fail(factory, job_id, lease_id, error)
     except Exception as error:
         _fail(factory, job_id, lease_id, error)
 
@@ -567,17 +712,22 @@ def run_once(factory, provider=None, ocr_client=None):
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
     config = settings()
-    if not config.ocr_service_token:
-        raise SystemExit("PaddleOCR service configuration missing")
     document_config = document_model_settings()
     if not document_config.document_model_base_url or not document_config.document_model:
         raise SystemExit("Document model configuration missing")
-    ocr_client = PaddleOCRClient(
-        config.ocr_service_url,
-        config.ocr_service_token,
-        connect_timeout=config.ocr_service_connect_timeout,
-        read_timeout=config.ocr_service_read_timeout,
-    )
+    ocr_client = None
+    if config.ocr_service_token:
+        ocr_client = PaddleOCRClient(
+            config.ocr_service_url,
+            config.ocr_service_token,
+            connect_timeout=config.ocr_service_connect_timeout,
+            read_timeout=config.ocr_service_read_timeout,
+        )
+    else:
+        log.warning(
+            "PaddleOCR is not configured; text-layer pages can still be processed, "
+            "while image-only pages will fail with an explicit OCR configuration error"
+        )
     while True:
         try:
             if not run_once(SessionLocal, ocr_client=ocr_client):

@@ -180,7 +180,7 @@ const latestContextUsage=computed(()=>{
  return {context_window:windowTokens,max_output_tokens:Number(modelLimits.value?.max_output_tokens||2048),used_tokens:inputTokens,remaining_tokens:remaining,used_percent:windowTokens?Math.round(inputTokens/windowTokens*1000)/10:0,input_tokens:0,input_tokens_estimated:inputTokens,output_tokens:0,reasoning_tokens:0,total_tokens:0,tool_count:0,tool_schema_count:0,tool_message_tokens_estimated:0,compaction_count:0,token_source:'estimate',remaining_label:formatTokenCount(remaining),used_label:formatTokenCount(inputTokens),window_label:formatTokenCount(windowTokens)}
 })
 watchEffect(()=>{if(typeof document!=='undefined')document.documentElement.style.setProperty('--context-percent',`${Math.min(100,Math.max(0,Number(latestContextUsage.value?.used_percent||0)))}%`)})
-const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
+const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_DOCUMENT:'等待文档解析',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
 const runErrorMessages:Record<string,string>={
  HTTPStatusError:'Harness 保存运行状态或调用内部接口时发生 HTTP 异常。',
  HARNESS_BACKEND_REJECTED:'Harness 的内部请求被后端拒绝。',
@@ -190,6 +190,8 @@ const runErrorMessages:Record<string,string>={
  MODEL_CONNECT_TIMEOUT:'连接模型服务超时。',
  MODEL_READ_TIMEOUT:'等待模型回复超时。',
  MODEL_NETWORK_ERROR:'模型服务网络连接异常。',
+  STORAGE_UNAVAILABLE:'附件存储不可用，解析任务已停止，请重新上传文件后再试。',
+  DOCUMENT_OCR_FAILED:'合同 OCR 解析未完成，请在右侧文件识别工作区查看原因后重试。',
  ERP_DESIGN_MCP_UNAVAILABLE:'ERP 设计服务当前不可达或响应超时，请启动 management-system ERP 后端并确认 MCP 地址可访问后重试。',
  ERP_DESIGN_MCP_CONFIG_INVALID:'ERP 设计 MCP 配置无效，请检查 ERP 地址和访问令牌。',
  ERP_DESIGN_MCP_NOT_INSTALLED:'ERP 设计 MCP 运行时未安装或配置不完整，请检查 Mold 业务包的 MCP 目录。',
@@ -444,14 +446,14 @@ function setProposalConfirmed(stepId:string,confirmed=true){
  confirmedProposalSteps.value={...confirmedProposalSteps.value,[stepId]:confirmed}
 }
 function runProcessExpanded(run:any){
- if(['QUEUED','RUNNING'].includes(run.status))return true
+ if(['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status))return true
  const chosen=runProcessOpen.value[run.id]
  if(chosen!==undefined)return chosen
  return false
 }
 function toggleRunProcess(run:any){runProcessOpen.value={...runProcessOpen.value,[run.id]:!runProcessExpanded(run)}}
 function runDurationSeconds(run:any){
- if(run.status==='RUNNING'||run.status==='QUEUED')return activeRunElapsedSeconds(run,runClockMs.value)
+ if(run.status==='RUNNING'||run.status==='QUEUED'||run.status==='WAITING_DOCUMENT')return activeRunElapsedSeconds(run,runClockMs.value)
  return calculateRunDurationSeconds(run,runClock.value)
 }
 function durationText(seconds:number){
@@ -1070,7 +1072,12 @@ async function uploadFiles(event:Event){
    const form=new FormData();for(const file of files)form.append('files',file,file.name)
    const query=new URLSearchParams({request_key:crypto.randomUUID()});if(target)query.set('conversation_id',target)
    const result=await api('/files/batch?'+query.toString(),{method:'POST',body:form})
-   if(epoch===conversationEpoch){conversation.value=result.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(result.conversation_id);documentRefresh.value++}
+   if(epoch===conversationEpoch){conversation.value=result.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(result.conversation_id);documentRefresh.value++;await openPanel('documents')}
+   const attachmentRun=product.value?.attachment_run,allowedMediaTypes=Array.isArray(attachmentRun?.media_types)?attachmentRun.media_types:[],batchFiles=Array.isArray(result.files)?result.files:[]
+   if(attachmentRun?.enabled&&batchFiles.length&&allowedMediaTypes.length&&batchFiles.every((file:any)=>allowedMediaTypes.includes(file.media_type))){
+    const run=await post('/runs',{prompt:'',conversation_id:result.conversation_id,file_ids:batchFiles.map((file:any)=>file.id),trigger:'ATTACHMENT_UPLOAD',agent_permission_mode:approvalPermissionMode.value})
+    if(epoch===conversationEpoch){conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id);await openPanel('documents')}
+   }
    return
   }
   for(const file of files){const query=new URLSearchParams({filename:file.name,request_key:crypto.randomUUID()});if(target)query.set('conversation_id',target)
@@ -1080,7 +1087,7 @@ async function uploadFiles(event:Event){
   const attachmentRun=product.value?.attachment_run,allowedMediaTypes=Array.isArray(attachmentRun?.media_types)?attachmentRun.media_types:[]
   if(attachmentRun?.enabled&&uploaded.length&&allowedMediaTypes.length&&uploaded.every(file=>allowedMediaTypes.includes(file.media_type))){
    const run=await post('/runs',{prompt:'',conversation_id:target,file_ids:uploaded.map(file=>file.id),trigger:'ATTACHMENT_UPLOAD',agent_permission_mode:approvalPermissionMode.value})
-   if(epoch===conversationEpoch){const bound=new Set(uploaded.map(file=>file.id));selectedFiles.value=selectedFiles.value.filter(file=>!bound.has(file.id));conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id)}
+   if(epoch===conversationEpoch){const bound=new Set(uploaded.map(file=>file.id));selectedFiles.value=selectedFiles.value.filter(file=>!bound.has(file.id));conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id);await openPanel('documents')}
   }else await refresh()
  }catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
@@ -1110,12 +1117,11 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
     <div v-if="conversationLoading" class="conversation-loading" role="status"><span class="pulse"/>正在打开会话…</div>
     <section v-else-if="!conversationRuns.length&&selectedFiles.length&&conversation" class="draft-conversation" aria-label="待发送附件会话">
       <div class="draft-conversation-card">
-        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'支持自动处理的文件正在后台解析，无需发送消息；其他附件可输入问题后发送任务。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
+        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'文件已自动进入后台解析，解析状态和工具调用会回到本会话；你可以继续追问合同内容。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
         <FileMaterial v-for="file in selectedFiles" :key="file.id" :file="file" @error="fail"/>
       </div>
     </section>
     <WelcomePanel v-else-if="!conversationRuns.length&&!processedFileIds.length" :capabilities="capabilities" @prompt="prompt=$event"/>
-    <component :is="conversationDocumentComponent" v-if="conversation&&conversationDocumentComponent&&product.attachment_processing?.enabled" :key="conversation+'|'+me?.authorization_hash" :conversation-id="conversation" :archived="activeConversationArchived" :refresh-key="documentRefresh" @processed="documentFilesHandled" @draft-action="handleAdminStartDraftAction"/>
     <article v-for="run in conversationRuns" :key="run.id" class="conversation-turn">
       <div class="message-block user-message-block">
         <div class="user-message">{{run.prompt}}<FileMaterial v-for="file in run.files||[]" :key="file.id" :file="file" :reusable="!activeConversationArchived" @reuse="reuseConversationFile" @error="fail"/></div>
@@ -1127,10 +1133,10 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
       <div class="agent-answer message-block">
         <div class="answer-body">
-          <div v-if="runPendingProposal(run)||run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&visibleRunFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING'].includes(run.status)||runPendingProposal(run)}"/>{{runPendingProposal(run)?'等待批准':(runStatus[run.status]??'任务状态待确认')}}<template v-if="['QUEUED','RUNNING'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
+          <div v-if="runPendingProposal(run)||run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&visibleRunFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)||runPendingProposal(run)}"/>{{runPendingProposal(run)?'等待批准':(runStatus[run.status]??'任务状态待确认')}}<template v-if="['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
           <p v-if="run.status==='WAITING_CONFIGURATION'" class="muted">任务已保存。模型尚未完成配置，当前不会生成业务结论。待审批事项仍可从消息通知中查看。</p>
           <div v-if="runTrace(run).length" class="react-trace" aria-label="执行链路">
-            <button v-if="runProcessTrace(run).length&&!['QUEUED','RUNNING'].includes(run.status)" type="button" class="run-duration-toggle" :aria-expanded="runProcessExpanded(run)" @click="toggleRunProcess(run)">
+            <button v-if="runProcessTrace(run).length&&!['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)" type="button" class="run-duration-toggle" :aria-expanded="runProcessExpanded(run)" @click="toggleRunProcess(run)">
               {{runDurationLabel(run)}}<ChevronRight class="run-duration-caret" :size="13"/>
             </button>
             <div v-if="runProcessTrace(run).length" class="run-process" :class="{open:runProcessExpanded(run)}" :aria-hidden="!runProcessExpanded(run)">
@@ -1343,6 +1349,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
         <template v-else><p v-if="!notices.length" class="notification-center-state">暂无通知记录。</p><button v-for="n in notices" :key="n.id" class="notification-workspace-row" :class="{unread:!n.read}" @click="notice(n)"><span v-if="!n.read" class="unread-dot"/><span class="notification-item-copy"><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small class="notification-item-meta"><span>{{auditName(n.kind)}}</span><time>{{shanghai(n.created_at)}}</time></small></span><ChevronRight :size="16"/></button></template>
       </div>
     </section>
+    <component v-else-if="panel==='documents'&&conversationDocumentComponent" :is="conversationDocumentComponent" :key="conversation+'|'+me?.authorization_hash" :conversation-id="conversation" :archived="activeConversationArchived" :refresh-key="documentRefresh" @processed="documentFilesHandled" @draft-action="handleAdminStartDraftAction"/>
     <template v-else-if="panel==='approvals'&&detail"><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/></template>
     <DomainWorkspacePanel v-else :panel="panel" :target-id="workspaceTargets[panel]||''" @approval="openApproval" @error="fail" @open="openPanel"/>
   </div></template></section>

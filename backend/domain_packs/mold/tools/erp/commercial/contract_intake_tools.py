@@ -206,7 +206,30 @@ def execute_tool(db, user, key, arguments, run=None):
     if key == "query_sales_contract_intake":
         data = _parse(ContractIntakeQueryInput, arguments)
         if data.contract_intake_group_id:
-            groups = [contract_intake.load_group(db, user, data.contract_intake_group_id)]
+            try:
+                groups = [contract_intake.load_group(db, user, data.contract_intake_group_id)]
+            except DomainError as error:
+                if error.code != 'NOT_FOUND':
+                    raise
+                # Models sometimes pass the document-intake id returned by
+                # query_document_intake instead of its nested group id.  It
+                # is safe to normalize that selector for this read-only tool.
+                try:
+                    intake = contract_intake.load(db, user, data.contract_intake_group_id)
+                except DomainError as intake_error:
+                    if intake_error.code != 'NOT_FOUND':
+                        raise
+                    intake = db.scalar(select(m.DocumentIntake).join(
+                        m.DocumentIntakeFile, m.DocumentIntakeFile.intake_id == m.DocumentIntake.id,
+                    ).where(
+                        m.DocumentIntakeFile.file_id == data.contract_intake_group_id,
+                        m.DocumentIntake.created_by == user.id,
+                    ).order_by(m.DocumentIntake.created_at.desc(), m.DocumentIntake.id.desc()))
+                    if not intake:
+                        raise
+                groups = list(db.scalars(select(m.ContractIntakeGroup).where(
+                    m.ContractIntakeGroup.intake_id == intake.id,
+                ).order_by(m.ContractIntakeGroup.created_at.desc(), m.ContractIntakeGroup.id.desc())))
         else:
             if not run or run.user_id != user.id:
                 raise DomainError("CONTRACT_INTAKE_CONTEXT_REQUIRED", "未指定识别分组时必须绑定当前 Agent Run", 403)

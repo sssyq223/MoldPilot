@@ -23,7 +23,7 @@ from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
-from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, public_run_status
+from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, WAITING_DOCUMENT, public_run_status
 from domain_packs.mold import models as mold_models
 
 active_manifest = load_domain_manifest()
@@ -200,7 +200,10 @@ def run_trace(run, steps, decisions=None):
                 })
                 assistant_turn += 1
     result = run.result if isinstance(run.result, dict) else {}
-    if result:
+    for item in result.get("trace", []) if isinstance(result.get("trace"), list) else []:
+        if isinstance(item, dict):
+            trace.append(dict(item))
+    if result and any(result.get(key) for key in ("summary", "message", "suggestions", "error_code")):
         trace.append({"type": "final", "summary": result.get("summary"), "message": result.get("message"),
                       "suggestions": result.get("suggestions", []), "error_code": result.get("error_code")})
     return trace
@@ -227,8 +230,74 @@ def run_duration_seconds(run, steps):
     return max(0, int((end - aware(run.created_at)).total_seconds()))
 
 
+def _reconcile_stale_attachment_runs(db, conversation_id: str):
+    """Close upload runs left behind when an older worker died mid-finalization.
+
+    The document worker now closes these runs transactionally.  This read-path
+    repair keeps historical uploads from displaying an endless timer when they
+    failed before that safeguard existed.
+    """
+    waiting = list(db.scalars(select(m.Run).where(
+        m.Run.conversation_id == conversation_id,
+        m.Run.status == WAITING_DOCUMENT,
+    )))
+    changed = []
+    for run in waiting:
+        checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+        if checkpoint.get("run_trigger") != "ATTACHMENT_UPLOAD":
+            continue
+        file_ids = list(db.scalars(select(m.RunFile.file_id).where(m.RunFile.run_id == run.id)))
+        if not file_ids:
+            continue
+        intake = db.scalar(select(m.DocumentIntake).join(
+            m.DocumentIntakeFile,
+            m.DocumentIntakeFile.intake_id == m.DocumentIntake.id,
+        ).where(m.DocumentIntakeFile.file_id.in_(file_ids)).order_by(m.DocumentIntake.created_at.desc()))
+        if not intake or intake.status in {
+            "FULL_OCR_QUEUED", "FULL_OCR_PROCESSING", "PRECLASSIFY_PROCESSING",
+        }:
+            continue
+        intake_files = list(db.scalars(select(m.DocumentIntakeFile).where(
+            m.DocumentIntakeFile.intake_id == intake.id,
+        )))
+        group_id = next((f.contract_group_id for f in intake_files if f.contract_group_id), None)
+        if intake.status == "AWAITING_FIELD_CONFIRMATION":
+            run.result = {
+                "trace": [{"type": "tool", "tool": "document_ocr", "data": [{
+                    "status": intake.status, "intake_id": intake.id,
+                    "contract_group_id": group_id, "fields_ready": True,
+                }], "as_of": now().isoformat()}],
+                "summary": "合同 OCR 解析已完成，候选字段已提取。请打开右侧“文件识别”工作区，点击“二次确认合同字段”复核；确认后才会进入后续审批准备。未确认前仍可继续追问合同内容。",
+                "suggestions": ["打开右侧“文件识别”工作区进行二次确认", "如暂不确认，可直接追问合同金额、编号或项目内容"],
+            }
+            run.status = "SUCCEEDED"
+        elif intake.status == "OCR_FAILED":
+            job = db.scalar(select(m.DocumentOcrJob).join(
+                m.DocumentIntakeFile,
+                m.DocumentOcrJob.intake_file_id == m.DocumentIntakeFile.id,
+            ).where(m.DocumentIntakeFile.intake_id == intake.id).order_by(m.DocumentOcrJob.created_at.desc()))
+            error_code = (job.last_error if job else None) or "DOCUMENT_OCR_FAILED"
+            run.result = {
+                "trace": [{"type": "tool_error", "tool": "document_ocr", "code": error_code,
+                           "message": "合同 OCR 解析未完成，请重新上传文件后再试。"}],
+                "message": "本次合同解析未完成，已停止继续等待。请重新上传合同后再试。",
+                "error_code": error_code,
+            }
+            run.status = "FAILED"
+        else:
+            continue
+        run.lease_until = None
+        run.checkpoint = {**checkpoint, "completed_at": now().isoformat()}
+        changed.append((run.conversation_id, run.id, run.status))
+    if changed:
+        db.commit()
+        for conversation_id_value, run_id, status in changed:
+            publish_run_update(conversation_id_value, run_id, status)
+
+
 def conversation_runs_payload(db, user, conversation_id: str):
     """Build the only client-visible run projection for HTTP and live events."""
+    _reconcile_stale_attachment_runs(db, conversation_id)
     from .files import run_files
     current_hash = auth.fingerprint(db, user)
     result = []
@@ -661,13 +730,52 @@ def create_user(data: s.UserInput, user=Depends(current_user), db=Depends(get_db
         m.AssignmentGroup.name == data.department,
         m.AssignmentGroup.active.is_(True)
     ))
-    if not department:
-        raise DomainError("INVALID_INPUT", "请先新增并选择有效部门")
+    # The department label is useful organizational data even before an
+    # assignment group has been configured.  Add membership when a group
+    # exists, but do not block account creation while the administrator is
+    # still setting up the organization.
     db.add(new); db.flush()
-    db.add(m.AssignmentMember(group_id=department.id, user_id=new.id, is_head=False))
-    record(db, user, "user.created", new.id, {"department_id": department.id})
+    if department:
+        db.add(m.AssignmentMember(group_id=department.id, user_id=new.id, is_head=False))
+    record(db, user, "user.created", new.id, {"department_id": department.id if department else None})
     db.commit()
     return public_user_with_profile(db, new)
+
+
+@app.delete("/api/users/{user_id}")
+def deactivate_user(user_id: str, user=Depends(current_user), db=Depends(get_db)):
+    """Safely remove a person from the active roster without breaking history."""
+    auth.require(db, user, "user.manage")
+    target = db.scalar(select(m.User).where(m.User.id == user_id).with_for_update())
+    if not target:
+        raise DomainError("NOT_FOUND", "用户不存在", 404)
+    if target.id == user.id:
+        raise DomainError("INVALID_INPUT", "不能删除当前登录账号")
+    if target.super_admin:
+        raise DomainError("FORBIDDEN", "不能删除超级管理员账号", 403)
+    if target.active:
+        target.active = False
+        target.security_version += 1
+        db.execute(delete(m.LoginSession).where(m.LoginSession.user_id == target.id))
+        record(db, user, "user.deactivated", target.id, {"username": target.username})
+        db.commit()
+    return public_user_with_profile(db, target)
+
+
+@app.put("/api/users/{user_id}")
+def edit_user(user_id: str, data: s.UserEditInput, user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "user.manage")
+    target = db.scalar(select(m.User).where(m.User.id == user_id).with_for_update())
+    if not target:
+        raise DomainError("NOT_FOUND", "用户不存在", 404)
+    if target.super_admin and target.id != user.id:
+        raise DomainError("FORBIDDEN", "不能编辑超级管理员账号", 403)
+    target.display_name = data.display_name.strip()
+    target.department = data.department.strip()
+    target.security_version += 1
+    record(db, user, "user.updated", target.id, {"department": target.department})
+    db.commit()
+    return public_user_with_profile(db, target)
 
 
 @app.get("/api/users/{user_id}/grants")
@@ -1462,13 +1570,17 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
                              default_enabled=model_config.llm_enabled)
     permission_mode = data.agent_permission_mode
     worker_scope = settings().worker_scope
+    attachment_wait = data.trigger == "ATTACHMENT_UPLOAD"
     run = m.Run(user_id=user.id, conversation_id=conversation.id, security_version=user.security_version, prompt=prompt,
-                status=SCOPED_QUEUED if selection else "WAITING_CONFIGURATION",
+                status=WAITING_DOCUMENT if attachment_wait else (SCOPED_QUEUED if selection else "WAITING_CONFIGURATION"),
                 checkpoint={"agent_permission_mode": permission_mode, "worker_scope": worker_scope,
                             "run_trigger": data.trigger, "model_selection": selection})
     db.add(run); db.flush()
     from .files import bind_run_files
     bind_run_files(db,user,run,data.file_ids)
+    if attachment_wait:
+        run.result = {"trace": [{"type": "tool_pending", "tool": "document_ocr", "run_status": WAITING_DOCUMENT,
+                                  "message": "附件已进入 OCR 解析队列，等待文档识别完成。"}]}
     record(db, user, "agent.run.created", run.id, {
         "agent_permission_mode": permission_mode, "run_trigger": data.trigger,
         "model_selection": selection,

@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     ocr_max_attempts: int = _compatible("ocr_max_attempts", 5, ge=1, le=10)
     document_model_profile_id: str = _compatible("document_model_profile_id", "")
     document_model_reasoning_effort: Literal['','low','high','max'] = _compatible("document_model_reasoning_effort", "")
-    document_model_total_timeout: float = _compatible("document_model_total_timeout", 240, gt=0, le=600)
+    document_model_total_timeout: float = _compatible("document_model_total_timeout", 120, gt=0, le=600)
     document_model_base_url: str = _compatible("document_model_base_url", "")
     document_model_api_key: str = _compatible("document_model_api_key", "")
     document_model: str = _compatible("document_model", "Qwen3-30B-A3B-Instruct")

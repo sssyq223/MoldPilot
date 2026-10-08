@@ -388,7 +388,11 @@ def approval_detail(db, user, instance):
             "definition": {"name": definition.name, "version": definition.version},
             "nodes": [{"name": n["name"], "key": n["key"], "mode": n["mode"],
                        "required_approvals": n.get("required_approvals"),
-                       "sla": n.get("sla")} for n in definition.config["nodes"]],
+                       "sla": n.get("sla"), "task_type": n.get("task_type", "approval"),
+                       "parallel_group": n.get("parallel_group"),
+                       "line_item_scope": n.get("line_item_scope", "document"),
+                       "form_schema": n.get("form_schema", definition.config.get("form_schema"))}
+                      for n in definition.config["nodes"]],
             "stage_index": instance.stage_index, "incident": instance.incident,
             "stage_completion": stage_completion,
             "deadline": ((instance.assignment_snapshots or {}).get(str(instance.stage_index), {})
@@ -791,6 +795,9 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     req = load_subject(db,instance,lock=True)
     request_access(db, user, req, "purchase.approve")
     detail = approval_detail(db, user, instance)
+    definition = db.get(WorkflowDefinition, instance.definition_id)
+    node = definition.config["nodes"][instance.stage_index]
+    bpm.validate_form_values(node.get("form_schema", definition.config.get("form_schema")), payload.get("form_values", {}))
     if instance.version != payload["version"] or instance.snapshot_hash != payload["snapshot_hash"]:
         raise DomainError("VERSION_CONFLICT", "审批资料或节点已变化", 409)
     if payload["decision"] not in detail["allowed_actions"]:
@@ -818,12 +825,12 @@ def _decide(db, user, payload, actor_type="HUMAN", delegation_id=None):
     if delegation_id:
         user_snapshot["delegation_id"] = delegation_id
     decision_context = {"return_target": return_target} if return_target else {}
+    if payload.get("form_values"):
+        decision_context["form_values"] = payload["form_values"]
     db.add(ApprovalAction(instance_id=instance.id, seat_id=seat.id, user_id=user.id,
                          user_snapshot=user_snapshot,
                          decision=payload["decision"], comment=payload["comment"],
                          snapshot_hash=instance.snapshot_hash, decision_context=decision_context))
-    definition = db.get(WorkflowDefinition, instance.definition_id)
-    node = definition.config["nodes"][instance.stage_index]
     db.flush()
     peers = list(db.scalars(select(ApprovalSeat).where(ApprovalSeat.instance_id == instance.id, ApprovalSeat.stage_index == instance.stage_index)))
     quorum_rejected = (

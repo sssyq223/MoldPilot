@@ -2,9 +2,13 @@
 from decimal import Decimal, InvalidOperation
 from domain_packs.mold.ports.errors import DomainError
 
-FIELDS = {"project_id", "category", "quantity", "remark", "currency", "amount"}
+FIELDS = {
+    "project_id", "category", "quantity", "remark", "currency", "amount",
+    "supplier_id", "supplier_name", "delivery_date", "expected_date",
+    "unit_price", "material_id", "design_type", "route", "status",
+}
 OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in"}
-NUMERIC_FIELDS = {'amount', 'quantity'}
+NUMERIC_FIELDS = {'amount', 'quantity', 'unit_price'}
 
 
 def validate_rule(rule, depth=0):

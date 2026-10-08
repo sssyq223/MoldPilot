@@ -13,7 +13,14 @@ def key_ok(key):
 def local_path(key):
     key_ok(key)
     if settings().environment not in {'development','test'}:raise DomainError('STORAGE_CONFIG','生产环境须配置私有对象存储',503)
-    root=Path(settings().file_local_root).resolve();path=(root/key).resolve()
+    configured_root = Path(settings().file_local_root)
+    # Detached workers may start with the Codex runtime directory as their
+    # process CWD.  A relative local-root must still resolve to this checkout,
+    # otherwise an upload succeeds in the API process but OCR later reports
+    # STORAGE_UNAVAILABLE when it cannot find the same object.
+    root = (configured_root if configured_root.is_absolute()
+            else Path(__file__).resolve().parents[2] / configured_root).resolve()
+    path=(root/key).resolve()
     if not path.is_relative_to(root):raise DomainError('FILE_KEY_INVALID','文件存储标识无效',500)
     return path
 

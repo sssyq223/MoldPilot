@@ -36,7 +36,7 @@ def validate_assignment(node):
     rule = node["assignment"]
     allowed_fields = {
         "roles", "departments", "department_heads_only", "domain_roles",
-        "business_permissions", "responsibility_scope",
+        "domain_roles_any", "business_permissions", "responsibility_scope",
     }
     if (
         ("users" in node and node["users"] != [])
@@ -45,11 +45,12 @@ def validate_assignment(node):
         or not valid_ids(rule.get("roles", []), True)
         or not valid_ids(rule.get("departments", []), True)
         or not valid_keys(rule.get("domain_roles", []), True)
+        or not valid_keys(rule.get("domain_roles_any", []), True)
         or not valid_keys(rule.get("business_permissions", []), True)
         or not valid_keys(rule.get("responsibility_scope", []), True)
         or type(rule.get("department_heads_only")) is not bool
         or not (
-            rule.get("roles") or rule.get("departments") or rule.get("domain_roles")
+            rule.get("roles") or rule.get("departments") or rule.get("domain_roles") or rule.get("domain_roles_any")
             or rule.get("business_permissions")
         )
         or (rule["department_heads_only"] and not rule.get("departments"))
@@ -61,6 +62,8 @@ def validate_assignment(node):
         )
     if rule.get("domain_roles"):
         component("workflow_assignment").validate_role_keys(rule["domain_roles"])
+    if rule.get("domain_roles_any"):
+        component("workflow_assignment").validate_role_keys(rule["domain_roles_any"])
     if rule.get("business_permissions"):
         contract = authorization_contract()
         if any(key not in contract.PERMISSIONS for key in rule["business_permissions"]):
@@ -281,6 +284,21 @@ def _resolve_users(db, node, context=None, publish=False, explain=False):
         selections.append(selected)
         basis_selections.append(selected)
         sources.extend(domain_sources)
+    if rule.get("domain_roles_any"):
+        extension = component("workflow_assignment")
+        selections_any = []
+        any_sources = []
+        for role_key in rule["domain_roles_any"]:
+            domain_ids, domain_sources = (
+                extension.publish_candidates(db, [role_key])
+                if publish and context is None
+                else extension.resolve(db, [role_key], context)
+            )
+            selections_any.append(set(domain_ids))
+            any_sources.extend(domain_sources)
+        selections.append(set().union(*selections_any))
+        basis_selections.append(set().union(*selections_any))
+        sources.extend(any_sources)
     if rule.get("business_permissions"):
         capability_ids, capability_sources, capability_gaps = _capability_candidates(
             db,

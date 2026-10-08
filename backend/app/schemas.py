@@ -13,10 +13,17 @@ class LoginInput(StrictModel):
 
 
 class UserInput(StrictModel):
-    username: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9_.-]+$")
+    # Chinese names are valid login identifiers in the ERP roster.  Keep the
+    # conservative punctuation set while allowing Unicode word characters.
+    username: str = Field(min_length=3, max_length=80, pattern=r"^[\w.-]+$")
     display_name: str = Field(min_length=1, max_length=100)
     department: str = Field(default="", max_length=100)
     password: str = Field(min_length=12, max_length=128)
+
+
+class UserEditInput(StrictModel):
+    display_name: str = Field(min_length=1, max_length=100)
+    department: str = Field(default="", max_length=100)
 
 
 class AvatarInput(StrictModel):
@@ -85,6 +92,7 @@ class DecisionInput(StrictModel):
     decision: Literal["APPROVE", "REJECT", "RETURN"]
     comment: str = Field(min_length=1, max_length=2000)
     return_target_node_key: str | None = Field(default=None, min_length=1, max_length=80)
+    form_values: dict = Field(default_factory=dict)
 
 
 class ApprovalWithdrawInput(StrictModel):

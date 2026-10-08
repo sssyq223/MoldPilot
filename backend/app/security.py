@@ -10,7 +10,13 @@ from .config import settings, trusted_origin_set
 from agent_core.security import digest, hasher, normalize_username
 
 def login(db, username, password):
-    user = db.scalar(select(User).where(User.username == normalize_username(username)))
+    login_name = str(username or '').strip()
+    user = db.scalar(select(User).where(User.username == normalize_username(login_name)))
+    # The ERP roster commonly uses the person's Chinese name as the visible
+    # identifier.  Keep the stored account key for compatibility, but allow a
+    # unique display name to be used at login as well.
+    if not user:
+        user = db.scalar(select(User).where(User.display_name == login_name).limit(1))
     try:
         if not user or not user.active or not hasher.verify(user.password_hash, password):
             raise DomainError("LOGIN_FAILED", "用户名或密码不正确", 401)
