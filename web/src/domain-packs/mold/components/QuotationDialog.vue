@@ -44,6 +44,8 @@ const form = reactive<any>({
   source_summary: {}, source_kind: 'UPLOAD', source_ref: '',
   file_ids: [...(props.proposal?.input?.file_ids || files.value.map((item: any) => item.id))],
   workflow_definition_id: '',
+  rejection_reason: '',
+  rejection_category: '',
 })
 
 const title = computed(() => intent.value ? '请确认客户报价版本' : '填写客户报价版本')
@@ -55,7 +57,22 @@ const missingLabels: Record<string, string> = {
   workflow_definition_id: '审批流程', cost_amount: '成本金额', cost_evidence: '成本依据', process_analysis: '工艺分析',
   duration_days: '工期估算', duration_evidence: '工期依据', supplier_quote_amount: '供应商报价',
   supplier_delivery_date: '供应商交期', supplier_requirements: '供应商要求', supplier_quote_evidence: '供应商报价依据',
+  rejection_reason: '拒绝原因', rejection_category: '拒绝类别',
 }
+
+const rejectionCategories = [
+  { value: 'PRICE_TOO_LOW', label: '价格过低' },
+  { value: 'TIMELINE_IMPOSSIBLE', label: '交期不可行' },
+  { value: 'TECHNICAL_DIFFICULTY', label: '技术难度过高' },
+  { value: 'CAPACITY_SHORTAGE', label: '产能不足' },
+  { value: 'CUSTOMER_CREDIT', label: '客户信誉问题' },
+  { value: 'MATERIAL_SHORTAGE', label: '材料缺货' },
+  { value: 'RESOURCE_CONFLICT', label: '资源冲突' },
+  { value: 'PROFIT_MARGIN_LOW', label: '利润率过低' },
+  { value: 'OTHER', label: '其他原因' },
+]
+
+const showRejectionForm = ref(false)
 
 function validate() {
   const errors: Record<string, string> = {}
@@ -101,6 +118,20 @@ async function dismiss() {
   busy.value = true
   try { await post(`/proposals/${encodeURIComponent(props.stepId)}/dismiss`); close(); emit('dismissed') }
   catch (e: any) { error.value = e.message || '暂不处理失败'; emit('error', error.value) }
+  finally { busy.value = false }
+}
+async function reject() {
+  if (!form.rejection_category || !form.rejection_reason?.trim() || busy.value) return
+  busy.value = true; error.value = ''
+  try {
+    await post(`/quotation-proposals/${encodeURIComponent(props.stepId)}/reject`, {
+      rejection_category: form.rejection_category,
+      rejection_reason: form.rejection_reason.trim(),
+    })
+    close()
+    emit('dismissed')
+  }
+  catch (e: any) { error.value = e.message || '拒绝报价失败'; emit('error', error.value) }
   finally { busy.value = false }
 }
 function focusDialog() { void nextTick(() => dialogElement.value?.focus()) }
@@ -168,7 +199,15 @@ onUnmounted(() => { window.removeEventListener('keydown', handleKeydown); docume
             <label>审批流程<select v-model="form.workflow_definition_id" required><option value="">请选择已发布报价流程</option><option v-for="item in workflows" :key="item.id" :value="item.id">{{ item.name }} · 第{{ item.version }}版</option></select><small v-if="fieldErrors.workflow_definition_id" class="field-error">{{ fieldErrors.workflow_definition_id }}</small></label>
           </div><p v-if="!workflows.length" class="field-error">当前没有可用的已发布报价审批流程，请先配置流程后再提交。</p></fieldset>
           <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-          <div class="dialog-actions"><button type="button" :disabled="busy" @click="dismiss">暂不处理</button><button class="primary" type="submit" :disabled="busy || props.archived || !workflows.length">{{ busy ? '正在处理…' : intent ? '本人确认并提交报价审批' : '生成报价 Proposal' }}</button></div>
+          <div class="dialog-actions">
+            <button type="button" :disabled="busy" @click="showRejectionForm = !showRejectionForm">{{ showRejectionForm ? '取消拒绝' : '拒绝报价' }}</button>
+            <button type="button" :disabled="busy" @click="dismiss">暂不处理</button>
+            <button class="primary" type="submit" :disabled="busy || props.archived || !workflows.length">{{ busy ? '正在处理…' : intent ? '本人确认并提交报价审批' : '生成报价 Proposal' }}</button>
+          </div>
+          <fieldset v-if="showRejectionForm" :disabled="busy" class="rejection-form"><legend>拒绝报价</legend><div class="form-grid">
+            <label>拒绝类别<select v-model="form.rejection_category" required><option value="">请选择拒绝类别</option><option v-for="cat in rejectionCategories" :key="cat.value" :value="cat.value">{{ cat.label }}</option></select><small v-if="fieldErrors.rejection_category" class="field-error">{{ fieldErrors.rejection_category }}</small></label>
+            <label class="wide">拒绝原因<textarea v-model="form.rejection_reason" rows="3" required placeholder="请详细说明拒绝报价的原因"/><small v-if="fieldErrors.rejection_reason" class="field-error">{{ fieldErrors.rejection_reason }}</small></label>
+          </div><div class="dialog-actions"><button type="button" class="danger" :disabled="busy || !form.rejection_category || !form.rejection_reason?.trim()" @click="reject">确认拒绝报价</button></div></fieldset>
         </form>
       </section>
     </div>
@@ -176,5 +215,5 @@ onUnmounted(() => { window.removeEventListener('keydown', handleKeydown); docume
 </template>
 
 <style scoped>
-.quotation-dialog{width:min(900px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:20px}.dialog-head{display:flex;justify-content:space-between;gap:18px;margin-bottom:14px}.dialog-head h2{margin:3px 0 6px;font-size:20px}.dialog-head p{margin:0;line-height:1.5}.eyebrow{font-size:11px;color:var(--accent);letter-spacing:.08em}.source-strip{display:flex;flex-wrap:wrap;gap:6px 12px;padding:9px 11px;margin-bottom:12px;border-radius:8px;background:color-mix(in srgb,var(--surface) 84%,var(--accent) 16%);font-size:12px}.source-strip span{color:var(--muted)}.quotation-dialog form{display:grid;gap:12px}.quotation-dialog fieldset{border:1px solid var(--border);border-radius:12px;padding:13px}.quotation-dialog legend{padding:0 6px;color:var(--muted);font-size:12px}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.form-grid label{display:grid;gap:5px;font-size:12px;color:var(--muted)}.form-grid input,.form-grid select,.form-grid textarea{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:7px;padding:8px;background:var(--surface);color:var(--text);font:inherit}.form-grid textarea{resize:vertical}.wide{grid-column:span 2}.nested-grid{margin-top:12px}.choice-row{display:flex;gap:18px;font-size:13px}.field-error{color:var(--error,#b4534b);font-size:11px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions button{min-height:34px;padding:0 14px;border-radius:8px}.primary{background:var(--accent);color:var(--accent-contrast,#fff);border-color:var(--accent)}@media(max-width:700px){.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.wide{grid-column:span 2}}@media(max-width:480px){.quotation-dialog{padding:14px}.form-grid{grid-template-columns:1fr}.wide{grid-column:auto}.dialog-head{gap:8px}.dialog-head h2{font-size:18px}}
+.quotation-dialog{width:min(900px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:20px}.dialog-head{display:flex;justify-content:space-between;gap:18px;margin-bottom:14px}.dialog-head h2{margin:3px 0 6px;font-size:20px}.dialog-head p{margin:0;line-height:1.5}.eyebrow{font-size:11px;color:var(--accent);letter-spacing:.08em}.source-strip{display:flex;flex-wrap:wrap;gap:6px 12px;padding:9px 11px;margin-bottom:12px;border-radius:8px;background:color-mix(in srgb,var(--surface) 84%,var(--accent) 16%);font-size:12px}.source-strip span{color:var(--muted)}.quotation-dialog form{display:grid;gap:12px}.quotation-dialog fieldset{border:1px solid var(--border);border-radius:12px;padding:13px}.quotation-dialog legend{padding:0 6px;color:var(--muted);font-size:12px}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.form-grid label{display:grid;gap:5px;font-size:12px;color:var(--muted)}.form-grid input,.form-grid select,.form-grid textarea{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:7px;padding:8px;background:var(--surface);color:var(--text);font:inherit}.form-grid textarea{resize:vertical}.wide{grid-column:span 2}.nested-grid{margin-top:12px}.choice-row{display:flex;gap:18px;font-size:13px}.field-error{color:var(--error,#b4534b);font-size:11px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions button{min-height:34px;padding:0 14px;border-radius:8px}.primary{background:var(--accent);color:var(--accent-contrast,#fff);border-color:var(--accent)}.danger{background:var(--error,#b4534b);color:#fff;border-color:var(--error,#b4534b)}.rejection-form{margin-top:12px;border-color:var(--error,#b4534b)}@media(max-width:700px){.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.wide{grid-column:span 2}}@media(max-width:480px){.quotation-dialog{padding:14px}.form-grid{grid-template-columns:1fr}.wide{grid-column:auto}.dialog-head{gap:8px}.dialog-head h2{font-size:18px}}
 </style>

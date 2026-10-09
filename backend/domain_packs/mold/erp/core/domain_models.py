@@ -984,6 +984,8 @@ class EngineeringChangeDetail(Base):
     solution: Mapped[str] = mapped_column(Text)
     customer_due_affected: Mapped[bool] = mapped_column(Boolean, default=False)
     customer_evidence: Mapped[str | None] = mapped_column(Text)
+    is_minor_change: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    __table_args__ = (CheckConstraint("is_minor_change IN (0, 1)", name='engineering_change_is_minor_change'),)
 
 
 class ChangeImpact(IdentityMixin, Base):
