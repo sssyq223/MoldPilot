@@ -1,11 +1,25 @@
 """Versioned customer quotation evidence owned by the mold commercial domain."""
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agent_core.model_base import Base, IdentityMixin, J
+
+
+# 报价拒绝类别枚举
+REJECTION_CATEGORIES = [
+    "PRICE_TOO_LOW",        # 价格过低
+    "TIMELINE_IMPOSSIBLE",  # 交期不可行
+    "TECHNICAL_DIFFICULTY", # 技术难度过高
+    "CAPACITY_SHORTAGE",    # 产能不足
+    "CUSTOMER_CREDIT",      # 客户信誉问题
+    "MATERIAL_SHORTAGE",    # 材料缺货
+    "RESOURCE_CONFLICT",    # 资源冲突
+    "PROFIT_MARGIN_LOW",    # 利润率过低
+    "OTHER",                # 其他原因
+]
 
 
 class QuoteInboundRecord(IdentityMixin, Base):
@@ -101,5 +115,26 @@ class QuotationFeedback(IdentityMixin, Base):
         CheckConstraint(
             "feedback_type IN ('ACCEPTED','REJECTED','REVISION_REQUESTED','NO_RESPONSE','OTHER')",
             name="quotation_feedback_type",
+        ),
+    )
+
+
+class QuotationRejection(Base):
+    """Internal decision to reject a quotation request before sending a quote."""
+
+    __tablename__ = "quotation_rejection"
+    subject_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), primary_key=True)
+    quotation_subject_id: Mapped[str] = mapped_column(ForeignKey("business_subject.id"), index=True)
+    rejection_category: Mapped[str] = mapped_column(String(30))
+    rejection_reason: Mapped[str] = mapped_column(Text)
+    decision_date: Mapped[date] = mapped_column(Date)
+    decided_by: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    evidence: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("now()"))
+    row_version: Mapped[int] = mapped_column(Integer, server_default="1")
+    __table_args__ = (
+        CheckConstraint(
+            f"rejection_category IN ({','.join(repr(c) for c in REJECTION_CATEGORIES)})",
+            name="quotation_rejection_category_check"
         ),
     )

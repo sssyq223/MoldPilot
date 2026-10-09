@@ -299,7 +299,27 @@ def preview_quotation_form(db, user, data, run):
         "files": [{"id": blob.id, "filename": blob.filename, "sha256": blob.sha256} for blob in blobs],
         "existing_quotations": existing,
         "existing_quotations_truncated": truncated,
+        "workflow_options": workflow_options(db, user, project),
         "next_step": "补齐报价编号、版本、成本/工艺/工期、价格、交期、收款条件后再准备正式报价版本。",
+    }
+
+
+def revise_quotation_form_proposal(db, user, step_id, arguments):
+    original, run = source(db, user, step_id)
+    if original.get("kind") != "quotation_form" or original.get("action") != "quotation_form":
+        raise DomainError("TOOL_FORBIDDEN", "当前 Proposal 不是客户报价表单", 403)
+    data = parse_quotation(arguments)
+    seed = original.get("input") or {}
+    if data.project_id != seed.get("project_id") or data.project_version != seed.get("project_version"):
+        raise DomainError("TOOL_FORBIDDEN", "报价表单不能修改当前项目范围", 403)
+    if data.file_ids != seed.get("file_ids"):
+        raise DomainError("FILE_CONTEXT_INVALID", "报价资料必须沿用当前表单已锁定的附件", 403)
+    run = db.get(m.Run, db.get(m.Step, step_id).run_id)
+    _, _, display = preview_quotation(db, user, data, run)
+    return {
+        "kind": "quotation", "action": "quotation_version", "requires_approval": True,
+        "input": data.model_dump(mode="json"), "display": display,
+        "confirmation_policy": proposal_confirmation_policy(run, requires_approval=True),
     }
 
 
@@ -359,22 +379,32 @@ def source(db, user, step_id, *, for_read=False):
         raise DomainError("AUTHORIZATION_CHANGED", "授权已变化，请重新准备操作", 403)
     proposal = step.result.get("proposal")
     if step.tool not in available_tools(db, user) or step.tool not in {
-        "prepare_quotation_version", "prepare_quotation_feedback",
+        "prepare_quotation_form", "prepare_quotation_version", "prepare_quotation_feedback",
     } or not proposal:
         raise DomainError("TOOL_FORBIDDEN", "操作能力不可用", 403)
     return proposal, run
 
 
 def validate_intent(db, user, payload):
-    proposal, run = source(db, user, payload["step_id"])
-    if content_hash(proposal) != payload["proposal_hash"]:
+    original, run = source(db, user, payload["step_id"])
+    proposal = payload.get("proposal_override") or original
+    if payload.get("proposal_override"):
+        if content_hash(proposal) != payload.get("proposal_hash"):
+            raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
+        if original.get("kind") != "quotation_form" or original.get("action") != "quotation_form":
+            raise DomainError("TOOL_FORBIDDEN", "不能覆盖非报价表单 Proposal", 403)
+        if proposal.get("kind") != "quotation" or proposal.get("action") != "quotation_version":
+            raise DomainError("TOOL_FORBIDDEN", "报价表单只能转换为报价版本 Proposal", 403)
+    elif content_hash(original) != payload["proposal_hash"]:
         raise DomainError("CONFIRMATION_INVALID", "操作建议内容已变化", 409)
     if proposal["action"] == "quotation_version":
         data = parse_quotation(proposal["input"])
         _, _, display = preview_quotation(db, user, data, run)
-    else:
+    elif proposal["action"] == "quotation_feedback":
         data = parse_feedback(proposal["input"])
         _, _, display = preview_feedback(db, user, data)
+    else:
+        raise DomainError("TOOL_FORBIDDEN", "报价表单必须先补齐并生成正式报价版本 Proposal", 409)
     if content_hash(display) != content_hash(proposal["display"]):
         raise DomainError("VERSION_CONFLICT", "项目、资料或流程已变化，请重新准备", 409)
     return proposal, data, run
@@ -451,6 +481,22 @@ def proposal_status(step_id: str, user=Depends(current_user), db=Depends(get_db)
         m.HumanIntent.receipt["status"].as_string().in_(["SUBMITTED", "RECORDED"]),
     ).order_by(m.HumanIntent.created_at.desc()))
     return {"receipt": intent.receipt if intent else None}
+
+
+@router.post("/api/quotation-proposals/{step_id}/form-intent")
+def form_intent(step_id: str, payload: dict, user=Depends(current_user), db=Depends(get_db)):
+    from domain_packs.mold.erp.core.business import create_intent
+
+    revised = revise_quotation_form_proposal(db, user, step_id, payload.get("input"))
+    result = create_intent(db, user, "quotation.execute", step_id, {
+        "step_id": step_id,
+        "proposal_hash": content_hash(revised),
+        "proposal_override": revised,
+    })
+    result["display"] = revised["display"]
+    result["confirmation_policy"] = revised.get("confirmation_policy")
+    db.commit()
+    return result
 
 
 @router.post("/api/quotation-proposals/{step_id}/intent")
