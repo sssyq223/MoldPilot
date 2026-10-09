@@ -101,7 +101,9 @@ class Settings(BaseSettings):
     )
     worker_secret: str = _compatible("worker_secret", "")
     worker_scope: str = _compatible("worker_scope", _default_worker_scope(), min_length=1, max_length=160)
-    api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8000")
+    # The local launcher serves the API on 8001. Keep the fallback aligned
+    # with that contract so a worker cannot silently poll an unrelated port.
+    api_base_url: str = _compatible("api_base_url", "http://127.0.0.1:8001")
     file_backend: Literal['local','s3'] = _compatible("file_backend", "local")
     file_local_root: str = _compatible("file_local_root", ".local/files")
     file_max_bytes: int = _compatible("file_max_bytes", 20*1024*1024, ge=1024, le=50*1024*1024)

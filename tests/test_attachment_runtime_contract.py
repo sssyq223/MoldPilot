@@ -15,6 +15,13 @@ def test_local_launcher_starts_document_worker():
     assert "'-m', 'app.document_worker'" in detached
     assert "-WindowStyle Hidden" in detached
     assert "RedirectStandardError" in detached
+    assert "AGENT_API_BASE_URL = 'http://127.0.0.1:8001'" in detached
+    assert 'start "MoldPilot Web" "http://127.0.0.1:5173/"' in launcher
+
+
+def test_local_worker_api_fallback_matches_launcher_port():
+    config = (ROOT / "backend" / "app" / "config.py").read_text(encoding="utf-8")
+    assert 'api_base_url", "http://127.0.0.1:8001"' in config
 
 
 def test_sales_contract_skill_keeps_tool_choice_with_the_model():

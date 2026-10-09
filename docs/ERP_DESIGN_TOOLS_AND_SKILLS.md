@@ -1,5 +1,7 @@
 # 设计工具与技能使用说明
 
+> **设计料单审批决策（2026-09-29）**：新模、改模、备料和附图方料设计料单导入统一调用 `D:\work2\management-system` 已封装的 ERP 设计审批流程。MoldPilot 负责解析、校验、人工确认和回执展示，只展示 ERP 返回的设计审批首节点，不创建本地设计审批实例。`prepare_design_order_approval` 仅保留给明确的非料单 Agent BPM 场景。
+
 更新时间：2026-09-19
 范围：MoldPilot 当前注册的设计能力，共 **57 个工具**、**16 个技能**。
 
@@ -141,7 +143,7 @@ flowchart LR
 
 | 工具 | 触发条件 | 对话至少输入 | 实现方式 |
 |---|---|---|---|
-| `erp_design_parse_new_mold_upload` | “解析/上传新模钢料表或五金表” | 当前聊天 XLSX/XLS/CSV；类型为 `auto`、`steel`（钢料）或 `hardware`（五金）；可选设计订单子类型 | 校验附件归属和文件类型后发送给 ERP，建立 `session_id` 上传会话。解析成功不等于已导入。 |
+| `erp_design_parse_new_mold_upload` | “解析/上传新模钢料表、五金表或备料表” | 当前聊天 XLSX/XLS/CSV；类型为 `auto`、`steel`（钢料）、`hardware`（五金）或 `stock_prepare`（备料）；可选设计订单子类型 | 校验附件归属和文件类型后发送给 ERP，建立 `session_id` 上传会话。解析成功不等于已导入；附图方料由 ERP 在五金明细中识别。 |
 | `erp_design_get_drawing_status` | “图纸处理好了吗”“查上传进度” | `session_id` | 查询本人上传会话的 ERP 图纸处理状态；可要求同时返回结果。 |
 | `erp_design_get_upload_result` | “查看已解析明细” | `session_id` | 读取 ERP 解析明细和异常，供后续人工核对。 |
 | `erp_design_validate_rows` | “校验这批明细能不能导入” | `session_id`、钢料/五金类型、要校验的 `preview_rows`；可选模号 | ERP 校验图纸匹配、字段和导入条件；失败时不允许导入。 |
@@ -149,13 +151,13 @@ flowchart LR
 | `erp_design_preview_drawing` | “看图纸/预览图纸” | `session_id`、当前明细的 `drawing_resource_id` | 校验图纸属于本人上传会话，从 ERP 明细读取预览地址并复用 ERP 的 DWG/DXF 预览结果；不接受任意 URL。 |
 | `erp_design_auto_correct_rows` | “自动修正/按图纸修正/修正数量或长宽厚” | `session_id`、类型、完整 `preview_rows`；可选 `row_numbers` | 使用 ERP 返回的图纸料型、尺寸和数量整套回填。钢料修正后自动调用 ERP 核价；五金同步已审批价、附图核算价、闲置料抵扣后采购数量和喷漆待重算状态。 |
 | `erp_design_evaluate_tolerances` | “判断公差/公差档位/长宽厚允许范围/对角公差” | `session_id`；可选当前完整 `preview_rows` | 工具内部只读获取 ERP 会话的明细和公差表，一次返回方料的档位、长宽厚允许范围和对角公差；圆料、圆环料显示为不适用。 |
-| `erp_design_get_approval_config` | “这批数据会走什么审批” | `session_id` | 读取 ERP 导入前的审批配置，只读。 |
+| `erp_design_get_approval_config` | “这批数据会走什么审批”“查看设计审批节点” | `session_id` | 读取 ERP 导入前的审批配置，只读，返回 ERP 流程编码、流程名称和设计首个实际审批节点；后续节点仍由 ERP 处理。 |
 | `erp_design_rematch_no_drawing` | ERP 明确提示“历史无图”，用户要求重新匹配 | `session_id`，并明确确认 | 仅能操作当前用户的会话；向 ERP 发起重新匹配请求，随后仍需查状态，不能把请求当作图纸已归档。 |
-| `erp_design_import_new_mold` | “确认导入这批新模明细” | `session_id`、类型、已核对 `preview_rows`、交期 `YYYY-MM-DD`；可选紧急程度、原因、备注、重复导入许可 | 先在后台重新校验，只有 ERP 校验通过且用户确认导入时才发起导入。若返回重复上传提示，必须展示既有单号并取得第二次明确确认后，才传重复导入许可。ERP 回执是创建结果。 |
+| `erp_design_import_new_mold` | “确认导入这批新模明细并发起设计审批” | `session_id`、类型、已核对 `preview_rows`、交期 `YYYY-MM-DD`；可选紧急程度、原因、备注、重复导入许可 | 先在后台重新校验，只有 ERP 校验通过且宿主确认卡有效时才发起导入。ERP 创建请购并启动原生设计审批，回执包含单号、流程和设计首节点；成功不代表审批已通过。若返回重复上传提示，必须展示既有单号并取得第二次明确确认后，才传重复导入许可。 |
 | `erp_design_submit_upload_change` | “把解析后的清单提交为变更请购” | 目标会话/模号、变更类型/原因、紧急度和待提交明细；明确确认 | 把受校验的 `payload` 发送到 ERP 固定变更请购接口。 |
-| `erp_design_parse_modify_mold_upload` | “上传改模钢料/五金清单”“上传时类型选改模” | 当前聊天 XLSX/XLS/CSV；类型可选 `auto`/`steel`/`hardware` | 调 ERP `/design/upload/parse`，把 `designOrderType` 固定为 `repair_other`；不走新模解析。 |
+| `erp_design_parse_modify_mold_upload` | “上传改模钢料/五金/备料清单”“上传时类型选改模” | 当前聊天 XLSX/XLS/CSV；类型可选 `auto`/`steel`/`hardware`/`stock_prepare` | 调 ERP `/design/upload/parse`，把 `designOrderType` 固定为 `repair_other`；不走新模解析，附图方料仍由 ERP 识别。 |
 | `erp_design_get_modify_mold_approval_config` | “这批改模数据会走什么审批” | 本人改模上传会话 `session_id` | 以 `designOrderType=repair_other` 读取审批发起配置，目标流程由 ERP 返回，当前为设计修改模审批。 |
-| `erp_design_import_modify_mold` | “确认导入这批改模清单并发起审批” | `session_id`、钢料/五金类型、已核对明细、模号、交期、请购原因；可选紧急程度和备注 | 后台再次校验；确认后固定以 `repair_other`、`new_request` 导入。请购原因限客户设变、设计/加工/组立/试模/外协异常、制程改善、其他异常；重复上传需二次确认。 |
+| `erp_design_import_modify_mold` | “确认导入这批改模清单并发起设计审批” | `session_id`、钢料/五金/备料类型、已核对明细、模号、交期、请购原因；可选紧急程度和备注 | 后台再次校验；确认后固定以 `repair_other`、`new_request` 导入 ERP 原生设计修改模流程，回执只展示设计首节点。请购原因限客户设变、设计/加工/组立/试模/外协异常、制程改善、其他异常；重复上传需二次确认。 |
 
 ### 3. ERP 设计工作台查询（15 个）
 
@@ -240,7 +242,7 @@ flowchart LR
 
 用户：`明细和交期确认，按正常紧急度导入。`
 
-系统：调用导入工具并带 `confirm_import: true`。导入是否成功、创建了什么记录，以 ERP 回执为准。
+系统：先读取审批配置，展示 ERP 流程名称和设计首节点；用户明确说“导入并发起审批”后由宿主签发一次性确认凭证，再调用导入工具。导入成功表示 ERP 已创建请购并启动设计审批，是否审批通过仍以 ERP 回执为准。
 
 ### 上传时选择改模
 

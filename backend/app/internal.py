@@ -12,8 +12,38 @@ from . import tool_gateway as tools
 from .bpm import content_hash
 from .authorization import fingerprint
 from .run_events import publish_run_update
-from agent_core.run_status import (LEGACY_QUEUED, LEGACY_RUNNING, RUNNING_STATUSES,
-                                   SCOPED_QUEUED, SCOPED_RUNNING, public_run_status)
+from agent_core.run_status import (COMPOSITION_FAILED, LEGACY_QUEUED, LEGACY_RUNNING,
+                                   RUNNING_STATUSES, SCOPED_QUEUED, SCOPED_RUNNING,
+                                   public_run_status)
+
+
+COMPOSITION_ERROR_CODES = frozenset({
+    "MODEL_AUTH_FAILED",
+    "MODEL_CONNECT_TIMEOUT",
+    "MODEL_HTTP_FAILED",
+    "MODEL_NETWORK_ERROR",
+    "MODEL_OUTPUT_INVALID",
+    "MODEL_OUTPUT_TRUNCATED",
+    "MODEL_RATE_LIMITED",
+    "MODEL_READ_TIMEOUT",
+})
+
+
+def _completed_evidence_ids(checkpoint, steps):
+    owned = {step.id for step in steps}
+    return [evidence_id for evidence_id in checkpoint.get("evidence_ids", [])
+            if evidence_id in owned]
+
+
+def _is_composition_failure(checkpoint, code, evidence_ids):
+    """Keep completed business evidence when only the terminal prose call failed."""
+    if code not in COMPOSITION_ERROR_CODES or not checkpoint.get("finalizing"):
+        return False
+    if checkpoint.get("pending") or not evidence_ids:
+        return False
+    required = set(checkpoint.get("required_evidence_tools") or [])
+    completed = set(checkpoint.get("evidence_tools") or [])
+    return not required or required <= completed
 
 
 def worker_auth(request: Request):
@@ -45,7 +75,7 @@ def execute_step(db, run_id, data):
     prior = db.scalar(select(Step).where(Step.run_id == run.id, Step.sequence == sequence))
     if prior:
         if prior.request_hash != h: raise DomainError("STEP_CONFLICT", "同一步骤内容发生变化", 409)
-        if data["key"] not in tools.available_tools(db, user):
+        if data["key"] not in tools.available_tools(db, user, include_writes=True):
             raise DomainError("TOOL_FORBIDDEN", "工具授权已变化", 403)
         db.commit()
         publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
@@ -98,8 +128,13 @@ def conversation_history(db, user, run, current_authorization_hash, allowed_tool
         if result:
             assistant = {key: result[key] for key in (
                 'response_kind', 'summary', 'suggestions', 'message', 'error_code',
-                'proposal_decision',
+                'proposal_decision', 'composition_failed',
             ) if key in result}
+            if result.get('composition_failed') and isinstance(result.get('evidence'), list):
+                assistant['completed_tools'] = [
+                    item['tool'] for item in result['evidence']
+                    if isinstance(item, dict) and isinstance(item.get('tool'), str)
+                ][:12]
             if isinstance(assistant.get('summary'), str):
                 assistant['summary'] = assistant['summary'][:400]
             if isinstance(assistant.get('message'), str):
@@ -208,7 +243,11 @@ def install(app):
         run.status = SCOPED_RUNNING if scoped else LEGACY_RUNNING
         run.lease_epoch, run.lease_until = run.lease_epoch+1, now()+timedelta(seconds=120)
         from .files import conversation_files, run_files
-        available_tools = tools.available_tools(db, user)
+        # ERP design write tools are proposal-only at this boundary. They must
+        # be visible to the Harness so it can create a confirmation card; the
+        # trusted confirmation endpoint is still the only path that executes
+        # the underlying ERP mutation.
+        available_tools = tools.available_tools(db, user, include_writes=True)
         context = {
             **run.checkpoint,
             "recent_requests": recent_requests(db, user, run),
@@ -220,7 +259,7 @@ def install(app):
             "files": run_files(db, user, run),
             "id": run.id, "epoch": run.lease_epoch, "prompt": run.prompt,
             "tools": [tools.tool_schema(k) for k in available_tools],
-            "skills": tools.skill_context(db, user),
+            "skills": tools.skill_context(db, user, include_writes=True),
         }
         db.commit()
         publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
@@ -309,8 +348,27 @@ def install(app):
                        "MODEL_RATE_LIMITED": "模型服务暂时繁忙，本次任务未完成，请稍后重新发起。",
                        "MODEL_OUTPUT_TRUNCATED": "模型回复不完整，本次任务未完成，请缩小问题范围后重试。",
                        "CONTEXT_BUDGET_EXCEEDED": "模型请求超过当前配置的安全上下文预算。请检查模型窗口配置及工具返回内容；附件大小不一定是原因。"}.get(code, "任务执行未完成，可以核对配置和执行记录后重试")
-            run.status = "FAILED"; run.result = {"message": message, "error_code": code}
-            run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
+            checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+            steps = list(db.scalars(select(Step).where(
+                Step.run_id == run.id
+            ).order_by(Step.sequence)))
+            evidence_ids = _completed_evidence_ids(checkpoint, steps)
+            if _is_composition_failure(checkpoint, code, evidence_ids):
+                run.status = COMPOSITION_FAILED
+                run.result = {
+                    "message": "业务工具已完成并保留结果，但模型未能生成最终说明。可以直接查看工具结果，或仅重新生成说明。",
+                    "error_code": code,
+                    "evidence_ids": evidence_ids,
+                    "evidence": [
+                        {"id": step.id, "tool": step.tool, **step.result}
+                        for step in steps if step.id in evidence_ids
+                    ],
+                    "composition_failed": True,
+                }
+            else:
+                run.status = "FAILED"
+                run.result = {"message": message, "error_code": code}
+            run.checkpoint = {**checkpoint, "completed_at": now().isoformat()}
             run.lease_until = None; db.commit()
             publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
         return {"ok": True}

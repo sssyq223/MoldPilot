@@ -311,6 +311,14 @@ export type ErpDesignImportReceipt = {
   requestNo: string
   message: string
   importedAt: string
+  requestId?: string
+  processCode?: string
+  processName?: string
+  currentNodeName?: string
+  currentApproverNames?: string[]
+  approvalSteps?: Array<{nodeName: string; approverNames: string[]}>
+  approvalStatus?: string
+  workflowInstanceId?: string
 }
 
 export type ErpDesignParameterResult = {
@@ -511,12 +519,43 @@ export function normalizeErpDesignImportReceipt(value: unknown): ErpDesignImport
   const source = record(value)
   const sessionId = Number(source?.sessionId ?? source?.session_id ?? 0)
   if (!Number.isInteger(sessionId) || sessionId < 1) return null
-  return {
+  const receipt: ErpDesignImportReceipt = {
     sessionId,
     requestNo: String(source?.requestNo ?? source?.request_no ?? '').trim(),
     message: String(source?.message ?? '').trim(),
     importedAt: String(source?.importedAt ?? source?.imported_at ?? ''),
   }
+  const fields: Array<[keyof ErpDesignImportReceipt, string[]]> = [
+    ['requestId', ['requestId', 'request_id']],
+    ['processCode', ['processCode', 'process_code']],
+    ['processName', ['processName', 'process_name']],
+    ['currentNodeName', ['currentNodeName', 'current_node_name']],
+    ['approvalStatus', ['approvalStatus', 'approval_status']],
+    ['workflowInstanceId', ['workflowInstanceId', 'workflow_instance_id']],
+  ]
+  for (const [field, aliases] of fields) {
+    const candidate = aliases.map(alias => source?.[alias]).find(item => item != null && String(item).trim())
+    if (candidate != null) receipt[field] = String(candidate).trim() as never
+  }
+  const currentApproverNames = source?.currentApproverNames ?? source?.current_approver_names
+  if (Array.isArray(currentApproverNames)) {
+    receipt.currentApproverNames = [...new Set(currentApproverNames.map(item => String(item || '').trim()).filter(Boolean))]
+  }
+  const approvalSteps = source?.approvalSteps ?? source?.approval_steps
+  if (Array.isArray(approvalSteps)) {
+    receipt.approvalSteps = approvalSteps.flatMap((item: any) => {
+      const nodeName = String(item?.nodeName ?? item?.node_name ?? '').trim()
+      if (!nodeName) return []
+      const names = item?.approverNames ?? item?.approver_names
+      return [{
+        nodeName,
+        approverNames: Array.isArray(names)
+          ? [...new Set(names.map((name: unknown) => String(name || '').trim()).filter(Boolean))]
+          : [],
+      }]
+    })
+  }
+  return receipt
 }
 
 export function normalizeErpDesignPreview(
@@ -574,7 +613,7 @@ export function erpDesignSessionFromTool(item: any): ErpDesignPreviewSession | n
 }
 
 export function erpDesignSessionFromRun(run: any): ErpDesignPreviewSession | null {
-  if (String(run?.status || '') !== 'SUCCEEDED') return null
+  if (!['SUCCEEDED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
   // Status/result follow-ups are shared by both ERP upload flows and may not
   // repeat the business type. Keep the original parser receipt as the
@@ -606,7 +645,7 @@ export function erpDesignToleranceFromRun(run: any): ErpDesignPreviewSession | n
   // ERP tool evidence remains valid when only the later model-summary turn
   // fails. Keep cancelled/running tasks hidden, but do not discard a completed
   // read receipt merely because the provider timed out during final wording.
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const tolerance = erpDesignToleranceFromTool(trace[index])
@@ -656,7 +695,7 @@ export function erpDesignTechnicalRequirementsFromTool(
 export function erpDesignTechnicalRequirementsFromRun(
   run: any,
 ): ErpDesignTechnicalRequirements | null {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const result = erpDesignTechnicalRequirementsFromTool(trace[index])
@@ -695,7 +734,7 @@ export function erpDesignParametersFromTool(item: any): ErpDesignParameterResult
 }
 
 export function erpDesignParametersFromRun(run: any): ErpDesignParameterResult | null {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return null
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return null
   const trace = Array.isArray(run?.trace) ? run.trace : []
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const result = erpDesignParametersFromTool(trace[index])
@@ -707,7 +746,7 @@ export function erpDesignParametersFromRun(run: any): ErpDesignParameterResult |
 // Combine selected projections only within one authoritative upload session.
 // Row positions come from ERP; names/codes may repeat and are not join keys.
 export function erpDesignParameterTablesFromRun(run: any): ErpDesignParameterResult[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return []
   const sessions = new Map<number, ErpDesignParameterResult>()
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const result = erpDesignParametersFromTool(item)
@@ -787,7 +826,7 @@ export function erpDesignDrawingsFromTool(item: any): ErpDesignDrawingResult | n
 }
 
 export function erpDesignDrawingsFromRun(run: any): ErpDesignDrawingResult[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status || ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status || ''))) return []
   const sessions = new Map<string, ErpDesignDrawingResult>()
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const result = erpDesignDrawingsFromTool(item)
@@ -834,7 +873,9 @@ export function erpDesignPreviewUrl(session: ErpDesignPreviewSession): string {
 }
 
 export function erpDesignSheetLabel(sheetType: string): string {
-  return sheetType === 'hardware' ? '五金清单' : '钢料清单'
+  if (sheetType === 'hardware') return '五金清单'
+  if (sheetType === 'stock_prepare') return '备料清单'
+  return '钢料清单'
 }
 
 export function erpDesignUploadStatusLabel(sheetType: string, imported = false): string {

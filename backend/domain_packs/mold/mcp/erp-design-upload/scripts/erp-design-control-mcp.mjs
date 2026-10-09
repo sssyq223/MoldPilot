@@ -21,7 +21,7 @@ const tools = [
     description: "Upload a new-mold design sheet and let ERP identify whether it is steel or hardware using ERP's existing parsers.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       filePath: { type: "string", minLength: 1 },
-      sheetType: { type: "string", enum: ["auto", "steel", "hardware"] },
+      sheetType: { type: "string", enum: ["auto", "steel", "hardware", "stock_prepare"] },
       designOrderSubType: { type: ["string", "null"] }
     }, required: ["filePath"] }
   },
@@ -30,7 +30,7 @@ const tools = [
     description: "Upload a modify-mold design purchase sheet with ERP designOrderType fixed to repair_other and let ERP identify steel or hardware.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       filePath: { type: "string", minLength: 1 },
-      sheetType: { type: "string", enum: ["auto", "steel", "hardware"] }
+      sheetType: { type: "string", enum: ["auto", "steel", "hardware", "stock_prepare"] }
     }, required: ["filePath"] }
   },
   {
@@ -45,7 +45,7 @@ const tools = [
     description: "Create an ERP modify-mold design request from validated rows using the repair_other business type and its dedicated approval flow.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       sessionId: { type: "integer", minimum: 1 },
-      sheetType: { type: "string", enum: ["steel", "hardware"] },
+      sheetType: { type: "string", enum: ["steel", "hardware", "stock_prepare"] },
       moldCode: { type: ["string", "null"] },
       previewRows: { type: "array", minItems: 1, maxItems: 1000, items: { type: "object" } },
       urgencyLevel: { type: "string", enum: ["normal", "important", "urgent"] },
@@ -496,7 +496,7 @@ async function callTool(name, args) {
   }
   if (name === "import_modify_mold_design") {
     positiveInteger(args?.sessionId, "sessionId");
-    if (!["steel", "hardware"].includes(args?.sheetType)) throw new Error("sheetType must be steel or hardware.");
+    if (!["steel", "hardware", "stock_prepare"].includes(args?.sheetType)) throw new Error("sheetType must be steel, hardware, or stock_prepare.");
     if (!Array.isArray(args?.previewRows) || args.previewRows.length < 1) throw new Error("previewRows must contain at least one row.");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(args?.expectedDate || "")) throw new Error("expectedDate must use YYYY-MM-DD.");
     if (!MODIFY_MOLD_PURCHASE_REASONS.includes(args?.purchaseReason)) throw new Error("purchaseReason is invalid for modify-mold upload.");

@@ -796,7 +796,12 @@ def _is_design_upload_import_continuation(context):
             continue
         assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
         text = " ".join(str(assistant.get(key) or "") for key in ("summary", "message", "content"))
-        if not text.strip():
+        completed_tools = set(assistant.get("completed_tools") or [])
+        completed_parse = bool(completed_tools & {
+            "erp_design_parse_new_mold_upload",
+            "erp_design_parse_modify_mold_upload",
+        })
+        if not text.strip() and not completed_parse:
             return False
         normalized = _compact_intent_text(text)
         has_parse_receipt = any(marker in normalized for marker in (
@@ -804,7 +809,8 @@ def _is_design_upload_import_continuation(context):
         ))
         user = turn.get("user") if isinstance(turn.get("user"), dict) else {}
         has_attachment = bool(user.get("attachments"))
-        if has_parse_receipt and (has_attachment or "上传会话" in normalized or "会话卡片" in normalized):
+        if ((has_parse_receipt or completed_parse)
+                and (has_attachment or "上传会话" in normalized or "会话卡片" in normalized)):
             return True
         # Only the immediately preceding assistant turn can establish this
         # continuation; older uploads must not activate write tools here.
@@ -812,8 +818,60 @@ def _is_design_upload_import_continuation(context):
     return False
 
 
+def _is_mold_repair_upload_confirmation(context):
+    """Recognize the confirmation turn for an ERP DXF repair upload.
+
+    The first turn may only prepare the upload request.  When the user then
+    replies with a short confirmation, the previous assistant receipt and the
+    same-conversation DXF attachment establish which existing ERP action is
+    being confirmed.  This keeps the write tool gated by the prior receipt
+    instead of treating every standalone ``确认上传`` as authorization.
+    """
+    prompt = str(context.get("prompt") or "").strip()
+    normalized_prompt = _compact_intent_text(prompt)
+    if not any(term in normalized_prompt for term in (
+            "确认上传", "确认修模", "确认改模", "上传吧", "继续上传")):
+        return False
+    if any(term in normalized_prompt for term in (
+            "不要上传", "不上传", "取消上传", "暂不上传", "取消")):
+        return False
+    if not any(
+            str(file.get("filename") or file.get("name") or "").lower().endswith(".dxf")
+            and re.match(r"^m\d{6}-p", str(file.get("filename") or file.get("name") or "").lower())
+            for file in _attachment_candidates(context)
+            if isinstance(file, dict)):
+        return False
+
+    # Only the immediately preceding assistant receipt establishes this
+    # continuation.  Older unrelated messages must not activate a write.
+    for turn in reversed(context.get("conversation_history") or []):
+        if not isinstance(turn, dict):
+            continue
+        assistant = turn.get("assistant") if isinstance(turn.get("assistant"), dict) else {}
+        text = " ".join(str(assistant.get(key) or "")
+                        for key in ("summary", "message", "content"))
+        if not text.strip():
+            continue
+        normalized = _compact_intent_text(text)
+        has_explicit_upload_receipt = any(marker in normalized for marker in (
+            "上传修改图纸", "上传改模图纸", "上传修模图纸", "上传修模改模图纸",
+            "确认您要上传的图纸", "请确认您要上传的图纸",
+        ))
+        has_confirmation_language = "确认" in normalized and "上传" in normalized
+        has_drawing_context = "图纸" in normalized and any(
+            marker in normalized for marker in ("修模", "改模", "待您确认", "待确认")
+        )
+        return bool(
+            (has_explicit_upload_receipt or has_confirmation_language)
+            and has_drawing_context
+        )
+    return False
+
+
 def _business_tool_activation_allowed(context):
     current_prompt = context.get("prompt") or ""
+    if _is_mold_repair_upload_confirmation(context):
+        return True
     # A short affirmative answer to the parser's own confirmation is a
     # continuation of that attachment request. It must retain ToolSearch, but
     # ordinary greetings in an old business conversation must stay tool-free.
@@ -1114,6 +1172,89 @@ def _is_write_capable_tool(name, tool_annotations=None):
     # Direct unit tests and older MCP providers may not carry annotations. The
     # conventional proposal prefix remains a safe conservative fallback.
     return str(name).startswith("prepare_")
+
+
+def _trusted_host_follow_up(result, source_tool, all_tools, tool_groups,
+                            tool_annotations=None):
+    """Build one domain-declared read continuation after a tool result.
+
+    Some deterministic readers start asynchronous work and return the exact
+    next read needed to describe the outcome.  Let the trusted domain adapter
+    declare that continuation instead of making the model rediscover an opaque
+    session handle.  The target must still be an authorized registered tool,
+    read-only, and owned by the same active skill as the source tool.  Invalid
+    declarations are ignored rather than widening the model's capabilities.
+    """
+    if not isinstance(result, dict):
+        return None
+    continuation = result.get("host_follow_up")
+    if not isinstance(continuation, dict):
+        return None
+    name = continuation.get("tool")
+    arguments = continuation.get("arguments", {})
+    if (not isinstance(name, str) or not name
+            or name not in all_tools
+            or not isinstance(arguments, dict)
+            or _is_write_capable_tool(name, tool_annotations)):
+        return None
+
+    owner_tools = set()
+    for group in tool_groups:
+        group_tools = {
+            *group.get("tools", []),
+            *group.get("required", []),
+            *group.get("optional", []),
+        }
+        if source_tool in group_tools:
+            owner_tools.update(group_tools)
+    if name not in owner_tools:
+        return None
+
+    canonical = json.dumps(arguments, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    call_id = "host_follow_up_" + hashlib.sha256(
+        (source_tool + "\n" + name + "\n" + canonical).encode("utf-8")
+    ).hexdigest()[:20]
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": canonical},
+    }
+
+
+def _trusted_host_completion(result, source_tool, tool_annotations=None):
+    """Validate a deterministic terminal response declared by a read tool.
+
+    Domain adapters may already know the exact user-facing outcome of a
+    deterministic read/preflight. Requiring a second provider call merely to
+    wrap that outcome in the Harness response protocol adds latency and can
+    turn a successful business read into a model timeout. Keep the shortcut
+    fail-closed: only explicitly read-only tools can declare it, and the
+    Harness supplies the authoritative evidence ids itself.
+    """
+    annotation = (tool_annotations or {}).get(source_tool) or {}
+    if annotation.get("readOnlyHint") is not True or not isinstance(result, dict):
+        return None
+    completion = result.get("host_completion")
+    if not isinstance(completion, dict) or completion.get("terminal") is not True:
+        return None
+    kind = completion.get("response_kind")
+    summary = completion.get("summary")
+    suggestions = completion.get("suggestions", [])
+    if (kind not in {"BUSINESS", "CLARIFICATION"}
+            or not isinstance(summary, str)
+            or not summary.strip()
+            or len(summary.strip()) > 400
+            or not isinstance(suggestions, list)
+            or len(suggestions) > 6
+            or not all(isinstance(item, str) and item.strip() and len(item.strip()) <= 200
+                       for item in suggestions)):
+        return None
+    return {
+        "response_kind": kind,
+        "summary": summary.strip(),
+        "suggestions": [item.strip() for item in suggestions],
+    }
 
 
 def _group_prompt_relevance(current_prompt, group, deferred_tools):
@@ -1522,19 +1663,28 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     activated_skill_keys = set(context.get("activated_skill_keys", [])) & known_skill_keys
     activated_skill_keys.update(trusted_skill_keys)
     trusted_skill_activation = bool(trusted_skill_groups) and (not proposal_resolution or post_proposal_continuation)
+    mold_repair_upload_confirmation = _is_mold_repair_upload_confirmation(context)
     business_tools_allowed = bool(all_tools) and (
         not proposal_resolution or post_proposal_continuation or design_upload_import_continuation
+        or mold_repair_upload_confirmation
     ) and (
         _business_tool_activation_allowed(context)
         or design_upload_import_continuation
+        or mold_repair_upload_confirmation
         or trusted_skill_activation
     )
     auto_activation_allowed = bool(
         _business_tool_auto_activation_allowed(context) or trusted_skill_activation
     )
     formal_action_requested = bool(
-        _has_formal_action_intent(context.get("prompt", ""))
-        and _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
+        (
+            _has_formal_action_intent(context.get("prompt", ""))
+            or mold_repair_upload_confirmation
+        )
+        and (
+            _contains_any(context.get("prompt", ""), ALL_BUSINESS_OBJECT_HINTS)
+            or mold_repair_upload_confirmation
+        )
     )
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
     design_upload_route = _design_upload_route(context)
@@ -1652,6 +1802,12 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     active_skill_keys.add(group["key"])
             if active_tool_names:
                 suppress_tool_search = True
+            # The latest owned upload session is a host concern. Start the
+            # import preflight with the empty-argument result reader so the
+            # model never has to reproduce an opaque nullable session id.
+            if "erp_design_get_upload_result" in active_tool_names:
+                host_auto_invoke_candidates.add("erp_design_get_upload_result")
+                required_evidence_tools.add("erp_design_get_upload_result")
         if (design_attachment_upload_requested
                 and design_upload_route in {"new", "modify", "form"}):
             # A design-list upload has one ERP parser entry point for the
@@ -1755,10 +1911,28 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
             active_tool_names.update(selected)
             if selected or group_already_active:
                 load_selected_skills(selected, [group["key"]])
-            if (group.get("requires_tool_evidence")
+            group_requires_evidence = bool(group.get("requires_tool_evidence"))
+            if (design_attachment_upload_requested
+                    and design_upload_route in {"new", "modify", "form"}
+                    and group["key"] in DESIGN_UPLOAD_SKILL_KEYS):
+                # A generic upload may expose both ERP parser schemas so the
+                # staged form can retain the type choice.  Only the route chosen
+                # as this turn's parser entry point is mandatory; the alternative
+                # parser is an available option, not another required read.
+                group_requires_evidence = group["key"] in set(authorized_design_groups)
+            if (group_requires_evidence
                     and (not group.get("host_auto_invoke_current_attachment_only")
                          or bool(context.get("files")))):
-                required_evidence_tools.update(group.get("required") or selected)
+                # Evidence is required only from tools actually activated for
+                # this request.  ``required`` is the skill's complete workflow
+                # inventory and can include later status/result/validation
+                # steps; treating all of it as mandatory makes a narrow parse
+                # request fan out into unrelated reads.
+                required_evidence_tools.update(selected)
+                if group_already_active:
+                    required_evidence_tools.update(
+                        set(group["tools"]) & active_tool_names
+                    )
             host_auto_queries = [str(alias).strip().lower()
                                  for alias in group.get("host_auto_invoke_queries", [])
                                  if str(alias).strip()]
@@ -1790,7 +1964,14 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 aliases = [str(alias).strip().lower()
                            for alias in group.get("action_activation_queries", [])
                            if str(alias).strip()]
-                if not aliases or not any(alias in normalized_prompt for alias in aliases):
+                action_alias_match = any(alias in normalized_prompt for alias in aliases)
+                repair_upload_confirmation_match = bool(
+                    mold_repair_upload_confirmation
+                    and group.get("key") == "erp_design_mold_repair"
+                    and "erp_design_upload_mold_repair_drawing"
+                    in set(group.get("action_activation_tools", []))
+                )
+                if not action_alias_match and not repair_upload_confirmation_match:
                     continue
                 selected = set(group.get("action_activation_tools", [])) & set(all_tools)
                 if not selected:
@@ -1922,6 +2103,10 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         if isinstance(instruction, str) and instruction.strip()
     ]
     activation_grace = bool(context.get('activation_grace', False))
+    host_completion = (
+        dict(context.get('host_completion'))
+        if isinstance(context.get('host_completion'), dict) else None
+    )
 
     # Some authoritative readers need no model-supplied arguments: their
     # domain adapter resolves the current conversation object server-side.
@@ -1931,7 +2116,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     # boundary and fresh-run checks keep this generic mechanism fail-closed.
     if (turn == 0
             and not pending
-            and not formal_action_requested
+            and (not formal_action_requested or design_upload_import_continuation)
             and not evidence_ids
             and not attempted_tools
             and not executed_tool_signatures
@@ -2017,6 +2202,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         gateway.checkpoint({"messages": messages, "turn": turn, "tool_count": count,
                             "evidence_ids": evidence_ids, "deadline": deadline,
                             "evidence_tools": sorted(evidence_tools),
+                            "required_evidence_tools": sorted(required_evidence_tools),
                             "attempted_tools": sorted(attempted_tools),
                             "pending": pending, "pending_index": pending_index,
                             'phase': phase, 'model_started_at': model_started_at,
@@ -2037,6 +2223,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             'streaming_model_message': streaming_model_message,
                             'next_model_instructions': next_model_instructions,
                             'activation_grace': activation_grace,
+                            'host_completion': host_completion,
                             'context_usage': context_usage,
                             'context_compactions': compactions})
 
@@ -2075,6 +2262,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         if pending:
             check_budget()
             batch_allowed_names = {_tool_name(t) for t in active_tools()}
+            scheduled_follow_up = None
             for call in pending[pending_index:]:
                 gateway.check()
                 check_budget()
@@ -2108,7 +2296,20 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                     load_selected_skills(candidates, matched_groups)
                     for group in tool_groups:
                         if group.get("key") in matched_groups and group.get("requires_tool_evidence"):
-                            required_evidence_tools.update(group.get("required") or group.get("tools") or [])
+                            # ToolSearch activates only the tools returned for
+                            # this query. A skill can also contain later
+                            # workflow readers (for example upload result and
+                            # validation after attachment parsing); requiring
+                            # the whole skill here makes a narrow read fan out
+                            # after its authoritative evidence already exists.
+                            group_tools = {
+                                *group.get("tools", []),
+                                *group.get("required", []),
+                                *group.get("optional", []),
+                            }
+                            required_evidence_tools.update(
+                                name for name in candidates if name in group_tools
+                            )
                     # Persist only the selected skill keys. ``model_messages``
                     # rebuilds their compact, authorized instructions on every
                     # provider call. Persisting the full bodies here duplicated
@@ -2154,6 +2355,26 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                 'status': 'success',
                                 'evidence_id': evidence_id,
                             }
+                    candidate_completion = _trusted_host_completion(
+                        result, name, tool_annotations
+                    )
+                    # The latest business read owns terminal wording. If a
+                    # declared continuation does not return a valid contract,
+                    # discard an earlier one and use the normal model path
+                    # instead of finishing with stale pre-continuation facts.
+                    host_completion = candidate_completion
+                    if scheduled_follow_up is None and not finalizing:
+                        candidate = _trusted_host_follow_up(
+                            result, name, all_tools, tool_groups, tool_annotations
+                        )
+                        if candidate is not None:
+                            follow_up_name = candidate["function"]["name"]
+                            follow_up_signature, _ = tool_signature(candidate)
+                            if follow_up_signature not in executed_tool_signatures:
+                                active_tool_names.add(follow_up_name)
+                                load_selected_skills([follow_up_name])
+                                required_evidence_tools.add(follow_up_name)
+                                scheduled_follow_up = candidate
                 proposal_result = isinstance(result, dict) and result.get('source') == 'agent_proposal'
                 if proposal_result:
                     # A Proposal is a confirmation boundary, not an ordinary
@@ -2197,15 +2418,53 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 save()
                 if proposal_result:
                     break
+            if scheduled_follow_up is not None and not finalizing:
+                pending, pending_index = [scheduled_follow_up], 0
+                messages.append({
+                    "role": "assistant",
+                    "content": "正在读取本次工具结果声明的后续业务状态。",
+                    "tool_calls": pending,
+                })
+                save()
+                continue
             pending, pending_index = [], 0
+            successful_action_evidence = {
+                outcome.get('evidence_id') for outcome in action_outcomes.values()
+                if outcome.get('status') == 'success' and outcome.get('evidence_id')
+            }
+            if (host_completion is not None
+                    and required_evidence_tools <= evidence_tools
+                    and not awaiting_proposal
+                    and not proposal_resolution
+                    and not (formal_action_requested
+                             and host_completion.get('response_kind') == 'BUSINESS'
+                             and not successful_action_evidence)):
+                finalizing = True
+                phase = 'COMPLETED'
+                result = {
+                    **host_completion,
+                    'evidence_ids': list(dict.fromkeys(evidence_ids)),
+                }
+                streaming_model_message = None
+                save()
+                gateway.finish(result)
+                return result
             # A narrowly auto-activated authoritative reader has already
             # answered the user's read-only question. Close the tool stage
             # before asking for the final envelope so providers cannot repeat
             # the same call, hallucinate a similarly named tool, or emit a
             # truncated second set of arguments. Formal action flows still
-            # continue because their read evidence is only a prerequisite.
+            # continue because their read evidence is only a prerequisite. A
+            # fresh design-list attachment is different: even when the user says
+            # “导入并发起审批”, this turn is the ERP parse/preflight boundary and
+            # no import tool is exposed yet. Close after its declared status read
+            # so the model cannot repeat the reader with invented arguments.
+            design_upload_parse_preflight = bool(
+                design_attachment_upload_requested
+                and not design_upload_import_continuation
+            )
             if (not finalizing
-                    and not formal_action_requested
+                    and (not formal_action_requested or design_upload_parse_preflight)
                     and required_evidence_tools
                     and required_evidence_tools <= evidence_tools):
                 finalizing = True

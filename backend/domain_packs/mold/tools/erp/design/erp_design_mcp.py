@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from base64 import b64decode
 from copy import deepcopy
 from datetime import date
@@ -42,8 +43,8 @@ _ENV_FILE = _RUNTIME_ROOT / ".env"
 _SERVER_FILE = _RUNTIME_ROOT / "node_modules" / "erp-design-upload-mcp" / "scripts" / "erp-design-upload-mcp.mjs"
 _CONTROL_SERVER_FILE = _RUNTIME_ROOT / "scripts" / "erp-design-control-mcp.mjs"
 _SESSION_ACTION = "erp_design_mcp.parsed"
-_SHEET_TYPES = Literal["steel", "hardware"]
-_PARSE_SHEET_TYPES = Literal["auto", "steel", "hardware"]
+_SHEET_TYPES = Literal["steel", "hardware", "stock_prepare"]
+_PARSE_SHEET_TYPES = Literal["auto", "steel", "hardware", "stock_prepare"]
 _MODIFY_MOLD_PURCHASE_REASON = Literal[
     "customer_change",
     "design_abnormal",
@@ -152,20 +153,20 @@ TOOL_SPECS = {
         "permission": "design_route.create",
     },
     "erp_design_get_approval_config": {
-        "description": "读取 ERP 为新模设计上传会话返回的审批发起配置；只读。",
+        "description": "读取 ERP 为设计料单上传会话返回的设计部门审批发起配置；只读。返回 ERP 流程编码、流程名称和首个设计审批节点，不由 Agent 自行决定审批人或节点。",
         "permission": "design_route.read",
     },
     "erp_design_get_modify_mold_approval_config": {
-        "description": "读取 ERP 为修模改模清单上传会话返回的“设计修改模审批”发起配置；业务类型固定为 repair_other，只读。",
+        "description": "读取 ERP 为修模改模设计清单返回的设计部门审批发起配置；业务类型固定为 repair_other，只读，后续流程由 ERP 继续推进。",
         "permission": "design_route.read",
     },
     "erp_design_import_new_mold": {
-        "description": "在用户明确确认后，将已校验的新模设计明细导入 ERP 并创建 ERP 请购/审批数据；若 ERP 提示重复上传，须再次取得用户确认后才可传 allow_duplicate=true。",
+        "description": "在宿主完成人工确认后，将已校验的新模设计明细导入 ERP 并启动 ERP 原生设计部门审批；回执只表示请购和设计审批实例已创建，不表示审批通过。若 ERP 提示重复上传，须再次取得用户确认后才可传 allow_duplicate=true。",
         "permission": "design_route.execute",
         "write": True,
     },
     "erp_design_import_modify_mold": {
-        "description": "在用户明确确认后，将已校验的修模改模设计清单以 repair_other 类型导入 ERP 并发起设计修改模审批；请购原因和交期必填，重复上传必须再次确认。",
+        "description": "在宿主完成人工确认后，将已校验的修模改模设计清单以 repair_other 类型导入 ERP 并启动 ERP 设计修改模审批；回执只表示设计审批实例已创建，请购原因和交期必填，重复上传必须再次确认。",
         "permission": "design_route.execute",
         "write": True,
     },
@@ -190,7 +191,7 @@ READ_TOOL_MAP = {
     "erp_design_get_mold_repair_processor_response": "get_erp_mold_repair_processor_response",
 }
 TOOL_SPECS.update({
-    "erp_design_query_orders": {"description": "查询 ERP 设计订单及其当前状态。", "permission": "design_route.read"},
+    "erp_design_query_orders": {"description": "查询 ERP 设计订单及其当前状态；query 中传 keyword（模具号/订单号）和 sourceType=steel（钢料）或 sourceType=hardware（五金）。", "permission": "design_route.read"},
     "erp_design_query_drawing_versions": {"description": "查询指定图号、零件号或模具号的 ERP 图纸版本主线和发布状态；图纸目标不明确时必须先追问，不能无条件查询全部版本。", "permission": "design_route.read"},
     "erp_design_query_bom": {"description": "查询 ERP BOM 或物料清单明细。", "permission": "design_route.read"},
     "erp_design_query_bom_report": {"description": "查询 ERP BOM/物料清单汇总、物料、采购进度或待采购报表。", "permission": "design_route.read"},
@@ -468,17 +469,74 @@ class ModifyMoldImportInput(RowsInput):
 
 
 class QueryInput(StrictModel):
-    query: dict = Field(default_factory=dict, max_length=30)
+    query: dict = Field(
+        default_factory=dict,
+        max_length=30,
+        description="ERP 设计订单 query 支持 keyword（模具号/订单号）、sourceType（steel=钢料，hardware=五金）、status、pageNum、pageSize。",
+    )
 
     @model_validator(mode="before")
     @classmethod
     def normalize_string_query(cls, value):
-        if not isinstance(value, dict) or not isinstance(value.get("query"), str):
+        if not isinstance(value, dict):
             return value
-        mold_number = value["query"].strip()
-        if not mold_number:
-            return value
-        return {**value, "query": {"moldNo": mold_number}}
+        query_value = value.get("query")
+        if isinstance(query_value, str):
+            mold_number = query_value.strip()
+            if mold_number:
+                query = {"moldNo": mold_number}
+                for label, source_type in (("钢料", "steel"), ("钢材", "steel"), ("五金", "hardware"), ("标准件", "hardware")):
+                    if label in mold_number:
+                        query["sourceType"] = source_type
+                        query["moldNo"] = re.sub(rf"的?{re.escape(label)}", "", mold_number).strip()
+                        break
+                value = {**value, "query": query}
+        source_type = value.get("sourceType") or value.get("source_type")
+        if source_type:
+            value = {
+                **value,
+                "query": {**(value.get("query") if isinstance(value.get("query"), dict) else {}), "sourceType": source_type},
+            }
+            value.pop("sourceType", None)
+            value.pop("source_type", None)
+        return value
+
+
+_DESIGN_ORDER_SOURCE_TYPE_ALIASES = {
+    "steel": "steel", "steel_plate": "steel", "steel_material": "steel",
+    "钢料": "steel", "钢材": "steel", "钢": "steel",
+    "hardware": "hardware", "hardware_standard": "hardware",
+    "五金": "hardware", "标准件": "hardware",
+}
+
+
+def _normalize_design_order_query(query: dict) -> dict:
+    """Map conversational material wording to the ERP order-list filters."""
+    normalized = dict(query or {})
+    if not str(normalized.get("keyword") or "").strip():
+        for alias in ("moldNo", "mold_no", "moldCode", "mold_code", "orderNo", "order_no"):
+            candidate = str(normalized.get(alias) or "").strip()
+            if candidate:
+                normalized["keyword"] = candidate
+                break
+    if not str(normalized.get("sourceType") or "").strip():
+        for alias in (
+            "source_type", "materialType", "material_type", "materialCategory",
+            "material_category", "sheetType", "sheet_type", "type", "category",
+        ):
+            candidate = str(normalized.get(alias) or "").strip()
+            if candidate:
+                normalized["sourceType"] = _DESIGN_ORDER_SOURCE_TYPE_ALIASES.get(
+                    candidate.lower(), candidate
+                )
+                break
+    for alias in (
+        "moldNo", "mold_no", "moldCode", "mold_code", "orderNo", "order_no",
+        "source_type", "materialType", "material_type", "materialCategory",
+        "material_category", "sheetType", "sheet_type", "type", "category",
+    ):
+        normalized.pop(alias, None)
+    return normalized
 
 
 class DrawingVersionQueryInput(StrictModel):
@@ -1011,6 +1069,42 @@ _INPUTS = {
 
 
 def tool_schema(key: str) -> dict:
+    if key == "erp_design_query_orders":
+        parameters = {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "object",
+                    "additionalProperties": {"type": ["string", "number", "boolean"]},
+                    "description": "必须在同一个 query 对象中传 keyword（模具号/订单号）；查询钢料再传 sourceType=steel，查询五金再传 sourceType=hardware。例如 {\"keyword\":\"M250238\",\"sourceType\":\"steel\"}。",
+                },
+            },
+            "additionalProperties": False,
+        }
+        return {"type": "function", "function": {
+            "name": key, "description": TOOL_SPECS[key]["description"],
+            "parameters": parameters,
+        }}
+    if key in {"erp_design_import_new_mold", "erp_design_import_modify_mold"}:
+        # The proposal host binds the latest owned upload session, ERP rows,
+        # due date and approval configuration. Exposing those large/opaque
+        # fields to the model caused truncated JSON and would let it alter the
+        # data being confirmed. Only duplicate intent remains model supplied.
+        parameters = {
+            "type": "object",
+            "properties": {
+                "allow_duplicate": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "仅当 ERP 已返回重复上传且用户再次明确确认时设为 true。",
+                },
+            },
+            "additionalProperties": False,
+        }
+        return {"type": "function", "function": {
+            "name": key, "description": TOOL_SPECS[key]["description"],
+            "parameters": parameters,
+        }}
     return {"type": "function", "function": {
         "name": key, "description": TOOL_SPECS[key]["description"],
         "parameters": _INPUTS[key].model_json_schema(),
@@ -1147,6 +1241,40 @@ def call_mcp(name: str, arguments: dict) -> dict | list:
 
 def call_design_control_mcp(name: str, arguments: dict) -> dict | list:
     return _call_server(_CONTROL_SERVER_FILE, name, arguments)
+
+
+def _drawing_status_is_processing(value) -> bool:
+    if not isinstance(value, dict):
+        return False
+    source = value.get("data") if isinstance(value.get("data"), dict) else value
+    processing = source.get("drawingProcessing")
+    if isinstance(processing, bool):
+        return processing
+    status = str(
+        source.get("drawingProcessingStatus")
+        or source.get("status")
+        or ""
+    ).strip().lower()
+    return status in {"processing", "pending", "claimed", "drawing_processing"}
+
+
+def _read_drawing_status(session_id: int, include_result: bool):
+    """Read ERP drawing status with a short bounded wait for completion races."""
+    arguments = {"sessionId": session_id, "includeResult": include_result}
+    value = call_mcp("get_new_mold_upload_status", arguments)
+    if not _drawing_status_is_processing(value):
+        return value
+
+    deadline = time.monotonic() + 2.0
+    delay = 0.15
+    while _drawing_status_is_processing(value):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        value = call_mcp("get_new_mold_upload_status", arguments)
+        delay = min(delay * 2, 0.75)
+    return value
 
 
 def _owned_session(db, user, session_id: int):
@@ -1341,6 +1469,108 @@ def _result(value, *, source="management-system ERP via erp-design-upload MCP", 
     return result
 
 
+def _with_design_approval_receipt(value):
+    """Expose ERP's design-workflow launch fields without copying workflow state."""
+    if not isinstance(value, dict):
+        return value
+    source = value.get("data") if isinstance(value.get("data"), dict) else value
+    workflow = source.get("workflow") if isinstance(source.get("workflow"), dict) else source
+    process = source.get("process") if isinstance(source.get("process"), dict) else {}
+    nodes = source.get("nodes") if isinstance(source.get("nodes"), list) else []
+    first_node = next(
+        (
+            node for node in nodes
+            if isinstance(node, dict)
+            and str(_first(node, "nodeType", "node_type") or "").lower() == "approval"
+        ),
+        next((node for node in nodes if isinstance(node, dict)), {}),
+    )
+    approval_steps = []
+    for node in nodes:
+        if not isinstance(node, dict) or str(_first(node, "nodeType", "node_type") or "").lower() != "approval":
+            continue
+        node_name = str(_first(node, "nodeName", "node_name", "name") or "").strip()
+        resolved_users = _first(node, "resolvedAssigneeUsers", "resolved_assignee_users") or []
+        approver_names = []
+        for user in resolved_users if isinstance(resolved_users, list) else []:
+            if not isinstance(user, dict):
+                continue
+            name = str(_first(user, "nickName", "nick_name", "displayName", "display_name", "userName", "user_name") or "").strip()
+            if name and name not in approver_names:
+                approver_names.append(name)
+        if node_name:
+            approval_steps.append({"nodeName": node_name, "approverNames": approver_names})
+    receipt = {
+        "requestId": _first(workflow, "requestId", "request_id") or _first(source, "requestId", "request_id"),
+        "requestNo": _first(workflow, "requestNo", "request_no") or _first(source, "requestNo", "request_no"),
+        "processCode": _first(workflow, "processCode", "process_code", "resolvedProcessCode", "resolved_process_code") or _first(source, "resolvedProcessCode", "resolved_process_code") or _first(process, "processCode", "process_code", "code"),
+        "processName": _first(workflow, "processName", "process_name") or _first(source, "processName", "process_name") or _first(process, "name", "processName", "process_name"),
+        "currentNodeName": _first(workflow, "currentNodeName", "current_node_name") or _first(source, "currentNodeName", "current_node_name") or _first(first_node, "nodeName", "node_name", "name"),
+        "currentApproverNames": approval_steps[0]["approverNames"] if approval_steps else [],
+        "approvalSteps": approval_steps,
+        "approvalStatus": _first(workflow, "approvalStatus", "approval_status") or _first(source, "approvalStatus", "approval_status") or "PENDING",
+        "workflowInstanceId": _first(workflow, "workflowInstanceId", "workflow_instance_id") or _first(source, "workflowInstanceId", "workflow_instance_id"),
+    }
+    receipt = {key: value for key, value in receipt.items() if value not in (None, "")}
+    if not receipt:
+        return value
+    result = dict(value)
+    result["designApproval"] = receipt
+    return result
+
+
+def _enrich_design_import_from_order_detail(value):
+    """Supplement an import response from ERP's existing order-detail reader."""
+    if not isinstance(value, dict):
+        return value
+    source = value.get("data") if isinstance(value.get("data"), dict) else value
+    request_id = _first(source, "requestId", "request_id")
+    try:
+        request_id = int(request_id)
+    except (TypeError, ValueError):
+        return value
+    try:
+        detail = call_mcp("get_erp_design_record", {"resource": "design_order", "id": request_id})
+    except DomainError:
+        return value
+    detail = detail.get("data") if isinstance(detail, dict) and isinstance(detail.get("data"), dict) else detail
+    if not isinstance(detail, dict):
+        return value
+    enriched = dict(source)
+    for output_key, candidates in {
+        "requestId": ("requestId", "request_id"),
+        "requestNo": ("requestNo", "request_no", "orderNo", "order_no"),
+        "currentNodeName": ("currentNodeName", "current_node_name", "currentApprovalNodeName", "current_approval_node_name"),
+        "approvalStatus": ("approvalStatus", "approval_status"),
+        "workflowInstanceId": ("workflowInstanceId", "workflow_instance_id"),
+    }.items():
+        if enriched.get(output_key) not in (None, ""):
+            continue
+        candidate = _first(detail, *candidates)
+        if candidate not in (None, ""):
+            enriched[output_key] = candidate
+    if isinstance(value.get("data"), dict):
+        return {**value, "data": enriched}
+    return enriched
+
+
+def _merge_design_approval_config(value, config):
+    if not isinstance(value, dict):
+        return value
+    wrapped = _with_design_approval_receipt(config)
+    config_receipt = wrapped.get("designApproval") if isinstance(wrapped, dict) else None
+    if not isinstance(config_receipt, dict):
+        return value
+    source = value.get("data") if isinstance(value.get("data"), dict) else value
+    enriched = dict(source)
+    for key in ("processCode", "processName", "currentNodeName", "currentApproverNames", "approvalSteps"):
+        if enriched.get(key) in (None, "") and config_receipt.get(key) not in (None, ""):
+            enriched[key] = config_receipt[key]
+    if isinstance(value.get("data"), dict):
+        return {**value, "data": enriched}
+    return enriched
+
+
 def _erp_rows(value) -> list[dict]:
     """Extract ERP list rows without changing the ERP response contract."""
     if isinstance(value, list):
@@ -1379,6 +1609,56 @@ def _erp_page_context(value, query: dict, *, table: str) -> dict:
         "has_next": bool(has_next),
         "presentation": "ERP 原始记录已提供只读表格。简述匹配总数、本页条数即可；不要凭空补充未查询字段。",
     }
+
+
+def _design_order_model_context(value, query: dict) -> dict:
+    """Expose bounded order facts while keeping the full ERP table in evidence.
+
+    The order reader is used by the workspace table, but its raw ERP payload can
+    contain large nested detail objects. Feeding that payload directly to the
+    model makes an otherwise successful read exceed the Harness context budget.
+    The UI still receives the durable full receipt; the model only needs counts,
+    material-type coverage, and a small row summary to explain what was found.
+    """
+    context = _erp_page_context(value, query, table="design_orders")
+    rows = _erp_rows(value)
+    type_counts: dict[str, int] = {}
+    summaries: list[dict] = []
+    for row in rows[:20]:
+        material_type = _first(
+            row,
+            "type", "materialType", "material_type", "orderType", "order_type",
+        )
+        material_type = str(material_type).strip() if material_type not in (None, "") else ""
+        if material_type:
+            type_counts[material_type] = type_counts.get(material_type, 0) + 1
+        summary = {}
+        for output_key, aliases in (
+            ("requestNo", ("requestNo", "request_no", "orderNo", "order_no")),
+            ("moldNo", ("moldNo", "mold_no", "moldCode", "mold_code")),
+            ("type", ("type", "materialType", "material_type", "orderType", "order_type")),
+            ("detailCount", ("detailCount", "detail_count", "detail", "detailsCount")),
+            ("status", ("status", "state", "orderStatus", "order_status")),
+            ("currentNode", ("currentNode", "current_node", "currentNodeName", "current_node_name")),
+            ("amount", ("amount", "totalAmount", "total_amount", "totalPrice", "total_price")),
+            ("createdAt", ("createdAt", "created_at")),
+        ):
+            found = _first(row, *aliases)
+            if found not in (None, ""):
+                text = str(found)
+                summary[output_key] = text if len(text) <= 120 else text[:117] + "..."
+        if summary:
+            summaries.append(summary)
+    context.update({
+        "type_counts": type_counts,
+        "row_summaries": summaries,
+        "row_summaries_truncated": len(rows) > len(summaries),
+        "presentation": (
+            "完整设计订单已由界面只读表格展示。回复时说明匹配总数和钢料/五金类型即可；"
+            "需要逐行细节时引导用户点击查看订单，不要重复生成完整表格。"
+        ),
+    })
+    return context
 
 
 _PROCESSING_FIELDS = {
@@ -1496,6 +1776,7 @@ def _upload_parse_model_context(value: dict):
         "sessionId", "fileName", "moldCode", "sheetType", "canImport",
         "totalQuantity", "duplicateUpload", "moldCodeMatched",
         "drawingProcessing", "drawingProcessingStatus", "drawingProcessingMessage",
+        "designOrderType", "expectedDate", "purchaseReason", "urgencyLevel", "remark",
     )
     result = {key: value[key] for key in fields if key in value}
     result.update(design_upload_form_options())
@@ -1508,6 +1789,117 @@ def _upload_parse_model_context(value: dict):
             result[key + "Count"] = len(items)
     result["rowDetail"] = "完整明细保存在本轮 ERP 工具回执中；需核对明细时另行读取上传会话。"
     return result
+
+
+def _upload_host_completion(value, *, requested_import: bool = False):
+    """Return the deterministic terminal contract for upload preflight reads."""
+    source = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    source = source if isinstance(source, dict) else {}
+    processing = _drawing_status_is_processing(source)
+    status = str(
+        source.get("drawingProcessingStatus") or source.get("status") or ""
+    ).strip().lower()
+    errors = source.get("errors") if isinstance(source.get("errors"), list) else []
+    can_import = source.get("canImport")
+
+    if status in {"failed", "error"}:
+        kind = "CLARIFICATION"
+        summary = "ERP 料单已解析，但图纸匹配与归档处理失败；当前尚未导入。请在“查看订单”中核对错误信息。"
+    elif errors or can_import is False:
+        kind = "CLARIFICATION"
+        summary = "ERP 料单已解析，但仍有校验问题；当前尚未导入。请在“查看订单”中核对并修正明细。"
+    elif processing:
+        kind = "CLARIFICATION" if requested_import else "BUSINESS"
+        summary = "ERP 料单已解析，图纸匹配与归档仍在处理中；当前尚未导入。请在“查看订单”中核对明细。"
+    else:
+        kind = "CLARIFICATION" if requested_import else "BUSINESS"
+        summary = "ERP 料单解析及图纸处理已完成；当前尚未导入。请在“查看订单”中核对明细、类型、交期和请购原因。"
+    return {
+        "terminal": True,
+        "response_kind": kind,
+        "summary": summary,
+        "suggestions": [],
+    }
+
+
+def _run_requests_design_import(run) -> bool:
+    """Limit approval-config chaining to an explicit import continuation."""
+    prompt = str(getattr(run, "prompt", "") or "").strip().lower()
+    if not prompt or any(word in prompt for word in ("不要导入", "不导入", "取消导入")):
+        return False
+    return any(word in prompt for word in (
+        "导入", "发起审批", "提交erp", "提交到erp", "提交给erp",
+    ))
+
+
+def _drawing_preview_model_context(value: dict):
+    """Keep the full drawing table in evidence while bounding model context."""
+    rows = value.get("previewRows") if isinstance(value, dict) else None
+    rows = rows if isinstance(rows, list) else []
+    missing_rows = value.get("missingDrawingRows") if isinstance(value, dict) else None
+    missing_rows = missing_rows if isinstance(missing_rows, list) else []
+    drawing_ids = {
+        row.get("drawing_resource_id")
+        for row in rows
+        if isinstance(row, dict) and row.get("drawing_resource_id") is not None
+    }
+    total_count = int(value.get("totalRowCount") or (len(rows) + len(missing_rows)))
+    missing_count = int(value.get("missingDrawingCount") or len(missing_rows))
+    return {
+        "displayMode": "design_drawings",
+        "sessionId": value.get("sessionId"),
+        "moldCode": value.get("moldCode"),
+        "totalRowCount": total_count,
+        "matchedCount": len(rows),
+        "missingDrawingCount": missing_count,
+        "allRowsHaveDrawing": total_count > 0 and missing_count == 0,
+        "uniqueDrawingCount": len(drawing_ids),
+        "missingDrawingItems": missing_rows[:100],
+        "missingDrawingItemsTruncated": len(missing_rows) > 100,
+        "presentation": (
+            "完整图纸明细已由界面表格展示并保存在工具证据中。"
+            "可根据 totalRowCount、matchedCount 和 missingDrawingCount 回答料单是否缺图；"
+            "用 missingDrawingItems 列出缺图行。不要重复列出已匹配明细或生成下载链接。"
+        ),
+    }
+
+
+def _upload_result_model_context(value: dict):
+    """Project a large ERP upload result into bounded facts for follow-up turns."""
+    context = _upload_parse_model_context(value)
+    source_rows = _drawing_rows(value)
+    matched_rows = []
+    missing_rows = []
+    for index, row in enumerate(source_rows, 1):
+        identity = _upload_parameter_row(row, "", index)
+        drawing_id = _number(_first(
+            row, "drawing_resource_id", "drawingResourceId", "drawing_id", "drawingId",
+        ))
+        summary = {
+            "rowIndex": identity["rowIndex"],
+            "item_code_full": identity["item_code_full"],
+            "item_name": identity["item_name"],
+            "drawing_status": str(_first(row, "drawing_status", "drawingStatus") or "missing"),
+            "drawing_status_label": str(_first(row, "drawing_status_label", "drawingStatusLabel") or "无图"),
+        }
+        if drawing_id is not None and drawing_id >= 1 and float(drawing_id).is_integer():
+            matched_rows.append(row)
+        else:
+            missing_rows.append(summary)
+    drawing_value = {
+        "sessionId": context.get("sessionId"),
+        "moldCode": context.get("moldCode"),
+        "previewRows": matched_rows,
+        "totalRowCount": len(source_rows),
+        "missingDrawingCount": len(missing_rows),
+        "missingDrawingRows": missing_rows,
+    }
+    context["drawingSummary"] = _drawing_preview_model_context(drawing_value)
+    context["rowDetail"] = (
+        "完整明细保存在 ERP 工具回执中；材料字段用专用参数查询，"
+        "图纸有无可直接使用 drawingSummary 回答。"
+    )
+    return context
 
 
 def _drawing_rows(value) -> list[dict]:
@@ -2140,11 +2532,10 @@ def _control_arguments(key: str, data: StrictModel) -> dict:
     raise DomainError("TOOL_UNKNOWN", "ERP 设计工具未实现", 403)
 
 
-def execute_tool(db, user, key: str, arguments: dict, run=None):
-    # A model-supplied confirm=True is not a human confirmation.  Until a
-    # HumanIntent-backed dispatcher owns the external write and its outcome,
-    # ERP mutations must not be reachable through the model tool gateway.
-    if TOOL_SPECS.get(key, {}).get("write"):
+def execute_tool(db, user, key: str, arguments: dict, run=None, *, trusted_confirmation: bool = False):
+    # A model-supplied confirm=True is not a human confirmation.  Only the
+    # HumanIntent-backed design proposal handler may pass trusted_confirmation.
+    if TOOL_SPECS.get(key, {}).get("write") and not trusted_confirmation:
         raise DomainError(
             "ERP_DESIGN_CONFIRMATION_REQUIRED",
             "该 ERP 设计操作尚未接入本人确认与执行回执，不能由 Agent 直接执行",
@@ -2185,14 +2576,24 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
         sheet_type = str(_first(source, "sheetType", "sheet_type") or _first(metadata, "sheetType", "sheet_type") or "steel")
         identifiers = _parameter_identifier_tokens(data.identifiers)
         drawing_rows = []
+        missing_drawing_rows = []
+        total_row_count = 0
         for index, row in enumerate(_drawing_rows(source), 1):
             drawing_id = _number(_first(row, "drawing_resource_id", "drawingResourceId", "drawing_id", "drawingId"))
-            if drawing_id is None or drawing_id < 1 or not float(drawing_id).is_integer():
+            identity = _upload_parameter_row(row, sheet_type, index)
+            if not _matches_parameter_identifiers(identity, identifiers):
                 continue
             if data.drawing_id is not None and drawing_id != data.drawing_id:
                 continue
-            identity = _upload_parameter_row(row, sheet_type, index)
-            if not _matches_parameter_identifiers(identity, identifiers):
+            total_row_count += 1
+            if drawing_id is None or drawing_id < 1 or not float(drawing_id).is_integer():
+                missing_drawing_rows.append({
+                    "rowIndex": identity["rowIndex"],
+                    "item_code_full": identity["item_code_full"],
+                    "item_name": identity["item_name"],
+                    "drawing_status": str(_first(row, "drawing_status", "drawingStatus") or "missing"),
+                    "drawing_status_label": str(_first(row, "drawing_status_label", "drawingStatusLabel") or "无图"),
+                })
                 continue
             drawing_rows.append({
                 "rowIndex": identity["rowIndex"],
@@ -2206,12 +2607,12 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             "sessionId": data.session_id,
             "moldCode": str(_first(source, "moldCode", "mold_code") or _first(metadata, "moldCode", "mold_code") or ""),
             "previewRows": drawing_rows,
+            "totalRowCount": total_row_count,
             "matchedCount": len(drawing_rows),
+            "missingDrawingCount": len(missing_drawing_rows),
+            "missingDrawingRows": missing_drawing_rows,
         }
-        return _result(value, model_context={
-            **value,
-            "presentation": "图纸明细已由界面提供表格入口，点击表格中的预览按钮只查看图纸。无需生成下载链接或重复列出参数。",
-        })
+        return _result(value, model_context=_drawing_preview_model_context(value))
     if key == "erp_design_query_master_data":
         reads = {
             "densities": "query_erp_design_densities",
@@ -2243,15 +2644,7 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             # ``moldNo`` for the other ERP catalogues, so translate the common
             # mold aliases at this boundary instead of letting the ERP silently
             # ignore them and return an unfiltered page.
-            query = dict(data.query)
-            if not str(query.get("keyword") or "").strip():
-                for alias in ("moldNo", "mold_no", "moldCode", "mold_code"):
-                    candidate = str(query.get(alias) or "").strip()
-                    if candidate:
-                        query["keyword"] = candidate
-                        break
-            for alias in ("moldNo", "mold_no", "moldCode", "mold_code"):
-                query.pop(alias, None)
+            query = _normalize_design_order_query(data.query)
             arguments = {"query": query}
         elif key == "erp_design_query_densities":
             query = dict(data.query)
@@ -2338,7 +2731,9 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             arguments = {"query": data.query}
         value = call_mcp(READ_TOOL_MAP[key], arguments)
         context = None
-        if key in {"erp_design_query_densities", "erp_design_query_group_rules", "erp_design_query_drawing_versions", "erp_design_query_standard_hardware"}:
+        if key == "erp_design_query_orders":
+            context = _design_order_model_context(value, data.query)
+        elif key in {"erp_design_query_densities", "erp_design_query_group_rules", "erp_design_query_drawing_versions", "erp_design_query_standard_hardware"}:
             context = _erp_page_context(value, data.query, table=key.removeprefix("erp_design_query_"))
         return _result(value, model_context=context)
     if key in CONTROL_TOOL_MAP:
@@ -2419,7 +2814,7 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
         if not isinstance(session_id, int) or session_id < 1:
             _failure("ERP 未返回有效上传会话编号")
         detected_sheet_type = value.get("sheetType") if isinstance(value, dict) else None
-        if detected_sheet_type not in {"steel", "hardware"}:
+        if detected_sheet_type not in {"steel", "hardware", "stock_prepare"}:
             _failure("ERP 未返回有效的清单类型")
         record(db, user, _SESSION_ACTION, str(session_id), {
             "file_id": str(source.id),
@@ -2432,7 +2827,20 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
         # order type is owned by the selected upload route and is therefore
         # added here as a separate fact rather than inferred from the file.
         parse_context["designOrderType"] = design_order_type
-        return _result(value, model_context=parse_context)
+        result = _result(value, model_context=parse_context)
+        result["host_completion"] = _upload_host_completion(
+            value, requested_import=_run_requests_design_import(run)
+        )
+        if parse_context.get("drawingProcessing") is True:
+            # Drawing matching is asynchronous in ERP.  Declare one concrete,
+            # read-only continuation so the Harness can obtain the current
+            # status before it closes the tool stage; this is not a polling
+            # loop and never retries the parse or starts an import.
+            result["host_follow_up"] = {
+                "tool": "erp_design_get_drawing_status",
+                "arguments": {"session_id": session_id, "include_result": False},
+            }
+        return result
     if key in {
         "erp_design_get_drawing_status",
         "erp_design_get_upload_result",
@@ -2442,9 +2850,32 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
         data.session_id = _latest_conversation_upload_session(db, user, run)
     _owned_session(db, user, data.session_id)
     if key == "erp_design_get_drawing_status":
-        value = call_mcp("get_new_mold_upload_status", {"sessionId": data.session_id, "includeResult": data.include_result})
+        value = _read_drawing_status(data.session_id, data.include_result)
+        result = _result(value, model_context=_upload_parse_model_context(value))
+        result["host_completion"] = _upload_host_completion(
+            value, requested_import=_run_requests_design_import(run)
+        )
+        return result
     elif key == "erp_design_get_upload_result":
         value = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
+        result = _result(value, model_context=_upload_result_model_context(value))
+        source = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+        receipt = _conversation_upload_receipt(db, user, run, data.session_id) or {}
+        order_type = str(
+            (_first(source, "designOrderType", "design_order_type") if isinstance(source, dict) else None)
+            or _first(receipt, "designOrderType", "design_order_type")
+            or "new_model"
+        ).strip().lower()
+        if _run_requests_design_import(run):
+            result["host_follow_up"] = {
+                "tool": (
+                    "erp_design_get_modify_mold_approval_config"
+                    if order_type == "repair_other"
+                    else "erp_design_get_approval_config"
+                ),
+                "arguments": {"session_id": data.session_id},
+            }
+        return result
     elif key in {"erp_design_query_upload_parameters", "erp_design_preview_drawing"}:
         source = call_mcp("get_new_mold_upload_result", {"sessionId": data.session_id})
         if not isinstance(source, dict):
@@ -2562,10 +2993,11 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             "correctedCount": corrected_count, "correctedFields": corrected_fields,
         })
     elif key == "erp_design_get_approval_config":
-        value = call_mcp("get_new_mold_approval_launch_config", {"sessionId": data.session_id})
+        value = _with_design_approval_receipt(call_mcp("get_new_mold_approval_launch_config", {"sessionId": data.session_id}))
     elif key == "erp_design_get_modify_mold_approval_config":
-        value = call_design_control_mcp("get_modify_mold_approval_launch_config", {"sessionId": data.session_id})
+        value = _with_design_approval_receipt(call_design_control_mcp("get_modify_mold_approval_launch_config", {"sessionId": data.session_id}))
     elif key == "erp_design_import_new_mold":
+        approval_config = call_mcp("get_new_mold_approval_launch_config", {"sessionId": data.session_id})
         validation = call_mcp("validate_new_mold_design_rows", {"sessionId": data.session_id, "sheetType": data.sheet_type,
             "moldCode": data.mold_code, "previewRows": data.preview_rows, "pricingAlreadyEnriched": True})
         if isinstance(validation, dict) and (validation.get("canImport") is False or validation.get("valid") is False or validation.get("errors")):
@@ -2574,9 +3006,15 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             "moldCode": data.mold_code, "previewRows": data.preview_rows, "urgencyLevel": data.urgency_level,
             "expectedDate": data.expected_date, "purchaseReason": data.purchase_reason, "remark": data.remark,
             "allowDuplicate": data.allow_duplicate})
+        value = _with_design_approval_receipt(_merge_design_approval_config(
+            _enrich_design_import_from_order_detail(value), approval_config,
+        ))
         record(db, user, "erp_design_mcp.imported", str(data.session_id), {"row_count": len(data.preview_rows)})
         db.commit()
     elif key == "erp_design_import_modify_mold":
+        approval_config = call_design_control_mcp(
+            "get_modify_mold_approval_launch_config", {"sessionId": data.session_id}
+        )
         validation = call_mcp("validate_new_mold_design_rows", {
             "sessionId": data.session_id,
             "sheetType": data.sheet_type,
@@ -2601,6 +3039,9 @@ def _execute_registered_tool(db, user, key: str, arguments: dict, run=None):
             "remark": data.remark,
             "allowDuplicate": data.allow_duplicate,
         })
+        value = _with_design_approval_receipt(_merge_design_approval_config(
+            _enrich_design_import_from_order_detail(value), approval_config,
+        ))
         record(db, user, "erp_design_mcp.modify_mold_imported", str(data.session_id), {
             "row_count": len(data.preview_rows),
             "purchase_reason": data.purchase_reason,

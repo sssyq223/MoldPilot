@@ -217,11 +217,13 @@ describe('ERP design preview', () => {
     })
   })
 
-  it('publishes the ERP session only when a run succeeds', () => {
+  it('publishes the ERP session when business evidence completed even if composition failed', () => {
     const current = { id: 'run-1', status: 'SUCCEEDED', trace: [tool] }
     const failed = { id: 'run-2', status: 'FAILED', trace: [tool] }
     const cancelled = { id: 'run-3', status: 'CANCELLED', trace: [tool] }
+    const compositionFailed = { id: 'run-4', status: 'COMPOSITION_FAILED', trace: [tool] }
     expect(erpDesignSessionFromRun(current)?.sessionId).toBe(268)
+    expect(erpDesignSessionFromRun(compositionFailed)?.sessionId).toBe(268)
     expect(erpDesignSessionFromRun(failed)).toBeNull()
     expect(erpDesignSessionFromRun(cancelled)).toBeNull()
   })
@@ -440,11 +442,21 @@ describe('ERP design preview', () => {
       request_no: 'REQ-20260918-01',
       message: '导入成功',
       imported_at: '2026-09-18T10:30:00+08:00',
+      current_approver_names: ['张设计', '张设计'],
+      approval_steps: [
+        { node_name: '设计负责人审批', approver_names: ['张设计'] },
+        { nodeName: '采购审批', approverNames: ['李采购'] },
+      ],
     })).toEqual({
       sessionId: 268,
       requestNo: 'REQ-20260918-01',
       message: '导入成功',
       importedAt: '2026-09-18T10:30:00+08:00',
+      currentApproverNames: ['张设计'],
+      approvalSteps: [
+        { nodeName: '设计负责人审批', approverNames: ['张设计'] },
+        { nodeName: '采购审批', approverNames: ['李采购'] },
+      ],
     })
   })
 

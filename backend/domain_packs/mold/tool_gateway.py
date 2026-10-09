@@ -657,7 +657,7 @@ SKILLS.update({
         # but a generic “五金清单” search cannot fan out into BOM readers.
         'activation_tools': ['erp_design_parse_new_mold_upload'],
         'suspended_tools': ['erp_design_import_new_mold'],
-        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '解析料单', '解析', '上传料单',
+        'activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传', '设计清单导入', '导入料单', '导入并发起审批', '设计部门审批', '查看设计审批节点', '解析料单', '解析', '上传料单',
                                '查看上传订单', '查看订单明细', '核算价格', '价格核算', '图纸预览', '预览图纸',
                                '自动修正参数', '按图纸修正', '修正数量', '修正长宽厚'],
         # With one supported attachment and an unambiguous upload skill, the
@@ -665,7 +665,7 @@ SKILLS.update({
         # parser directly.  This avoids making the model synthesize a tool
         # call whose UUID/nullable schema is rejected by some gateways.
         'auto_activation_queries': ['解析上传附件', '上传新模钢料表', '上传新模五金表', '新模设计上传',
-                                    '设计清单导入', '导入料单', '解析料单', '解析', '解析这个清单',
+                                    '设计清单导入', '导入料单', '导入并发起审批', '设计部门审批', '查看设计审批节点', '解析料单', '解析', '解析这个清单',
                                     '解析清单', '解析当前附件', '上传料单'],
         'suppress_tool_search_on_auto_activation': True,
         'requires_tool_evidence': True,
@@ -684,11 +684,12 @@ SKILLS.update({
         # The upload parser is the single initial capability. Follow-up tools
         # are enabled after ERP returns the owned repair_other session.
         'activation_tools': ['erp_design_parse_modify_mold_upload'],
+        'suspended_tools': ['erp_design_import_modify_mold'],
         'activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
-                               '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
+                               '改模采购清单', '改模设计上传', '改模设计审批', '导入并发起审批', '查看设计审批节点', '类型选择改模', '上传时选择改模',
                                '修模改模清单上传', '解析改模清单附件', '解析'],
         'auto_activation_queries': ['上传改模钢料清单', '上传改模五金清单', '上传修模改模采购清单',
-                                    '改模采购清单', '改模设计上传', '类型选择改模', '上传时选择改模',
+                                    '改模采购清单', '改模设计上传', '改模设计审批', '导入并发起审批', '查看设计审批节点', '类型选择改模', '上传时选择改模',
                                     '修模改模清单上传', '解析改模清单附件', '解析改模清单', '解析'],
         'suppress_tool_search_on_auto_activation': True,
         'requires_tool_evidence': True,
@@ -744,7 +745,7 @@ SKILLS.update({
                                     '料单的材质', '清单的材质', '料单的规格', '清单的规格',
                                     '料单的料型', '清单的料型', '料单的数量', '清单的数量', '料单的长', '料单的宽',
                                     '料单的厚', '料单的高', '料单的外径', '料单的内径', '料单的密度', '料单的价格',
-                                    '料单的金额', '料单的图纸', '采购数量', '材料参数', '材料尺寸', '长宽高', '长宽厚',
+                                    '料单的金额', '采购数量', '材料参数', '材料尺寸', '长宽高', '长宽厚',
                                     '多长', '多宽', '多厚', '多高', '外径', '内径', '直径', '密度', '单价', '价格', '金额', '热处理', '时效', '硬度', '加工工艺',
                                     '方料', '圆料', '圆环料', '外径', '内径', '直径',
                                     '长是多少', '宽是多少', '高是多少', '厚是多少', '多长', '多宽', '多高', '多厚',
@@ -763,10 +764,12 @@ SKILLS.update({
         'tools': ['erp_design_preview_drawing'],
         'activation_tools': ['erp_design_preview_drawing'],
         'activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                               '图纸状态', '有没有图纸', '哪些没有图纸', '缺图料号',
                                '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
                                '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸',
                                '图纸与尺寸', '图纸和尺寸', '参数与图纸', '参数和图纸'],
         'auto_activation_queries': ['看图纸', '图纸预览', '预览图纸', '查看图纸', '打开图纸',
+                                    '图纸状态', '有没有图纸', '哪些没有图纸', '缺图料号',
                                     '料单的图纸', '清单的图纸', '长宽厚与图纸', '长宽厚和图纸',
                                     '图纸与长宽厚', '图纸和长宽厚', '尺寸与图纸', '尺寸和图纸'],
         'suppress_tool_search_on_auto_activation': True,
@@ -926,7 +929,15 @@ SKILLS.update({
         'activation_queries': ['设计修模', '设计改模', '修模改模图纸', '修改图纸异常',
                                '确认新图数量', '修模审批', '改模审批', '修改图纸审批',
                                '修模订单关联', '改模订单关联', '加工商响应', '同意改图',
-                               '已加工反馈', '下载修模图纸'],
+                               '已加工反馈', '下载修模图纸', '上传修改图纸',
+                               '上传改模图纸', '上传修模图纸', '上传修模改模图纸'],
+        # These phrases are explicit ERP write requests.  Activate only the
+        # existing upload adapter; the model still has to resolve the current
+        # session attachment and produce the normal confirmation proposal.
+        'action_activation_queries': ['上传修改图纸', '上传改模图纸', '上传修模图纸',
+                                      '上传修模改模图纸'],
+        'action_activation_tools': ['erp_design_upload_mold_repair_drawing'],
+        'suppress_tool_search_on_action_activation': True,
     },
     'erp_design_bom_maintenance': {
         'name': 'ERP BOM 维护与导入',
@@ -1489,9 +1500,10 @@ def assigned(db, user, kind, key):
     return bool(db.scalar(select(Capability.id).where(Capability.user_id == user.id, Capability.kind == kind, Capability.key == key, Capability.enabled.is_(True))))
 
 
-def available_tools(db, user):
+def available_tools(db, user, *, include_writes: bool = False):
     allowed = [key for key, tool in TOOLS.items() if assigned(db, user, "TOOL", key) and
-               (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"])))]
+               (include_writes or not (key in erp_design_mcp.TOOL_SPECS and erp_design_mcp.TOOL_SPECS[key].get("write"))) and
+               (user.super_admin or any(g.effect == "ALLOW" for g in grants_for(db, user, tool["permission"]))) ]
     # Existing accounts can already have the three read-only master-data
     # catalogues assigned.  Treat that exact prior grant as authorization for
     # the new aggregate reader, so this display/selection simplification does
@@ -1824,8 +1836,8 @@ def tool_schema(key):
              "parameters": {"type": "object", "properties": {}, "additionalProperties": False}, "strict": True}}
 
 
-def skill_context(db, user):
-    allowed = set(available_tools(db, user))
+def skill_context(db, user, *, include_writes: bool = False):
+    allowed = set(available_tools(db, user, include_writes=include_writes))
     result = []
     for key, spec in SKILLS.items():
         enabled = assigned(db, user, "SKILL", key)
@@ -1860,11 +1872,21 @@ def skill_context(db, user):
             route = skill_paths()[key]
             path = route["path"]
             content = path.read_text(encoding="utf-8")
+            optional_tools = [tool for tool in spec.get("optional_tools", [])
+                              if include_writes or not (
+                                  tool in erp_design_mcp.TOOL_SPECS
+                                  and erp_design_mcp.TOOL_SPECS[tool].get("write")
+                              )]
+            activation_tools = [tool for tool in (spec.get("activation_tools") or [])
+                                if include_writes or not (
+                                    tool in erp_design_mcp.TOOL_SPECS
+                                    and erp_design_mcp.TOOL_SPECS[tool].get("write")
+                                )]
             result.append({"key": key, "version": "1.0.0", "hash": content_hash(content), "instructions": content,
                            "agent_description": skill_agent_description(content),
-                           "tools": spec["tools"], "optional_tools": spec.get("optional_tools", []),
+                           "tools": spec["tools"], "optional_tools": optional_tools,
                            "suspended_tools": spec.get("suspended_tools", []),
-                           "activation_tools": spec.get("activation_tools"),
+                           "activation_tools": activation_tools,
                            "activation_queries": spec.get("activation_queries", []),
                            "auto_activation_queries": spec.get("auto_activation_queries", []),
                            "action_activation_queries": spec.get("action_activation_queries", []),
@@ -1935,7 +1957,12 @@ def _fallback_empty_design_context_to_erp(db, user, data, allowed, local_result,
 
 
 def execute(db, user, key, arguments, run=None):
-    if key not in available_tools(db, user): raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
+    is_design_write = bool(
+        key in erp_design_mcp.TOOL_SPECS
+        and erp_design_mcp.TOOL_SPECS[key].get('write') is True
+    )
+    if key not in available_tools(db, user, include_writes=is_design_write):
+        raise DomainError("TOOL_FORBIDDEN", "工具不在当前有效能力范围内", 403)
     if key in {'query_local_change_context', 'prepare_local_change_intake',
                'prepare_local_change_association', 'prepare_local_change_acceptance'}:
         from domain_packs.mold.tools.local.change_intake_tools import execute_tool

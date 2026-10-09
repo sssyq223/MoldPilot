@@ -1,8 +1,8 @@
-"""Prepare an ERP design-order snapshot for the local Agent BPM.
+"""Prepare an independent Agent BPM snapshot for non-upload design work.
 
-ERP remains the live design-data authority.  This adapter stores only the
-immutable evidence package that a person actually submitted for one approval
-round; it never mirrors ERP lists or calls ERP approval endpoints.
+ERP design-upload imports use the management-system ERP native design approval
+flow and do not enter this module. This adapter stores only the immutable
+evidence package for an explicitly independent Agent BPM round.
 """
 from __future__ import annotations
 
@@ -223,7 +223,7 @@ def _preview(db, user, data: DesignOrderApprovalInput, run, *, source_material=N
         "指定复核人": reviewer.display_name,
         "提交说明": data.submission_note,
         "审批流程": selected["name"] + " · 第" + str(selected["version"]) + "版",
-        "说明": "本人确认后只冻结 ERP 设计订单证据与本轮附件并提交 Agent BPM；不调用 ERP 设计审批，也不把快照当作 ERP 当前状态。",
+        "说明": "本人确认后只冻结独立 Agent BPM 的设计订单证据；该路径不处理 ERP 设计料单导入，ERP 设计上传审批仍由 ERP 原生流程负责。",
     }
     return project, reviewer, selected, material, blobs, display
 
@@ -248,7 +248,7 @@ def execute_tool(db, user, key, arguments, run=None):
         "as_of": now().isoformat(),
         "proposal": proposal,
         "limitations": [
-            "仅准备本次 Agent BPM 设计审批；ERP 仍是设计订单、图纸版本、材质密度和标准件的实时权威来源。",
+            "仅准备独立 Agent BPM 设计审批；ERP 设计料单导入审批仍由 management-system ERP 原生流程负责。",
             "本人确认后才创建审批实例；后续 ERP 写入仍需独立、明确的业务确认。",
         ],
     }

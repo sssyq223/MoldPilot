@@ -104,6 +104,143 @@ const idleColumns: ErpDesignColumn[] = [
   { key: 'version', label: '明细版本', fields: ['detail_version', 'detailVersion'], width: 200 },
 ]
 
+/** Fields returned by the ERP mold-repair upload/approval APIs.  The table is
+ * deliberately a presentation adapter: values are copied from the ERP
+ * response and are never recalculated here. */
+const moldRepairColumns: ErpDesignColumn[] = [
+  { key: 'exceptionId', label: '异常ID', fields: ['exceptionId', 'exception_id', 'id'], width: 90 },
+  { key: 'partNo', label: '零件号', fields: ['partNo', 'part_no', 'partKey', 'part_key'], width: 160 },
+  { key: 'changeType', label: '变更类型', fields: ['changeType', 'change_type', '变更类型'], width: 100 },
+  { key: 'summary', label: '变更说明', fields: ['summary', 'changeSummary', 'change_summary', 'description', '变更说明'], width: 220 },
+  { key: 'material', label: '材料', fields: ['material', 'materialMark', 'material_mark', '材质'], width: 120 },
+  { key: 'modifiedBy', label: '修改人', fields: ['modifiedBy', 'modified_by', '修改人'], width: 110 },
+  { key: 'modificationDate', label: '修改日期', fields: ['modificationDate', 'modification_date', '修改日期'], width: 130 },
+  { key: 'oldDrawingCount', label: '旧图数量', fields: ['oldDrawingCount', 'old_drawing_count', 'oldQtyLabel', 'oldQty', 'old_qty', '旧图数量'], width: 100 },
+  { key: 'newDrawingCount', label: '新图数量', fields: ['newDrawingCount', 'new_drawing_count', 'newQtyLabel', 'newQty', 'new_qty', '新图数量'], width: 100 },
+  { key: 'orderedQty', label: '已下单', fields: ['orderedQtyLabel', 'orderedQty', 'ordered_qty', 'orderedQuantity', 'ordered_quantity', '已下单'], width: 100 },
+  { key: 'shortageQty', label: '缺少', fields: ['shortageQtyLabel', 'shortageQty', 'shortage_qty', 'missingQty', 'missing_qty', '缺少'], width: 90 },
+  { key: 'unit', label: '单位', fields: ['unit', 'quantityUnit', 'quantity_unit', '单位'], width: 80 },
+  { key: 'businessSource', label: '业务来源', fields: ['businessSource', 'business_source', 'businessCategory', 'business_category', 'sourceType', 'source_type', '业务来源'], width: 130 },
+  { key: 'receiver', label: '接收方', fields: ['receiver', 'receiverName', 'receiver_name', 'receiverType', 'receiver_type', '接收方'], width: 180 },
+  { key: 'inbound', label: '入库判断', fields: ['inbound', 'inboundStatus', 'inbound_status', 'inboundCheckStatus', 'inbound_check_status', '入库判断'], width: 140 },
+  { key: 'processingMethod', label: '处理方式', fields: ['processingMethod', 'processing_method', 'handleType', 'handle_type', 'deliveryStatus', 'delivery_status', '处理方式'], width: 140 },
+  { key: 'currentStage', label: '当前环节', fields: ['currentStage', 'current_stage', 'currentNodeName', 'current_node_name', 'stage', 'stageLabel', 'stage_label', '当前环节'], width: 150 },
+  { key: 'status', label: '审批状态', fields: ['approvalStatus', 'approval_status', 'status', 'statusLabel', 'status_label'], width: 120 },
+]
+
+function nested(source: Record<string, any>, ...keys: string[]): Record<string, any> {
+  for (const key of keys) {
+    const value = source[key]
+    if (record(value)) return value
+  }
+  return {}
+}
+
+function repairBusinessLabel(value: unknown): unknown {
+  const labels: Record<string, string> = {
+    hardware: '五金',
+    hardware_standard: '五金',
+    attached_order: '附图订购',
+    steel: '钢料',
+    steel_plate: '钢料',
+    unknown: '',
+  }
+  const key = String(value ?? '').trim()
+  return labels[key] ?? value
+}
+
+function repairReceiverLabel(row: Record<string, any>, receiver: Record<string, any>): unknown {
+  const name = row.receiverName ?? row.receiver_name ?? receiver.receiverName ?? receiver.receiver_name
+  if (name) return name
+  const type = String(row.receiverType ?? row.receiver_type ?? receiver.receiverType ?? receiver.receiver_type ?? '').trim()
+  const labels: Record<string, string> = {
+    processor: '加工商',
+    supplier: '供应商',
+    customer: '客户',
+    internal: '内部',
+    outsource: '委外加工商',
+    unknown: '',
+  }
+  return labels[type] ?? type
+}
+
+function repairInboundLabel(row: Record<string, any>, inbound: Record<string, any>): unknown {
+  if (row.inboundStatus ?? row.inbound_status) return row.inboundStatus ?? row.inbound_status
+  if (typeof inbound.isInbound === 'boolean') return inbound.isInbound ? '已入库' : '未入库'
+  const status = inbound.statusLabel ?? inbound.status ?? inbound.checkStatus ?? inbound.check_status
+  return status === 'error' || status === 'failed' ? '查询失败' : status
+}
+
+function repairProcessingLabel(row: Record<string, any>): unknown {
+  const value = row.processingMethod ?? row.processing_method ?? row.handleType ?? row.handle_type ?? row.deliveryStatus ?? row.delivery_status
+  const labels: Record<string, string> = {
+    waiting_approval: '可审批',
+    not_applicable: '不适用',
+    sent: '已发送',
+    pending: '待处理',
+  }
+  return labels[String(value ?? '').trim()] ?? value
+}
+
+function repairRows(value: unknown): ErpDesignRow[] {
+  const source = sourceData(value)
+  const candidates: ErpDesignRow[] = []
+  const visit = (node: unknown, depth = 0) => {
+    if (depth > 5) return
+    if (Array.isArray(node)) {
+      for (const item of node) if (record(item)) visit(item, depth + 1)
+      return
+    }
+    const row = record(node)
+    if (!row) return
+    if (
+      row.changeType !== undefined || row.change_type !== undefined ||
+      row.quantityRecognition !== undefined || row.quantity_recognition !== undefined ||
+      row.quantityComparison !== undefined || row.quantity_comparison !== undefined ||
+      row.exceptionId !== undefined || row.exception_id !== undefined
+    ) candidates.push(row as ErpDesignRow)
+    for (const key of ['exceptions', 'exceptionList', 'exception_list', 'moldRepairExceptions', 'mold_repair_exceptions', 'details', 'items', 'rows', 'records', 'list']) {
+      if (row[key] !== undefined) visit(row[key], depth + 1)
+    }
+  }
+  visit(source)
+  const unique = new Map<string, ErpDesignRow>()
+  for (const row of candidates) {
+    // ERP returns both persisted ``exceptions`` and parsed ``items``. They
+    // describe the same part/change, so prefer the persisted row carrying an
+    // exception ID and keep one visible row per part and change type.
+    const part = String(row.partNo ?? row.part_no ?? row.partKey ?? row.part_key ?? '').trim()
+    const change = String(row.changeType ?? row.change_type ?? '').trim()
+    const id = part || String(row.exceptionId ?? row.exception_id ?? unique.size)
+    const key = `${id}|${change}`
+    const current = unique.get(key)
+    const hasExceptionId = row.exceptionId !== undefined || row.exception_id !== undefined
+    const currentHasExceptionId = current?.exceptionId !== undefined || current?.exception_id !== undefined
+    if (!current || (hasExceptionId && !currentHasExceptionId)) unique.set(key, row)
+  }
+  return [...unique.values()].map((row) => {
+    const recognition = nested(row, 'quantityRecognition', 'quantity_recognition')
+    const comparison = nested(row, 'quantityComparison', 'quantity_comparison')
+    const receiver = nested(row, 'receiver')
+    const inbound = nested(row, 'inbound', 'inboundCheck', 'inbound_check')
+    const approval = nested(row, 'approval')
+    return {
+      ...row,
+      oldDrawingCount: row.oldDrawingCount ?? row.old_drawing_count ?? row.oldQtyLabel ?? recognition.oldQty ?? recognition.old_qty,
+      newDrawingCount: row.newDrawingCount ?? row.new_drawing_count ?? row.newQtyLabel ?? recognition.newQty ?? recognition.new_qty,
+      orderedQty: row.orderedQtyLabel ?? row.orderedQty ?? row.ordered_qty ?? comparison.orderedQty ?? comparison.ordered_qty,
+      shortageQty: row.shortageQtyLabel ?? row.shortageQty ?? row.shortage_qty ?? comparison.shortageQty ?? comparison.shortage_qty,
+      unit: row.unit ?? recognition.unit ?? recognition.quantityUnit ?? 'PCS',
+      businessSource: repairBusinessLabel(row.businessSource ?? row.business_source ?? row.businessCategory ?? row.business_category ?? receiver.businessCategory ?? receiver.business_category),
+      receiver: repairReceiverLabel(row, receiver),
+      inbound: repairInboundLabel(row, inbound),
+      processingMethod: repairProcessingLabel(row),
+      currentStage: row.currentStage ?? row.current_stage ?? row.currentNodeName ?? row.current_node_name ?? row.stageLabel ?? row.stage_label ?? row.stage,
+      approvalStatus: row.approvalStatus ?? row.approval_status ?? approval.status ?? approval.approvalStatus,
+    }
+  })
+}
+
 function cell(row: ErpDesignRow, column: ErpDesignColumn): string {
   for (const field of column.fields) {
     const value = row[field]
@@ -131,7 +268,7 @@ function tableFrom(source: unknown, key: string, title: string, columns: ErpDesi
 }
 
 export function erpDesignMasterDataTablesFromRun(run: any): ErpDesignResultTable[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status ?? ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
   const result: ErpDesignResultTable[] = []
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const tool = String(item?.tool ?? '')
@@ -149,7 +286,7 @@ export function erpDesignMasterDataTablesFromRun(run: any): ErpDesignResultTable
 }
 
 export function erpDesignProcessingTablesFromRun(run: any): ErpDesignResultTable[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status ?? ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
   const result: ErpDesignResultTable[] = []
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const payload = sourceData(item?.data)
@@ -197,7 +334,7 @@ export function erpDesignProcessingTablesFromRun(run: any): ErpDesignResultTable
 }
 
 export function erpDesignDrawingVersionTablesFromRun(run: any): ErpDesignResultTable[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status ?? ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
   const result: ErpDesignResultTable[] = []
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const tool = String(item?.tool ?? '')
@@ -228,7 +365,7 @@ export function erpDesignDrawingVersionTablesFromRun(run: any): ErpDesignResultT
 }
 
 export function erpDesignIdleMaterialTablesFromRun(run: any): ErpDesignResultTable[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status ?? ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
   const result: ErpDesignResultTable[] = []
   for (const item of Array.isArray(run?.trace) ? run.trace : []) {
     const tool = String(item?.tool ?? '')
@@ -239,6 +376,35 @@ export function erpDesignIdleMaterialTablesFromRun(run: any): ErpDesignResultTab
       : { rows: [payload], total: 1 }
     const table = tableFrom(source, `idle-material:${tool}`, tool === 'erp_design_query_idle_material' ? 'ERP 闲置料匹配表' : 'ERP 闲置料决策明细表', idleColumns)
     if (table) result.push(table)
+  }
+  return result
+}
+
+export function erpDesignMoldRepairTablesFromRun(run: any): ErpDesignResultTable[] {
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
+  const result: ErpDesignResultTable[] = []
+  for (const item of Array.isArray(run?.trace) ? run.trace : []) {
+    // A confirmed write is represented by a proposal_resolution trace item;
+    // its authoritative ERP receipt is nested under receipt.result rather than
+    // being emitted as a second ordinary tool step.
+    const resolutionReceipt = item?.type === 'proposal_resolution' ? record(item?.receipt) : null
+    const tool = String(item?.tool ?? resolutionReceipt?.tool ?? '')
+    if (!tool.includes('mold_repair')) continue
+    const source = resolutionReceipt?.result ?? item?.data
+    const tableRows = repairRows(source)
+    if (!tableRows.length) continue
+    const payload = sourceData(source)
+    const moldCode = payload.factoryModel ?? payload.factory_model ?? payload.moldCode ?? payload.mold_code
+    result.push({
+      key: `mold-repair:${item?.id ?? item?.call_id ?? result.length}`,
+      title: 'ERP 修模/改模变更明细',
+      context: moldCode ? String(moldCode) : '',
+      summary: `共 ${tableRows.length} 条 · 已展示变更类型、旧图/新图数量及 ERP 处理状态`,
+      sourceNote: '明细来自 management-system ERP 原始回执，仅供只读展示；Agent 不重新计算或写入 ERP',
+      rows: tableRows,
+      columns: moldRepairColumns,
+      defer: tableRows.length > 8,
+    })
   }
   return result
 }

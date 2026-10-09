@@ -38,7 +38,7 @@ export function erpDesignGroupKeywordsFromTool(item: any): ErpDesignGroupKeyword
 }
 
 export function erpDesignGroupKeywordsFromRun(run: any): ErpDesignGroupKeywords[] {
-  if (!['SUCCEEDED', 'FAILED'].includes(String(run?.status ?? ''))) return []
+  if (!['SUCCEEDED', 'FAILED', 'COMPOSITION_FAILED'].includes(String(run?.status ?? ''))) return []
   return (Array.isArray(run?.trace) ? run.trace : [])
     .map(erpDesignGroupKeywordsFromTool)
     .filter((result: ErpDesignGroupKeywords | null): result is ErpDesignGroupKeywords => result !== null)

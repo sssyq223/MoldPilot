@@ -33,15 +33,38 @@ def test_erp_design_write_tools_require_host_confirmed_dispatch(monkeypatch):
     assert write_keys
     assert write_keys.isdisjoint(available_tools(None, user))
     for key in write_keys:
-        with pytest.raises(DomainError) as gateway_error:
-            gateway_execute(None, user, key, {"confirm": True, "confirm_import": True})
-        assert gateway_error.value.code == "TOOL_FORBIDDEN"
         with pytest.raises(DomainError) as direct_error:
             erp_design_mcp.execute_tool(None, user, key, {"confirm": True, "confirm_import": True})
         assert direct_error.value.code == "ERP_DESIGN_CONFIRMATION_REQUIRED"
+    # The worker may expose write capabilities, but gateway execution can only
+    # create a human-confirmed proposal. It must not reach the ERP adapter.
+    proposal = gateway_execute(None, user, "erp_design_manage_density", {
+        "operation": "create", "material_mark": "S50C", "density": "7.85",
+    }, run=SimpleNamespace(checkpoint={"agent_permission_mode": "ask"}))
+    assert proposal["source"] == "agent_proposal"
+    assert proposal["proposal"]["requires_approval"] is True
     for skill in skill_context(None, user):
         assert write_keys.isdisjoint(skill["optional_tools"])
         assert write_keys.isdisjoint(skill["activation_tools"] or [])
+
+
+def test_worker_catalog_can_offer_design_proposal_tools_without_publicly_exposing_them():
+    user = SimpleNamespace(super_admin=True)
+    public = set(available_tools(None, user))
+    worker = set(available_tools(None, user, include_writes=True))
+    worker_skills = {
+        skill["key"]: skill for skill in skill_context(None, user, include_writes=True)
+    }
+
+    assert "erp_design_import_new_mold" not in public
+    assert "erp_design_import_new_mold" in worker
+    assert "erp_design_import_modify_mold" in worker
+    assert "erp_design_import_new_mold" in worker_skills[
+        "erp_new_mold_design_upload"
+    ]["optional_tools"]
+    assert "erp_design_import_modify_mold" in worker_skills[
+        "erp_design_modify_mold_upload"
+    ]["optional_tools"]
 
 
 def test_erp_design_mcp_failure_classifies_unavailable_and_keeps_endpoint_safe(monkeypatch, tmp_path):
@@ -215,6 +238,7 @@ def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_pat
         calls.append((name, arguments))
         return {
             "sessionId": 321, "sheetType": "hardware", "canImport": True,
+            "drawingProcessing": True, "drawingProcessingStatus": "processing",
             "previewRows": [{"item_code_full": f"P4-{index}", "item_name": "五金件",
                              "qty": index, "detail": "ERP 原始解析字段" * 30}
                             for index in range(1, 10)],
@@ -245,13 +269,81 @@ def test_new_mold_parse_defaults_to_erp_auto_type_detection(monkeypatch, tmp_pat
         assert result["model_context"]["previewRowCount"] == 9
         assert "previewRows" not in result["model_context"]
         assert result["model_context_complete"] is True
+        assert result["host_follow_up"] == {
+            "tool": "erp_design_get_drawing_status",
+            "arguments": {"session_id": 321, "include_result": False},
+        }
+        assert result["host_completion"] == {
+            "terminal": True,
+            "response_kind": "BUSINESS",
+            "summary": "ERP 料单已解析，图纸匹配与归档仍在处理中；当前尚未导入。请在“查看订单”中核对明细。",
+            "suggestions": [],
+        }
         projected = _tool_result_for_model(result, prefer_model_context=True)
         assert "data" not in projected
+        assert "host_follow_up" not in projected
         assert estimate_json_tokens(projected) < 500
         assert estimate_json_tokens(result) > 3000
         assert event.detail["sheet_type"] == "hardware"
     finally:
         engine.dispose()
+
+
+def test_drawing_status_waits_briefly_for_erp_completion(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    responses = iter([
+        {
+            "sessionId": 392,
+            "status": "drawing_processing",
+            "drawingProcessing": True,
+            "drawingProcessingStatus": "processing",
+        },
+        {
+            "sessionId": 392,
+            "status": "parsed",
+            "phase": "completed",
+            "progressPercent": 100,
+            "drawingProcessing": False,
+            "drawingProcessingStatus": "completed",
+        },
+    ])
+    calls = []
+
+    def fake_call(name, arguments):
+        calls.append((name, arguments))
+        return next(responses)
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_call)
+    monkeypatch.setattr(erp_design_mcp.time, "sleep", lambda _seconds: None)
+
+    result = erp_design_mcp._read_drawing_status(392, False)
+
+    assert result["drawingProcessingStatus"] == "completed"
+    assert calls == [
+        ("get_new_mold_upload_status", {"sessionId": 392, "includeResult": False}),
+        ("get_new_mold_upload_status", {"sessionId": 392, "includeResult": False}),
+    ]
+
+
+def test_upload_host_completion_distinguishes_parse_and_import_preflight():
+    from domain_packs.mold import erp_design_mcp
+
+    parsed = erp_design_mcp._upload_host_completion({
+        "sessionId": 392,
+        "drawingProcessing": False,
+        "drawingProcessingStatus": "completed",
+    })
+    import_preflight = erp_design_mcp._upload_host_completion({
+        "sessionId": 392,
+        "drawingProcessing": False,
+        "drawingProcessingStatus": "completed",
+    }, requested_import=True)
+
+    assert parsed["terminal"] is True
+    assert parsed["response_kind"] == "BUSINESS"
+    assert import_preflight["response_kind"] == "CLARIFICATION"
+    assert "当前尚未导入" in import_preflight["summary"]
 
 
 def test_modify_mold_parse_fixes_erp_business_type_to_repair_other(monkeypatch, tmp_path):
@@ -340,7 +432,7 @@ def test_modify_mold_config_and_import_use_dedicated_erp_flow(monkeypatch):
                 "mold_code": "M250238-P4",
                 "preview_rows": rows,
                 "confirm_import": True,
-                "expected_date": "2026-09-21",
+                "expected_date": (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
                 "purchase_reason": "design_abnormal",
                 "remark": "设计异常改模",
             })
@@ -356,24 +448,31 @@ def test_modify_mold_config_and_import_use_dedicated_erp_flow(monkeypatch):
         })]
         assert control_calls == [
             ("get_modify_mold_approval_launch_config", {"sessionId": 322}),
+            ("get_modify_mold_approval_launch_config", {"sessionId": 322}),
             ("import_modify_mold_design", {
                 "sessionId": 322,
                 "sheetType": "steel",
                 "moldCode": "M250238-P4",
                 "previewRows": rows,
                 "urgencyLevel": "normal",
-                "expectedDate": "2026-09-21",
+                "expectedDate": (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
                 "purchaseReason": "design_abnormal",
                 "remark": "设计异常改模",
                 "allowDuplicate": False,
             }),
         ]
+        # The model only asks the host to prepare an import card. The full ERP
+        # payload remains authoritative and is validated after host binding.
         schema = tool_schema("erp_design_import_modify_mold")["function"]["parameters"]
-        assert schema["properties"]["purchase_reason"]["enum"] == [
+        assert set(schema["properties"]) == {"allow_duplicate"}
+        authoritative = erp_design_mcp._INPUTS[
+            "erp_design_import_modify_mold"
+        ].model_json_schema()
+        assert authoritative["properties"]["purchase_reason"]["enum"] == [
             "customer_change", "design_abnormal", "machining_abnormal", "assembly_abnormal",
             "trial_mold_abnormal", "outsource_abnormal", "process_improvement", "other_abnormal",
         ]
-        assert schema["properties"]["confirm_import"]["const"] is True
+        assert authoritative["properties"]["confirm_import"]["const"] is True
     finally:
         engine.dispose()
 
@@ -479,6 +578,9 @@ def test_agent_drawing_preview_tool_returns_owned_drawing_table_without_download
             "drawing_preview_url": "/purchase/drawing/resource/1190/preview",
             "item_code_full": "C04", "item_name": "导柱", "drawing_file_name": "C04.dxf",
             "length": 42, "unit_price": 123,
+        }, {
+            "item_code_full": "C05", "item_name": "导套",
+            "drawing_status": "no_drawing", "drawing_status_label": "无图",
         }]}
 
     monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_mcp)
@@ -499,6 +601,7 @@ def test_agent_drawing_preview_tool_returns_owned_drawing_table_without_download
             result = execute(db, user, "erp_design_preview_drawing", {
                 "session_id": 271, "drawing_id": 1190,
             })
+            overview = execute(db, user, "erp_design_preview_drawing", {"session_id": 271})
             with pytest.raises(DomainError, match="该图纸不属于当前上传会话"):
                 execute(db, user, "erp_design_preview_drawing", {"session_id": 271, "drawing_id": 999})
             with pytest.raises(DomainError, match="上传会话不存在"):
@@ -509,8 +612,22 @@ def test_agent_drawing_preview_tool_returns_owned_drawing_table_without_download
             "drawing_resource_id": 1190, "drawing_file_name": "C04.dxf",
         }]
         assert result["data"]["matchedCount"] == 1
+        assert result["model_context"]["matchedCount"] == 1
+        assert result["model_context"]["uniqueDrawingCount"] == 1
+        assert "previewRows" not in result["model_context"]
         assert "file" not in result["data"]
+        assert overview["data"]["totalRowCount"] == 2
+        assert overview["data"]["matchedCount"] == 1
+        assert overview["data"]["missingDrawingCount"] == 1
+        assert overview["model_context"]["missingDrawingItems"] == [{
+            "rowIndex": 2,
+            "item_code_full": "C05",
+            "item_name": "导套",
+            "drawing_status": "no_drawing",
+            "drawing_status_label": "无图",
+        }]
         assert mcp_calls == [
+            ("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True}),
             ("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True}),
             ("get_new_mold_upload_status", {"sessionId": 271, "includeResult": True}),
             ("get_new_mold_upload_result", {"sessionId": 271}),
@@ -518,6 +635,63 @@ def test_agent_drawing_preview_tool_returns_owned_drawing_table_without_download
         assert control_calls == []
     finally:
         engine.dispose()
+
+
+def test_drawing_preview_model_context_does_not_copy_large_table():
+    from agent_core.context_budget import estimate_json_tokens
+    from domain_packs.mold import erp_design_mcp
+
+    value = {
+        "displayMode": "design_drawings",
+        "sessionId": 392,
+        "moldCode": "M250238-P4",
+        "previewRows": [
+            {
+                "rowIndex": index,
+                "item_code_full": f"PART-{index:03d}",
+                "item_name": "五金件",
+                "drawing_resource_id": 1200 + (index % 12),
+                "drawing_file_name": f"drawing-{index:03d}.pdf",
+            }
+            for index in range(1, 78)
+        ],
+        "matchedCount": 77,
+    }
+
+    context = erp_design_mcp._drawing_preview_model_context(value)
+
+    assert context["matchedCount"] == 77
+    assert context["totalRowCount"] == 77
+    assert context["missingDrawingCount"] == 0
+    assert context["allRowsHaveDrawing"] is True
+    assert context["uniqueDrawingCount"] == 12
+    assert "previewRows" not in context
+    assert estimate_json_tokens(context) < 250
+
+
+def test_upload_result_model_context_reports_missing_drawings_without_copying_rows():
+    from agent_core.context_budget import estimate_json_tokens
+    from domain_packs.mold import erp_design_mcp
+
+    value = {
+        "sessionId": 417,
+        "moldCode": "M250238-P4",
+        "previewRows": [
+            {"rowIndex": 1, "item_code_full": "A01", "item_name": "导柱",
+             "drawing_resource_id": 1190, "drawing_status": "has_drawing"},
+            {"rowIndex": 2, "item_code_full": "A02", "item_name": "导套",
+             "drawing_status": "no_drawing", "drawing_status_label": "无图"},
+        ],
+    }
+
+    context = erp_design_mcp._upload_result_model_context(value)
+
+    assert context["drawingSummary"]["totalRowCount"] == 2
+    assert context["drawingSummary"]["matchedCount"] == 1
+    assert context["drawingSummary"]["missingDrawingCount"] == 1
+    assert context["drawingSummary"]["missingDrawingItems"][0]["item_code_full"] == "A02"
+    assert "previewRows" not in context
+    assert estimate_json_tokens(context) < 500
 
 
 def test_standard_hardware_query_keeps_erp_drawing_rows_and_keyword(monkeypatch):
@@ -873,7 +1047,12 @@ def test_upload_parameter_reader_reuses_conversation_session_and_projects_only_d
         ]
         assert drawings["data"] == {
             "displayMode": "design_drawings", "sessionId": 417, "moldCode": "M250238-P4",
-            "matchedCount": 1, "previewRows": [{
+            "totalRowCount": 2, "matchedCount": 1, "missingDrawingCount": 1,
+            "missingDrawingRows": [{
+                "rowIndex": 1, "item_code_full": "B2-05", "item_name": "下垫脚",
+                "drawing_status": "missing", "drawing_status_label": "无图",
+            }],
+            "previewRows": [{
                 "rowIndex": 2, "item_code_full": "DIE-01", "item_name": "下模板",
                 "drawing_resource_id": 1191, "drawing_file_name": "DIE-01.dxf",
             }],
@@ -931,6 +1110,8 @@ def test_erp_design_mcp_read_tool_is_registered_and_forwarded(monkeypatch):
             ("get_erp_mold_repair_approval", {"batchId": 18}),
         ]
         assert order["data"]["rows"][0]["moldNo"] == "M250238-P4"
+        assert order["model_context"]["total"] == 1
+        assert order["model_context"]["row_summaries"] == [{"moldNo": "M250238-P4"}]
         assert result["data"]["rows"][0]["moldNo"] == "M250238-P4"
         assert repair["data"]["total"] == 1
         assert result["source"] == "management-system ERP via erp-design-upload MCP"
@@ -947,6 +1128,32 @@ def test_erp_design_mcp_read_tool_is_registered_and_forwarded(monkeypatch):
         assert tool_schema("erp_design_query_bom")["function"]["name"] == "erp_design_query_bom"
     finally:
         engine.dispose()
+
+
+def test_erp_design_order_query_preserves_material_category_filter(monkeypatch):
+    from domain_packs.mold import erp_design_mcp
+
+    calls = []
+
+    def fake_call(name, arguments):
+        calls.append((name, arguments))
+        return {"rows": [], "total": 0}
+
+    monkeypatch.setattr(erp_design_mcp, "call_mcp", fake_call)
+    user = SimpleNamespace(super_admin=True)
+    execute(
+        None,
+        user,
+        "erp_design_query_orders",
+        {"query": {"moldNo": "M250238-P4", "materialType": "钢料"}},
+    )
+
+    assert calls == [
+        (
+            "query_erp_design_orders",
+            {"query": {"keyword": "M250238-P4", "sourceType": "steel"}},
+        )
+    ]
 
 
 def test_erp_design_master_data_query_aggregates_the_related_read_catalogues(monkeypatch):

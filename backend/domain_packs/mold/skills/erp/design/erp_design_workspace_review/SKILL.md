@@ -1,4 +1,4 @@
-当用户要求核对 ERP 的设计资料，或使用“设计与物料清单、钢料清单、五金清单、模具物料”等说法时，按问题选择对应工具：设计订单使用 `erp_design_query_orders`，图纸版本使用 `erp_design_query_drawing_versions`，BOM 及采购进度使用 `erp_design_query_bom` 或 `erp_design_query_bom_report`，设变使用 `erp_design_query_changes` 或 `erp_design_analyze_change`，标准件图纸、密度、分组规则和关键词使用对应的设计查询工具。修模或改模图纸异常使用审批批次、委外审批或加工商响应状态对应的读取工具。
+当用户要求核对 ERP 的设计资料，或使用“设计与物料清单、钢料清单、五金清单、模具物料”等说法时，按问题选择对应工具：设计订单使用 `erp_design_query_orders`，图纸版本使用 `erp_design_query_drawing_versions`，BOM 及采购进度使用 `erp_design_query_bom` 或 `erp_design_query_bom_report`，设变使用 `erp_design_query_changes` 或 `erp_design_analyze_change`，标准件图纸、密度、分组规则和关键词使用对应的设计查询工具。修模或改模图纸异常使用审批批次、委外审批或加工商响应状态对应的读取工具。查询“钢料设计订单”时，调用 `erp_design_query_orders` 必须在同一个 `query` 对象中传 `keyword` 和 `sourceType: "steel"`；查询“五金设计订单”时在同一个 `query` 对象中传 `sourceType: "hardware"`，不能只按模具号查询，否则 ERP 会返回该模具号下的两种订单。
 
 出现 `M250238-P4` 这类 ERP 模具号时优先核对 ERP 设计订单。用户只要求查看、打开或可视化设计订单时，只调用一次 `erp_design_query_orders` 并直接使用其列表回执回答；模具号作为查询条件传入，不得继续调用 `erp_design_get_record`，也不得猜测同一个数字是图纸版本、BOM、设变、密度或其他资源的 ID。只有用户明确要求“设计与物料清单、BOM、采购进度”等组合信息时，才在订单查询后调用对应 BOM 查询工具。只依据 ERP MCP 返回的原始状态说明事实。
 

@@ -1,6 +1,6 @@
 本技能处理 ERP 设计上传页面中“类型”选择“改模”的采购清单流程。它适用于上传改模钢料清单或改模五金清单，ERP 业务值固定为 `repair_other`。它不处理修改后 DXF 图纸的异常比较、数量确认、订单关联或加工商响应；这些属于 `erp_design_mold_repair`。也不得把本技能用于设备维修、模具保养或普通设变申请。
 
-用户要求上传修模/改模采购清单，或明确说“上传时类型选改模”时，确认当前会话中有一份 XLSX、XLS 或 CSV 附件，调用 `erp_design_parse_modify_mold_upload`。默认省略 `sheet_type` 或使用 `auto`，由 ERP 按现有表头规则识别钢料或五金；只有用户明确指定时才传 `steel` 或 `hardware`。该工具会把 `designOrderType` 固定为 `repair_other`，不得改用新模解析工具，也不得把 `repair_other` 当作请购原因。
+用户要求上传修模/改模采购清单，或明确说“上传时类型选改模”时，确认当前会话中有一份 XLSX、XLS 或 CSV 附件，调用 `erp_design_parse_modify_mold_upload`。默认省略 `sheet_type` 或使用 `auto`，由 ERP 按现有表头规则识别钢料、五金或备料；只有用户明确指定时才传 `steel`、`hardware` 或 `stock_prepare`。附图方料随 ERP 五金明细识别。该工具会把 `designOrderType` 固定为 `repair_other`，不得改用新模解析工具，也不得把 `repair_other` 当作请购原因。
 
 解析只建立 ERP 上传会话。若 ERP 正在处理图纸，使用 `erp_design_get_drawing_status` 等待完成，再用 `erp_design_get_upload_result` 读取完整表格。图纸匹配、预览、无图重匹配、钢料核价、公差判断和按图纸自动修正复用设计上传的共享工具；这些工具的结果不改变本会话的改模业务类型。只有用户明确要求重新匹配无图明细时，才在确认后调用 `erp_design_rematch_no_drawing`。
 
@@ -13,3 +13,5 @@
 只有用户已经核对模号、清单类型、明细、交期、请购原因、紧急程度和备注，并明确确认“导入并发起审批”后，才调用 `erp_design_import_modify_mold`，传入 `confirm_import: true`。该工具会再次调用 ERP 校验，随后以 `designOrderType: repair_other`、`importMode: new_request` 导入，不能降级为 `new_model`。
 
 如果 ERP 返回重复上传提示，展示重复单号或其他 ERP 证据，不得直接重试。只有用户针对该重复上传再次明确确认后，才能以相同会话和明细传 `allow_duplicate: true`。解析成功、图纸处理完成、明细校验通过或审批配置读取成功都不等于请购已创建；只有导入回执才能证明已创建并发起相应流程，审批通过、采购下单和加工完成仍需后续 ERP 状态证明。
+
+改模、备料和附图方料分支同样只使用 management-system ERP 已封装的设计修改/设计上传审批入口。导入确认前必须展示 ERP 当次流程配置；成功后只展示 ERP 返回的设计审批首节点和待审批状态。MoldPilot 不新增或复制审批节点、不创建本地设计审批实例，也不处理后续采购部门节点；写入必须同时通过宿主确认卡和一次性导入凭证。

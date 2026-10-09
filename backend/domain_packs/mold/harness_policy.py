@@ -11,7 +11,7 @@ ACTION_INTENT_TERMS = (
 FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "签署", "交接", "上报", "分派", "确认执行", "确认提交", "暂停项目", "恢复项目",
-    "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算",
+    "关闭项目", "终止项目", "确认回款", "确认付款", "扣款结算", "上传修改图纸", "上传改模图纸", "上传修模图纸", "上传修模改模图纸",
     "prepare", "submit", "create", "record", "sign", "execute action",
 )
 # Complete negative scopes are removed before the Harness tests for a positive
@@ -25,6 +25,9 @@ FORMAL_ACTION_NEGATED_PHRASES = (
     "不要办理", "不办理", "无需办理",
     "不要提交", "不提交", "无需提交",
     "不要执行", "不执行", "无需执行",
+    "不要上传修改图纸", "不上传修改图纸", "无需上传修改图纸",
+    "不要上传改模图纸", "不上传改模图纸", "无需上传改模图纸",
+    "不要上传修模图纸", "不上传修模图纸", "无需上传修模图纸",
     "do not prepare or execute action", "do not prepare or execute",
     "do not prepare", "do not submit", "do not execute", "read only",
 )
@@ -34,6 +37,7 @@ READ_ONLY_INTENT_TERMS = (
 UNAMBIGUOUS_FORMAL_ACTION_TERMS = (
     "准备", "办理", "登记", "创建", "建立", "新增", "提交", "发起", "录入", "导入",
     "维护", "修改", "删除", "启用", "停用", "更新", "确认执行", "确认提交", "暂停项目", "恢复项目", "关闭项目", "终止项目",
+    "上传修改图纸", "上传改模图纸", "上传修模图纸", "上传修模改模图纸",
     "确认回款", "确认付款", "扣款结算",
     "prepare", "submit", "create", "record", "execute action",
 )

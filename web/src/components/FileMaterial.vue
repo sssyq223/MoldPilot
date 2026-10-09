@@ -2,18 +2,18 @@
 import {computed,nextTick,onUnmounted,ref,shallowRef,watch} from 'vue'
 import type {PDFDocumentLoadingTask,PDFDocumentProxy} from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import {Download,Eye,FileText,Minus,Paperclip,Plus,X} from 'lucide-vue-next'
+import {Download,Eye,FileSearch,FileText,Minus,Paperclip,Plus,X} from 'lucide-vue-next'
 
 const DOCX='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const XLS='application/vnd.ms-excel'
 const CSV='text/csv'
-const props=defineProps<{file:any,reusable?:boolean}>()
+const props=defineProps<{file:any,reusable?:boolean,parseable?:boolean,actionBusy?:boolean}>()
 const isDocx=computed(()=>props.file.media_type===DOCX||String(props.file.filename||'').toLowerCase().endsWith('.docx'))
 const isSpreadsheet=computed(()=>[XLSX,XLS,CSV].includes(props.file.media_type)||/\.(xlsx|xls|csv)$/i.test(String(props.file.filename||'')))
 const isExcel=computed(()=>/\.(xlsx|xls)$/i.test(String(props.file.filename||'')))
 const spreadsheetView=ref<'pages'|'table'>('pages')
-const emit=defineEmits<{error:[message:string],reuse:[file:any]}>()
+const emit=defineEmits<{error:[message:string],reuse:[file:any],parse:[file:any]}>()
 const busy=ref(false),previewOpen=ref(false),previewBusy=ref(false),previewError=ref(''),previewNotice=ref('')
 const previewKind=ref<'docx'|'image'|'pdf'|'spreadsheet'|''>(''),previewUrl=ref('')
 type SpreadsheetCell={column:number;value:string|number|boolean|null;row_span?:number;column_span?:number;style?:{
@@ -216,7 +216,7 @@ async function openPreview(view:'pages'|'table'='pages'){
 <article class="file-material">
  <div class="file-material-main">
   <div class="file-material-heading"><FileText :size="18"/><div><strong>{{file.title||file.filename}}</strong><small>{{file.title?file.filename+' · ':''}}{{Math.ceil(file.size/1024)}} KB<span v-if="file.version"> · 第 {{file.version}} 版 · {{file.is_current?'当前版本':'历史版本'}}</span></small></div></div>
-  <div class="file-material-actions"><button type="button" :disabled="busy" @click="openPreview()"><Eye :size="14"/>在线预览</button><button v-if="reusable" type="button" :disabled="busy" @click="emit('reuse',file)"><Paperclip :size="14"/>引用到新消息</button></div>
+  <div class="file-material-actions"><button type="button" :disabled="busy||actionBusy" @click="openPreview()"><Eye :size="14"/>在线预览</button><button v-if="parseable" type="button" :disabled="busy||actionBusy" @click="emit('parse',file)"><FileSearch :size="14"/>解析</button><button v-if="reusable" type="button" :disabled="busy||actionBusy" @click="emit('reuse',file)"><Paperclip :size="14"/>引用到新消息</button></div>
  </div>
  <Teleport to="body">
   <div v-if="previewOpen" class="approval-file-preview-shade" @click.self="closePreview">

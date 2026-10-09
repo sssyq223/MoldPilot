@@ -14,6 +14,10 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONLEGACYWINDOWSSTDIO = '0'
 $env:PYTHONPATH = Join-Path $root 'backend'
+# The API and the workers are launched as one local installation. Override
+# the legacy MOLD_* value here so workers cannot inherit an unrelated 8000
+# endpoint from an old .env file.
+$env:AGENT_API_BASE_URL = 'http://127.0.0.1:8001'
 
 function Start-DetachedService {
     param(

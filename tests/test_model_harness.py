@@ -32,6 +32,20 @@ def test_read_only_status_words_do_not_trigger_formal_action_intent():
     assert harness_module._has_formal_action_intent('can_submit、erp_mapping_required') is False
 
 
+@pytest.mark.parametrize('prompt', [
+    '上传修改图纸',
+    '请上传改模图纸',
+    '上传修模图纸',
+    '上传修模改模图纸',
+])
+def test_mold_repair_drawing_upload_is_a_formal_action(prompt):
+    assert harness_module._has_formal_action_intent(prompt) is True
+
+
+def test_negated_mold_repair_drawing_upload_is_not_a_formal_action():
+    assert harness_module._has_formal_action_intent('不要上传修改图纸，只查询文件状态') is False
+
+
 def test_model_request_shape_and_tool_call():
     def serve(request):
         body = json.loads(request.content)
@@ -345,6 +359,69 @@ def test_tool_search_activates_deferred_business_tool_for_next_turn():
     assert model.tool_names == [['ToolSearch'], ['ToolSearch', 'query_projects'], ['ToolSearch', 'query_projects']]
     assert gateway.physical_calls == 1
     assert gateway.saved['active_tool_names'] == ['query_projects']
+
+
+def test_tool_search_requires_only_the_selected_skill_reader():
+    parser = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '解析当前 ERP 设计料单附件。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    upload_result = {'type': 'function', 'function': {
+        'name': 'erp_design_get_upload_result',
+        'description': '读取已完成上传会话的完整明细。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    validate_rows = {'type': 'function', 'function': {
+        'name': 'erp_design_validate_rows',
+        'description': '校验准备导入的明细。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    search = {'role': 'assistant', 'tool_calls': [{
+        'id': 'search-parser', 'type': 'function',
+        'function': {'name': 'ToolSearch', 'arguments': json.dumps({
+            'query': 'erp_design_parse_new_mold_upload',
+        })},
+    }]}
+    parse_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'parse-attachment', 'type': 'function',
+        'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'},
+    }]}
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '该附件是新模五金请购单。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([search, parse_call, final])
+
+    result = run_loop(context(
+        prompt='这个是什么料单',
+        core_tool_names=[],
+        tools=[parser, upload_result, validate_rows],
+        skills=[{
+            'key': 'erp_new_mold_design_upload',
+            'tools': [
+                'erp_design_parse_new_mold_upload',
+                'erp_design_get_upload_result',
+                'erp_design_validate_rows',
+            ],
+            'activation_tools': ['erp_design_parse_new_mold_upload'],
+            'activation_queries': ['料单'],
+            'requires_tool_evidence': True,
+        }],
+        tool_annotations={
+            'erp_design_parse_new_mold_upload': {'readOnlyHint': True},
+            'erp_design_get_upload_result': {'readOnlyHint': True},
+            'erp_design_validate_rows': {'readOnlyHint': True},
+        },
+    ), model, gateway)
+
+    assert result['summary'] == '该附件是新模五金请购单。'
+    assert gateway.saved['evidence_tools'] == ['erp_design_parse_new_mold_upload']
+    assert gateway.saved['attempted_tools'] == ['erp_design_parse_new_mold_upload']
+    assert not gateway.saved['protocol_repair_events']
 
 
 def test_deferred_action_after_authoritative_read_is_repaired_without_bypassing_read_only_boundary():
@@ -1750,7 +1827,10 @@ def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
         'erp_design_import_new_mold', 'erp_design_parse_modify_mold_upload',
         'erp_design_get_modify_mold_approval_config', 'erp_design_import_modify_mold',
     ]
-    tools = [{'type': 'function', 'function': {'name': name, 'description': name}}
+    tools = [{'type': 'function', 'function': {
+        'name': name, 'description': name,
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
              for name in names]
     skills = [
         {'key': 'erp_new_mold_design_upload',
@@ -1764,14 +1844,14 @@ def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
                             'erp_design_import_modify_mold']},
     ]
 
-    read_result = {'role': 'assistant', 'tool_calls': [{
-        'id': 'read-upload-result', 'type': 'function',
-        'function': {'name': 'erp_design_get_upload_result', 'arguments': '{}'},
+    import_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'prepare-import', 'type': 'function',
+        'function': {'name': 'erp_design_import_new_mold', 'arguments': '{}'},
     }]}
     final = {'role': 'assistant', 'content': json.dumps({
-        'response_kind': 'BUSINESS',
-        'summary': '已读取 ERP 上传会话，继续按其表单类型处理。',
-        'evidence_ids': ['e1'], 'suggestions': [],
+        'response_kind': 'AWAITING_APPROVAL',
+        'summary': '已按 ERP 上传会话和设计审批配置生成待确认导入建议。',
+        'evidence_ids': ['e1', 'e2', 'e3'], 'suggestions': [],
     }, ensure_ascii=False)}
 
     class InspectingModel(Model):
@@ -1781,18 +1861,49 @@ def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
             self.system = messages[0]['content']
             return copy.deepcopy(self.replies.pop(0))
 
-    model = InspectingModel([read_result, final])
-    gateway = Gateway()
-    run_loop(context(
-        prompt='导入', core_tool_names=[], tools=tools, skills=skills,
+    class ImportGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            if key == 'erp_design_get_upload_result':
+                return {
+                    'evidence_id': 'e1',
+                    'data': {'sessionId': 392, 'designOrderType': 'new_model'},
+                    'host_follow_up': {
+                        'tool': 'erp_design_get_approval_config',
+                        'arguments': {'session_id': 392},
+                    },
+                }
+            if key == 'erp_design_get_approval_config':
+                return {'evidence_id': 'e2', 'data': {'processName': '设计新模审批'}}
+            assert key == 'erp_design_import_new_mold'
+            assert arguments == {}
+            return {
+                'evidence_id': 'e3',
+                'source': 'agent_proposal',
+                'proposal': {'tool': key, 'requires_approval': True},
+            }
+
+    model = InspectingModel([import_call, final])
+    gateway = ImportGateway()
+    result = run_loop(context(
+        prompt='导入并发起审批', core_tool_names=[], tools=tools, skills=skills,
         conversation_history=[{
             'status': 'completed',
             'user': {'content': '解析当前附件', 'attachments': [{'filename': '料单.csv'}]},
             'assistant': {'summary': '已成功解析附件，ERP 上传会话已建立，请确认后导入。'},
         }],
         conversation_files=[{'filename': '料单.csv'}],
+        tool_annotations={
+            'erp_design_get_upload_result': {'readOnlyHint': True},
+            'erp_design_validate_rows': {'readOnlyHint': True},
+            'erp_design_get_approval_config': {'readOnlyHint': True},
+            'erp_design_get_modify_mold_approval_config': {'readOnlyHint': True},
+            'erp_design_import_new_mold': {'readOnlyHint': False},
+            'erp_design_import_modify_mold': {'readOnlyHint': False},
+        },
     ), model, gateway)
 
+    assert result['response_kind'] == 'AWAITING_APPROVAL'
     assert all('ToolSearch' not in names for names in model.names)
     assert all('erp_design_parse_new_mold_upload' not in names for names in model.names)
     assert 'erp_design_get_upload_result' in model.names[0]
@@ -1803,7 +1914,12 @@ def test_explicit_import_after_erp_parse_activates_real_erp_workflow_tools():
     assert 'prepare_project_erp_import' not in str(model.names)
     assert 'prepare_project_proposal' not in str(model.names)
     assert '严禁虚构 prepare_project_erp_import' in model.system
-    assert gateway.physical_calls == 1
+    assert gateway.physical_calls == 3
+    assert gateway.saved['evidence_tools'] == [
+        'erp_design_get_approval_config',
+        'erp_design_get_upload_result',
+        'erp_design_import_new_mold',
+    ]
 
 
 def test_old_or_unrelated_assistant_message_does_not_activate_design_import_tools():
@@ -1815,6 +1931,114 @@ def test_old_or_unrelated_assistant_message_does_not_activate_design_import_tool
             {'assistant': {'summary': '模型服务连接中断。'}, 'user': {'content': '继续'}},
         ],
     })
+
+
+def test_completed_parser_evidence_survives_terminal_composition_failure_for_import_continuation():
+    assert harness_module._is_design_upload_import_continuation({
+        'prompt': '确认导入',
+        'conversation_history': [{
+            'user': {'attachments': [{'filename': 'M250238-P4.csv'}]},
+            'assistant': {
+                'message': '业务工具已完成并保留结果，但模型未能生成最终说明。',
+                'error_code': 'MODEL_READ_TIMEOUT',
+                'composition_failed': True,
+                'completed_tools': [
+                    'erp_design_parse_new_mold_upload',
+                    'erp_design_get_drawing_status',
+                ],
+            },
+        }],
+    }) is True
+
+
+def test_mold_repair_upload_confirmation_reactivates_existing_erp_upload_tool():
+    context = {
+        'prompt': '确认上传',
+        'conversation_history': [{
+            'user': {'attachments': [{
+                'id': 'file-dxf-1',
+                'filename': 'M250238-P4-修改111.dxf',
+            }]},
+            'assistant': {
+                'summary': '已准备上传修改图纸的请求，待您确认图纸信息和操作。'
+            },
+        }],
+    }
+    assert harness_module._is_mold_repair_upload_confirmation(context) is True
+
+
+def test_mold_repair_upload_confirmation_accepts_clarification_receipt():
+    assert harness_module._is_mold_repair_upload_confirmation({
+        'prompt': '确认上传',
+        'conversation_history': [{
+            'user': {'attachments': [{
+                'id': 'file-dxf-1',
+                'filename': 'M250238-P4-修改111.dxf',
+            }]},
+            'assistant': {
+                'summary': '请确认您要上传的图纸文件 M250238-P4-修改111.dxf 是否为 M250238-P4 的修模/改模图纸。'
+            },
+        }],
+    }) is True
+
+
+def test_mold_repair_upload_confirmation_requires_the_matching_receipt():
+    assert not harness_module._is_mold_repair_upload_confirmation({
+        'prompt': '确认上传',
+        'conversation_history': [{
+            'user': {'attachments': [{
+                'id': 'file-dxf-1',
+                'filename': 'M250238-P4-修改111.dxf',
+            }]},
+            'assistant': {'summary': '查询订单已完成。'},
+        }],
+    })
+    assert not harness_module._is_mold_repair_upload_confirmation({
+        'prompt': '取消上传',
+        'conversation_history': [{
+            'user': {'attachments': [{
+                'id': 'file-dxf-1',
+                'filename': 'M250238-P4-修改111.dxf',
+            }]},
+            'assistant': {
+                'summary': '已准备上传修改图纸的请求，待您确认图纸信息和操作。'
+            },
+        }],
+    })
+
+
+def test_mold_repair_upload_confirmation_exposes_only_the_existing_erp_write_tool():
+    upload_tool = {'type': 'function', 'function': {
+        'name': 'erp_design_upload_mold_repair_drawing',
+        'description': '上传 ERP 修模改模 DXF 图纸。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+
+    class UploadModel(Model):
+        def __init__(self):
+            super().__init__([{
+                'role': 'assistant', 'tool_calls': [{
+                    'id': 'upload-call', 'type': 'function',
+                    'function': {'name': 'erp_design_upload_mold_repair_drawing', 'arguments': '{}'},
+                }]
+            }, copy.deepcopy(FINAL)])
+
+        def generate(self, messages, tools):
+            names = [(tool.get('function') or {}).get('name') for tool in tools]
+            assert names == ['erp_design_upload_mold_repair_drawing']
+            return super().generate(messages, tools)
+
+    result = run_loop(context(
+        prompt='确认上传', core_tool_names=[], tools=[upload_tool],
+        files=[{'id': 'file-dxf-1', 'filename': 'M250238-P4-修改111.dxf'}],
+        conversation_history=[{
+            'assistant': {'summary': '请确认您要上传的图纸文件 M250238-P4-修改111.dxf 是否为 M250238-P4 的修模/改模图纸。'},
+            'user': {'attachments': [{'id': 'file-dxf-1', 'filename': 'M250238-P4-修改111.dxf'}]},
+        }],
+        skills=[{'key': 'erp_design_mold_repair'}],
+        tool_annotations={'erp_design_upload_mold_repair_drawing': {'readOnlyHint': False}},
+    ), UploadModel(), Gateway())
+    assert result['response_kind'] == 'BUSINESS'
 
 
 def test_design_upload_route_defers_type_to_erp_form_when_unspecified():
@@ -2232,6 +2456,202 @@ def test_tolerance_prompt_directly_activates_authoritative_reader_without_tool_s
     assert gateway.saved['finalizing'] is True
 
 
+def test_design_parser_chains_declared_drawing_status_before_finalizing():
+    parser = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_new_mold_upload',
+        'description': '解析 ERP 新模设计清单',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    status = {'type': 'function', 'function': {
+        'name': 'erp_design_get_drawing_status',
+        'description': '查询 ERP 图纸匹配状态',
+        'parameters': {'type': 'object', 'properties': {
+            'session_id': {'type': ['integer', 'null']},
+            'include_result': {'type': 'boolean'},
+        }, 'additionalProperties': False},
+    }}
+    modify_parser = {'type': 'function', 'function': {
+        'name': 'erp_design_parse_modify_mold_upload',
+        'description': '解析 ERP 改模设计清单',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    upload_result = {'type': 'function', 'function': {
+        'name': 'erp_design_get_upload_result', 'description': '读取完整上传结果',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    validate_rows = {'type': 'function', 'function': {
+        'name': 'erp_design_validate_rows', 'description': '校验上传明细',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+
+    class DesignGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            if key == 'erp_design_parse_new_mold_upload':
+                assert arguments == {}
+                return {
+                    'evidence_id': 'parse-evidence',
+                    'model_context': {'sessionId': 389, 'drawingProcessing': True},
+                    'host_follow_up': {
+                        'tool': 'erp_design_get_drawing_status',
+                        'arguments': {'session_id': 389, 'include_result': False},
+                    },
+                }
+            assert key == 'erp_design_get_drawing_status'
+            assert arguments == {'session_id': 389, 'include_result': False}
+            return {
+                'evidence_id': 'status-evidence',
+                'data': {'sessionId': 389, 'drawingProcessingStatus': 'processing'},
+                'host_completion': {
+                    'terminal': True,
+                    'response_kind': 'CLARIFICATION',
+                    'summary': '料单已解析，ERP 图纸仍在处理中，尚未导入。',
+                    'suggestions': [],
+                },
+            }
+
+    parser_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'parse-new-mold', 'type': 'function',
+        'function': {'name': 'erp_design_parse_new_mold_upload', 'arguments': '{}'},
+    }]}
+    gateway = DesignGateway()
+    model = InspectingRepliesModel([parser_call])
+
+    result = run_loop(context(
+        prompt='导入并发起审批',
+        core_tool_names=[],
+        files=[{'id': 'file-1', 'filename': 'M250238-P4.csv', 'media_type': 'text/csv'}],
+        tools=[parser, modify_parser, status, upload_result, validate_rows],
+        tool_annotations={
+            'erp_design_parse_new_mold_upload': {'readOnlyHint': True},
+            'erp_design_parse_modify_mold_upload': {'readOnlyHint': True},
+            'erp_design_get_drawing_status': {'readOnlyHint': True},
+            'erp_design_get_upload_result': {'readOnlyHint': True},
+            'erp_design_validate_rows': {'readOnlyHint': True},
+        },
+        skills=[
+            {
+                'key': 'erp_new_mold_design_upload',
+                'tools': [
+                    'erp_design_parse_new_mold_upload',
+                    'erp_design_get_drawing_status',
+                    'erp_design_get_upload_result',
+                    'erp_design_validate_rows',
+                ],
+                'activation_tools': ['erp_design_parse_new_mold_upload'],
+                'auto_activation_queries': ['解析'],
+                'suppress_tool_search_on_auto_activation': True,
+                'requires_tool_evidence': True,
+                'host_auto_invoke_empty_arguments': True,
+                'host_auto_invoke_current_attachment_only': True,
+            },
+            {
+                'key': 'erp_design_modify_mold_upload',
+                'tools': [
+                    'erp_design_parse_modify_mold_upload',
+                    'erp_design_get_drawing_status',
+                    'erp_design_get_upload_result',
+                    'erp_design_validate_rows',
+                ],
+                'activation_tools': ['erp_design_parse_modify_mold_upload'],
+                'auto_activation_queries': ['解析'],
+                'suppress_tool_search_on_auto_activation': True,
+                'requires_tool_evidence': True,
+                'host_auto_invoke_empty_arguments': True,
+                'host_auto_invoke_current_attachment_only': True,
+            },
+        ],
+    ), model, gateway)
+
+    assert result['summary'] == '料单已解析，ERP 图纸仍在处理中，尚未导入。'
+    assert result['evidence_ids'] == ['parse-evidence', 'status-evidence']
+    assert gateway.physical_calls == 2
+    assert model.tool_names == [['erp_design_parse_new_mold_upload']]
+    assert gateway.saved['attempted_tools'] == [
+        'erp_design_get_drawing_status',
+        'erp_design_parse_new_mold_upload',
+    ]
+    assert gateway.saved['evidence_tools'] == [
+        'erp_design_get_drawing_status',
+        'erp_design_parse_new_mold_upload',
+    ]
+    assert gateway.saved['protocol_repairs'] == 0
+    assert gateway.saved['finalizing'] is True
+    assert gateway.saved['phase'] == 'COMPLETED'
+    assert 'erp_design_parse_modify_mold_upload' not in gateway.saved['active_tool_names']
+    assert 'erp_design_get_upload_result' not in gateway.saved['attempted_tools']
+    assert 'erp_design_validate_rows' not in gateway.saved['attempted_tools']
+
+
+def test_host_completion_is_ignored_for_write_capable_tool():
+    receipt = {
+        'evidence_id': 'write-evidence',
+        'host_completion': {
+            'terminal': True,
+            'response_kind': 'BUSINESS',
+            'summary': '不应信任的工具说明。',
+            'suggestions': [],
+        },
+    }
+
+    assert harness_module._trusted_host_completion(
+        receipt,
+        'prepare_import',
+        {'prepare_import': {'readOnlyHint': False}},
+    ) is None
+
+
+def test_declared_host_follow_up_cannot_activate_a_write_tool():
+    parser = {'type': 'function', 'function': {
+        'name': 'query_parser', 'description': '只读解析',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+    write_tool = {'type': 'function', 'function': {
+        'name': 'prepare_import', 'description': '准备导入',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    }}
+
+    class UnsafeContinuationGateway(Gateway):
+        def execute(self, seq, key, arguments):
+            self.physical_calls += 1
+            return {
+                'evidence_id': 'parse-evidence',
+                'host_follow_up': {'tool': 'prepare_import', 'arguments': {}},
+            }
+
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS', 'summary': '解析完成。',
+        'evidence_ids': ['parse-evidence'], 'suggestions': [],
+    }, ensure_ascii=False)}
+    parser_call = {'role': 'assistant', 'tool_calls': [{
+        'id': 'query-parser', 'type': 'function',
+        'function': {'name': 'query_parser', 'arguments': '{}'},
+    }]}
+    gateway = UnsafeContinuationGateway()
+    model = InspectingRepliesModel([parser_call, final])
+
+    result = run_loop(context(
+        prompt='查询项目解析对象', core_tool_names=['query_parser'], tools=[parser, write_tool],
+        tool_annotations={
+            'query_parser': {'readOnlyHint': True},
+            'prepare_import': {'readOnlyHint': False},
+        },
+        skills=[{
+            'key': 'safe_parser',
+            'tools': ['query_parser'],
+            'optional_tools': ['prepare_import'],
+            'activation_tools': ['query_parser'],
+            'auto_activation_queries': ['项目解析对象'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+        }],
+    ), model, gateway)
+
+    assert result['summary'] == '解析完成。'
+    assert gateway.physical_calls == 1
+    assert gateway.saved['attempted_tools'] == ['query_parser']
+
+
 def test_drawing_preview_host_binds_latest_upload_after_history_is_present():
     preview_tool = {'type': 'function', 'function': {
         'name': 'erp_design_preview_drawing',
@@ -2258,7 +2678,7 @@ def test_drawing_preview_host_binds_latest_upload_after_history_is_present():
             'tools': ['erp_design_preview_drawing'],
             'activation_tools': ['erp_design_preview_drawing'],
             'activation_queries': ['查看图纸', '料单的图纸'],
-            'auto_activation_queries': ['查看图纸', '料单的图纸'],
+            'auto_activation_queries': ['查看图纸', '料单的图纸', '哪些没有图纸'],
             'suppress_tool_search_on_auto_activation': True,
             'requires_tool_evidence': True,
             'host_auto_invoke_empty_arguments': True,
@@ -2269,6 +2689,60 @@ def test_drawing_preview_host_binds_latest_upload_after_history_is_present():
     assert model.tool_names == [[]]
     assert gateway.physical_calls == 1
     assert gateway.saved['attempted_tools'] == ['erp_design_preview_drawing']
+
+
+def test_drawing_status_does_not_require_material_parameter_evidence():
+    tools = [
+        {'type': 'function', 'function': {
+            'name': 'erp_design_query_upload_parameters',
+            'description': '读取当前上传会话中的材料参数',
+            'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+        }},
+        {'type': 'function', 'function': {
+            'name': 'erp_design_preview_drawing',
+            'description': '读取当前 ERP 上传会话中已匹配的图纸预览',
+            'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+        }},
+    ]
+    skills = [
+        {
+            'key': 'erp_design_upload_parameter_review',
+            'tools': ['erp_design_query_upload_parameters'],
+            'activation_tools': ['erp_design_query_upload_parameters'],
+            'auto_activation_queries': ['料单参数', '长宽厚与图纸'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+        },
+        {
+            'key': 'erp_design_drawing_preview',
+            'tools': ['erp_design_preview_drawing'],
+            'activation_tools': ['erp_design_preview_drawing'],
+            'auto_activation_queries': ['查看图纸', '料单的图纸', '哪些没有图纸'],
+            'suppress_tool_search_on_auto_activation': True,
+            'requires_tool_evidence': True,
+            'host_auto_invoke_empty_arguments': True,
+        },
+    ]
+    final = {'role': 'assistant', 'content': json.dumps({
+        'response_kind': 'BUSINESS',
+        'summary': '已查询图纸状态：77 条匹配记录，26 个图纸编号。',
+        'evidence_ids': ['e1'],
+        'suggestions': [],
+    }, ensure_ascii=False)}
+    gateway = Gateway()
+    model = InspectingRepliesModel([final])
+
+    result = run_loop(context(
+        prompt='其中有哪些没有图纸的',
+        core_tool_names=[],
+        tools=tools,
+        skills=skills,
+    ), model, gateway)
+
+    assert result['summary'].startswith('已查询图纸状态')
+    assert model.tool_names == [[]]
+    assert gateway.saved['attempted_tools'] == ['erp_design_preview_drawing']
+    assert not gateway.saved['protocol_repair_events']
 
 
 def test_combined_parameters_and_drawing_prompt_activates_both_readers():

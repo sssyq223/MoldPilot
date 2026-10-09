@@ -64,7 +64,11 @@ def install_mcp(app,worker_auth,fence,execute_step):
         elif method=='tools/list':
             if params.get('cursor'):return error(rid,-32602,'无效的工具分页标识')
             result={'tools':[]}
-            for k in tools.available_tools(db,user):
+            # This endpoint is the worker-only MCP boundary.  Public
+            # capability discovery intentionally hides write tools, but the
+            # Harness must see ERP write adapters so it can create the normal
+            # confirmation proposal before execution.
+            for k in tools.available_tools(db,user,include_writes=True):
                 function=tools.tool_schema(k)['function']
                 result['tools'].append({'name':function['name'],'description':function['description'],
                     'inputSchema':function['parameters'],
@@ -77,7 +81,7 @@ def install_mcp(app,worker_auth,fence,execute_step):
                 return error(rid,-32602,'工具调用参数无效')
             seq=meta.get('agent/sequence')
             if type(seq) is not int or not 0<=seq<30:return error(rid,-32602,'缺少有效的执行步骤编号')
-            if name not in tools.available_tools(db,user):return error(rid,-32602,'工具不存在或当前不可用')
+            if name not in tools.available_tools(db,user,include_writes=True):return error(rid,-32602,'工具不存在或当前不可用')
             try:
                 value=execute_step(db,run_id,{'epoch':epoch,'sequence':seq,'key':name,'arguments':arguments})
                 result={'content':[{'type':'text','text':json.dumps(value,ensure_ascii=False)}],

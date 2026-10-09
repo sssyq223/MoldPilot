@@ -810,7 +810,7 @@ const toleranceRows = computed(() => {
         <button v-if="preview.sheetType==='steel'" type="button" :disabled="repricing||loading||!localRows.length" @click="$emit('reprice',localRows)">
           {{repricing?'正在核算…':'重新核算价格'}}
         </button>
-        <button class="erp-design-import-button" type="button" :disabled="!canImport" :title="expectedDate && expectedDate>=minExpectedDate?'确认后将提交 ERP 导入':'请先选择今天或之后的交期'" @click="submitImport(false)">
+        <button class="erp-design-import-button" type="button" :disabled="!canImport" :title="expectedDate && expectedDate>=minExpectedDate?'创建 ERP 请购并启动设计审批流':'请先选择今天或之后的交期'" @click="submitImport(false)">
           {{importing ? '正在导入…' : '确认导入'}}
         </button>
       </div>

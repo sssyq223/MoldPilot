@@ -24,11 +24,13 @@ import ErpDesignDrawingTable from './components/ErpDesignDrawingTable.vue'
 import ErpDesignTechnicalRequirements from './components/ErpDesignTechnicalRequirements.vue'
 import ErpDrawingPreview from './components/ErpDrawingPreview.vue'
 import ErpDesignOrdersDialog from './components/ErpDesignOrdersDialog.vue'
+import ErpApprovalFlowReceipt from './components/ErpApprovalFlowReceipt.vue'
 import {applyTheme,storedTheme,type ColorTheme} from './theme'
 import {erpDesignBlockingErrors,erpDesignParameterTablesFromRun,erpDesignToleranceMergedIntoParameter,erpDesignDrawingsFromRun,erpDesignDrawingsFromTool,erpDesignParametersFromRun,erpDesignParametersFromTool,erpDesignSessionFromRun,erpDesignSessionFromTool,erpDesignTechnicalRequirementsFromRun,erpDesignTechnicalRequirementsFromTool,erpDesignToleranceFromRun,erpDesignToleranceFromTool,erpDesignUploadStatusLabel,mergeErpDesignDraft,normalizeErpDesignImportReceipt,normalizeErpDesignPreview,parseErpDesignDueDateCommand,parseErpDesignFormCommand,type ErpDesignImportReceipt,type ErpDesignPreviewSession,type ErpDesignRow} from './erpDesignPreview'
-import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
+import {erpDesignDrawingVersionTablesFromRun,erpDesignIdleMaterialTablesFromRun,erpDesignMasterDataTablesFromRun,erpDesignMoldRepairTablesFromRun,erpDesignProcessingTablesFromRun} from './erpDesignResultTables'
 import {activeRunElapsedSeconds,shouldRefreshRunProjection} from './runProjection'
 import {runDurationSeconds as calculateRunDurationSeconds,shouldPollActiveRun} from './runTiming'
+import {hasErpDesignParserCapability,isErpDesignParseAttachment} from './erpDesignAttachment'
 const colorTheme=ref<ColorTheme>(storedTheme())
 function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
 const product=ref<any>(initialProduct)
@@ -50,15 +52,20 @@ const erpDesignImporting=ref(false)
 const erpDesignPreviewNotice=ref('')
 const pendingErpDesignDueDate=ref('')
 const erpDesignDuplicateNotice=ref<{message:string;requestNo:string}|null>(null)
+const erpDesignApprovalProposal=ref<{sessionId:number;fingerprint:string;approval:any}|null>(null)
 const erpDesignImportReceipts=ref<Record<string,ErpDesignImportReceipt>>({})
 const erpDrawingPreviewRow=ref<ErpDesignRow|null>(null)
 const erpDesignDrafts=new Map<number,{expectedDate:string;remark:string;designOrderType:string;purchaseReason:string}>()
 const erpDesignRowRepriceTokens=new Map<string,number>()
 let erpDesignPreviewPoll:number|null=null
+let erpDesignImportStatusPoll:number|null=null
 let erpDesignPreviewRequest=0
 const loadedErpDesignImportStatuses=new Set<number>()
 const openedErpDesignRunIds=new Set<string>()
 const selectedFiles=ref<any[]>([]),uploading=ref(false),fileInput=ref<HTMLInputElement|null>(null)
+const moldRepairDrawingAttached=computed(()=>selectedFiles.value.some((file:any)=>
+ /^M\d{6}-P[^\\/\\\\]*\.dxf$/i.test(String(file?.filename||''))
+))
 const processedFileIds=ref<string[]>([]),documentRefresh=ref(0)
 function documentFilesHandled(ids:string[]){processedFileIds.value=ids;const handled=new Set(ids);selectedFiles.value=selectedFiles.value.filter(f=>!handled.has(f.id))}
 let conversationEpoch=0
@@ -74,7 +81,9 @@ function sortConversationRuns(items:any[]):any[]{
  return [...items].sort((left,right)=>conversationRunTime(left)-conversationRunTime(right)||String(left?.id||'').localeCompare(String(right?.id||'')))
 }
 const conversationRuns=computed(()=>sortConversationRuns([...runs.value,...localErpTurns.value]))
+const localErpReceiptSessionIds=computed(()=>new Set(localErpTurns.value.map(run=>embeddedErpDesignReceipt(run)?.sessionId||0).filter(Boolean)))
 const approvals=ref<any[]>([]),initiatedApprovals=ref<any[]>([]),approvalWorkItems=ref<any>({copied:[],overdue:[]}),detail=ref<any>(null),capabilities=ref<any>({tools:[],skills:[]})
+const erpDesignParserAvailable=computed(()=>hasErpDesignParserCapability(capabilities.value))
 const runEventsReady=ref(false)
 const runClock=ref(Date.now())
 let runEvents:EventSource|null=null
@@ -180,7 +189,7 @@ const latestContextUsage=computed(()=>{
  return {context_window:windowTokens,max_output_tokens:Number(modelLimits.value?.max_output_tokens||2048),used_tokens:inputTokens,remaining_tokens:remaining,used_percent:windowTokens?Math.round(inputTokens/windowTokens*1000)/10:0,input_tokens:0,input_tokens_estimated:inputTokens,output_tokens:0,reasoning_tokens:0,total_tokens:0,tool_count:0,tool_schema_count:0,tool_message_tokens_estimated:0,compaction_count:0,token_source:'estimate',remaining_label:formatTokenCount(remaining),used_label:formatTokenCount(inputTokens),window_label:formatTokenCount(windowTokens)}
 })
 watchEffect(()=>{if(typeof document!=='undefined')document.documentElement.style.setProperty('--context-percent',`${Math.min(100,Math.max(0,Number(latestContextUsage.value?.used_percent||0)))}%`)})
-const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_DOCUMENT:'等待文档解析',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
+const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_DOCUMENT:'等待文档解析',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',COMPOSITION_FAILED:'业务结果已生成，说明暂不可用',FAILED:'执行未完成',CANCELLED:'已停止'}
 const runErrorMessages:Record<string,string>={
  HTTPStatusError:'Harness 保存运行状态或调用内部接口时发生 HTTP 异常。',
  HARNESS_BACKEND_REJECTED:'Harness 的内部请求被后端拒绝。',
@@ -327,7 +336,7 @@ function runTrace(run:any){
 function runProcessTrace(run:any){
  return runTrace(run).filter((item:any)=>
   !['final','proposal_resolution'].includes(item.type)
-  && (run.status==='SUCCEEDED'||!erpDesignSessionFromTool(item)),
+  && (['SUCCEEDED','COMPOSITION_FAILED'].includes(run.status)||!erpDesignSessionFromTool(item)),
  )
 }
 function streamedTextKey(run:any,item:any,index:number){return `${run.id}:${item?.message_key||`index:${index}`}`}
@@ -497,14 +506,36 @@ async function copyMessage(text:string,key:string){
 }
 function evidenceTitle(item:any){return item?.proposal?'操作建议':capabilityName(item?.tool||'')}
 function stopErpDesignPreviewPolling(){if(erpDesignPreviewPoll!=null){window.clearTimeout(erpDesignPreviewPoll);erpDesignPreviewPoll=null}}
-function closeErpDesignPreview(){erpDesignPreviewRequest++;stopErpDesignPreviewPolling();erpDrawingPreviewRow.value=null;erpDesignPreview.value=null;erpDesignPreviewLoading.value=false;erpDesignPreviewError.value='';erpDesignPreviewNotice.value='';erpDesignRepricing.value=false;erpDesignImporting.value=false;erpDesignDuplicateNotice.value=null;pendingErpDesignDueDate.value='';erpTextActionNotice.value=''}
+function stopErpDesignImportStatusPolling(){if(erpDesignImportStatusPoll!=null){window.clearTimeout(erpDesignImportStatusPoll);erpDesignImportStatusPoll=null}}
+function closeErpDesignPreview(){erpDesignPreviewRequest++;stopErpDesignPreviewPolling();erpDrawingPreviewRow.value=null;erpDesignPreview.value=null;erpDesignPreviewLoading.value=false;erpDesignPreviewError.value='';erpDesignPreviewNotice.value='';erpDesignRepricing.value=false;erpDesignImporting.value=false;erpDesignDuplicateNotice.value=null;erpDesignApprovalProposal.value=null;pendingErpDesignDueDate.value='';erpTextActionNotice.value=''}
 function erpDesignImportReceipt(session:ErpDesignPreviewSession|null|undefined){return session?erpDesignImportReceipts.value[String(session.sessionId)]||null:null}
 function erpDesignUploadLabel(session:ErpDesignPreviewSession|null){return erpDesignUploadStatusLabel(session?.sheetType||'steel',Boolean(erpDesignImportReceipt(session)))}
 function setErpDesignImportReceipt(receipt:ErpDesignImportReceipt){erpDesignImportReceipts.value={...erpDesignImportReceipts.value,[String(receipt.sessionId)]:receipt}}
-async function loadErpDesignImportStatuses(currentRuns:any[]){
- const sessionIds=[...new Set(currentRuns.filter(run=>run.status==='SUCCEEDED').flatMap(run=>runTrace(run).map((item:any)=>erpDesignSessionFromTool(item)?.sessionId)).filter((value):value is number=>Boolean(value)))]
- const pending=sessionIds.filter(sessionId=>!loadedErpDesignImportStatuses.has(sessionId))
- if(!pending.length)return
+function embeddedErpDesignReceipt(run:any):ErpDesignImportReceipt|null{
+ const embedded=normalizeErpDesignImportReceipt(run?.result?.erp_design_receipt)
+ if(embedded)return embedded
+ const summary=String(run?.result?.summary||'').trim()
+ if(!String(run?.id||'').startsWith('local-erp-')||!summary.startsWith('已创建 ERP 请购'))return null
+ const receipts=Object.values(erpDesignImportReceipts.value)
+ return receipts.find(receipt=>receipt.message===summary)||receipts.sort((left,right)=>Date.parse(right.importedAt)-Date.parse(left.importedAt))[0]||null
+}
+function erpDesignReceiptFlowForRun(run:any):ErpDesignImportReceipt|null{
+ const embedded=embeddedErpDesignReceipt(run)
+ if(embedded)return embedded
+ const session=erpDesignSessionFromRun(run)
+ if(!session||localErpReceiptSessionIds.value.has(session.sessionId))return null
+ return erpDesignImportReceipt(session)
+}
+async function loadErpDesignImportStatuses(currentRuns:any[],force=false){
+ const sessionIds=[...new Set(currentRuns.filter(run=>['SUCCEEDED','COMPOSITION_FAILED'].includes(run.status)).flatMap(run=>runTrace(run).map((item:any)=>erpDesignSessionFromTool(item)?.sessionId)).filter((value):value is number=>Boolean(value)))]
+ const pending=force?sessionIds:sessionIds.filter(sessionId=>!loadedErpDesignImportStatuses.has(sessionId))
+ const schedule=()=>{
+  stopErpDesignImportStatusPolling()
+  if(sessionIds.length&&conversation.value){
+   erpDesignImportStatusPoll=window.setTimeout(()=>{void loadErpDesignImportStatuses(runs.value,true)},10000)
+  }
+ }
+ if(!pending.length){schedule();return}
  pending.forEach(sessionId=>loadedErpDesignImportStatuses.add(sessionId))
  try{
   const result=await post('/erp-design-uploads/import-statuses',{session_ids:pending})
@@ -514,7 +545,7 @@ async function loadErpDesignImportStatuses(currentRuns:any[]){
   }
  }catch{
   // Import status restoration is supplementary; the order remains usable if it cannot be read.
- }
+ }finally{schedule()}
 }
 async function loadErpDesignPreview(){
  const current=erpDesignPreview.value
@@ -645,6 +676,33 @@ function erpDesignDuplicateFromResult(value:any):{message:string;requestNo:strin
  const message=erpDesignDisplayMessage(result.message||result.errorMessage||result.error_message,'检测到同类型、同模号且明细相同的重复上传。')
  return {message,requestNo:String(result.requestNo||result.request_no||erpDesignDuplicateRequestNo(message)||'')}
 }
+function erpDesignApprovalStatusLabel(value:string):string{
+ const status=String(value||'').trim().toLowerCase()
+ if(['pending','design_pending','in_progress'].includes(status))return '审批中'
+ if(['approved','completed','passed'].includes(status))return '已通过'
+ if(['rejected','refused'].includes(status))return '已驳回'
+ return value||'审批中'
+}
+function erpDesignReceiptMessage(receipt:ErpDesignImportReceipt):string{
+ const steps=receipt.approvalSteps||[]
+ const currentApprovers=receipt.currentApproverNames?.length
+  ? receipt.currentApproverNames
+  : steps.find(step=>step.nodeName===receipt.currentNodeName)?.approverNames||[]
+ const lines=[
+  '已创建 ERP 请购并启动设计审批。',
+  '',
+  `- 回执单号：${receipt.requestNo||'ERP 未返回'}`,
+  `- 审批流程：${receipt.processName||'ERP 未返回'}`,
+  `- 当前审批节点：${receipt.currentNodeName||'ERP 未返回'}`,
+  `- 当前审批人：${currentApprovers.length?currentApprovers.join('、'):'ERP 未返回具体审批人'}`,
+  `- 当前状态：${erpDesignApprovalStatusLabel(receipt.approvalStatus||'PENDING')}`,
+ ]
+ if(steps.length){
+  lines.push('','**审批节点及审批人**')
+  steps.forEach((step,index)=>lines.push(`${index+1}. ${step.nodeName}  `,`   审批人：${step.approverNames.length?step.approverNames.join('、'):'ERP 未返回具体审批人'}`))
+ }
+ return lines.join('\n')
+}
 async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:string;remark:string;designOrderType:string;purchaseReason:string;allowDuplicate:boolean},sessionOverride?:ErpDesignPreviewSession):Promise<boolean>{
  const current=sessionOverride||erpDesignPreview.value
  if(!current||erpDesignImporting.value)return false
@@ -653,6 +711,39 @@ async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:
  erpDesignPreviewError.value=''
  erpDesignPreviewNotice.value=''
  try{
+  const approvalFingerprint=JSON.stringify({sessionId:current.sessionId,sheetType:current.sheetType,moldCode:current.moldCode||null,designOrderType:payload.designOrderType,expectedDate:payload.expectedDate,purchaseReason:payload.purchaseReason||null,remark:payload.remark||null,previewRows:payload.previewRows,allowDuplicate:payload.allowDuplicate})
+  let proposal=erpDesignApprovalProposal.value
+  const proposalExpired=proposal?.approval?.expiresAt&&Date.parse(String(proposal.approval.expiresAt))<=Date.now()
+  if(!proposal||proposal.sessionId!==current.sessionId||proposal.fingerprint!==approvalFingerprint||proposalExpired){
+   const approvalConfig=await post('/erp-design-uploads/approval-config',{
+    session_id:current.sessionId,
+    sheet_type:current.sheetType,
+    mold_code:current.moldCode||null,
+    design_order_type:payload.designOrderType,
+    urgency_level:'normal',
+    expected_date:payload.expectedDate,
+    purchase_reason:payload.purchaseReason||null,
+    remark:payload.remark||null,
+    preview_rows:payload.previewRows,
+    allow_duplicate:payload.allowDuplicate,
+   })
+   const configuredApproval=approvalConfig?.approval
+   if(!configuredApproval?.approvalToken)throw new Error('ERP 未返回设计审批确认凭证，请重新读取审批配置')
+   proposal={sessionId:current.sessionId,fingerprint:approvalFingerprint,approval:configuredApproval}
+   erpDesignApprovalProposal.value=proposal
+   const configuredProcess=String(configuredApproval.processName||'').trim()
+   const configuredNode=String(configuredApproval.currentNodeName||'').trim()
+   erpDesignPreviewNotice.value=configuredProcess
+    ? `已读取 ERP 设计审批配置：${configuredProcess}${configuredNode?`，首节点：${configuredNode}`:''}，正在创建请购并启动审批。`
+    : 'ERP 设计审批配置已读取，正在创建请购并启动审批。'
+   erpTextActionNotice.value=erpDesignPreviewNotice.value
+  }
+  const approval=proposal.approval
+  const processName=String(approval.processName||'').trim()
+  const currentNode=String(approval.currentNodeName||'').trim()
+  erpDesignPreviewNotice.value=processName
+   ? `ERP 设计审批流程：${processName}${currentNode?`，首节点：${currentNode}`:''}`
+   : '正在创建 ERP 请购并启动设计审批。'
   const result=await post('/erp-design-uploads/import',{
    session_id:current.sessionId,
    sheet_type:current.sheetType,
@@ -661,6 +752,7 @@ async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:
    purchase_reason:payload.purchaseReason||null,
    preview_rows:payload.previewRows,
    confirm_import:true,
+   approval_token:approval.approvalToken,
    urgency_level:'normal',
    expected_date:payload.expectedDate,
    remark:payload.remark||null,
@@ -677,13 +769,24 @@ async function importErpDesign(payload:{previewRows:ErpDesignRow[];expectedDate:
   const requestNo=String(response.requestNo??response.request_no??'').trim()
   erpDesignDuplicateNotice.value=null
   erpDesignDrafts.delete(current.sessionId)
-  const receipt={
+  const receipt=normalizeErpDesignImportReceipt({
    sessionId:current.sessionId,
    requestNo,
-   message:requestNo?`已成功导入 ERP，回执单号：${requestNo}`:'已成功导入 ERP，并收到导入回执。',
+   requestId:String(response.requestId??response.request_id??'').trim(),
+   processCode:String(response.processCode??response.process_code??approval.processCode??'').trim(),
+   processName:String(response.processName??response.process_name??approval.processName??'').trim(),
+   currentNodeName:String(response.currentNodeName??response.current_node_name??approval.currentNodeName??'').trim(),
+   currentApproverNames:response.currentApproverNames??response.current_approver_names??approval.currentApproverNames??[],
+   approvalSteps:response.approvalSteps??response.approval_steps??approval.approvalSteps??[],
+   approvalStatus:String(response.approvalStatus??response.approval_status??'PENDING').trim(),
+   workflowInstanceId:String(response.workflowInstanceId??response.workflow_instance_id??'').trim(),
+   message:'',
    importedAt:new Date().toISOString(),
-  }
+  })
+  if(!receipt)throw new Error('ERP 导入成功，但回执格式无效')
+  receipt.message=erpDesignReceiptMessage(receipt)
   setErpDesignImportReceipt(receipt)
+  erpDesignApprovalProposal.value=null
   closeErpDesignPreview()
   // closeErpDesignPreview clears transient form notices; restore the durable
   // import result so a text-confirmed import gets a visible success turn.
@@ -883,14 +986,35 @@ function isErpDesignImportCommand(input:string): boolean {
 function appendLocalErpTurn(userPrompt:string,assistantText:string){
  const message=String(assistantText||'').trim()
  if(!message)return
+ const session=latestErpDesignSession()
+ const receipt=message.startsWith('已创建 ERP 请购')?erpDesignImportReceipt(session):null
  localErpTurns.value=[...localErpTurns.value,{
   id:`local-erp-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
   prompt:userPrompt,
   status:'SUCCEEDED',
   created_at:new Date().toISOString(),
-  result:{summary:message},
+  result:{summary:message,erp_design_receipt:receipt||undefined},
+  erp_duplicate_confirmation:Boolean(erpDesignDuplicateNotice.value&&/确认重复导入/.test(message)),
  }]
  void nextTick(()=>chatScroll.value?.scrollTo({top:chatScroll.value.scrollHeight,behavior:'smooth'}))
+}
+function showErpDuplicateConfirmation(run:any):boolean{
+ return Boolean(run?.erp_duplicate_confirmation&&erpDesignDuplicateNotice.value&&!erpDesignImportReceipt(erpDesignPreview.value||latestErpDesignSession()))
+}
+async function confirmErpDuplicateFromButton(){
+ const current=erpDesignPreview.value||latestErpDesignSession()
+ if(!current||erpDesignImporting.value||activeConversationArchived.value)return
+ const command='确认重复导入'
+ erpTextActionNotice.value=''
+ await importErpDesignFromText(current,command)
+ appendLocalErpTurn(command,erpTextActionNotice.value)
+}
+async function importErpDesignFromCard(current:ErpDesignPreviewSession|null){
+ if(!current||erpDesignImporting.value||activeConversationArchived.value||erpDesignImportReceipt(current))return
+ const command='导入'
+ erpTextActionNotice.value=''
+ await importErpDesignFromText(current,command)
+ appendLocalErpTurn(command,erpTextActionNotice.value)
 }
 function erpDesignTextImportType(value:string):'new_model'|'repair_other'{
  const raw=String(value||'').toLowerCase()
@@ -1046,7 +1170,19 @@ async function tryHandleErpDesignFormMessage(): Promise<boolean> {
  if(importRequested)return await importErpDesignFromText(erpDesignPreview.value||updatedCurrent,text)
  return true
 }
-async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;const submittedText=prompt.value.trim();if(await tryHandleErpDesignFormMessage()){appendLocalErpTurn(submittedText,erpTextActionNotice.value);return}busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+async function submitAgentRun(text:string,fileIds:string[]){
+ if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}
+ if(!text.trim()||busy.value||uploading.value||running.value)return
+ busy.value=true;error.value=''
+ try{const r=await post('/runs',{prompt:text.trim(),conversation_id:conversation.value||null,file_ids:fileIds,agent_permission_mode:approvalPermissionMode.value});const bound=new Set(fileIds);selectedFiles.value=selectedFiles.value.filter(file=>!bound.has(String(file.id)));if(prompt.value.trim()===text.trim())prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}
+}
+async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value||running.value)return;const submittedText=prompt.value.trim();if(await tryHandleErpDesignFormMessage()){appendLocalErpTurn(submittedText,erpTextActionNotice.value);return}await submitAgentRun(submittedText,selectedFiles.value.map(file=>String(file.id)))}
+async function parseDesignAttachment(file:any){
+ if(!erpDesignParserAvailable.value||!isErpDesignParseAttachment(file))return
+ const fileId=String(file?.id||'')
+ if(!fileId)return
+ await submitAgentRun('解析',[fileId])
+}
 async function queryGroupKeywordPage(result:any,page:number){
  if(!result||page<1||busy.value)return
  const filter=result.keywordText?`，包含“${result.keywordText}”`:''
@@ -1061,6 +1197,7 @@ function reuseConversationFile(file:any){
 }
 async function handleAdminStartDraftAction(payload:{prompt:string}){prompt.value=payload.prompt;await send()}
 async function stopActiveRun(){const run=activeRun.value;if(!run||busy.value)return;busy.value=true;error.value='';try{await post('/runs/'+run.id+'/cancel');if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+async function retryComposition(run:any){if(!run?.id||run.status!=='COMPOSITION_FAILED'||busy.value)return;busy.value=true;error.value='';try{await post(`/runs/${run.id}/retry-composition`);if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function uploadFiles(event:Event){
  const input=event.target as HTMLInputElement,files=Array.from(input.files||[]);input.value=''
  if(!files.length||uploading.value)return
@@ -1117,8 +1254,8 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
     <div v-if="conversationLoading" class="conversation-loading" role="status"><span class="pulse"/>正在打开会话…</div>
     <section v-else-if="!conversationRuns.length&&selectedFiles.length&&conversation" class="draft-conversation" aria-label="待发送附件会话">
       <div class="draft-conversation-card">
-        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'文件已自动进入后台解析，解析状态和工具调用会回到本会话；你可以继续追问合同内容。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
-        <FileMaterial v-for="file in selectedFiles" :key="file.id" :file="file" @error="fail"/>
+        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'支持自动处理的文件正在后台解析，无需发送消息；其他附件可输入问题后发送任务。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
+        <FileMaterial v-for="file in selectedFiles" :key="file.id" :file="file" :parseable="erpDesignParserAvailable&&isErpDesignParseAttachment(file)" :action-busy="busy||uploading||running" @parse="parseDesignAttachment" @error="fail"/>
       </div>
     </section>
     <WelcomePanel v-else-if="!conversationRuns.length&&!processedFileIds.length" :capabilities="capabilities" @prompt="prompt=$event"/>
@@ -1187,10 +1324,14 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
                       <div v-else-if="erpDesignSessionFromTool(item)" class="agent-tool-main agent-evidence-brief">
                         <span>
                           <strong>{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?'ERP 清单已成功导入':(erpDesignSessionFromTool(item)?.moldCode||erpDesignSessionFromTool(item)?.fileName||'ERP 设计上传清单')}}</strong>
-                          <small v-if="erpDesignImportReceipt(erpDesignSessionFromTool(item))">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo:'ERP 已返回成功回执'}}</small>
+                          <small v-if="erpDesignImportReceipt(erpDesignSessionFromTool(item))">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromTool(item))?.requestNo:'ERP 已返回设计审批回执'}}{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.currentNodeName?' · 待'+erpDesignImportReceipt(erpDesignSessionFromTool(item))?.currentNodeName+'审批':''}}</small>
+                          <small v-if="erpDesignImportReceipt(erpDesignSessionFromTool(item))?.processName">已启动 {{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.processName}} · 等待 ERP 设计审批<template v-if="erpDesignImportReceipt(erpDesignSessionFromTool(item))?.workflowInstanceId"> · 流程实例 {{erpDesignImportReceipt(erpDesignSessionFromTool(item))?.workflowInstanceId}}</template></small>
                           <small v-else>ERP 上传会话 {{erpDesignSessionFromTool(item)?.sessionId}} · {{erpDesignSessionFromTool(item)?.rowCount}} 行解析明细</small>
                         </span>
-                        <button :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromTool(item)))" :title="erpDesignImportReceipt(erpDesignSessionFromTool(item))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreviewFromTool(item)">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?'已导入':'查看订单'}}</button>
+                        <div class="erp-design-result-buttons">
+                          <button :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromTool(item)))" :title="erpDesignImportReceipt(erpDesignSessionFromTool(item))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreviewFromTool(item)">{{erpDesignImportReceipt(erpDesignSessionFromTool(item))?'已导入':'查看订单'}}</button>
+                          <button v-if="!erpDesignImportReceipt(erpDesignSessionFromTool(item))" type="button" :disabled="erpDesignImporting||activeConversationArchived" title="确认后创建 ERP 请购并启动审批流" @click="importErpDesignFromCard(erpDesignSessionFromTool(item))">{{erpDesignImporting?'正在导入…':'确认导入'}}</button>
+                        </div>
                       </div>
                       <div v-else-if="isErpDesignOrdersEvidence(item)" class="agent-tool-main agent-evidence-brief">
                         <span>
@@ -1233,13 +1374,18 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
               </div>
             </div>
             <div v-for="(finalItem,finalIndex) in runFinalTraces(run)" :key="'final:'+finalIndex" class="assistant-prose final">
-              <MarkdownText v-if="(finalItem.summary || finalItem.message) && !erpDesignTechnicalRequirementsFromRun(run)" :text="finalItem.summary ?? finalItem.message"/>
-              <div v-if="finalItem.error_code" class="run-error-detail" role="note">
-                <strong>失败原因</strong><span>{{runFailureReason(finalItem.error_code)}}</span><code>错误码 {{finalItem.error_code}}</code>
+              <MarkdownText v-if="(finalItem.summary || finalItem.message) && !erpDesignTechnicalRequirementsFromRun(run) && !embeddedErpDesignReceipt(run)" :text="finalItem.summary ?? finalItem.message"/>
+              <div v-if="finalItem.error_code" class="run-error-detail" :class="{composition:run.status==='COMPOSITION_FAILED'}" role="note">
+                <strong>{{run.status==='COMPOSITION_FAILED'?'说明生成状态':'失败原因'}}</strong><span>{{runFailureReason(finalItem.error_code)}}</span><code>错误码 {{finalItem.error_code}}</code>
+                <button v-if="run.status==='COMPOSITION_FAILED'" type="button" :disabled="busy" @click="retryComposition(run)">重新生成说明</button>
               </div>
               <ul v-if="finalItem.suggestions?.length">
                 <li v-for="s in finalItem.suggestions" :key="s"><MarkdownText :text="s" inline/></li>
               </ul>
+            </div>
+            <ErpApprovalFlowReceipt v-if="erpDesignReceiptFlowForRun(run)" :receipt="erpDesignReceiptFlowForRun(run)!"/>
+            <div v-if="showErpDuplicateConfirmation(run)" class="erp-duplicate-confirm-action">
+              <button type="button" :disabled="erpDesignImporting||activeConversationArchived" @click="confirmErpDuplicateFromButton">{{erpDesignImporting?'正在重复导入…':'确认重复导入'}}</button>
             </div>
             <ErpDesignTechnicalRequirements :result="erpDesignTechnicalRequirementsFromRun(run)"/>
             <ErpDesignToleranceTable v-if="!erpDesignToleranceMergedIntoParameter(run)" :preview="erpDesignToleranceFromRun(run)"/>
@@ -1250,13 +1396,18 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             <ErpDesignResultTable v-for="result in erpDesignProcessingTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignDrawingVersionTablesFromRun(run)" :key="result.key" :result="result"/>
             <ErpDesignResultTable v-for="result in erpDesignIdleMaterialTablesFromRun(run)" :key="result.key" :result="result"/>
+            <ErpDesignResultTable v-for="result in erpDesignMoldRepairTablesFromRun(run)" :key="result.key" :result="result"/>
             <div v-if="!erpDesignDrawingsFromRun(run).length&&erpDesignSessionFromRun(run)" class="erp-design-result-action" :class="{imported:Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))}" :role="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'status':undefined">
               <span>
                 <strong>{{erpDesignUploadLabel(erpDesignSessionFromRun(run))}}</strong>
-                <small v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo:'ERP 已返回成功回执'}} · 上传会话 {{erpDesignSessionFromRun(run)?.sessionId}}</small>
+                <small v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo?'回执单号 '+erpDesignImportReceipt(erpDesignSessionFromRun(run))?.requestNo:'ERP 已返回设计审批回执'}}{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.currentNodeName?' · 待'+erpDesignImportReceipt(erpDesignSessionFromRun(run))?.currentNodeName+'审批':''}} · 上传会话 {{erpDesignSessionFromRun(run)?.sessionId}}</small>
+                <small v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))?.processName">已启动 {{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.processName}} · 等待 ERP 设计审批<template v-if="erpDesignImportReceipt(erpDesignSessionFromRun(run))?.workflowInstanceId"> · 流程实例 {{erpDesignImportReceipt(erpDesignSessionFromRun(run))?.workflowInstanceId}}</template></small>
                 <small v-else>上传会话 {{erpDesignSessionFromRun(run)?.sessionId}} · {{erpDesignSessionFromRun(run)?.rowCount}} 行解析明细</small>
               </span>
-              <button type="button" :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))" :title="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreview(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?'已导入':'查看订单'}}</button>
+              <div class="erp-design-result-buttons">
+                <button type="button" :disabled="Boolean(erpDesignImportReceipt(erpDesignSessionFromRun(run)))" :title="erpDesignImportReceipt(erpDesignSessionFromRun(run))?'该订单已成功导入，不能重复提交':'查看订单'" @click="openErpDesignPreview(erpDesignSessionFromRun(run))">{{erpDesignImportReceipt(erpDesignSessionFromRun(run))?'已导入':'查看订单'}}</button>
+                <button v-if="!erpDesignImportReceipt(erpDesignSessionFromRun(run))" type="button" :disabled="erpDesignImporting||activeConversationArchived" title="确认后创建 ERP 请购并启动审批流" @click="importErpDesignFromCard(erpDesignSessionFromRun(run))">{{erpDesignImporting?'正在导入…':'确认导入'}}</button>
+              </div>
             </div>
             <div v-if="erpDesignOrdersFromRun(run)" class="erp-design-result-action">
               <span>
@@ -1274,7 +1425,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
           <div v-if="assistantCopyText(run)" class="message-actions assistant-message-actions">
             <button class="message-action" :class="{copied:copiedMessage==='assistant:'+run.id}" :title="copiedMessage==='assistant:'+run.id?'已复制':'复制消息'" :aria-label="copiedMessage==='assistant:'+run.id?'助手消息已复制':'复制助手消息'" @click="copyMessage(assistantCopyText(run),'assistant:'+run.id)"><Check v-if="copiedMessage==='assistant:'+run.id" :size="14"/><Copy v-else :size="14"/></button>
             <span v-if="copiedMessage==='assistant:'+run.id" class="copy-feedback">已复制</span>
-            <span>{{messageTime(run.created_at,run.status==='SUCCEEDED'?runDurationSeconds(run):0)}}</span>
+            <span>{{messageTime(run.created_at,['SUCCEEDED','COMPOSITION_FAILED'].includes(run.status)?runDurationSeconds(run):0)}}</span>
           </div>
         </div>
       </div>
@@ -1285,7 +1436,8 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
   <form v-else class="composer" @submit.prevent="send">
     <div v-if="selectedFiles.length" class="composer-files"><span v-for="file in selectedFiles" :key="file.id">{{file.filename}}<button type="button" class="icon-button" :aria-label="'取消本次关联附件：'+file.filename" @click="selectedFiles=selectedFiles.filter(f=>f.id!==file.id)"><X :size="13"/></button></span></div>
     <p v-if="uploading" role="status" class="muted small">正在保存上传原件…</p>
-    <textarea v-model="prompt" placeholder="输入任务或问题…" aria-label="输入任务或问题" rows="3" @keydown.enter.exact.prevent="send"/>
+    <p v-else-if="moldRepairDrawingAttached" class="composer-hint" role="status">已识别为 ERP 修模/改模图纸；输入“上传修改图纸”并发送，系统会先核对文件并请求确认。</p>
+    <textarea v-model="prompt" :placeholder="moldRepairDrawingAttached?'输入“上传修改图纸”后发送…':'输入任务或问题…'" aria-label="输入任务或问题" rows="3" @keydown.enter.exact.prevent="send"/>
     <div class="composer-toolbar">
       <input ref="fileInput" hidden type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.xls,.csv,.dxf,.dwg,.prt" multiple aria-label="选择上传附件" @change="uploadFiles"/>
       <button v-if="permissions.includes('file.upload')" type="button" class="icon-button" aria-label="上传附件" title="上传附件" :disabled="uploading||busy" @click="fileInput?.click()"><Paperclip :size="17"/></button>

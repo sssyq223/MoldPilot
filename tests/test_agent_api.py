@@ -1,4 +1,5 @@
 from datetime import timedelta
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -361,6 +362,92 @@ def test_failed_run_marks_unfinished_tool_call_as_interrupted(client, data, monk
     assert failed['trace'][0]['type'] == 'tool_interrupted'
     assert failed['trace'][0]['tool'] == 'ToolSearch'
     assert failed['trace'][-1]['error_code'] == 'MODEL_OUTPUT_INVALID'
+
+
+def test_terminal_model_timeout_preserves_completed_tools_and_retries_only_composition(
+        client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    executed = execute(client, claimed)
+    assert executed.status_code == 200, executed.text
+    tool_result = executed.json()
+    evidence_id = tool_result['evidence_id']
+    signature = 'query_purchase_requests:durable-signature'
+    checkpoint = {
+        'messages': [
+            {'role': 'assistant', 'content': '正在查询采购申请。', 'tool_calls': [{
+                'id': 'query-1', 'type': 'function',
+                'function': {'name': 'query_purchase_requests', 'arguments': '{}'},
+            }]},
+            {'role': 'tool', 'tool_call_id': 'query-1',
+             'content': json.dumps(tool_result, ensure_ascii=False)},
+        ],
+        'turn': 1,
+        'phase': 'MODEL_FAILED',
+        'pending': [],
+        'finalizing': True,
+        'tool_count': 1,
+        'evidence_ids': [evidence_id],
+        'required_evidence_tools': ['query_purchase_requests'],
+        'evidence_tools': ['query_purchase_requests'],
+        'attempted_tools': ['query_purchase_requests'],
+        'executed_tool_signatures': [signature],
+        'model_metrics': {'total_ms': 120000, 'retry_count': 1},
+    }
+    saved = client.post(
+        f"/internal/runs/{run['id']}/checkpoint",
+        headers=worker_headers(),
+        json={'epoch': claimed['epoch'], 'checkpoint': checkpoint},
+    )
+    assert saved.status_code == 200, saved.text
+
+    failed = client.post(
+        f"/internal/runs/{run['id']}/fail",
+        headers=worker_headers(),
+        json={'epoch': claimed['epoch'], 'code': 'MODEL_READ_TIMEOUT'},
+    )
+    assert failed.status_code == 200, failed.text
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]
+    assert history['status'] == 'COMPOSITION_FAILED'
+    assert history['result']['composition_failed'] is True
+    assert history['result']['evidence_ids'] == [evidence_id]
+    assert any(item.get('type') == 'tool' and item.get('id') == evidence_id
+               for item in history['trace'])
+    assert history['trace'][-1]['error_code'] == 'MODEL_READ_TIMEOUT'
+
+    retried = client.post(f"/api/runs/{run['id']}/retry-composition")
+    assert retried.status_code == 200, retried.text
+    assert retried.json()['status'] == 'QUEUED'
+    resumed = client.post('/internal/runs/claim', headers=worker_headers()).json()['run']
+    assert resumed['id'] == run['id']
+    assert resumed['finalizing'] is True
+    assert resumed['evidence_ids'] == [evidence_id]
+    assert resumed['executed_tool_signatures'] == [signature]
+    assert resumed['composition_attempt'] == 1
+    with data[1]() as db:
+        steps = list(db.scalars(select(Step).where(Step.run_id == run['id'])))
+        assert len(steps) == 1
+
+
+def test_model_timeout_before_business_evidence_remains_failed(client, data, monkeypatch):
+    run, claimed = start(client, monkeypatch)
+    saved = client.post(
+        f"/internal/runs/{run['id']}/checkpoint",
+        headers=worker_headers(),
+        json={'epoch': claimed['epoch'], 'checkpoint': {
+            'messages': [], 'turn': 0, 'phase': 'MODEL_FAILED',
+            'pending': [], 'finalizing': False, 'evidence_ids': [],
+        }},
+    )
+    assert saved.status_code == 200, saved.text
+    failed = client.post(
+        f"/internal/runs/{run['id']}/fail",
+        headers=worker_headers(),
+        json={'epoch': claimed['epoch'], 'code': 'MODEL_READ_TIMEOUT'},
+    )
+    assert failed.status_code == 200, failed.text
+    history = client.get(f"/api/conversations/{run['conversation_id']}/runs").json()[0]
+    assert history['status'] == 'FAILED'
+    assert history['result']['error_code'] == 'MODEL_READ_TIMEOUT'
 
 
 def test_tool_search_result_is_projected_as_harness_activity(client, data, monkeypatch):

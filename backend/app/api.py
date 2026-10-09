@@ -23,7 +23,8 @@ from .events import record
 from .run_events import publish_run_update, subscribe_run_updates
 from .domain_pack import manifest as load_domain_manifest
 from agent_core.domain_pack import component, resource_contract
-from agent_core.run_status import ACTIVE_STATUSES, SCOPED_QUEUED, WAITING_DOCUMENT, public_run_status
+from agent_core.run_status import (ACTIVE_STATUSES, COMPOSITION_FAILED, SCOPED_QUEUED,
+                                   WAITING_DOCUMENT, composition_retry_checkpoint, public_run_status)
 from domain_packs.mold import models as mold_models
 
 active_manifest = load_domain_manifest()
@@ -114,6 +115,8 @@ def run_trace(run, steps, decisions=None):
     tool_result_call_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool" and msg.get("tool_call_id")}
     tool_names_by_call = {}
     trace = []
+    resolution = (run.checkpoint or {}).get("proposal_resolution") or {}
+    resolution_projected = False
     assistant_turn = 0
     assistant_texts = set()
     for msg in messages:
@@ -162,15 +165,26 @@ def run_trace(run, steps, decisions=None):
                 trace.append({"type": "tool_search", "tool": "ToolSearch", "query": payload.get("query", ""),
                               "activated": payload.get("activated", []), "matches": payload.get("matches", []),
                               "message": payload.get("message", ""), "as_of": payload.get("as_of")})
-            elif payload.get("source") == "trusted_host" and payload.get("event") == "proposal_resolved":
+            elif (payload.get("source") == "trusted_host" and payload.get("event") == "proposal_resolved") or (
+                resolution.get("proposal_step_id")
+                and msg.get("tool_call_id") == "proposal_resolution_" + resolution["proposal_step_id"]
+            ):
+                # UI receipts come from durable host state, not the compacted
+                # model transcript (which may have lost the event envelope).
+                receipt_event = resolution or payload
                 trace.append({
                     "type": "proposal_resolution",
-                    "decision": payload.get("decision"),
-                    "proposal_step_id": payload.get("proposal_step_id"),
-                    "receipt": payload.get("authoritative_receipt"),
+                    "decision": receipt_event.get("decision"),
+                    "proposal_step_id": receipt_event.get("proposal_step_id"),
+                    "receipt": receipt_event.get("authoritative_receipt"),
                 })
+                resolution_projected = True
             else:
                 trace.append({"type": "tool", "tool": "业务工具", "data": [], "as_of": payload.get("as_of")})
+    if resolution.get("authoritative_receipt") and not resolution_projected:
+        trace.append({"type": "proposal_resolution", "decision": resolution.get("decision"),
+                      "proposal_step_id": resolution.get("proposal_step_id"),
+                      "receipt": resolution["authoritative_receipt"]})
     streaming = (run.checkpoint or {}).get("streaming_model_message")
     if run.status in ACTIVE_STATUSES and isinstance(streaming, dict):
         text = (streaming.get("content") or "").strip()
@@ -1591,6 +1605,37 @@ def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db))
             "trigger": data.trigger, "model_selection": selection}
 
 
+@app.post("/api/runs/{run_id}/retry-composition")
+def retry_run_composition(run_id: str, user=Depends(current_user), db=Depends(get_db)):
+    """Resume only the terminal model turn after authoritative tools completed."""
+    run = db.scalar(select(m.Run).where(
+        m.Run.id == run_id,
+        m.Run.user_id == user.id,
+    ).with_for_update())
+    if not run:
+        raise DomainError("NOT_FOUND", "任务不存在", 404)
+    if run.status != COMPOSITION_FAILED:
+        raise DomainError("RUN_NOT_COMPOSITION_FAILED", "当前任务不需要重新生成说明", 409)
+    checkpoint = run.checkpoint if isinstance(run.checkpoint, dict) else {}
+    evidence_ids = checkpoint.get("evidence_ids") or []
+    if not checkpoint.get("finalizing") or not evidence_ids:
+        raise DomainError("COMPOSITION_RETRY_INVALID", "任务没有可恢复的业务结果", 409)
+    worker_scope = settings().worker_scope
+    run.checkpoint = composition_retry_checkpoint(
+        checkpoint, run.result if isinstance(run.result, dict) else None, worker_scope
+    )
+    run.status = SCOPED_QUEUED
+    run.result = None
+    run.lease_until = None
+    record(db, user, "agent.run.composition_retried", run.id, {
+        "evidence_ids": evidence_ids,
+        "composition_attempt": run.checkpoint["composition_attempt"],
+    })
+    db.commit()
+    publish_run_update(run.conversation_id, run.id, public_run_status(run.status))
+    return {"id": run.id, "status": public_run_status(run.status)}
+
+
 @app.get("/api/conversations/{conversation_id}/runs")
 def runs(conversation_id: str, user=Depends(current_user), db=Depends(get_db)):
     return conversation_runs_payload(db, user, conversation_id)
@@ -1653,7 +1698,7 @@ def run_events(conversation_id: str, request: Request, user=Depends(current_user
 def cancel(run_id: str, user=Depends(current_user), db=Depends(get_db)):
     run = db.scalar(select(m.Run).where(m.Run.id == run_id, m.Run.user_id == user.id).with_for_update())
     if not run: raise DomainError("NOT_FOUND", "任务不存在", 404)
-    if run.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+    if run.status not in {"SUCCEEDED", COMPOSITION_FAILED, "FAILED", "CANCELLED"}:
         run.status = "CANCELLED"; run.lease_epoch += 1
         run.checkpoint = {**(run.checkpoint or {}), "completed_at": now().isoformat()}
     db.commit()

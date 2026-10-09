@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import date, timedelta
 
 from domain_packs.mold.tools.erp.design.erp_design_mcp import TOOL_NAMES
 from domain_packs.mold.tools.erp.design import design_action_tools
@@ -48,9 +49,26 @@ def test_design_write_tools_are_human_confirmed_proposals():
         assert descriptor["mode"] == "human_confirmed_proposal"
 
 
+def test_mold_repair_upload_proposal_display_is_user_facing():
+    display = design_action_tools._display(
+        "erp_design_upload_mold_repair_drawing",
+        {"file_id": "internal-id", "confirm": True, "skip_vision": False},
+        file_display={"filename": "M250238-P4-修改111.dxf", "mold_code": "M250238-P4"},
+    )
+    assert display == {
+        "操作": "上传修改后的修模/改模图纸",
+        "图纸文件": "M250238-P4-修改111.dxf",
+        "模号": "M250238-P4",
+        "文件格式": "DXF（ERP 支持格式）",
+        "视觉识别": "执行",
+        "执行后流程": "调用 ERP 原有上传接口，进行图纸比对、登记修改图纸异常，并进入设计主管审批。",
+        "说明": "点击“确认执行”后才会调用 ERP；当前只是准备确认，尚未上传。",
+    }
+
+
 def test_design_write_tool_is_gated_before_erp_execution(monkeypatch):
     key = "erp_design_manage_density"
-    monkeypatch.setattr(gateway, "available_tools", lambda _db, _user: [key])
+    monkeypatch.setattr(gateway, "available_tools", lambda _db, _user, **_kwargs: [key])
     run = SimpleNamespace(checkpoint={"agent_permission_mode": "ask"})
     result = gateway.execute(None, SimpleNamespace(), key, {
         "operation": "create", "material_mark": "S50C", "density": "7.85",
@@ -87,7 +105,7 @@ def test_design_write_confirmation_executes_only_after_card_approval(monkeypatch
     monkeypatch.setattr(
         design_action_tools.erp_design_mcp,
         "execute_tool",
-        lambda _db, _user, tool, arguments, run=None: executed.append((tool, arguments)) or {"ok": True},
+        lambda _db, _user, tool, arguments, run=None, **_kwargs: executed.append((tool, arguments)) or {"ok": True},
     )
     payload = {
         "step_id": step.id,
@@ -96,6 +114,79 @@ def test_design_write_confirmation_executes_only_after_card_approval(monkeypatch
     receipt = design_action_tools.confirm(FakeDb(), user, payload)
     assert executed == [(key, {"operation": "create", "material_mark": "S50C", "density": "7.85", "confirm": True})]
     assert receipt["status"] == "EXECUTED"
+
+
+def test_design_import_proposal_binds_server_owned_session_and_browser_form(monkeypatch):
+    key = "erp_design_import_new_mold"
+    user = SimpleNamespace(id="user-1")
+    expected_date = (date.today() + timedelta(days=10)).isoformat()
+    rows = [{"rowIndex": 1, "item_code_full": "A-01", "qty": 2}]
+    calls = []
+
+    monkeypatch.setattr(
+        design_action_tools.erp_design_mcp,
+        "_latest_conversation_upload_session",
+        lambda _db, _user, _run: 392,
+    )
+    monkeypatch.setattr(
+        design_action_tools.erp_design_mcp, "_owned_session", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        design_action_tools.erp_design_mcp,
+        "_conversation_upload_receipt",
+        lambda *_args: {"designOrderType": "new_model"},
+    )
+    monkeypatch.setattr(
+        design_action_tools,
+        "_latest_browser_import_binding",
+        lambda *_args: {
+            "session_id": 392,
+            "sheet_type": "hardware",
+            "preview_rows": rows,
+            "mold_code": "M250238-P4",
+            "design_order_type": "new_model",
+            "urgency_level": "normal",
+            "expected_date": expected_date,
+            "purchase_reason": None,
+            "remark": "已核对",
+            "allow_duplicate": False,
+        },
+    )
+
+    def call_mcp(name, arguments):
+        calls.append((name, arguments))
+        if name == "get_new_mold_upload_result":
+            return {"sessionId": 392, "previewRows": [{"rowIndex": 99}]}
+        if name == "validate_new_mold_design_rows":
+            return {"valid": True, "canImport": True}
+        assert name == "get_new_mold_approval_launch_config"
+        return {
+            "resolvedProcessCode": "design_new_model_approval",
+            "processName": "设计新模审批",
+            "currentNodeName": "设计主管审批",
+        }
+
+    monkeypatch.setattr(design_action_tools.erp_design_mcp, "call_mcp", call_mcp)
+    result = design_action_tools.execute_tool(
+        None, user, key, {}, run=SimpleNamespace(checkpoint={"agent_permission_mode": "ask"})
+    )
+
+    assert result["source"] == "agent_proposal"
+    assert result["proposal"]["input"]["session_id"] == 392
+    assert result["proposal"]["input"]["preview_rows"] == rows
+    assert result["proposal"]["input"]["expected_date"] == expected_date
+    assert result["proposal"]["display"]["参数"]["rowCount"] == 1
+    assert "preview_rows" not in result["proposal"]["display"]["参数"]
+    assert result["proposal"]["preflight"]["designApproval"]["processName"] == "设计新模审批"
+    assert calls[1][0] == "validate_new_mold_design_rows"
+
+
+def test_design_import_model_schema_does_not_expose_session_or_rows():
+    schema = design_action_tools.erp_design_mcp.tool_schema("erp_design_import_new_mold")
+    parameters = schema["function"]["parameters"]
+
+    assert set(parameters["properties"]) == {"allow_duplicate"}
+    assert parameters["additionalProperties"] is False
 
 
 def test_skill_descriptor_keeps_dependencies_and_review_metadata():
@@ -420,6 +511,9 @@ def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
     assert "erp_design_preview_drawing" in preview["tools"]
     assert "看图纸" in preview["activation_queries"]
     assert {"料单的图纸", "清单的图纸", "长宽厚与图纸", "尺寸与图纸"} <= set(preview["activation_queries"])
+    assert {"图纸状态", "有没有图纸", "哪些没有图纸", "缺图料号"} <= set(
+        preview["auto_activation_queries"]
+    )
     assert preview["auto_activation_queries"]
     assert preview["suppress_tool_search_on_auto_activation"] is True
     assert preview["requires_tool_evidence"] is True
@@ -442,6 +536,8 @@ def test_price_preview_and_auto_correction_are_explicit_design_capabilities():
     assert technical_requirements["host_auto_invoke_empty_arguments"] is True
     assert parameters["tools"] == ["erp_design_query_upload_parameters"]
     assert {"采购数量", "长宽厚", "圆料", "圆环料", "直径", "长是多少"} <= set(parameters["activation_queries"])
+    assert "料单的图纸" not in parameters["auto_activation_queries"]
+    assert "长宽厚与图纸" in parameters["auto_activation_queries"]
     assert parameters["suppress_tool_search_on_auto_activation"] is True
     assert parameters["requires_tool_evidence"] is True
     assert {"分组关键词", "关键词列表", "全部关键词"} <= set(keywords["activation_queries"])
@@ -483,6 +579,10 @@ def test_design_mold_repair_skill_exposes_dedicated_erp_operations():
     assert {"设计修模", "设计改模", "确认新图数量", "同意改图", "已加工反馈"} <= set(
         skill["activation_queries"]
     )
+    assert {"上传修改图纸", "上传改模图纸", "上传修模图纸"} <= set(
+        skill["action_activation_queries"]
+    )
+    assert skill["action_activation_tools"] == ["erp_design_upload_mold_repair_drawing"]
 
     for tool in dedicated:
         item = capability_descriptor("TOOL", tool, TOOLS[tool])

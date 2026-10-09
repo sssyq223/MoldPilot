@@ -95,8 +95,9 @@ echo [OK] Core API, Agent Worker, Message Worker and Web were launched as hidden
 echo Document Worker starts only when AGENT_OCR_SERVICE_TOKEN is configured in .env.
 echo Check .local\logs if a service exits or a dependency is unavailable.
 echo The browser will open shortly. The first frontend build may take a moment.
-timeout /t 3 /nobreak >nul
+powershell.exe -NoLogo -NoProfile -Command "Start-Sleep -Seconds 3"
 echo [INFO] Open http://127.0.0.1:5173/ in the browser.
+start "MoldPilot Web" "http://127.0.0.1:5173/"
 
 popd
 exit /b 0
