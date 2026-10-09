@@ -123,7 +123,11 @@ JOIN entrust_order_parts part ON part.order_id = order_row.id
 LEFT JOIN LATERAL (
     SELECT coalesce(sum(
         CASE
-            WHEN lower(coalesce(line.receipt_status, '')) IN ('received', 'partial')
+            WHEN lower(coalesce(line.receipt_status, '')) IN ('received', 'partial', 'confirmed')
+              OR (
+                    lower(coalesce(line.receipt_status, '')) NOT IN ('pending', 'cancelled', 'canceled', 'rejected')
+                AND coalesce(line.received_qty, 0) > 0
+              )
             THEN coalesce(nullif(line.received_qty, 0), line.qty)
             ELSE 0
         END
@@ -164,8 +168,7 @@ WHERE lower(coalesce(order_row.status, '')) = 'open'
   AND (
         lower(coalesce(order_row.stage, '')) IN ('producing', 'shipping')
      OR (
-            lower(coalesce(order_row.outsource_type, project.outsource_type, 'part')) = 'operation'
-        AND lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')
+            lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')
         AND NOT EXISTS (
             SELECT 1
             FROM entrust_material_supply_tasks supply

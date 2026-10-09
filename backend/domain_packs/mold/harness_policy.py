@@ -19,11 +19,13 @@ OUTSOURCE_FORMAL_ACTION_TERMS = (
     "填成交价", "填写成交价", "重选加工商",
     # 加工商 报价 / 接单
     "我要接单", "帮我接单", "确认接单", "接这单", "我接了", "这单我接了",
+    "全部接单", "全接单", "都接单", "全都接",
     "拒绝接单", "我要拒单", "拒这单",
     # 仓管 供料
     "确认发料", "确认备料", "确认原料发货", "办发料", "办备料",
     # 加工商 收料 / 成品回厂
     "确认收料", "确认来料", "发成品", "发半成品", "确认成品发货", "办成品发货",
+    "成品发货把", "成品发货吧", "发货把", "发货吧", "确认发货", "办发货",
     # 仓管 回厂
     "确认到货", "确认收货", "确认入库", "入库确认", "办到货", "办入库",
     "收货确认",
@@ -151,6 +153,8 @@ OUTSOURCE_BOARD_NOUNS = (
     *OUTSOURCE_STATUS_PHRASES,
     "待填价", "待报价", "待下单", "待填成交价", "待接单", "待采购填报价",
     "委外待办", "采购待办", "待办", "工单", "单子", "委外单子", "委外订单",
+    # 站点名本身带“发”，不能当成“发询价/发成品”那种写入动词。
+    "可成品发货", "待成品发货", "成品发货", "半成品发货", "原料发货",
 )
 # Look-up questions.  These hide write tools.  They do not decide whether the
 # model understood a spoken write such as “把价钱写成400”.
@@ -158,6 +162,7 @@ READ_ONLY_QUESTION_TERMS = (
     "有几个", "有没有", "有哪些", "多少条", "几条", "是多少", "是什么", "什么是",
     "查一下", "查询", "查看", "看看", "看下", "待办", "怎么样", "情况", "进度",
     "确认一下", "什么状态", "有委外", "委外单子", "有单子",
+    "可成品发货", "待成品发货", "成品发货",
 )
 # Spoken write signals that are not in the formal-receipt whitelist.
 # Visibility of prepare_* tools uses these; the receipt invariant does not.
@@ -495,6 +500,23 @@ def is_spoken_write(prompt: str, context_text: str = "") -> bool:
             spoken_quote_arguments,
         )
         if is_spoken_processor_quote(prompt) or spoken_quote_arguments(prompt, context_text):
+            return True
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools import (
+            spoken_product_ship_arguments,
+        )
+        if spoken_product_ship_arguments(prompt, context_text) is not None:
+            return True
+    except ImportError:
+        pass
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_tools import (
+            spoken_accept_arguments,
+            spoken_reject_arguments,
+        )
+        if spoken_accept_arguments(prompt, context_text) or spoken_reject_arguments(prompt, context_text):
             return True
     except ImportError:
         pass

@@ -204,3 +204,87 @@ def dispatch_erp(
     operation.error_code = None
     db.commit()
     return operation.response
+
+
+def dispatch_erp_batch(
+    db,
+    user,
+    *,
+    intent_id: str,
+    action: str,
+    jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """One confirmation covers several ERP writes of the same action."""
+    if not intent_id:
+        raise DomainError("CONFIRMATION_INVALID", "确认操作缺少幂等标识，请重新准备", 409)
+    if not jobs:
+        raise DomainError("INVALID_TOOL_INPUT", "没有可提交的 ERP 操作", 400)
+    identity = db.get(m.ERPIdentity, user.id)
+    if not identity or not identity.token_ciphertext:
+        raise DomainError("ERP_LOGIN_REQUIRED", "请先验证本人的 ERP 账号后再确认办理", 401)
+    try:
+        decrypt(identity.token_ciphertext)
+    except DomainError:
+        if discard_unreadable_erp_token(identity):
+            db.commit()
+        raise
+    normalized = []
+    for job in jobs:
+        normalized.append({
+            "native_id": str(job.get("native_id") or ""),
+            "path": str(job.get("path") or "").lstrip("/"),
+            "body": job.get("body") or {},
+            "params": job.get("params") or {},
+        })
+    request_hash = content_hash({"action": action, "jobs": normalized})
+    native_id = "batch:" + action + ":" + ",".join(item["native_id"] for item in normalized)
+    operation = db.scalar(
+        select(m.ERPOperation).where(m.ERPOperation.intent_id == intent_id).with_for_update()
+    )
+    if operation is not None:
+        if operation.request_hash != request_hash:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一次确认的 ERP 请求内容已变化", 409)
+        if operation.state == "SUCCEEDED":
+            return operation.response or {}
+        if operation.state in {"DISPATCHING", "UNKNOWN"}:
+            raise DomainError(
+                "ERP_OUTCOME_UNKNOWN",
+                "同一次确认正在提交 ERP 或上次提交中断；请稍后重新查询 ERP 状态，不会自动重复正式操作",
+                502,
+            )
+        raise DomainError(
+            operation.error_code or "ERP_BUSINESS_REJECTED",
+            "ERP 已拒绝同一次确认请求，请重新查询业务状态后准备",
+            409,
+        )
+    operation = m.ERPOperation(
+        user_id=user.id,
+        intent_id=intent_id,
+        action=action,
+        native_id=native_id[:80],
+        state="DISPATCHING",
+        request_hash=request_hash,
+        erp_user_id=str(identity.erp_user_id),
+    )
+    db.add(operation)
+    db.commit()
+    results = []
+    try:
+        for job in normalized:
+            results.append(call_erp(db, user, "POST", job["path"], job["body"], job["params"]))
+    except DomainError as error:
+        if error.code in AUTH_ABORT_CODES:
+            db.delete(operation)
+            db.commit()
+            raise
+        operation.state = "UNKNOWN" if error.code == "ERP_OUTCOME_UNKNOWN" else "REJECTED"
+        operation.error_code = error.code
+        operation.response = _json_value({"results": results, "partial": True})
+        db.commit()
+        raise
+    payload = {"code": 200, "results": _json_value(results)}
+    operation.state = "SUCCEEDED"
+    operation.response = payload
+    operation.error_code = None
+    db.commit()
+    return payload

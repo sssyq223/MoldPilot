@@ -148,9 +148,15 @@ def test_wait_sql_requires_warehouse_pending_supply():
 
 def test_product_sql_does_not_block_operation_without_warehouse_pending():
     sql = processor_fulfillment.PRODUCT_SQL.lower()
-    assert "outsource_type" in sql
     assert "entrust_material_supply_tasks" in sql
-    assert "operation" in sql
+    assert "material_receiving" in sql
+
+
+def test_product_sql_includes_part_after_receipt_while_stage_still_material_receiving():
+    sql = " ".join(processor_fulfillment.PRODUCT_SQL.split())
+    assert "IN ('accepted', 'material_receiving')" in sql
+    assert "= 'operation' AND lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')" not in sql
+    assert "confirmed" in processor_fulfillment.PRODUCT_SQL.lower()
 
 
 def test_product_item_is_one_shippable_order():
@@ -171,15 +177,35 @@ def test_product_item_is_one_shippable_order():
     assert item["remainQty"] == 3
     assert "B1-01" in item["partDetails"]
     assert "成品库" in item["partDetails"]
+    received = processor_fulfillment.product_item({
+        "order_id": 5136,
+        "order_no": "EO-260928-WE11",
+        "outsource_type": "part",
+        "stage": "material_receiving",
+        "parts": [{"orderPartId": 1, "partNo": "B1-01", "remainQty": 1, "orderQty": 1}],
+    })
+    assert received is not None
+    assert received["remainQty"] == 1
 
 
 def test_spoken_product_ship_prepares_only_when_asked_to_ship():
     from domain_packs.mold.tools.erp.procurement import erp_outsource_processor_ship_tools as ship
 
     assert ship.spoken_product_ship_arguments("成品发货") is None
+    assert ship.spoken_product_ship_arguments("成品发货", "可成品发货 EO-261008-5A0M")["order_no"] == "EO-261008-5A0M"
+    assert ship.spoken_product_ship_arguments("发货", "可成品发货 EO-261008-5A0M")["order_no"] == "EO-261008-5A0M"
     assert ship.spoken_product_ship_arguments("有没有可以成品发货的订单？") is None
     assert ship.spoken_product_ship_arguments("确认收货") is None
-    assert ship.spoken_product_ship_arguments("确认成品发货") == {}
+    assert ship.spoken_product_ship_arguments("确认成品发货") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("发货把") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("发货吧") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("成品发货吧") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("成品发货吧。") == {"ship_all": True}
     assert ship.spoken_product_ship_arguments("NO.1成品发货") == {"board_row": 1}
     named = ship.spoken_product_ship_arguments("确认成品发货", "上一张可发订单 EO-260928-WE11")
     assert named["order_no"] == "EO-260928-WE11"
+    two = ship.spoken_product_ship_arguments(
+        "发货吧",
+        "可成品发货 EO-261009-L6ON M260063-P1\n可成品发货 EO-261009-IPBI M260063-P1\n旧单 EO-260928-WE11 M210236-P1",
+    )
+    assert two == {"ship_all": True}

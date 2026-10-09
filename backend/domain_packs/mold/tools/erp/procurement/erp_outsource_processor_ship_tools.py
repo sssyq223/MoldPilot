@@ -1,13 +1,14 @@
 """Processor product shipment: query shippable qty/target, then confirm ship."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import Field, ValidationError, field_validator
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
-from domain_packs.mold.erp.procurement.erp_outsource_http import post_erp
+from domain_packs.mold.erp.procurement.erp_outsource_http import dispatch_erp_batch, post_erp
 from domain_packs.mold.erp.procurement.erp_outsource_scope import require_allow, supplier_codes_for
 from domain_packs.mold.ports.bpm import content_hash
 from domain_packs.mold.ports.confirmation_policy import proposal_confirmation_policy
@@ -36,8 +37,9 @@ SKILL_SPECS = {
         "auto_activation_queries": [
             "成品发货", "发成品", "发半成品", "回厂发货",
             "待发货", "有没有发货", "成品发货待办",
+            "发货把", "发货吧", "成品发货把", "成品发货吧", "确认发货", "办发货",
         ],
-        "priority_patterns": ["成品发货|发成品|发半成品|回厂发货|待发货|成品发货待办"],
+        "priority_patterns": ["成品发货吧|成品发货把|成品发货|发成品|发半成品|回厂发货|待发货|成品发货待办|发货把|发货吧|确认发货|办发货"],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -51,7 +53,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_processor.read",
     },
     SHIP_TOOL: {
-        "description": "准备成品发货。用查询结果中的订单号，必要时加模具号、批次号。未指定行时按剩余可发数量发。禁止使用内部数字 id。本人确认后才写入 ERP。",
+        "description": "准备成品发货。用户说 NO.N / 发货吧 / 全部发货或订单号时立刻锁定。NO. 是可成品发货表第一列。未指定行时按剩余可发数量发。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
 }
@@ -62,20 +64,36 @@ TOOL_NAMES = {
 }
 
 
-PRODUCT_SHIP_SPEECH = ("确认成品发货", "办成品发货", "发成品", "发半成品", "回厂发货")
+PRODUCT_SHIP_SPEECH = (
+    "确认成品发货", "办成品发货", "发成品", "发半成品", "回厂发货",
+    "成品发货把", "成品发货吧", "发货把", "发货吧", "确认发货", "办发货", "把货发了",
+)
+_SHIP_IMPERATIVE = re.compile(r"(成品)?发货[把吧]")
+
+
+def _unique_order_nos(text: str) -> list[str]:
+    found: list[str] = []
+    for match in buyer_todo.ORDER_NO.finditer(text or ""):
+        order_no = buyer_todo.normalize_order_no(match.group(1))
+        if order_no and order_no not in found:
+            found.append(order_no)
+    return found
 
 
 def _latest_order_no(text: str) -> str | None:
-    found = None
-    for match in buyer_todo.ORDER_NO.finditer(text or ""):
-        found = match.group(1).upper()
-    return found
+    found = _unique_order_nos(text)
+    return found[-1] if found else None
+
+
+SHIP_ALL_SPEECH = ("发货吧", "发货把", "全部发货", "都发了", "全都发", "这几个都发", "把货发了", "成品发货吧", "成品发货把")
 
 
 def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
     """Parse 确认成品发货 / NO.n成品发货 into prepare arguments.
 
     「成品发货」单独出现、以及「有没有/有几个」是查询，不准备确认卡。
+    上一张可发表还在时，再说「发货 / 成品发货」视为办理。
+    对话里有多张 EO- 时不要抓最后一张旧单；「发货吧」按当前可发表全部发。
     NO. 是可成品发货表的行号，不是待办表。
     """
     text = prompt or ""
@@ -83,24 +101,38 @@ def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[s
         return None
     if any(token in text for token in ("收货", "收料", "来料", "原料发货", "备料", "发料")):
         return None
+    compact = re.sub(r"[。.!！？\s]+$", "", text.strip())
     row_no = buyer_todo.spoken_board_row_number(text)
-    named = any(token in text for token in PRODUCT_SHIP_SPEECH)
+    named = any(token in text for token in PRODUCT_SHIP_SPEECH) or bool(_SHIP_IMPERATIVE.search(text))
+    if compact in {"发货", "发一下货"}:
+        named = True
+    context_orders = _unique_order_nos(context_text)
+    if compact == "成品发货" and len(context_orders) == 1:
+        named = True
     row_ship = bool(row_no) and "成品发货" in text
     if not named and not row_ship:
         return None
     arguments: dict[str, Any] = {}
     if row_no:
         arguments["board_row"] = row_no
-    order_no = _latest_order_no(text)
-    if not order_no and not row_no:
-        order_no = _latest_order_no(context_text)
-    if order_no:
-        arguments["order_no"] = order_no
-    parsed = buyer_todo.parse_question(f"{text}\n{context_text or ''}")
+    order_in_prompt = _latest_order_no(text)
+    if order_in_prompt:
+        arguments["order_no"] = order_in_prompt
+    elif not row_no and len(context_orders) == 1:
+        arguments["order_no"] = context_orders[0]
+    elif not row_no and (any(token in compact for token in SHIP_ALL_SPEECH) or compact in {"发货", "发一下货", "确认成品发货", "办成品发货", "确认发货", "办发货"}):
+        arguments["ship_all"] = True
+    parsed = buyer_todo.parse_question(text)
     if parsed.get("mold_batch"):
         arguments["batch"] = parsed["mold_batch"]
     if parsed.get("mold_family"):
         arguments["mold"] = parsed["mold_family"]
+    elif arguments.get("order_no") or arguments.get("board_row"):
+        context_parsed = buyer_todo.parse_question(context_text or "")
+        if context_parsed.get("mold_batch"):
+            arguments["batch"] = context_parsed["mold_batch"]
+        if context_parsed.get("mold_family"):
+            arguments["mold"] = context_parsed["mold_family"]
     return arguments
 
 
@@ -122,6 +154,8 @@ class ProductShipLineInput(StrictModel):
 class ProcessorProductShipInput(StrictModel):
     order_no: str | None = Field(default=None, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。只剩一张可发货订单时可以不填。")
     board_row: int | None = Field(default=None, ge=1, description="可成品发货表第一列 NO.。说第N行或 NO.N 时填这个，不要用待办表行号。")
+    ship_all: bool = Field(default=False, description="发货吧 / 全部发货时为 true，锁定当前可成品发货列表。")
+    order_nos: list[str] | None = Field(default=None, description="全部发货锁定后的订单号列表。")
     mold: str | None = Field(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = Field(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
     lines: list[ProductShipLineInput] = Field(default_factory=list, description="空则按各零件剩余可发数量全部发出。")
@@ -237,13 +271,28 @@ def execute_query(db, user, arguments: dict | None, run=None) -> dict[str, Any]:
 
 
 def _resolved_lines(data, item: dict[str, Any]) -> list[dict[str, Any]]:
+    remain_parts = [
+        part for part in item.get("parts") or []
+        if int(part.get("remainQty") or 0) > 0
+    ]
     remain = {
         int(part.get("orderPartId") or 0): part
-        for part in item.get("parts") or []
-        if int(part.get("remainQty") or 0) > 0
+        for part in remain_parts
+        if int(part.get("orderPartId") or 0) > 0
     }
     if data.lines:
-        chosen = [{"order_part_id": line.order_part_id, "qty": line.qty} for line in data.lines]
+        chosen = []
+        for line in data.lines:
+            part_id = int(line.order_part_id)
+            if part_id not in remain:
+                # 模型常把可发表 NO.1 当成 order_part_id；NO. 不是 ERP 零件行 id。
+                if 1 <= part_id <= len(remain_parts):
+                    part_id = int(remain_parts[part_id - 1].get("orderPartId") or 0)
+                elif len(remain_parts) == 1:
+                    part_id = int(remain_parts[0].get("orderPartId") or 0)
+                else:
+                    raise DomainError("INVALID_TOOL_INPUT", "请说零件号或按可发数量全发，不要使用表格行号", 400)
+            chosen.append({"order_part_id": part_id, "qty": line.qty})
     else:
         chosen = [
             {"order_part_id": part_id, "qty": int(part.get("remainQty") or 0)}
@@ -254,13 +303,14 @@ def _resolved_lines(data, item: dict[str, Any]) -> list[dict[str, Any]]:
     for line in chosen:
         part = remain.get(line["order_part_id"])
         allowed = int((part or {}).get("remainQty") or 0)
+        label = (part or {}).get("partNo") or line["order_part_id"]
         if allowed <= 0:
-            raise DomainError("STATE_BLOCKED", f"零件行 {line['order_part_id']} 当前不可发", 409)
+            raise DomainError("STATE_BLOCKED", f"零件 {label} 当前不可发", 409)
         if line["qty"] > allowed:
             received = int((part or {}).get("receivedQty") or 0)
             raise DomainError(
                 "STATE_BLOCKED",
-                f"零件行 {line['order_part_id']} 只能按已收原料发成品（已收 {received}，可发 {allowed}）",
+                f"零件 {label} 只能按已收原料发成品（已收 {received}，可发 {allowed}）",
                 409,
             )
     return chosen
@@ -273,14 +323,39 @@ def _shippable(tokens: list[str] | None) -> list[dict[str, Any]]:
     )
 
 
-def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    item = None
+def _filter_shippable(items: list[dict[str, Any]], data) -> list[dict[str, Any]]:
+    order_nos = {
+        buyer_todo.normalize_order_no(item)
+        for item in (getattr(data, "order_nos", None) or [])
+        if item
+    }
+    wanted_order = buyer_todo.normalize_order_no(getattr(data, "order_no", None))
+    mold = str(getattr(data, "mold", None) or "")
+    batch = str(getattr(data, "batch", None) or "")
+    hits = []
+    for item in items:
+        if order_nos and buyer_todo.normalize_order_no(item.get("orderNo")) not in order_nos:
+            continue
+        if wanted_order or mold or batch:
+            if not buyer_todo.item_matches_identity(
+                item, order_no=wanted_order if not order_nos else "", mold=mold, batch=batch
+            ):
+                continue
+        hits.append(item)
+    return hits
+
+
+def _resolve_ship_items(data, tokens: list[str] | None) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    items = _shippable(tokens)
     if getattr(data, "board_row", None):
-        items = _shippable(tokens)
         index = int(data.board_row) - 1
         if index < 0 or index >= len(items):
             raise DomainError("NOT_FOUND", f"可成品发货没有第 {data.board_row} 行", 404)
-        item = items[index]
+        chosen = [items[index]]
+    elif getattr(data, "ship_all", False) or getattr(data, "order_nos", None):
+        chosen = _filter_shippable(items, data)
+        if not chosen:
+            raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请重新查询可成品发货", 404)
     elif getattr(data, "order_no", None) or getattr(data, "mold", None) or getattr(data, "batch", None):
         item = processor_fulfillment.find_product_order_by_identity(
             order_no=getattr(data, "order_no", None),
@@ -289,19 +364,26 @@ def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[s
         )
         if not item:
             raise DomainError("NOT_FOUND", "没有找到可成品发货的工单，请用订单号、模具号和批次号重新查询", 404)
+        chosen = [item]
     else:
-        items = _shippable(tokens)
         if not items:
             raise DomainError("NOT_FOUND", "当前没有可成品发货的订单", 404)
         if len(items) > 1:
             raise DomainError("AMBIGUOUS", "有多张可成品发货，请说 NO.几 或订单号", 409)
-        item = items[0]
-    _guard(item, tokens)
-    return item, _resolved_lines(data, item)
+        chosen = [items[0]]
+    resolved = []
+    for item in chosen:
+        _guard(item, tokens)
+        resolved.append((item, _resolved_lines(data, item)))
+    return resolved
 
 
-def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
-    item, lines = _lookup(data, _tokens(db, user))
+def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    resolved = _resolve_ship_items(data, tokens)
+    return resolved[0]
+
+
+def _ship_detail_lines(item: dict[str, Any], lines: list[dict[str, Any]]) -> list[str]:
     parts = {int(part.get("orderPartId") or 0): part for part in item.get("parts") or []}
     details = []
     for line in lines:
@@ -311,20 +393,36 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             f"（订单{part.get('orderQty')}/已收{part.get('receivedQty')}/已发{part.get('shippedQty')}/可发{part.get('remainQty')}，"
             f"首道{part.get('isFirstOperationLabel')}/末道{part.get('isEndOperationLabel')}→{part.get('inboundTargetLabel')}）"
         )
+    return details
+
+
+def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved = _resolve_ship_items(data, _tokens(db, user))
+    item, lines = resolved[0]
     display = {
         **identity_display(item),
         "委外类型": item.get("outsourceTypeLabel") or item.get("outsourceType"),
-        "操作": "成品发货",
+        "操作": "成品发货" if len(resolved) == 1 else f"成品发货（{len(resolved)}张）",
         "入库目标": "、".join(item.get("inboundTargets") or []),
-        "明细": "；".join(details),
-        "说明": "本人确认后写入 ERP。下一步仓库按同一入库目标做回厂入库确认（下期）。",
+        "明细": "；".join(_ship_detail_lines(item, lines)),
+        "说明": "本人确认后写入 ERP。下一步仓库按同一入库目标做回厂入库确认。",
     }
+    if len(resolved) > 1:
+        display["订单"] = "、".join(str(row.get("orderNo") or "") for row, _ in resolved if row.get("orderNo"))
+        display["明细"] = "；".join(
+            f"{row.get('orderNo')} {_ship_detail_lines(row, row_lines)[0]}" if _ship_detail_lines(row, row_lines) else str(row.get("orderNo") or "")
+            for row, row_lines in resolved
+        )
     if data.logistics_company:
         display["物流公司"] = data.logistics_company
     if data.tracking_no:
         display["运单号"] = data.tracking_no
     item = dict(item)
     item["shipLines"] = lines
+    item["shipBundle"] = [
+        {"orderNo": row.get("orderNo"), "orderId": row.get("orderId"), "lines": row_lines}
+        for row, row_lines in resolved
+    ]
     return item, display
 
 
@@ -333,7 +431,21 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
         return execute_query(db, user, arguments, run=run)
     _require_execute(db, user)
     data = parse(key, arguments)
-    _, display = preview(db, user, key, data)
+    item, display = preview(db, user, key, data)
+    dumped = data.model_dump(mode="json")
+    bundle = item.get("shipBundle") or []
+    if len(bundle) > 1:
+        dumped["ship_all"] = True
+        dumped["order_nos"] = [row.get("orderNo") for row in bundle if row.get("orderNo")]
+        dumped["order_no"] = None
+        dumped["mold"] = None
+        dumped["batch"] = None
+        dumped["lines"] = []
+    else:
+        dumped["lines"] = [
+            {"order_part_id": int(line["order_part_id"]), "qty": int(line["qty"])}
+            for line in item.get("shipLines") or []
+        ]
     return {
         "data": [],
         "source": "agent_proposal",
@@ -342,7 +454,7 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
             "kind": KIND_BY_TOOL[key],
             "action": ACTION_BY_TOOL[key],
             "requires_approval": False,
-            "input": data.model_dump(mode="json"),
+            "input": dumped,
             "display": display,
             "confirmation_policy": proposal_confirmation_policy(run, requires_approval=False),
         },
@@ -381,18 +493,38 @@ def validate_intent(db, user, payload):
 
 def confirm(db, user, payload):
     _, data = validate_intent(db, user, payload)
-    item, lines = _lookup(data, _tokens(db, user))
-    order_id = item.get("orderId")
-    if not order_id:
-        raise DomainError("STATE_BLOCKED", "这张待办还没有委外订单，不能发货", 409)
-    result = post_erp(db, user, "entrust/fulfillment/product-shipment", {
-        "order_id": order_id,
-        "lines": lines,
-        "logistics_company": data.logistics_company,
-        "tracking_no": data.tracking_no,
-        "remark": data.remark,
-    }, intent_id=payload.get("_intent_id"), action="processor_product_ship", native_id=f"order:{order_id}")
-    return {
+    resolved = _resolve_ship_items(data, _tokens(db, user))
+    jobs = []
+    for item, lines in resolved:
+        order_id = item.get("orderId")
+        if not order_id:
+            raise DomainError("STATE_BLOCKED", "这张待办还没有委外订单，不能发货", 409)
+        jobs.append({
+            "native_id": f"order:{order_id}",
+            "path": "entrust/fulfillment/product-shipment",
+            "body": {
+                "order_id": order_id,
+                "lines": lines,
+                "logistics_company": data.logistics_company,
+                "tracking_no": data.tracking_no,
+                "remark": data.remark,
+            },
+        })
+    item, _ = resolved[0]
+    if len(jobs) == 1:
+        result = post_erp(
+            db, user, jobs[0]["path"], jobs[0]["body"],
+            intent_id=payload.get("_intent_id"), action="processor_product_ship",
+            native_id=jobs[0]["native_id"],
+        )
+    else:
+        result = dispatch_erp_batch(
+            db, user,
+            intent_id=payload.get("_intent_id") or "",
+            action="processor_product_ship",
+            jobs=jobs,
+        )
+    receipt = {
         "order_no": item.get("orderNo") or data.order_no,
         "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
         "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
@@ -402,3 +534,6 @@ def confirm(db, user, payload):
         "inboundTargets": item.get("inboundTargets") or [],
         "nextHint": "成品已发出。下一步仓库按入库目标（成品库/半成品库）做回厂入库确认。",
     }
+    if len(resolved) > 1:
+        receipt["order_nos"] = [row.get("orderNo") for row, _ in resolved if row.get("orderNo")]
+    return receipt

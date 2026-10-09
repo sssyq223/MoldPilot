@@ -1867,6 +1867,80 @@ def find_item_by_identity(
     return hits[0]
 
 
+FIND_AWARDED_ORDER_SQL = """
+SELECT
+    project.id AS project_id,
+    lower(coalesce(project.outsource_type, '')) AS outsource_type,
+    molds.mold_no,
+    NULL::bigint AS inquiry_id,
+    NULL::text AS inquiry_status,
+    NULL::numeric AS our_quote_amount,
+    NULL::numeric AS auto_accept_max_amount,
+    NULL::numeric AS final_deal_amount,
+    NULL::date AS delivery_date,
+    0 AS invitation_count,
+    0 AS quoted_count,
+    '[]'::json AS invitations,
+    lower(coalesce(order_row.stage, '')) AS awarded_stage,
+    lower(coalesce(order_row.status, '')) AS awarded_status,
+    order_row.id AS awarded_order_id,
+    order_row.order_no AS awarded_order_no,
+    order_row.supplier_id,
+    supplier.partner_code AS supplier_code,
+    supplier.partner_name AS supplier_name,
+    order_row.total_amount AS awarded_amount,
+    order_row.process_name,
+    false AS dispatch_exhausted,
+    NULL::text AS pending_dispatch_suppliers,
+    parts.parts,
+    NULL::numeric AS reference_total
+FROM entrust_outsource_orders order_row
+JOIN entrust_projects project ON project.id = order_row.project_id
+LEFT JOIN partner supplier ON supplier.id = order_row.supplier_id
+LEFT JOIN LATERAL (
+    SELECT string_agg(DISTINCT mold.name, '、' ORDER BY mold.name) AS mold_no
+    FROM entrust_molds mold
+    WHERE mold.project_id = project.id
+) molds ON TRUE
+LEFT JOIN LATERAL (
+    SELECT json_agg(
+        json_build_object(
+            'partNo', part.part_no,
+            'partName', part.part_name,
+            'moldCode', part.mold_code,
+            'qty', part.order_qty
+        )
+        ORDER BY part.mold_code, part.part_no
+    ) AS parts
+    FROM entrust_order_parts part
+    WHERE part.order_id = order_row.id
+) parts ON TRUE
+WHERE upper(order_row.order_no) = %(order_no)s
+LIMIT 1
+"""
+
+
+def find_awarded_order(
+    *,
+    order_no: str | None = None,
+    mold: str | None = None,
+    batch: str | None = None,
+) -> dict[str, Any] | None:
+    """Locate an awarded EO even after it leaves the 待接单 board."""
+    wanted = normalize_order_no(order_no)
+    if not wanted:
+        return None
+    rows = fetch_all(FIND_AWARDED_ORDER_SQL, {"order_no": wanted})
+    if not rows:
+        return None
+    item = item_from_row(rows[0], "accept")
+    item["awardedStage"] = str(rows[0].get("awarded_stage") or "")
+    item["awardedStatus"] = str(rows[0].get("awarded_status") or "")
+    if not item_matches_identity(item, order_no=wanted, mold=str(mold or ""), batch=str(batch or "")):
+        return None
+    return item
+
+
 def find_invitation(invitation_id: int, *, mold: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     for item in _scan_items(mold):
         for invitation in item.get("invitations") or []:

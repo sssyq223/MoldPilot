@@ -5,10 +5,11 @@ import re
 from typing import Any
 
 from pydantic import Field, ValidationError, field_validator, model_validator
+from sqlalchemy import select
 
 from domain_packs.mold import models as m
 from domain_packs.mold.authorization import fingerprint
-from domain_packs.mold.erp.procurement.erp_outsource_http import post_erp
+from domain_packs.mold.erp.procurement.erp_outsource_http import dispatch_erp_batch, post_erp
 from domain_packs.mold.erp.procurement.erp_outsource_scope import require_allow, supplier_codes_for
 from domain_packs.mold.ports.bpm import content_hash
 from domain_packs.mold.ports.confirmation_policy import (
@@ -45,10 +46,10 @@ SKILL_SPECS = {
         ],
         "auto_activation_queries": [
             "提交报价", "我要报价", "加工商报价",
-            "我要接单", "确认接单", "我接了", "这单我接了",
+            "我要接单", "确认接单", "我接了", "这单我接了", "全部接单", "NO.1接单",
             "拒绝接单", "我要拒单",
         ],
-        "priority_patterns": ["加工商报价|提交报价|我要报价|报价\\s*\\d+|确认接单|我要接单|我接了|拒绝接单|我要拒单"],
+        "priority_patterns": ["加工商报价|提交报价|我要报价|报价\\s*\\d+|确认接单|我要接单|我接了|全部接单|NO\\.?\\s*\\d+\\s*接单|拒绝接单|我要拒单"],
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
     },
@@ -60,7 +61,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_processor.execute",
     },
     ACCEPT_TOOL: {
-        "description": "准备确认接单。用查询结果中的订单号，必要时加模具号、批次号定位。当前分站必须是待接单。禁止使用内部数字 id。本人确认后才写入 ERP。",
+        "description": "准备确认接单。用户说 NO.N / 第N行接单、全部接单或订单号时立刻锁定，不要再口头请用户确认。NO. 是我的委外待办第一列。当前分站必须是待接单。禁止使用内部数字 id。本人确认后才写入 ERP。",
         "permission": "erp_outsource_processor.execute",
     },
     REJECT_TOOL: {
@@ -75,7 +76,16 @@ TOOL_NAMES = {
     REJECT_TOOL: "准备拒绝接单",
 }
 
-ACCEPT_SPEECH = ("我接了", "这单我接了", "确认接单", "我要接单", "接这单")
+ACCEPT_SPEECH = ("我接了", "这单我接了", "确认接单", "我要接单", "帮我接单", "接这单")
+ACCEPT_ALL_SPEECH = ("全部接单", "全都接", "都接了", "全接单", "这几个都接", "全部都接", "都接单")
+ACCEPT_LOOK_UP = ("有几个", "有哪些", "有没有", "到哪一步", "不要接", "不接单")
+ACCEPT_WRITE = re.compile(
+    r"(?:全部接单|全都接|都接了|全接单|这几个都接|全部都接|都接单|"
+    r"我接了|这单我接了|确认接单|我要接单|帮我接单|接这单|"
+    r"(?:NO[.\u3002\uff0e]?\s*\d+|第\s*(?:\d+|[一二三四五六七八九十])\s*行)\s*接单|"
+    r"(?<![待不])接单)",
+    re.IGNORECASE,
+)
 REJECT_SPEECH = ("拒绝接单", "我要拒单", "拒这单", "这单我拒了", "拒单吧", "拒单")
 REJECT_LOOK_UP = ("有几个", "有哪些", "有没有", "不要拒", "不拒单", "全部拒单")
 REJECT_REASON = re.compile(r"(?:因为|原因|由于)[:：,\s]*(.+)$")
@@ -247,25 +257,43 @@ def spoken_quote_from_board(prompt: str, items) -> dict[str, Any] | None:
     return arguments
 
 
+def is_spoken_processor_accept(text: str) -> bool:
+    prompt = text or ""
+    if any(token in prompt for token in ACCEPT_LOOK_UP):
+        return False
+    if any(token in prompt for token in ("拒", "不接")):
+        return False
+    return bool(ACCEPT_WRITE.search(prompt))
+
+
 def spoken_accept_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
     """Parse accept speech into prepare_erp_outsource_processor_accept arguments."""
     text = prompt or ""
-    if any(token in text for token in ("拒", "不接", "有几个", "有哪些", "有没有", "到哪一步", "不要接")):
-        return None
-    if not any(token in text for token in ACCEPT_SPEECH):
+    if not is_spoken_processor_accept(text):
         return None
     identity_source = f"{text}\n{context_text or ''}"
-    order = buyer_todo.ORDER_NO.search(identity_source)
-    if not order:
-        return None
-    arguments: dict[str, Any] = {"order_no": order.group(1).upper()}
+    arguments: dict[str, Any] = {}
     parsed = buyer_todo.parse_question(identity_source)
     if parsed.get("mold_family"):
         arguments["mold"] = parsed["mold_family"]
     if parsed.get("mold_batch"):
         arguments["batch"] = parsed["mold_batch"]
         arguments.setdefault("mold", parsed["mold_batch"].split("-P", 1)[0])
-    return arguments
+    if any(token in text for token in ACCEPT_ALL_SPEECH) or re.search(r"这[两三四五六七八九十\d]+[张单]都接", text):
+        arguments["accept_all"] = True
+        return arguments
+    row_no = buyer_todo.spoken_board_row_number(text)
+    if row_no:
+        arguments["board_row"] = row_no
+        return arguments
+    order = buyer_todo.ORDER_NO.search(identity_source)
+    if order:
+        arguments["order_no"] = buyer_todo.normalize_order_no(order.group(1))
+        return arguments
+    if arguments.get("batch") or arguments.get("mold"):
+        arguments["accept_all"] = True
+        return arguments
+    return None
 
 
 def is_spoken_processor_reject(text: str) -> bool:
@@ -364,7 +392,10 @@ class ProcessorQuoteInput(StrictModel):
 
 
 class ProcessorAcceptInput(CamelModel):
-    order_no: str = identity_order_no(min_length=3, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。禁止使用内部数字 id。")
+    order_no: str | None = identity_order_no(default=None, max_length=80, description="查询结果中的订单号，例如 EO-260923-0KKR。说了表格 NO. 或全部接单时可省略。禁止使用内部数字 id。")
+    board_row: int | None = Field(default=None, ge=1, description="我的委外待办第一列 NO.。说第N行或 NO.N 接单时填这个。")
+    accept_all: bool = Field(default=False, description="全部接单时为 true，锁定当前待接单列表。")
+    order_nos: list[str] | None = Field(default=None, description="全部接单锁定后的订单号列表，确认时按这个清单写入。")
     mold: str | None = identity_mold(default=None, max_length=40, description="模具号，例如 M260063。")
     batch: str | None = identity_batch(default=None, max_length=40, description="批次号，例如 M260063-P1。同一订单有多批次时必填。")
 
@@ -372,6 +403,23 @@ class ProcessorAcceptInput(CamelModel):
     @classmethod
     def strip_identity(cls, value):
         return value.strip() or None if isinstance(value, str) else value
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_row(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        row = _board_row_value(data.get("board_row") or data.get("boardRow"))
+        if row:
+            data["board_row"] = row
+        return data
+
+    @model_validator(mode="after")
+    def need_target(self):
+        if self.accept_all or self.board_row or self.order_no or self.order_nos:
+            return self
+        raise ValueError("请用表格 NO.、订单号，或说全部接单")
 
 
 class ProcessorRejectInput(CamelModel):
@@ -602,11 +650,49 @@ def _lookup_quote(data, tokens: list[str] | None) -> tuple[dict[str, Any], dict[
     return item, invitation
 
 
+POST_ACCEPT_STAGES = frozenset({
+    "accepted", "material_receiving", "producing", "shipping", "delivered",
+})
+
+
+def _pending_accept_items(
+    tokens: list[str] | None,
+    *,
+    mold: str | None = None,
+    batch: str | None = None,
+) -> list[dict[str, Any]]:
+    payload = buyer_todo.run(
+        {
+            "station": "accept",
+            "mold_family": "" if batch else str(mold or ""),
+            "mold_batch": str(batch or ""),
+            "project_no": "",
+            "outsource_type": "",
+        },
+        processor_tokens=tokens,
+    )
+    return [
+        item for item in payload.get("items") or []
+        if isinstance(item, dict) and item.get("station") == "accept"
+    ]
+
+
 def _lookup_order(data, tokens: list[str] | None) -> dict[str, Any]:
+    if getattr(data, "board_row", None):
+        item = _item_from_processor_board(tokens, int(data.board_row))
+        _guard_scope(item, None, tokens)
+        if item.get("station") != "accept":
+            raise DomainError(
+                "STATE_BLOCKED",
+                f"NO.{int(data.board_row)} 当前是{item.get('stationLabel') or item.get('station')}，不能接单",
+                409,
+            )
+        return item
     item = buyer_todo.find_item_by_identity(
         order_no=getattr(data, "order_no", None),
         mold=getattr(data, "mold", None),
         batch=getattr(data, "batch", None),
+        station="accept",
     )
     if not item:
         raise DomainError("NOT_FOUND", "没有找到这张仍待接单的委外工单，请用订单号、模具号和批次号重新查询", 404)
@@ -618,6 +704,128 @@ def _lookup_order(data, tokens: list[str] | None) -> dict[str, Any]:
             409,
         )
     return item
+
+
+def _resolve_accept_items(data, tokens: list[str] | None) -> list[dict[str, Any]]:
+    order_nos = [buyer_todo.normalize_order_no(item) for item in (getattr(data, "order_nos", None) or []) if item]
+    if getattr(data, "accept_all", False) or (len(order_nos) > 1 and not getattr(data, "board_row", None)):
+        items = []
+        for order_no in order_nos:
+            item = buyer_todo.find_item_by_identity(
+                order_no=order_no,
+                mold=getattr(data, "mold", None),
+                batch=getattr(data, "batch", None),
+                station="accept",
+            )
+            if item and item.get("station") == "accept":
+                _guard_scope(item, None, tokens)
+                items.append(item)
+        if items:
+            return items
+        items = _pending_accept_items(
+            tokens,
+            mold=getattr(data, "mold", None),
+            batch=getattr(data, "batch", None),
+        )
+        if not items:
+            raise DomainError("NOT_FOUND", "没有仍待接单的委外工单，请重新查询待办", 404)
+        return items
+    return [_lookup_order(data, tokens)]
+
+
+def _accepted_order(data, tokens: list[str] | None) -> dict[str, Any] | None:
+    """Return the EO if ERP already left 待接单 (timeout after a successful accept)."""
+    item = buyer_todo.find_awarded_order(
+        order_no=getattr(data, "order_no", None),
+        mold=getattr(data, "mold", None),
+        batch=getattr(data, "batch", None),
+    )
+    if not item:
+        return None
+    _guard_scope(item, None, tokens)
+    stage = str(item.get("awardedStage") or "").casefold()
+    if stage not in POST_ACCEPT_STAGES:
+        return None
+    return item
+
+
+def _mark_accept_observed(db, order_id: int, response: dict[str, Any]) -> None:
+    if db is None or not order_id:
+        return
+    operations = list(db.scalars(
+        select(m.ERPOperation).where(
+            m.ERPOperation.action == "processor_accept",
+            m.ERPOperation.native_id == f"order:{order_id}",
+            m.ERPOperation.state.in_(("UNKNOWN", "DISPATCHING")),
+        )
+    ))
+    if not operations:
+        return
+    for operation in operations:
+        operation.state = "OBSERVED_APPLIED"
+        operation.response = response
+        operation.error_code = None
+    db.commit()
+
+
+def _accept_receipt(item: dict[str, Any], data, erp: dict[str, Any], *, items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    rows = items or [item]
+    identity = {
+        "order_no": item.get("orderNo") or getattr(data, "order_no", None),
+        "mold": item.get("moldFamily") or item.get("moldNo") or getattr(data, "mold", None),
+        "batch": item.get("moldBatch") or item.get("moldNo") or getattr(data, "batch", None),
+    }
+    hint = _accept_hint(item)
+    receipt = {
+        **identity,
+        "action": "processor_accept",
+        "status": "CONFIRMED",
+        "erp": clip_accept_erp(erp),
+        "nextHint": hint,
+        "model_context": {
+            "action": "processor_accept",
+            "status": "CONFIRMED",
+            "orderNo": identity["order_no"],
+            "mold": identity["mold"],
+            "batch": identity["batch"],
+            "nextHint": hint,
+        },
+    }
+    if len(rows) > 1:
+        order_nos = [str(row.get("orderNo") or "") for row in rows if row.get("orderNo")]
+        receipt["order_nos"] = order_nos
+        receipt["model_context"]["orderNos"] = order_nos
+    return receipt
+
+
+def _confirm_accept_items(db, user, data, items: list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, Any]:
+    jobs = []
+    missing = []
+    for item in items:
+        order_id = item.get("orderId")
+        if not order_id:
+            missing.append(item.get("orderNo") or "未编号")
+            continue
+        jobs.append({
+            "native_id": f"order:{order_id}",
+            "path": f"entrust/inquiry/order/{order_id}/accept",
+        })
+    if missing:
+        raise DomainError("STATE_BLOCKED", f"这些待办还没有委外订单，不能接单：{'、'.join(str(item) for item in missing)}", 409)
+    if len(jobs) == 1:
+        result = post_erp(
+            db, user, jobs[0]["path"],
+            intent_id=payload.get("_intent_id"), action="processor_accept",
+            native_id=jobs[0]["native_id"],
+        )
+        return _accept_receipt(items[0], data, result, items=items)
+    result = dispatch_erp_batch(
+        db, user,
+        intent_id=payload.get("_intent_id") or "",
+        action="processor_accept",
+        jobs=jobs,
+    )
+    return _accept_receipt(items[0], data, result, items=items)
 
 
 def _card(item: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
@@ -648,12 +856,15 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
         if invitation.get("supplierName"):
             extra["加工商"] = invitation["supplierName"]
         return item, _card(item, extra)
-    item = _lookup_order(data, tokens)
+    items = _resolve_accept_items(data, tokens) if key == ACCEPT_TOOL else [_lookup_order(data, tokens)]
+    item = items[0]
     if key == ACCEPT_TOOL:
         extra = {
-            "操作": "确认接单",
-            "说明": "本人确认后调用 ERP 接单。",
+            "操作": "确认接单" if len(items) == 1 else f"确认接单（{len(items)}张）",
+            "说明": "本人确认后调用 ERP 接单。工序委外下一步等仓管备料，不要确认原料收货。",
         }
+        if len(items) > 1:
+            extra["订单"] = "、".join(str(row.get("orderNo") or "") for row in items if row.get("orderNo"))
     else:
         reason = processor_reject_reason.resolve(data.reason_code, db, user)
         extra = {
@@ -676,6 +887,17 @@ def execute_tool(db, user, key: str, arguments: dict | None, run=None) -> dict[s
     if key == REJECT_TOOL:
         reason = processor_reject_reason.resolve(data.reason_code, db, user)
         data = data.model_copy(update={"reason_code": reason["reason_code"]})
+    if key == ACCEPT_TOOL:
+        items = _resolve_accept_items(data, _tokens(db, user))
+        locked = {
+            "order_no": items[0].get("orderNo") or data.order_no,
+            "mold": items[0].get("moldFamily") or items[0].get("moldNo") or data.mold,
+            "batch": items[0].get("moldBatch") or data.batch,
+        }
+        if len(items) > 1 or data.accept_all:
+            locked["accept_all"] = True
+            locked["order_nos"] = [row.get("orderNo") for row in items if row.get("orderNo")]
+        data = data.model_copy(update=locked)
     _, display = preview(db, user, key, data)
     proposal = {
         "kind": KIND_BY_TOOL[key],
@@ -720,7 +942,13 @@ def validate_intent(db, user, payload):
     if key is None:
         raise DomainError("TOOL_FORBIDDEN", "操作建议类型不可用", 403)
     data = parse(key, proposal["input"])
-    _, display = preview(db, user, key, data)
+    try:
+        _, display = preview(db, user, key, data)
+    except DomainError as error:
+        if key == ACCEPT_TOOL and error.code in {"NOT_FOUND", "STATE_BLOCKED"}:
+            if _accepted_order(data, _tokens(db, user)):
+                return proposal, key, data
+        raise
     if content_hash(display) != content_hash(proposal["display"]):
         raise DomainError("VERSION_CONFLICT", "委外待办状态已变化，请重新查询后准备", 409)
     return proposal, key, data
@@ -730,8 +958,16 @@ def _quote_hint() -> str:
     return "报价已提交。请重新查询待办。变成待接单就可以接单或拒单。如果还不是待接单，请等待采购处理，不要自己接单。"
 
 
-def _accept_hint() -> str:
-    return "接单已写入 ERP。请重新查询待办，只按查到的分站说话。不要引用这张单历史上的拒单原因或备注。"
+def _accept_hint(item: dict[str, Any] | None = None) -> str:
+    if item and item.get("outsourceType") == "operation":
+        return (
+            "接单已写入 ERP。工序委外下一步等仓管备料完成，本加工商不要确认原料收货，也不要说待收料。"
+            "请重新查询待办，只说还剩的待接单。不要引用这张单历史上的拒单原因或备注。"
+        )
+    return (
+        "接单已写入 ERP。下一步等仓库原料发货后，本加工商再确认收货。"
+        "请重新查询待办，只按查到的分站说话。不要引用这张单历史上的拒单原因或备注。"
+    )
 
 
 def _reject_hint(item: dict[str, Any]) -> str:
@@ -799,7 +1035,34 @@ def confirm(db, user, payload):
             "erp": result,
             "nextHint": _quote_hint(),
         }
-    item, _ = preview(db, user, key, data)
+    tokens = _tokens(db, user)
+    if key == ACCEPT_TOOL:
+        try:
+            items = _resolve_accept_items(data, tokens)
+        except DomainError as error:
+            if error.code in {"NOT_FOUND", "STATE_BLOCKED"}:
+                item = _accepted_order(data, tokens)
+                if item:
+                    order_id = item.get("orderId")
+                    observed = {
+                        "msg": "已确认接单",
+                        "code": 200,
+                        "observed": True,
+                        "data": {
+                            "id": order_id,
+                            "order_no": item.get("orderNo"),
+                            "stage": item.get("awardedStage"),
+                            "status": item.get("awardedStatus") or "open",
+                        },
+                    }
+                    _mark_accept_observed(db, order_id, observed)
+                    return _accept_receipt(item, data, observed)
+            raise
+        return _confirm_accept_items(db, user, data, items, payload)
+    try:
+        item, _ = preview(db, user, key, data)
+    except DomainError:
+        raise
     order_id = item.get("orderId")
     if not order_id:
         raise DomainError("STATE_BLOCKED", "这张待办还没有委外订单，不能接单或拒单", 409)
@@ -808,28 +1071,6 @@ def confirm(db, user, payload):
         "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
         "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
     }
-    if key == ACCEPT_TOOL:
-        result = post_erp(
-            db, user, f"entrust/inquiry/order/{order_id}/accept",
-            intent_id=payload.get("_intent_id"), action="processor_accept",
-            native_id=f"order:{order_id}",
-        )
-        hint = _accept_hint()
-        return {
-            **identity,
-            "action": "processor_accept",
-            "status": "CONFIRMED",
-            "erp": clip_accept_erp(result),
-            "nextHint": hint,
-            "model_context": {
-                "action": "processor_accept",
-                "status": "CONFIRMED",
-                "orderNo": identity["order_no"],
-                "mold": identity["mold"],
-                "batch": identity["batch"],
-                "nextHint": hint,
-            },
-        }
     reason = processor_reject_reason.resolve(data.reason_code, db, user)
     result = post_erp(
         db,

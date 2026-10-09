@@ -170,6 +170,26 @@ def test_clip_accept_erp_drops_stale_reject_remark():
     assert clipped["data"]["stage"] == "pending_accept"
 
 
+def test_processor_accept_prepare_from_board_row(monkeypatch):
+    monkeypatch.setattr(erp_outsource_processor_tools, "_item_from_processor_board", lambda tokens, row_no: {
+        "orderId": 5166,
+        "orderNo": "EO-261009-L6ON",
+        "station": "accept",
+        "stationLabel": "待接单",
+        "outsourceType": "operation",
+        "outsourceTypeLabel": "工序委外",
+        "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
+        "partDetails": "DIE-41 下模板",
+    })
+    result = erp_outsource_processor_tools.execute_tool(None, Admin(), erp_outsource_processor_tools.ACCEPT_TOOL, {
+        "board_row": 1,
+    })
+    assert result["proposal"]["input"]["order_no"] == "EO-261009-L6ON"
+    assert result["proposal"]["display"]["订单号"] == "EO-261009-L6ON"
+
+
 def test_processor_accept_prepare_returns_card(monkeypatch):
     monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
         "orderId": 44,
@@ -207,6 +227,11 @@ def test_spoken_accept_locks_order_no():
     assert erp_outsource_processor_tools.spoken_accept_arguments(
         "订单 EO-260924-A5SS 这单我拒了",
     ) is None
+    assert erp_outsource_processor_tools.spoken_accept_arguments("NO.1接单") == {"board_row": 1}
+    assert erp_outsource_processor_tools.spoken_accept_arguments("全部接单") == {"accept_all": True}
+    scoped = erp_outsource_processor_tools.spoken_accept_arguments("M260063-P1接单")
+    assert scoped["accept_all"] is True
+    assert scoped["batch"] == "M260063-P1"
 
 
 def test_processor_reject_operation_card_mentions_auto_next(monkeypatch):
@@ -609,3 +634,121 @@ def test_quote_input_accepts_no_label_and_blank_invitation_id():
     assert blank.board_row == 1
     assert blank.invitation_id is None
     assert blank.unit_price == 3000
+
+
+def _accepted_item():
+    return {
+        "orderId": 5176,
+        "orderNo": "EO-261009-YMTD",
+        "station": "accept",
+        "stationLabel": "待接单",
+        "outsourceType": "operation",
+        "outsourceTypeLabel": "工序委外",
+        "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
+        "partDetails": "UB-02 上垫板（PTR）",
+        "supplierCode": "SUP000114",
+        "awardedStage": "material_receiving",
+        "awardedStatus": "open",
+    }
+
+
+def test_find_awarded_order_keeps_post_accept_stage(monkeypatch):
+    monkeypatch.setattr(buyer_todo, "fetch_all", lambda sql, params: [{
+        "project_id": 5298,
+        "outsource_type": "operation",
+        "mold_no": "M260063-P1",
+        "inquiry_id": None,
+        "our_quote_amount": None,
+        "auto_accept_max_amount": None,
+        "final_deal_amount": None,
+        "delivery_date": None,
+        "invitation_count": 0,
+        "quoted_count": 0,
+        "invitations": [],
+        "awarded_stage": "material_receiving",
+        "awarded_status": "open",
+        "awarded_order_id": 5176,
+        "awarded_order_no": "EO-261009-YMTD",
+        "supplier_id": 4,
+        "supplier_code": "SUP000114",
+        "supplier_name": "青岛和兴嘉业金属制品有限公司",
+        "awarded_amount": 1,
+        "process_name": "PTR",
+        "dispatch_exhausted": False,
+        "pending_dispatch_suppliers": None,
+        "parts": [{"partNo": "UB-02", "partName": "上垫板", "moldCode": "M260063-P1", "qty": 1}],
+        "reference_total": None,
+    }])
+    item = buyer_todo.find_awarded_order(
+        order_no="EO-261009-YMTD", mold="M260063", batch="M260063-P1",
+    )
+    assert item["orderId"] == 5176
+    assert item["awardedStage"] == "material_receiving"
+    assert buyer_todo.find_awarded_order(
+        order_no="EO-261009-YMTD", mold="M210236", batch="M210236-P1",
+    ) is None
+
+
+def test_validate_intent_allows_already_accepted_after_timeout(monkeypatch):
+    user = SimpleNamespace(id="u1", security_version=1, super_admin=True)
+    run = SimpleNamespace(
+        id="r1", user_id="u1", status="SUCCEEDED", security_version=1,
+        checkpoint={"authorization_hash": "h"},
+    )
+    proposal = {
+        "kind": "erp_outsource_processor_accept",
+        "input": {"order_no": "EO-261009-YMTD", "mold": "M260063", "batch": "M260063-P1"},
+        "display": {"操作": "确认接单"},
+    }
+    step = SimpleNamespace(id="s1", run_id="r1", tool=tools.ACCEPT_TOOL, result={"proposal": proposal})
+    monkeypatch.setattr(tools, "fingerprint", lambda db, current: "h")
+    monkeypatch.setattr(
+        "domain_packs.mold.tool_gateway.available_tools",
+        lambda db, current: {tools.ACCEPT_TOOL},
+    )
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: None)
+    monkeypatch.setattr(buyer_todo, "find_awarded_order", lambda **kwargs: _accepted_item())
+    monkeypatch.setattr(tools, "content_hash", lambda value: "hash")
+    monkeypatch.setattr(tools, "_tokens", lambda db, user: ["SUP000114"])
+    found, key, data = tools.validate_intent(_Db(step, run), user, {
+        "step_id": "s1",
+        "proposal_hash": "hash",
+    })
+    assert key == tools.ACCEPT_TOOL
+    assert found is proposal
+    assert data.order_no == "EO-261009-YMTD"
+
+
+def test_confirm_observes_already_accepted_without_repost(monkeypatch):
+    item = _accepted_item()
+    marked = {}
+
+    def boom(*args, **kwargs):
+        raise AssertionError("must not post accept again")
+
+    monkeypatch.setattr(tools, "validate_intent", lambda db, user, payload: (
+        {},
+        tools.ACCEPT_TOOL,
+        tools.parse(tools.ACCEPT_TOOL, {
+            "order_no": "EO-261009-YMTD",
+            "mold": "M260063",
+            "batch": "M260063-P1",
+        }),
+    ))
+    monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: None)
+    monkeypatch.setattr(buyer_todo, "find_awarded_order", lambda **kwargs: item)
+    monkeypatch.setattr(tools, "_tokens", lambda db, user: ["SUP000114"])
+    monkeypatch.setattr(tools, "post_erp", boom)
+    monkeypatch.setattr(
+        tools,
+        "_mark_accept_observed",
+        lambda db, order_id, response: marked.update({"order_id": order_id, "response": response}),
+    )
+    result = tools.confirm(None, Admin(), {"_intent_id": "intent-timeout"})
+    assert result["status"] == "CONFIRMED"
+    assert result["order_no"] == "EO-261009-YMTD"
+    assert result["erp"]["observed"] is True
+    assert marked["order_id"] == 5176
+    assert "不要确认原料收货" in result["nextHint"]

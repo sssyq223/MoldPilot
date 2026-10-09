@@ -94,6 +94,49 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[0].referenceTotal ?? null).toBeNull()
   })
 
+  it('drops accepted orders from a leftover processor board', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      result: {
+        proposal_resolution: {
+          decision: 'approved',
+          authoritative_receipt: { order_no: 'EO-261009-RIVQ' },
+        },
+      },
+      trace: [
+        {
+          type: 'tool',
+          id: 'board',
+          tool: 'query_erp_outsource_processor_board',
+          data: {
+            scope: 'M260063-P1',
+            items: [
+              { stationLabel: '待接单', orderNo: 'EO-261009-YMTD', moldFamily: 'M260063' },
+              { stationLabel: '待接单', orderNo: 'EO-261009-RIVQ', moldFamily: 'M260063' },
+              { stationLabel: '待接单', orderNo: 'EO-261009-VDN2', moldFamily: 'M260063' },
+            ],
+          },
+        },
+        {
+          type: 'tool',
+          id: 'accept-ymtd',
+          tool: 'prepare_erp_outsource_processor_accept',
+          proposal_decision: 'approved',
+          proposal: { input: { order_no: 'EO-261009-YMTD' }, display: { 订单号: 'EO-261009-YMTD' } },
+        },
+        {
+          type: 'tool',
+          id: 'accept-rivq',
+          tool: 'prepare_erp_outsource_processor_accept',
+          proposal_decision: 'approved',
+          proposal: { input: { order_no: 'EO-261009-RIVQ' }, display: { 订单号: 'EO-261009-RIVQ' } },
+        },
+      ],
+    })
+    expect(tables).toHaveLength(1)
+    expect(tables[0].rows.map((row) => row.orderNo)).toEqual(['EO-261009-VDN2'])
+  })
+
   it('keeps the fuller board when a later query narrows to one mold', () => {
     const tables = erpOutsourceResultTablesFromRun({
       status: 'SUCCEEDED',

@@ -110,6 +110,8 @@ class ERPClient:
 
     def request(self,method,path,**kwargs):
         # Callers provide code-registered paths only; no browser/LLM arbitrary URL input.
+        if method.upper()!='GET' and 'timeout' not in kwargs:
+            kwargs['timeout']=httpx.Timeout(60,connect=5)
         try:
             with self.client.stream(method,path.lstrip('/'),**kwargs) as response:
                 if response.status_code in {401,403}:raise DomainError('ERP_FORBIDDEN','ERP 登录失效或原系统权限不足',403)

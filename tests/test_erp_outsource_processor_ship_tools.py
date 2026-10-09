@@ -163,9 +163,84 @@ def test_product_ship_empty_lines_uses_remain(monkeypatch):
         erp_outsource_processor_ship_tools.SHIP_TOOL,
         {"order_no": "EO-3"},
     )
-    assert result["proposal"]["input"]["lines"] == []
+    assert result["proposal"]["input"]["lines"] == [{"order_part_id": 21, "qty": 1}]
     assert "可发1" in result["proposal"]["display"]["明细"]
     assert "成品库" in result["proposal"]["display"]["入库目标"]
+
+
+def test_product_ship_table_no_is_not_order_part_id(monkeypatch):
+    monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
+        "orderId": 5161,
+        "orderNo": "EO-261008-5A0M",
+        "moldNo": "M260063-P4",
+        "outsourceType": "part",
+        "supplierName": "铂锐",
+        "inboundTargets": ["成品库"],
+        "parts": [{
+            "orderPartId": 4122,
+            "partNo": "B1-01",
+            "orderQty": 1,
+            "receivedQty": 1,
+            "shippedQty": 0,
+            "remainQty": 1,
+            "inboundTargetLabel": "成品库",
+        }],
+    })
+    result = erp_outsource_processor_ship_tools.execute_tool(
+        None,
+        Admin(),
+        erp_outsource_processor_ship_tools.SHIP_TOOL,
+        {"order_no": "EO-261008-5A0M", "lines": [{"order_part_id": 1, "qty": 1}]},
+    )
+    assert result["proposal"]["input"]["lines"] == [{"order_part_id": 4122, "qty": 1}]
+    assert "B1-01" in result["proposal"]["display"]["明细"]
+
+
+def _shippable_item(order_no: str, order_id: int, part_id: int, part_no: str) -> dict:
+    return {
+        "orderId": order_id,
+        "orderNo": order_no,
+        "moldNo": "M260063-P1",
+        "moldFamily": "M260063",
+        "moldBatch": "M260063-P1",
+        "outsourceType": "operation",
+        "outsourceTypeLabel": "工序委外",
+        "supplierName": "铂锐",
+        "inboundTargets": ["半成品库"],
+        "parts": [{
+            "orderPartId": part_id,
+            "partNo": part_no,
+            "orderQty": 1,
+            "receivedQty": 1,
+            "shippedQty": 0,
+            "remainQty": 1,
+            "isFirstOperationLabel": "F",
+            "isEndOperationLabel": "F",
+            "inboundTargetLabel": "半成品库",
+        }],
+    }
+
+
+def test_product_ship_all_prepares_one_card(monkeypatch):
+    items = [
+        _shippable_item("EO-261009-L6ON", 6101, 4101, "DIE-01"),
+        _shippable_item("EO-261009-IPBI", 6102, 4102, "DIE-02"),
+    ]
+    monkeypatch.setattr(processor_fulfillment, "query_product_items", lambda *args, **kwargs: items)
+    result = erp_outsource_processor_ship_tools.execute_tool(
+        None,
+        Admin(),
+        erp_outsource_processor_ship_tools.SHIP_TOOL,
+        {"ship_all": True},
+    )
+    proposal = result["proposal"]
+    assert proposal["display"]["操作"] == "成品发货（2张）"
+    assert "EO-261009-L6ON" in proposal["display"]["订单"]
+    assert "EO-261009-IPBI" in proposal["display"]["订单"]
+    assert proposal["input"]["ship_all"] is True
+    assert proposal["input"]["order_nos"] == ["EO-261009-L6ON", "EO-261009-IPBI"]
+    assert proposal["input"]["lines"] == []
+    assert proposal["input"]["order_no"] is None
 
 
 def test_product_ship_blocks_over_received(monkeypatch):

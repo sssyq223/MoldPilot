@@ -124,6 +124,41 @@ function rowPartText(row: ErpDesignRow): string {
   return `${row.partDetails || ''} ${row.parts || ''} ${parts}`
 }
 
+function orderNoOf(value: unknown): string {
+  const rec = record(value)
+  const raw = rec?.orderNo ?? rec?.order_no ?? rec?.['订单号'] ?? value
+  return String(raw ?? '').trim().toUpperCase()
+}
+
+function acceptedOrderNosFromRun(run: any): Set<string> {
+  const orderNos = new Set<string>()
+  const sources = [
+    ...(Array.isArray(run?.trace) ? run.trace : []),
+    ...(Array.isArray(run?.result?.evidence) ? run.result.evidence : []),
+  ]
+  for (const item of sources) {
+    if (String(item?.tool || '') !== 'prepare_erp_outsource_processor_accept') continue
+    if (item.proposal_decision !== 'approved') continue
+    const proposal = record(item.proposal)
+    for (const source of [proposal?.input, proposal?.display, item.receipt]) {
+      const orderNo = orderNoOf(source)
+      if (orderNo.startsWith('EO-')) orderNos.add(orderNo)
+    }
+  }
+  const resolution = record(run?.result?.proposal_resolution) || record(run?.checkpoint?.proposal_resolution)
+  if (resolution?.decision === 'approved') {
+    const receipt = record(resolution.authoritative_receipt)
+    const orderNo = orderNoOf(receipt) || orderNoOf(receipt?.model_context)
+    if (orderNo.startsWith('EO-')) orderNos.add(orderNo)
+  }
+  return orderNos
+}
+
+function dropAcceptedBoardRows(rows: ErpDesignRow[], accepted: Set<string>): ErpDesignRow[] {
+  if (!accepted.size) return rows
+  return rows.filter((row) => !accepted.has(orderNoOf(row)))
+}
+
 export function erpOutsourceQuotePatchesFromRuns(runs: any[], _confirmed: Record<string, boolean> = {}): BuyerQuotePatch[] {
   const patches: BuyerQuotePatch[] = []
   for (const run of Array.isArray(runs) ? runs : []) {
@@ -383,6 +418,7 @@ function warehouseOrderRows(data: Record<string, any>): ErpDesignRow[] {
 export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuotePatch[] = []): ErpDesignResultTable[] {
   const result: ErpDesignResultTable[] = []
   const patches = quotePatches.length ? quotePatches : erpOutsourceQuotePatchesFromRuns([run])
+  const accepted = acceptedOrderNosFromRun(run)
   for (const item of toolItems(run)) {
     const tool = String(item.tool ?? '')
     const data = payload(item.data)
@@ -390,7 +426,8 @@ export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuo
     if (BOARD_TOOLS.has(tool)) {
       const processor = tool === 'query_erp_outsource_processor_board'
       const title = processor ? '我的委外待办' : 'ERP 委外待办'
-      const rows = processor ? list(data.items) : applyQuotePatches(list(data.items), patches)
+      const rawRows = processor ? list(data.items) : applyQuotePatches(list(data.items), patches)
+      const rows = dropAcceptedBoardRows(rawRows, accepted)
       if (!rows.length) continue
       const scope = String(data.scope || '')
       const next = table(

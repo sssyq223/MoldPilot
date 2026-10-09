@@ -17,6 +17,8 @@ function erpLoginRequiredText(message:string){
 }
 function explainError(message:string, stage:'review'|'confirm'|'other'='other'){
   if(erpLoginRequiredText(message))return '查询看板不用登录 ERP。报价、接单等写入要先验证本人 ERP 账号，验证一次后即可确认。'
+  if(stage==='confirm' && /连接中断或超时|执行结果需要核对|结果未知/.test(message||''))
+    return 'ERP 提交超时或回执中断，正式操作不会自动重做。请再点一次查看并批准，系统会核对 ERP 是否已经接单。'
   if(stage==='confirm')return message||'ERP 没有接受本次发询价，请核对账号后再确认执行。'
   return message
 }

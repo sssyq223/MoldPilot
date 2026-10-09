@@ -187,3 +187,39 @@ def test_dispatch_erp_login_failure_does_not_consume_intent(monkeypatch):
     else:
         raise AssertionError("expected ERP_FORBIDDEN")
     assert db.operation is None
+
+
+def test_dispatch_erp_batch_posts_each_job_once(monkeypatch):
+    _patch_readable_token(monkeypatch)
+    db = FakeDB()
+    calls = []
+
+    def fake_call(db, user, method, path, body=None, params=None):
+        calls.append(path)
+        return {"code": 200, "path": path}
+
+    monkeypatch.setattr(erp_outsource_http, "call_erp", fake_call)
+    first = erp_outsource_http.dispatch_erp_batch(
+        db, User(),
+        intent_id="intent-batch",
+        action="processor_accept",
+        jobs=[
+            {"native_id": "order:1", "path": "entrust/inquiry/order/1/accept"},
+            {"native_id": "order:2", "path": "entrust/inquiry/order/2/accept"},
+        ],
+    )
+    second = erp_outsource_http.dispatch_erp_batch(
+        db, User(),
+        intent_id="intent-batch",
+        action="processor_accept",
+        jobs=[
+            {"native_id": "order:1", "path": "entrust/inquiry/order/1/accept"},
+            {"native_id": "order:2", "path": "entrust/inquiry/order/2/accept"},
+        ],
+    )
+    assert first == second
+    assert calls == [
+        "entrust/inquiry/order/1/accept",
+        "entrust/inquiry/order/2/accept",
+    ]
+    assert db.operation.state == "SUCCEEDED"

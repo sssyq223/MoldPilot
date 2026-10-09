@@ -842,6 +842,30 @@ def _without_progress_tools(names, prompt):
 def _choose_host_auto_invoke(prompt, names):
     """Pick one listing reader. Progress tools are not a count/board answer."""
     preferred = _without_progress_tools(names, prompt)
+    if not preferred:
+        return None
+    text = str(prompt or "")
+    hints = {
+        "query_erp_outsource_followup_board": ("委外单子", "委外订单", "有没有委外", "有委外", "几个委外"),
+        "query_erp_outsource_processor_board": ("我的委外", "加工商"),
+        "query_erp_outsource_processor_product_ship": (
+            "成品发货", "发成品", "发半成品", "回厂发货", "可成品发货", "待发货",
+        ),
+        "query_erp_outsource_processor_fulfillment": (
+            "待收料", "确认来料", "原料收货", "收料待办",
+        ),
+        "query_erp_outsource_warehouse_tasks": ("仓库", "备料", "发料"),
+        "query_erp_outsource_warehouse_inbound": ("到货", "入库", "回厂"),
+        "query_erp_outsource_quality_tasks": ("质检", "领取质检"),
+        "query_erp_outsource_approval_todos": ("审批", "待我审批"),
+    }
+    scored = []
+    for name in preferred:
+        score = sum(len(hint) for hint in hints.get(name, ()) if hint in text)
+        scored.append((score, name))
+    scored.sort(reverse=True)
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1]
     boards = [
         name for name in preferred
         if str(name).endswith(("_board", "_todos", "_tasks"))
@@ -849,22 +873,6 @@ def _choose_host_auto_invoke(prompt, names):
     candidates = boards or preferred
     if len(candidates) == 1:
         return candidates[0]
-    text = str(prompt or "")
-    hints = {
-        "query_erp_outsource_followup_board": ("委外单子", "委外订单", "有没有委外", "有委外", "几个委外"),
-        "query_erp_outsource_processor_board": ("我的委外", "加工商"),
-        "query_erp_outsource_warehouse_tasks": ("仓库", "备料", "发料"),
-        "query_erp_outsource_warehouse_inbound": ("到货", "入库", "回厂"),
-        "query_erp_outsource_quality_tasks": ("质检", "领取质检"),
-        "query_erp_outsource_approval_todos": ("审批", "待我审批"),
-    }
-    scored = []
-    for name in candidates:
-        score = sum(len(hint) for hint in hints.get(name, ()) if hint in text)
-        scored.append((score, name))
-    scored.sort(reverse=True)
-    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
-        return scored[0][1]
     if "query_erp_outsource_followup_board" in candidates and any(
         token in text for token in ("委外", "单子", "订单")
     ):
@@ -1682,8 +1690,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                         name for name in ranked
                         if _is_write_capable_tool(name, tool_annotations)
                     ]
+                    listing = [
+                        name for name in (required or group["tools"])
+                        if name in all_tools and not _is_write_capable_tool(name, tool_annotations)
+                    ]
+                    listing = _without_progress_tools(listing, auto_prompt)
                     if writes:
                         selected = list(dict.fromkeys([*required, *writes]))
+                    elif prompt_relevant:
+                        selected = listing or required
                     elif is_board_group:
                         selected = required
                     else:
