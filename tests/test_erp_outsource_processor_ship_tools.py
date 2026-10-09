@@ -288,3 +288,73 @@ def test_product_ship_blocks_over_received(monkeypatch):
         assert "已收" in error.message
     else:
         raise AssertionError("expected STATE_BLOCKED")
+
+
+def test_clip_ship_erp_drops_qr_fields():
+    clipped = erp_outsource_processor_ship_tools.clip_ship_erp({
+        "msg": "成品发货已成功提交至ERP，二维码已生成，下一步入库",
+        "data": {
+            "shipmentNo": "PS-5408-38216",
+            "qrCode": "payload",
+            "qr_url": "https://example/qr",
+            "二维码": "x",
+        },
+    })
+    assert clipped["data"]["shipmentNo"] == "PS-5408-38216"
+    assert "qrCode" not in clipped["data"]
+    assert "qr_url" not in clipped["data"]
+    assert "二维码" not in clipped["data"]
+    assert "二维码" not in clipped["msg"]
+    assert "PS-5408-38216" == erp_outsource_processor_ship_tools._shipment_no_from_erp({
+        "data": {"shipment_no": "PS-5408-38216", "qrCode": "x"},
+    })
+
+
+def test_product_ship_receipt_hides_qr_from_model(monkeypatch):
+    item = _shippable_item("EO-261009-XG96", 6201, 4301, "B1-01")
+    item["inboundTargets"] = ["成品库"]
+    data = erp_outsource_processor_ship_tools.parse(
+        erp_outsource_processor_ship_tools.SHIP_TOOL,
+        {"order_no": "EO-261009-XG96"},
+    )
+    monkeypatch.setattr(
+        erp_outsource_processor_ship_tools,
+        "validate_intent",
+        lambda db, user, payload: ({}, data),
+    )
+    monkeypatch.setattr(
+        erp_outsource_processor_ship_tools,
+        "_resolve_ship_items",
+        lambda data, tokens: [(item, [{"order_part_id": 4301, "qty": 1}])],
+    )
+    monkeypatch.setattr(erp_outsource_processor_ship_tools, "_tokens", lambda db, user: ["铂锐"])
+    monkeypatch.setattr(
+        erp_outsource_processor_ship_tools,
+        "post_erp",
+        lambda *args, **kwargs: {
+            "msg": "发货成功，二维码已生成",
+            "data": {"shipmentNo": "PS-5408-38216", "qrCode": "secret"},
+        },
+    )
+    receipt = erp_outsource_processor_ship_tools.confirm(None, Admin(), {"_intent_id": "intent-1"})
+    assert receipt["shipment_no"] == "PS-5408-38216"
+    assert receipt["model_context"]["shipmentNo"] == "PS-5408-38216"
+    assert "二维码" not in str(receipt)
+    assert "qrCode" not in str(receipt)
+    assert "二维码" not in receipt["nextHint"]
+    assert receipt["erp"]["data"]["shipmentNo"] == "PS-5408-38216"
+
+
+def test_sanitize_followup_summary_strips_qr_talk():
+    from domain_packs.mold.harness_policy import sanitize_followup_summary
+
+    result = sanitize_followup_summary(
+        {
+            "summary": "成品发货已成功提交至ERP，发货单号：PS-5408-38216，二维码已生成，下一步请仓库入库。",
+            "suggestions": ["二维码已生成", "请仓库入库确认"],
+        },
+        {"authoritative_receipt": {"action": "processor_product_ship"}},
+    )
+    assert "二维码" not in result["summary"]
+    assert "PS-5408-38216" in result["summary"]
+    assert result["suggestions"] == ["请仓库入库确认"]

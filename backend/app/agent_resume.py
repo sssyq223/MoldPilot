@@ -70,6 +70,7 @@ def queue_after_proposal_decision(db, user, step_id, decision, receipt=None):
             "下一步只按回执 nextHint 说。工序委外接单后禁止说待收料、原料收货或请加工商收货。"
             "不要根据接单前的待办表把已经接过的单再说成待接单。"
             "报价成功后不要说待接单或请等待采购处理，避免加工商从回复判断价格区间。"
+            "成品发货成功后不要说二维码已生成或二维码。"
             "最终 JSON 必须包含 response_kind=BUSINESS、summary、evidence_ids、suggestions，"
             "并保留 proposal_decision。"
         )

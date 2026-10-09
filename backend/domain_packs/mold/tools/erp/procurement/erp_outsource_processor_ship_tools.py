@@ -70,6 +70,14 @@ PRODUCT_SHIP_SPEECH = (
 )
 _SHIP_IMPERATIVE = re.compile(r"(成品)?发货[把吧]")
 _SHIP_NOW = frozenset({"成品发货", "发货", "发一下货"})
+_SHIP_NEXT_HINT = "成品已发出。下一步仓库按入库目标（成品库/半成品库）做回厂入库确认。"
+_QR_KEY_MARKERS = ("qr", "barcode", "二维码", "条码")
+_QR_EXACT_KEYS = {"qrcode", "qrurl", "qrimage", "qrpayload", "qrtoken", "barcode"}
+_QR_TALK = re.compile(
+    r"[，,、;；]?\s*(?:二维码(?:已|已经)?(?:生成|创建)?|QR\s*codes?(?:\s+generated)?)",
+    re.IGNORECASE,
+)
+_SHIPMENT_NO_KEYS = {"shipmentno", "shipmentnumber", "shipno"}
 
 
 def _unique_order_nos(text: str) -> list[str]:
@@ -79,6 +87,61 @@ def _unique_order_nos(text: str) -> list[str]:
         if order_no and order_no not in found:
             found.append(order_no)
     return found
+
+
+def _folded_key(key: str) -> str:
+    return re.sub(r"[^a-z]", "", str(key or "").lower())
+
+
+def strip_qr_talk(text: str) -> str:
+    cleaned = _QR_TALK.sub("", text or "")
+    cleaned = re.sub(r"[，,]{2,}", "，", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip("，,、;； ").strip()
+
+
+def _is_qr_key(key: str) -> bool:
+    folded = _folded_key(key)
+    if folded in _QR_EXACT_KEYS:
+        return True
+    if any(marker in str(key) for marker in ("二维码", "条码")):
+        return True
+    return any(marker in folded for marker in ("qr", "barcode"))
+
+
+def clip_ship_erp(payload: Any) -> Any:
+    """Drop QR/barcode fields so follow-up speech cannot mention 二维码."""
+    if isinstance(payload, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in payload.items():
+            if _is_qr_key(key):
+                continue
+            if isinstance(value, str):
+                value = strip_qr_talk(value)
+                if not value:
+                    continue
+            cleaned[key] = clip_ship_erp(value)
+        return cleaned
+    if isinstance(payload, list):
+        return [clip_ship_erp(item) for item in payload]
+    return payload
+
+
+def _shipment_no_from_erp(payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if _folded_key(key) in _SHIPMENT_NO_KEYS and value not in (None, ""):
+                return str(value).strip()
+        for value in payload.values():
+            found = _shipment_no_from_erp(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _shipment_no_from_erp(item)
+            if found:
+                return found
+    return ""
 
 
 def _latest_order_no(text: str) -> str | None:
@@ -537,16 +600,35 @@ def confirm(db, user, payload):
             action="processor_product_ship",
             jobs=jobs,
         )
-    receipt = {
+    shipment_no = _shipment_no_from_erp(result)
+    identity = {
         "order_no": item.get("orderNo") or data.order_no,
         "mold": item.get("moldFamily") or item.get("moldNo") or data.mold,
         "batch": item.get("moldBatch") or item.get("moldNo") or data.batch,
+    }
+    targets = item.get("inboundTargets") or []
+    receipt = {
+        **identity,
         "action": "processor_product_ship",
         "status": "CONFIRMED",
-        "erp": result,
-        "inboundTargets": item.get("inboundTargets") or [],
-        "nextHint": "成品已发出。下一步仓库按入库目标（成品库/半成品库）做回厂入库确认。",
+        "erp": clip_ship_erp(result),
+        "inboundTargets": targets,
+        "nextHint": _SHIP_NEXT_HINT,
+        "model_context": {
+            "action": "processor_product_ship",
+            "status": "CONFIRMED",
+            "orderNo": identity["order_no"],
+            "mold": identity["mold"],
+            "batch": identity["batch"],
+            "inboundTargets": targets,
+            "nextHint": _SHIP_NEXT_HINT,
+        },
     }
+    if shipment_no:
+        receipt["shipment_no"] = shipment_no
+        receipt["model_context"]["shipmentNo"] = shipment_no
     if len(resolved) > 1:
-        receipt["order_nos"] = [row.get("orderNo") for row, _ in resolved if row.get("orderNo")]
+        order_nos = [row.get("orderNo") for row, _ in resolved if row.get("orderNo")]
+        receipt["order_nos"] = order_nos
+        receipt["model_context"]["orderNos"] = order_nos
     return receipt

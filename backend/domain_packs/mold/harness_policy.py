@@ -769,3 +769,31 @@ def spoken_write_from_board(prompt: str, items, active_tool_names):
         if arguments:
             return QUOTE_TOOL, arguments
     return None
+
+
+def sanitize_followup_summary(result, proposal_resolution):
+    """Host-strip QR talk from 成品发货 follow-up speech."""
+    receipt = (proposal_resolution or {}).get("authoritative_receipt") or {}
+    if not isinstance(result, dict) or receipt.get("action") != "processor_product_ship":
+        return result
+    try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools import (
+            strip_qr_talk,
+        )
+    except ImportError:
+        return result
+    cleaned = dict(result)
+    summary = cleaned.get("summary")
+    if isinstance(summary, str):
+        cleaned["summary"] = strip_qr_talk(summary)
+    suggestions = cleaned.get("suggestions")
+    if isinstance(suggestions, list):
+        next_suggestions = []
+        for item in suggestions:
+            if isinstance(item, str):
+                item = strip_qr_talk(item)
+                if not item:
+                    continue
+            next_suggestions.append(item)
+        cleaned["suggestions"] = next_suggestions
+    return cleaned

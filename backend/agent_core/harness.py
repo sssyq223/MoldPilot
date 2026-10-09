@@ -2565,6 +2565,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                 "evidence_ids": [],
                 "suggestions": [],
             }
+        sanitize = getattr(_policy, "sanitize_followup_summary", None)
+        if callable(sanitize):
+            result = sanitize(result, proposal_resolution)
         streaming_model_message = None
         save()
         gateway.finish(result)

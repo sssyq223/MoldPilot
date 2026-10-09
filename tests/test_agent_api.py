@@ -161,6 +161,8 @@ def test_confirmed_proposal_is_requeued_as_a_new_model_turn(monkeypatch):
     tool_receipt = run.checkpoint['messages'][-2]
     assert tool_receipt['tool_call_id'].startswith('proposal_resolution_')
     assert '"event": "proposal_resolved"' in tool_receipt['content']
+    system_instruction = run.checkpoint['messages'][-1]['content']
+    assert '成品发货成功后不要说二维码已生成或二维码' in system_instruction
 
 
 def test_confirmed_proposal_resume_preserves_prior_evidence_ids(monkeypatch):
