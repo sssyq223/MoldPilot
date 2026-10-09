@@ -458,7 +458,7 @@ ACTION_BY_TOOL = {
 }
 
 LIMIT_BY_TOOL = {
-    QUOTE_TOOL: "仅准备本加工商报价；本人确认后才调用 ERP。提交后重新查询。对加工商只说：待接单可以接单，否则等待采购处理。不要提区间、成交价、主管或总经理。",
+    QUOTE_TOOL: "仅准备本加工商报价；本人确认后才调用 ERP。提交后只说报价已提交、请重新查询待办。不要根据报价结果说明下一步由谁处理，也不要提区间、成交价、主管或总经理。",
     ACCEPT_TOOL: "仅准备确认接单；本人确认后才调用 ERP。接单成功后只说接单结果和下一步，不要引用历史拒单原因或备注。",
     REJECT_TOOL: "仅准备拒绝接单；本人确认后才调用 ERP。工序委外拒单后由 ERP 自动转下一家，不要自己选下一家。",
 }
@@ -849,7 +849,7 @@ def preview(db, user, key: str, data) -> tuple[dict[str, Any], dict[str, Any]]:
             "报价金额": data.unit_price,
             "承诺交期": data.delivery_date,
             "是否含税": "含税" if data.tax_included else "不含税",
-            "说明": "本人确认后写入 ERP。提交后再查待办：变成待接单就可以接单；还不是待接单就等待采购处理。",
+            "说明": "本人确认后写入 ERP。提交后请重新查询待办。",
         }
         if item.get("ourQuoteAmount") is not None:
             extra["采购报价"] = item["ourQuoteAmount"]
@@ -955,7 +955,7 @@ def validate_intent(db, user, payload):
 
 
 def _quote_hint() -> str:
-    return "报价已提交。请重新查询待办。变成待接单就可以接单或拒单。如果还不是待接单，请等待采购处理，不要自己接单。"
+    return "报价已提交。请重新查询待办后再办理。"
 
 
 def _accept_hint(item: dict[str, Any] | None = None) -> str:
@@ -1028,12 +1028,18 @@ def confirm(db, user, payload):
             intent_id=payload.get("_intent_id"), action="processor_quote",
             native_id=f"invitation:{data.invitation_id}",
         )
+        hint = _quote_hint()
         return {
             "invitation_id": data.invitation_id,
             "action": "processor_quote",
             "status": "CONFIRMED",
             "erp": result,
-            "nextHint": _quote_hint(),
+            "nextHint": hint,
+            "model_context": {
+                "action": "processor_quote",
+                "status": "CONFIRMED",
+                "nextHint": hint,
+            },
         }
     tokens = _tokens(db, user)
     if key == ACCEPT_TOOL:

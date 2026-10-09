@@ -69,6 +69,7 @@ PRODUCT_SHIP_SPEECH = (
     "成品发货把", "成品发货吧", "发货把", "发货吧", "确认发货", "办发货", "把货发了",
 )
 _SHIP_IMPERATIVE = re.compile(r"(成品)?发货[把吧]")
+_SHIP_NOW = frozenset({"成品发货", "发货", "发一下货"})
 
 
 def _unique_order_nos(text: str) -> list[str]:
@@ -91,8 +92,8 @@ SHIP_ALL_SPEECH = ("发货吧", "发货把", "全部发货", "都发了", "全�
 def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[str, Any] | None:
     """Parse 确认成品发货 / NO.n成品发货 into prepare arguments.
 
-    「成品发货」单独出现、以及「有没有/有几个」是查询，不准备确认卡。
-    上一张可发表还在时，再说「发货 / 成品发货」视为办理。
+    「有没有/有几个/查询」是查询，不准备确认卡。
+    界面按钮或口令「成品发货」是办理：按当前可发表出确认卡，不要让模型口头再确认。
     对话里有多张 EO- 时不要抓最后一张旧单；「发货吧」按当前可发表全部发。
     NO. 是可成品发货表的行号，不是待办表。
     """
@@ -104,11 +105,9 @@ def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[s
     compact = re.sub(r"[。.!！？\s]+$", "", text.strip())
     row_no = buyer_todo.spoken_board_row_number(text)
     named = any(token in text for token in PRODUCT_SHIP_SPEECH) or bool(_SHIP_IMPERATIVE.search(text))
-    if compact in {"发货", "发一下货"}:
+    if compact in _SHIP_NOW:
         named = True
     context_orders = _unique_order_nos(context_text)
-    if compact == "成品发货" and len(context_orders) == 1:
-        named = True
     row_ship = bool(row_no) and "成品发货" in text
     if not named and not row_ship:
         return None
@@ -118,9 +117,11 @@ def spoken_product_ship_arguments(prompt: str, context_text: str = "") -> dict[s
     order_in_prompt = _latest_order_no(text)
     if order_in_prompt:
         arguments["order_no"] = order_in_prompt
+    elif compact in _SHIP_NOW:
+        arguments["ship_all"] = True
     elif not row_no and len(context_orders) == 1:
         arguments["order_no"] = context_orders[0]
-    elif not row_no and (any(token in compact for token in SHIP_ALL_SPEECH) or compact in {"发货", "发一下货", "确认成品发货", "办成品发货", "确认发货", "办发货"}):
+    elif not row_no and (any(token in compact for token in SHIP_ALL_SPEECH) or compact in {"确认成品发货", "办成品发货", "确认发货", "办发货"}):
         arguments["ship_all"] = True
     parsed = buyer_todo.parse_question(text)
     if parsed.get("mold_batch"):

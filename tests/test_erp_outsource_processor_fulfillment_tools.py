@@ -191,9 +191,9 @@ def test_product_item_is_one_shippable_order():
 def test_spoken_product_ship_prepares_only_when_asked_to_ship():
     from domain_packs.mold.tools.erp.procurement import erp_outsource_processor_ship_tools as ship
 
-    assert ship.spoken_product_ship_arguments("成品发货") is None
-    assert ship.spoken_product_ship_arguments("成品发货", "可成品发货 EO-261008-5A0M")["order_no"] == "EO-261008-5A0M"
-    assert ship.spoken_product_ship_arguments("发货", "可成品发货 EO-261008-5A0M")["order_no"] == "EO-261008-5A0M"
+    assert ship.spoken_product_ship_arguments("成品发货") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("成品发货", "可成品发货 EO-261008-5A0M") == {"ship_all": True}
+    assert ship.spoken_product_ship_arguments("发货", "可成品发货 EO-261008-5A0M") == {"ship_all": True}
     assert ship.spoken_product_ship_arguments("有没有可以成品发货的订单？") is None
     assert ship.spoken_product_ship_arguments("确认收货") is None
     assert ship.spoken_product_ship_arguments("确认成品发货") == {"ship_all": True}

@@ -106,6 +106,20 @@ def test_processor_quote_prepare_returns_confirmation_card(monkeypatch):
     assert result["proposal"]["display"]["报价金额"] == 330
     assert result["proposal"]["display"]["模具号"] == "M260063"
     assert result["proposal"]["display"]["批次号"] == "M260063-P1"
+    assert "待接单" not in result["proposal"]["display"]["说明"]
+    assert "采购" not in result["proposal"]["display"]["说明"]
+
+
+def test_processor_quote_hint_does_not_reveal_price_band():
+    hint = erp_outsource_processor_tools._quote_hint()
+    assert hint == "报价已提交。请重新查询待办后再办理。"
+    assert "待接单" not in hint
+    assert "采购" not in hint
+    quote_action = buyer_todo.processor_next_action({"station": "supplier_quote"})
+    assert "待接单" not in quote_action["hint"]
+    assert "采购处理" not in quote_action["hint"]
+    wait_action = buyer_todo.processor_next_action({"station": "place_order"})
+    assert "请等待采购处理" not in wait_action["hint"]
 
 
 def test_processor_quote_requires_quote_station(monkeypatch):

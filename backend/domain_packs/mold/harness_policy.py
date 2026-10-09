@@ -712,6 +712,20 @@ def spoken_write_from_board(prompt: str, items, active_tool_names):
     """After a board hit, lock the matching prepare when speech already asked to quote or send."""
     names = set(active_tool_names or ())
     try:
+        from domain_packs.mold.tools.erp.procurement.erp_outsource_processor_ship_tools import (
+            SHIP_TOOL as PRODUCT_SHIP_TOOL,
+            spoken_product_ship_arguments,
+        )
+        shippable = [
+            item for item in (items or [])
+            if "成品发货" in str((item or {}).get("station") or "")
+        ]
+        arguments = spoken_product_ship_arguments(prompt)
+        if arguments is not None and shippable:
+            return PRODUCT_SHIP_TOOL, arguments
+    except ImportError:
+        pass
+    try:
         from domain_packs.mold.tools.erp.procurement.erp_outsource_approval_tools import (
             spoken_approval_from_board,
         )

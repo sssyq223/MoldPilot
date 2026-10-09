@@ -2265,6 +2265,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                             stage = "正在准备委外下单审批通过确认卡，请核对订单号和当前节点。"
                         elif name == "prepare_erp_outsource_approval_reject":
                             stage = "正在准备委外下单审批驳回确认卡，请核对订单号和驳回原因。"
+                        elif name == "prepare_erp_outsource_processor_product_ship":
+                            stage = "正在准备成品发货确认卡，请核对订单号、可发数量和入库目标。"
                         host_spoken_write_name = name
                         host_spoken_write_summary = stage
                         required_evidence_tools.clear()

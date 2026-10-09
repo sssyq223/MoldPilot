@@ -1686,7 +1686,7 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
     if station == "supplier_quote":
         return {
             "action": "quote",
-            "hint": "提交本加工商报价。提交后重新查询：变成待接单就可以接单；还不是待接单就等待采购处理。不要向加工商提区间、成交价或审批人。",
+            "hint": "提交本加工商报价。提交后只说报价已提交、请重新查询待办。不要根据报价结果说明下一步由谁处理，也不要提区间、成交价或审批人。",
         }
     if station == "accept":
         if outsource_type == "operation":
@@ -1704,7 +1704,7 @@ def processor_next_action(item: dict[str, Any]) -> dict[str, Any]:
     if station in {"place_order", "order_approval"}:
         return {
             "action": "wait",
-            "hint": "当前还不能接单。请等待采购处理，不要自己接单或改价。不要向加工商解释区间、成交价或审批人。",
+            "hint": "当前还不能接单，请稍后重新查询待办，不要自行接单或改价。不要解释区间、成交价或审批人，也不要说明接下来由谁处理。",
         }
     if station == "exhausted":
         return {"action": "wait", "hint": "候选加工商已全部拒单，等采购员重派。"}
