@@ -101,6 +101,55 @@ def test_buyer_todo_question_treats_spoken_accept_as_station():
     assert parsed["station"] == "accept"
 
 
+def test_item_uses_order_plan_delivery_date():
+    item = buyer_todo.item_from_row(
+        {
+            "outsource_type": "operation",
+            "mold_no": "M260063-P1",
+            "awarded_order_no": "EO-261009-I5FU",
+            "delivery_date": "2026-10-01",
+            "plan_delivery_date": "2026-10-15",
+            "parts": [{"partNo": "DIE-02", "partName": "下模板", "qty": 1}],
+        },
+        "accept",
+    )
+    assert item["planDeliveryDate"] == "2026-10-15"
+    assert item["inquiryDeliveryDate"] == "2026-10-01"
+    assert item["deliveryDate"] == "2026-10-15"
+    inquiry_only = buyer_todo.item_from_row(
+        {
+            "outsource_type": "part",
+            "mold_no": "M260063-P1",
+            "delivery_date": "2026-10-20",
+            "parts": [{"partNo": "B1-01", "qty": 1}],
+        },
+        "supplier_quote",
+    )
+    assert inquiry_only["deliveryDate"] == "2026-10-20"
+    presented = buyer_todo.present({"station": "accept"}, [item])
+    assert "交期2026-10-15" in presented["summary"]
+
+
+def test_due_date_questions_are_board_lookups():
+    assert erp_outsource_query_tools._looks_like_board_lookup("这几笔交期呢")
+    assert erp_outsource_query_tools._looks_like_board_lookup("每笔订单交期")
+    context = erp_outsource_query_tools._model_context({
+        "summary": "ERP 委外待办共 2 条。",
+        "counts": {"待接单": 2},
+        "items": [{
+            "orderNo": "EO-261009-I5FU",
+            "moldFamily": "M260063",
+            "moldBatch": "M260063-P1",
+            "stationLabel": "待接单",
+            "outsourceTypeLabel": "工序委外",
+            "deliveryDate": "2026-10-15",
+            "partDetails": "DIE-02",
+        }],
+    }, question="这几笔交期呢")
+    assert context["items"][0]["deliveryDate"] == "2026-10-15"
+    assert "deliveryDate" in context["summary"]
+
+
 def test_model_context_keeps_board_short():
     payload = {
         "summary": "ERP 委外待办 的零件/工序委外全部分站共 10 条。\n- 待接单：10 条\n" + "\n".join(

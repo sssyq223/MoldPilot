@@ -374,8 +374,20 @@ def _resolve_ship_items(data, tokens: list[str] | None) -> list[tuple[dict[str, 
     resolved = []
     for item in chosen:
         _guard(item, tokens)
+        _assert_erp_ship_stage(item)
         resolved.append((item, _resolved_lines(data, item)))
     return resolved
+
+
+def _assert_erp_ship_stage(item: dict[str, Any]) -> None:
+    stage = str(item.get("stage") or "").casefold()
+    if not stage or stage in processor_fulfillment.ERP_PRODUCT_SHIP_STAGES:
+        return
+    raise DomainError(
+        "STATE_BLOCKED",
+        processor_fulfillment.product_ship_blocked_message(item.get("orderNo")),
+        409,
+    )
 
 
 def _lookup(data, tokens: list[str] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:

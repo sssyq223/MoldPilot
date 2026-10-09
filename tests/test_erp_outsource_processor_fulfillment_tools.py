@@ -149,13 +149,14 @@ def test_wait_sql_requires_warehouse_pending_supply():
 def test_product_sql_does_not_block_operation_without_warehouse_pending():
     sql = processor_fulfillment.PRODUCT_SQL.lower()
     assert "entrust_material_supply_tasks" in sql
-    assert "material_receiving" in sql
+    assert "producing" in sql
+    assert "shipping" in sql
 
 
-def test_product_sql_includes_part_after_receipt_while_stage_still_material_receiving():
+def test_product_sql_matches_erp_write_stages_only():
     sql = " ".join(processor_fulfillment.PRODUCT_SQL.split())
-    assert "IN ('accepted', 'material_receiving')" in sql
-    assert "= 'operation' AND lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')" not in sql
+    assert "IN ('producing', 'shipping')" in sql
+    assert "IN ('accepted', 'material_receiving')" not in sql
     assert "confirmed" in processor_fulfillment.PRODUCT_SQL.lower()
 
 
@@ -184,8 +185,7 @@ def test_product_item_is_one_shippable_order():
         "stage": "material_receiving",
         "parts": [{"orderPartId": 1, "partNo": "B1-01", "remainQty": 1, "orderQty": 1}],
     })
-    assert received is not None
-    assert received["remainQty"] == 1
+    assert received is None
 
 
 def test_spoken_product_ship_prepares_only_when_asked_to_ship():

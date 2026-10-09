@@ -108,7 +108,7 @@ export type ErpDesignColumn = {
   fields: string[]
   width?: number
   decimals?: number
-  kind?: 'paint' | 'hardware-type' | 'preview' | 'wrap'
+  kind?: 'paint' | 'hardware-type' | 'preview' | 'wrap' | 'parts'
 }
 
 const ERP_DESIGN_UPLOAD_PAGE = 'http://127.0.0.1:18080/design/upload/index'
@@ -117,6 +117,33 @@ const ERP_DESIGN_PARAMETER_TOOL = 'erp_design_query_upload_parameters'
 const ERP_DESIGN_DRAWING_TOOL = 'erp_design_preview_drawing'
 const ERP_DESIGN_TECHNICAL_REQUIREMENTS_TOOL = 'erp_design_get_technical_requirements'
 export const ERP_READONLY_INLINE_ROW_LIMIT = 8
+export const ERP_COLLAPSED_PART_LIMIT = 2
+
+export function splitPartDetails(value: unknown): string[] {
+  return String(value ?? '')
+    .split(/[\n；;]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+export function collapsedPartPreview(value: unknown, limit = ERP_COLLAPSED_PART_LIMIT) {
+  const lines = splitPartDetails(value)
+  const visible = Math.max(1, Number(limit) || ERP_COLLAPSED_PART_LIMIT)
+  if (lines.length <= visible) {
+    return {
+      lines,
+      hidden: 0,
+      total: lines.length,
+      preview: lines.join(' · '),
+    }
+  }
+  return {
+    lines,
+    hidden: lines.length - 1,
+    total: lines.length,
+    preview: lines[0] || '',
+  }
+}
 
 export function erpDesignReadOnlyTableNeedsDisclosure(
   rowCount: number,

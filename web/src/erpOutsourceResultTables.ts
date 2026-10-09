@@ -52,7 +52,8 @@ const boardColumns: ErpDesignColumn[] = [
   { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 150 },
   { key: 'moldFamily', label: '模具号', fields: ['moldFamily', 'mold_family'], width: 120 },
   { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'moldNo', 'mold_no'], width: 140 },
-  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 240 },
+  { key: 'deliveryDate', label: '交期', fields: ['deliveryDate', 'planDeliveryDate', 'delivery_date'], width: 110 },
+  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 280, kind: 'parts' },
   { key: 'referenceTotal', label: '核算价', fields: ['referenceTotal', 'reference_total'], width: 100, decimals: 2 },
   { key: 'ourQuote', label: '我方报价', fields: ['ourQuoteAmount', 'our_quote_amount', 'ourQuote'], width: 100, decimals: 2 },
   { key: 'ceiling', label: '接单上限', fields: ['autoAcceptMaxAmount', 'auto_accept_max_amount', 'ceiling'], width: 100, decimals: 2 },
@@ -115,6 +116,55 @@ function quoteAmount(value: unknown): number | string | null {
   if (numeric != null) return numeric
   const text = String(value).trim()
   return text || null
+}
+
+function partHead(part: Record<string, any>, fallback = '零件'): string {
+  return [part.partNo || part.part_no, part.partName || part.part_name].filter(Boolean).join(' ') || fallback
+}
+
+function joinPartLines(labels: string[]): string {
+  return labels.map((label) => String(label || '').trim()).filter(Boolean).join('\n')
+}
+
+function processTokens(value: unknown): string[] {
+  return String(value || '')
+    .split(/[、,;／/]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function stripKnownProcess(line: string, processes: string[]): string {
+  let text = line.trim()
+  for (const process of processes) {
+    const escaped = process.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    text = text.replace(new RegExp(`[（(]\\s*${escaped}\\s*[)）]\\s*$`), '').trim()
+  }
+  return text
+}
+
+function formatBoardPartDetails(row: ErpDesignRow, omitProcess = false): string {
+  const processes = processTokens(row.processNames || row.processName)
+  const structured = Array.isArray(row.parts) ? row.parts.filter(record) as Record<string, any>[] : []
+  if (structured.length) {
+    return joinPartLines(structured.map((part) => {
+      const extras = []
+      const qty = part.qty
+      if (qty != null && qty !== '' && Number(qty) !== 1) extras.push(`×${qty}`)
+      if (!omitProcess) {
+        const process = String(part.processName || part.process_name || '').trim()
+        if (process) extras.push(process)
+      }
+      const spec = String(part.spec || '').trim()
+      if (spec) extras.push(spec)
+      const head = partHead(part)
+      return extras.length ? `${head}（${extras.join(' ')}）` : head
+    }))
+  }
+  const text = String(row.partDetails || '').trim()
+  if (!text) return ''
+  return joinPartLines(
+    text.split(/[；;]/).map((line) => omitProcess ? stripKnownProcess(line, processes) : line),
+  )
 }
 
 function rowPartText(row: ErpDesignRow): string {
@@ -244,7 +294,7 @@ const warehouseColumns: ErpDesignColumn[] = [
   { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 150 },
   { key: 'mold', label: '模具号', fields: ['moldFamily', 'moldNo', 'mold_no'], width: 120 },
   { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'mold_batch'], width: 140 },
-  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 420 },
+  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 280, kind: 'parts' },
   { key: 'lineCount', label: '明细数', fields: ['lineCount', 'line_count'], width: 80 },
   { key: 'qty', label: '数量合计', fields: ['qty'], width: 90 },
   { key: 'source', label: '来源', fields: ['sourceTypeLabel', 'sourceType'], width: 110 },
@@ -298,7 +348,7 @@ function productShipRows(data: Record<string, any>): ErpDesignRow[] {
     return {
       ...item,
       stationLabel: item.stationLabel || item.station || '待成品发货',
-      partDetails: item.partDetails || parts.map(productPartLabel).join('；'),
+      partDetails: formatBoardPartDetails(item) || joinPartLines(parts.map(productPartLabel)),
       lineCount: item.lineCount || parts.length,
       remainQty: item.remainQty ?? parts.reduce((sum, line) => sum + Number(line.remainQty || 0), 0),
       inboundTargetText: targets.join('、'),
@@ -312,7 +362,7 @@ const productShipColumns: ErpDesignColumn[] = [
   { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 150 },
   { key: 'mold', label: '模具号', fields: ['moldFamily', 'moldNo', 'mold_no'], width: 120 },
   { key: 'moldBatch', label: '批次号', fields: ['moldBatch', 'mold_batch'], width: 140 },
-  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 420 },
+  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 280, kind: 'parts' },
   { key: 'lineCount', label: '明细数', fields: ['lineCount', 'line_count'], width: 80 },
   { key: 'remainQty', label: '可发合计', fields: ['remainQty', 'remain_qty'], width: 90 },
   { key: 'inbound', label: '入库目标', fields: ['inboundTargetText', 'inboundTargets'], width: 120 },
@@ -346,7 +396,7 @@ const qualityColumns: ErpDesignColumn[] = [
   { key: 'orderNo', label: '订单号', fields: ['orderNo', 'order_no'], width: 150 },
   { key: 'inboundNo', label: '入库单', fields: ['inboundNo', 'inbound_no'], width: 150 },
   { key: 'inbound', label: '入库目标', fields: ['inboundTargetLabel'], width: 110 },
-  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 360 },
+  { key: 'partDetails', label: '零件明细', fields: ['partDetails', 'part_details'], width: 280, kind: 'parts' },
   { key: 'lineCount', label: '明细数', fields: ['lineCount', 'line_count'], width: 80 },
   { key: 'warehouse', label: '仓库', fields: ['warehouse'], width: 110 },
   { key: 'processor', label: '供应商', fields: ['partnerName', 'partner_name'], width: 180 },
@@ -365,7 +415,7 @@ function qualityRows(items: unknown): ErpDesignRow[] {
     return {
       ...item,
       stationLabel: item.stationLabel || item.station || item.statusLabel || item.actionLabel,
-      partDetails: item.partDetails || details.map(qualityPartLabel).join('；'),
+      partDetails: formatBoardPartDetails(item) || joinPartLines(details.map(qualityPartLabel)),
       lineCount: item.lineCount || details.length,
     }
   })
@@ -386,7 +436,7 @@ function inboundRows(items: unknown): ErpDesignRow[] {
     return {
       ...item,
       stationLabel: item.stationLabel || item.station || item.actionLabel,
-      partDetails: item.partDetails || lines.map(inboundPartLabel).join('；'),
+      partDetails: formatBoardPartDetails(item) || joinPartLines(lines.map(inboundPartLabel)),
       inboundTargetText: targets.join('、'),
     }
   })
@@ -407,7 +457,7 @@ function warehouseOrderRows(data: Record<string, any>): ErpDesignRow[] {
       ...first,
       moldFamily: joinUnique(lines.map((line) => line.moldFamily || line.moldNo)),
       moldBatch: joinUnique(lines.map((line) => line.moldBatch)),
-      partDetails: lines.map(supplyLineLabel).join('；'),
+      partDetails: joinPartLines(lines.map(supplyLineLabel)),
       lineCount: lines.length,
       qty: lines.reduce((sum, line) => sum + Number(line.qty || 0), 0),
       processName: joinUnique(lines.map((line) => line.processName)),
@@ -427,7 +477,10 @@ export function erpOutsourceResultTablesFromRun(run: any, quotePatches: BuyerQuo
       const processor = tool === 'query_erp_outsource_processor_board'
       const title = processor ? '我的委外待办' : 'ERP 委外待办'
       const rawRows = processor ? list(data.items) : applyQuotePatches(list(data.items), patches)
-      const rows = dropAcceptedBoardRows(rawRows, accepted)
+      const rows = dropAcceptedBoardRows(rawRows, accepted).map((row) => ({
+        ...row,
+        partDetails: formatBoardPartDetails(row, processor),
+      }))
       if (!rows.length) continue
       const scope = String(data.scope || '')
       const next = table(

@@ -165,20 +165,7 @@ LEFT JOIN LATERAL (
     WHERE mold.project_id = order_row.project_id
 ) molds ON TRUE
 WHERE lower(coalesce(order_row.status, '')) = 'open'
-  AND (
-        lower(coalesce(order_row.stage, '')) IN ('producing', 'shipping')
-     OR (
-            lower(coalesce(order_row.stage, '')) IN ('accepted', 'material_receiving')
-        AND NOT EXISTS (
-            SELECT 1
-            FROM entrust_material_supply_tasks supply
-            WHERE supply.order_id = order_row.id
-              AND lower(coalesce(supply.responsible_type, '')) = 'warehouse'
-              AND lower(coalesce(supply.source_type, '')) IN ('material_stock', 'semi_finished_stock')
-              AND lower(coalesce(supply.status, '')) = 'pending'
-        )
-     )
-  )
+  AND lower(coalesce(order_row.stage, '')) IN ('producing', 'shipping')
   AND (
         %(mold_batch)s = '' AND %(mold_family)s = ''
      OR (%(mold_batch)s <> '' AND upper(coalesce(molds.mold_no, '')) LIKE '%%' || %(mold_batch)s || '%%')
@@ -300,6 +287,7 @@ def flag_tf(value: Any) -> str:
     return "未知"
 
 
+ERP_PRODUCT_SHIP_STAGES = frozenset({"producing", "shipping"})
 PROCESSOR_INBOUND_RULE_VERSION = "processor-inbound-v1"
 PROCESSOR_INBOUND_MISSING_END_OPERATION_WARNING = (
     "工序委外缺少末道工序标志，已按半成品库处理，请核对排产数据"
@@ -394,7 +382,15 @@ def receipt_item(row: dict[str, Any]) -> dict[str, Any]:
     return _stamp_identity(item)
 
 
+def product_ship_blocked_message(order_no: Any = None) -> str:
+    label = str(order_no or "").strip() or "该工单"
+    return f"工单 {label} 当前阶段不允许成品发货"
+
+
 def product_item(row: dict[str, Any]) -> dict[str, Any] | None:
+    stage = str(row.get("stage") or "").casefold()
+    if stage and stage not in ERP_PRODUCT_SHIP_STAGES:
+        return None
     outsource_type = str(row.get("outsource_type") or "part")
     parts = []
     for part in _as_list(row.get("parts")):

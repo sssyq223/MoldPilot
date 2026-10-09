@@ -279,6 +279,8 @@ def test_generic_proposal_card_has_no_mold_dictionary_or_contact_routing():
     assert "ContactProposal" not in source
     assert "contacts" not in source
     assert "detailLink.target" in source
+    assert "正在提交 ERP…" not in source
+    assert "closeModal" in source
 
 
 def test_generic_frontend_shell_has_no_mold_business_implementation():

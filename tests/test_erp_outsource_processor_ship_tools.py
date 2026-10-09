@@ -243,6 +243,29 @@ def test_product_ship_all_prepares_one_card(monkeypatch):
     assert proposal["input"]["order_no"] is None
 
 
+def test_product_ship_prepare_blocks_before_card_when_stage_forbids(monkeypatch):
+    monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
+        "orderId": 5371,
+        "orderNo": "EO-261009-JEJY",
+        "stage": "material_receiving",
+        "supplierName": "铂锐",
+        "parts": [{"orderPartId": 4226, "remainQty": 1, "receivedQty": 1, "partNo": "PU-02"}],
+    })
+    try:
+        erp_outsource_processor_ship_tools.execute_tool(
+            None,
+            Admin(),
+            erp_outsource_processor_ship_tools.SHIP_TOOL,
+            {"order_no": "EO-261009-JEJY"},
+        )
+    except DomainError as error:
+        assert error.code == "STATE_BLOCKED"
+        assert "EO-261009-JEJY" in error.message
+        assert "当前阶段不允许成品发货" in error.message
+    else:
+        raise AssertionError("expected STATE_BLOCKED before confirmation card")
+
+
 def test_product_ship_blocks_over_received(monkeypatch):
     monkeypatch.setattr(processor_fulfillment, "find_product_order_by_identity", lambda **kwargs: {
         "orderId": 3,

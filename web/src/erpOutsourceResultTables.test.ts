@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { collapsedPartPreview } from './erpDesignPreview'
 import { erpOutsourceResultTablesFromRun } from './erpOutsourceResultTables'
 
 describe('ERP outsource result tables', () => {
@@ -39,7 +40,7 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].title).toBe('ERP 委外待办')
     expect(tables[0].rows).toHaveLength(2)
     expect(tables[0].columns.map((column) => column.label)).toEqual([
-      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '核算价', '我方报价', '接单上限', '加工商报价', '成交价', '加工商',
+      '进度', '委外类型', '订单号', '模具号', '批次号', '交期', '零件明细', '核算价', '我方报价', '接单上限', '加工商报价', '成交价', '加工商',
     ])
     expect(tables[0].columns.find((column) => column.key === 'supplierQuotes')?.kind).toBe('wrap')
     expect(tables[0].columns.find((column) => column.key === 'pending')?.kind).toBe('wrap')
@@ -84,7 +85,7 @@ describe('ERP outsource result tables', () => {
     expect(tables).toHaveLength(1)
     expect(tables[0].title).toBe('我的委外待办')
     expect(tables[0].columns.map((column) => column.label)).toEqual([
-      '进度', '委外类型', '订单号', '模具号', '批次号', '零件明细', '工序', '核算价', '采购报价', '我的报价', '成交价',
+      '进度', '委外类型', '订单号', '模具号', '批次号', '交期', '零件明细', '工序', '核算价', '采购报价', '我的报价', '成交价',
     ])
     expect(tables[0].sourceNote).toContain('采购报价')
     expect(tables[0].rows[0].buyerQuoteAmount).toBe(18000)
@@ -92,6 +93,63 @@ describe('ERP outsource result tables', () => {
     expect(tables[0].rows[1].buyerQuoteAmount).toBeNull()
     expect(tables[0].rows[1].referenceTotal).toBe(267)
     expect(tables[0].rows[0].referenceTotal ?? null).toBeNull()
+    expect(tables[0].columns.find((column) => column.key === 'partDetails')?.kind).toBe('parts')
+  })
+
+  it('keeps processor part details compact and expandable', () => {
+    const tables = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_processor_board',
+        data: {
+          scope: 'ERP 委外待办',
+          items: [{
+            stationLabel: '待接单',
+            outsourceTypeLabel: '工序委外',
+            orderNo: 'EO-261009-WZU0',
+            moldFamily: 'M260063',
+            moldBatch: 'M260063-P1',
+            partDetails: 'GU-01 抬料板（ZKR）；GU-02 抬料板（ZKR）',
+            processNames: 'ZKR',
+            parts: [
+              { partNo: 'GU-01', partName: '抬料板', processName: 'ZKR', qty: 1 },
+              { partNo: 'GU-02', partName: '抬料板', processName: 'ZKR', qty: 1 },
+            ],
+          }],
+        },
+      }],
+    })
+    expect(tables[0].rows[0].partDetails).toBe('GU-01 抬料板\nGU-02 抬料板')
+    expect(tables[0].columns.find((column) => column.key === 'partDetails')?.kind).toBe('parts')
+    const fromText = erpOutsourceResultTablesFromRun({
+      status: 'SUCCEEDED',
+      trace: [{
+        type: 'tool',
+        tool: 'query_erp_outsource_processor_board',
+        data: {
+          items: [{
+            stationLabel: '待接单',
+            partDetails: 'DIE-02 下模板（深冷）；DIE-03 下模板（深冷）',
+            processNames: '深冷',
+          }],
+        },
+      }],
+    })
+    expect(fromText[0].rows[0].partDetails).toBe('DIE-02 下模板\nDIE-03 下模板')
+  })
+
+  it('collapses extra parts until expanded', () => {
+    expect(collapsedPartPreview('GU-01 抬料板\nGU-02 抬料板')).toMatchObject({
+      preview: 'GU-01 抬料板 · GU-02 抬料板',
+      hidden: 0,
+      total: 2,
+    })
+    expect(collapsedPartPreview('A\nB\nC\nD')).toMatchObject({
+      preview: 'A',
+      hidden: 3,
+      total: 4,
+    })
   })
 
   it('drops accepted orders from a leftover processor board', () => {

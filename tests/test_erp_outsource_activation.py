@@ -193,7 +193,7 @@ def test_query_aliases_catch_count_questions_without_bare_ops_verbs():
     buyer_ops = _auto(erp_outsource_buyer_tools, "outsource_buyer_ops")
     followup = _auto(erp_outsource_query_tools, "outsource_followup_query")
 
-    assert {"有几个", "有没有", "待报价", "待接单"} <= processor_query
+    assert {"有几个", "有没有", "待报价", "待接单", "订单交期", "交期呢"} <= processor_query
     assert {"有几个", "待报价", "待接单"} <= followup
     assert {"有几个", "有没有"} <= _auto(erp_outsource_quality_tools, "outsource_quality_ops")
     assert not {"报价", "接单", "拒单"} & processor_ops
@@ -293,6 +293,9 @@ def test_spoken_processor_quote_is_a_write_not_a_lookup():
         assert locked is not None
         assert locked[0] == "prepare_erp_outsource_processor_quote"
         assert locked[1]["unit_price"] == 66666
+    dated = "NO.1报价3000，交期2026-10-15"
+    assert harness._has_formal_action_intent(dated)
+    assert not harness._is_read_only_request(dated)
 
 
 def test_host_auto_invokes_processor_quote_from_order_speech():
@@ -452,11 +455,21 @@ def test_outsource_count_questions_are_not_formal_actions():
         "备料完成的有哪些", "原料发货待办", "待发询价有几个",
         "质检合格的有几条", "检验合格了没有", "到货确认待办", "回厂入库待办有几个",
         "成品入库的有哪些", "待发成品有几个", "待领取质检有几个",
+        "这几笔交期呢", "每笔订单交期", "交期是多少",
     )
     for phrase in phrases:
         assert not harness._has_formal_action_intent(phrase), phrase
-        if phrase in {"有没有可以成品发货的订单", "成品发货", "成品发货待办有几个"}:
+        if phrase in {
+            "有没有可以成品发货的订单", "成品发货", "成品发货待办有几个",
+            "这几笔交期呢", "每笔订单交期", "交期是多少",
+        }:
             assert harness._is_read_only_request(phrase), phrase
+    for phrase in ("这几笔交期呢", "每笔订单交期", "交期是多少", "交期呢"):
+        assert harness._may_host_auto_authorized_read(phrase), phrase
+        assert harness._choose_host_auto_invoke(phrase, [
+            "query_erp_outsource_processor_board",
+            "query_erp_outsource_processor_product_ship",
+        ]) == "query_erp_outsource_processor_board"
 
 
 def test_negated_outsource_operations_are_not_formal_actions():

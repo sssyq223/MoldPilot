@@ -45,6 +45,7 @@ SKILL_SPECS = {
             "待采购填报价", "待填价", "待发询价", "待报价", "待填成交价", "待下单",
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "有没有委外", "有委外",
             "几个委外", "有几个", "多少委外", "所有待办", "查看待办", "查看所有待办",
+            "订单交期", "每笔交期", "各单交期", "交期呢", "交期是多少",
         ],
         "auto_activation_queries": [
             "委外跟单", "零件委外", "工序委外", "委外待办", "委外项目", "委外订单",
@@ -52,9 +53,10 @@ SKILL_SPECS = {
             "待接单", "全部拒单", "委外时间线", "委外到哪一步", "所有委外", "全部委外",
             "所有待办", "全部待办", "查看待办", "查看所有待办",
             "委外单子", "有没有委外", "有委外", "几个委外", "有几个", "多少委外",
+            "订单交期", "每笔交期", "各单交期", "交期呢", "交期是多少",
         ],
         "priority_patterns": [
-            "零件委外|工序委外|委外跟单|委外待办|委外订单|委外项目|委外单子|待填价|委外时间线|有几个委外|几个委外",
+            "零件委外|工序委外|委外跟单|委外待办|委外订单|委外项目|委外单子|待填价|委外时间线|订单交期|每笔交期|交期呢|有几个委外|几个委外",
         ],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
@@ -68,11 +70,13 @@ SKILL_SPECS = {
         "activation_tools": [PROCESSOR_BOARD_TOOL],
         "activation_queries": [
             "我的委外", "待报价", "待接单", "加工商待办", "有几个", "有没有", "待办",
+            "订单交期", "每笔交期", "各单交期", "交期呢", "交期是多少", "交期多少",
         ],
         "auto_activation_queries": [
             "我的委外", "待报价", "待接单", "加工商待办", "有几个", "有没有", "待办",
+            "订单交期", "每笔交期", "各单交期", "交期呢", "交期是多少", "交期多少",
         ],
-        "priority_patterns": ["我的委外|加工商待办|待报价|待接单|有几个|有没有"],
+        "priority_patterns": ["我的委外|加工商待办|待报价|待接单|订单交期|每笔交期|交期呢|交期是多少|有几个|有没有"],
         "requires_tool_evidence": True,
         "activation_route": "authorized",
         "suppress_tool_search_on_auto_activation": False,
@@ -82,7 +86,7 @@ SKILL_SPECS = {
 
 TOOL_SPECS = {
     BOARD_TOOL: {
-        "description": "只读读取 ERP 委外待办看板：委外类型、模具号、零件明细和价格。有没有委外、几个订单、全部待办都直接查责任域看板；有模具号则只过滤该模具。不要先追问模具号。采购员/主管使用。",
+        "description": "只读读取 ERP 委外待办看板：委外类型、模具号、零件明细、价格和每张订单交期（deliveryDate，有订单用 plan_delivery_date，否则用询价单交期）。有没有委外、几个订单、全部待办、每笔交期都直接查本看板；有模具号则只过滤该模具。不要先追问模具号。采购员/主管使用。",
         "permission": "erp_outsource_buyer.read",
     },
     PROGRESS_TOOL: {
@@ -90,7 +94,7 @@ TOOL_SPECS = {
         "permission": "erp_outsource_buyer.read",
     },
     PROCESSOR_BOARD_TOOL: {
-        "description": "只读读取本加工商可见的委外待办：待报价、待接单等。不含其他供应商订单，不含我方内部价。",
+        "description": "只读读取本加工商可见的委外待办：待报价、待接单、每张订单交期（deliveryDate，来自订单 plan_delivery_date）。问交期、每笔订单交期时用本工具直接查，不要猜。不含其他供应商订单，不含我方内部价。",
         "permission": "erp_outsource_processor.read",
     },
     PROCESSOR_PROGRESS_TOOL: {
@@ -197,7 +201,10 @@ def _looks_like_board_lookup(text: str) -> bool:
     source = text or ""
     if _clears_inherited_scope(source) or _asks_full_board(source):
         return True
-    return any(word in source for word in ("查看待办", "查待办", "看看待办", "查询待办"))
+    return any(word in source for word in (
+        "查看待办", "查待办", "看看待办", "查询待办",
+        "交期", "订单交期", "每笔交期", "各单交期",
+    ))
 
 
 def _has_mold_scope(parsed: dict[str, str]) -> bool:
@@ -259,6 +266,8 @@ def _compact_board_items(items: list[Any], *, limit: int = 8) -> list[dict[str, 
             "kind": item.get("outsourceTypeLabel") or item.get("kind") or item.get("outsourceType"),
             "parts": details,
         }
+        if item.get("deliveryDate"):
+            row["deliveryDate"] = item.get("deliveryDate")
         if item.get("processNames"):
             row["process"] = item.get("processNames")
         if item.get("buyerQuoteAmount") is not None:
@@ -307,6 +316,8 @@ def _model_context(payload: dict[str, Any], *, question: str = "") -> dict[str, 
                 summary = (summary + " 本轮 prepare 报价确认卡。").strip()
         if "待收料" in stations:
             summary = (summary + " 待收料表示仓库已经发料，请加工商确认收货，不要说没有收料待办。").strip()
+        if "交期" in question:
+            summary = (summary + " 交期在 items.deliveryDate，有订单用计划交期。按订单号逐笔回答。").strip()
     return {
         "summary": summary[:240],
         "item_count": len(items),

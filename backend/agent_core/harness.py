@@ -846,8 +846,8 @@ def _choose_host_auto_invoke(prompt, names):
         return None
     text = str(prompt or "")
     hints = {
-        "query_erp_outsource_followup_board": ("委外单子", "委外订单", "有没有委外", "有委外", "几个委外"),
-        "query_erp_outsource_processor_board": ("我的委外", "加工商"),
+        "query_erp_outsource_followup_board": ("委外单子", "委外订单", "有没有委外", "有委外", "几个委外", "交期"),
+        "query_erp_outsource_processor_board": ("我的委外", "加工商", "交期"),
         "query_erp_outsource_processor_product_ship": (
             "成品发货", "发成品", "发半成品", "回厂发货", "可成品发货", "待发货",
         ),

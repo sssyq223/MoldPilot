@@ -812,8 +812,14 @@ async function switchModelProfile(profile:any){
 async function handleProposalConfirmed(stepId:string,runId=''){
  setProposalConfirmed(stepId,true)
  if(runId)runProcessOpen.value={...runProcessOpen.value,[runId]:false}
- await refresh()
- if(conversation.value)runs.value=await api(`/conversations/${conversation.value}/runs`)
+ const id=conversation.value
+ if(id&&!runEventsReady.value){
+  try{
+   const latest=await api(`/conversations/${id}/runs`)
+   if(conversation.value===id){runs.value=latest;lastRunProjectionSyncAt=Date.now()}
+  }catch{}
+ }
+ void refresh().catch(()=>{})
 }
 async function handleProposalDismissed(stepId:string,runId=''){
  await handleProposalConfirmed(stepId,runId)

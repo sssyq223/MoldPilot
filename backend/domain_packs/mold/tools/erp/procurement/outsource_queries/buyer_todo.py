@@ -109,6 +109,7 @@ SELECT
     awarded.supplier_name,
     awarded.awarded_amount,
     awarded.process_name,
+    awarded.plan_delivery_date,
     coalesce(awarded.dispatch_exhausted, false) AS dispatch_exhausted,
     awarded.pending_dispatch_suppliers,
     coalesce(order_parts.parts, project_parts.parts) AS parts,
@@ -168,6 +169,7 @@ LEFT JOIN LATERAL (
         supplier.partner_name AS supplier_name,
         order_row.total_amount AS awarded_amount,
         order_row.process_name,
+        order_row.plan_delivery_date,
         (
             lower(coalesce(order_row.status, '')) = 'rejected'
             AND lower(coalesce(project.outsource_type, '')) = 'operation'
@@ -1562,7 +1564,9 @@ def item_from_row(row: dict[str, Any], station: str) -> dict[str, Any]:
         "supplierName": row.get("supplier_name") or "",
         "supplierId": row.get("supplier_id"),
         "supplierCode": row.get("supplier_code") or "",
-        "deliveryDate": iso_date(row.get("delivery_date")),
+        "inquiryDeliveryDate": iso_date(row.get("delivery_date")),
+        "planDeliveryDate": iso_date(row.get("plan_delivery_date")),
+        "deliveryDate": iso_date(row.get("plan_delivery_date")) or iso_date(row.get("delivery_date")),
         "invitations": invitations,
     }
 
@@ -1607,10 +1611,11 @@ def present(parsed: dict[str, str], items: list[dict[str, Any]]) -> dict[str, An
             if len(details) > 80:
                 details = details[:80] + "…"
             suppliers = item.get("pendingQuoteSuppliers") or item.get("supplierName") or ""
+            due = item.get("deliveryDate") or "未填"
             line = (
                 f"{item['stationLabel']} {item['outsourceTypeLabel']} "
                 f"{item.get('orderNo') or '尚未下单'} {item.get('moldFamily') or item['moldNo']} "
-                f"{item.get('moldBatch') or item['moldNo']} {details}"
+                f"{item.get('moldBatch') or item['moldNo']} 交期{due} {details}"
             )
             if suppliers:
                 line += f" 加工商 {suppliers}"
@@ -1890,6 +1895,7 @@ SELECT
     supplier.partner_name AS supplier_name,
     order_row.total_amount AS awarded_amount,
     order_row.process_name,
+    order_row.plan_delivery_date,
     false AS dispatch_exhausted,
     NULL::text AS pending_dispatch_suppliers,
     parts.parts,
