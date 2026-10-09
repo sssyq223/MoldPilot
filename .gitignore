@@ -81,6 +81,7 @@ uv.lock
 .env
 .env.*
 !.env.example
+!.env.mail.local.example
 .local/
 node_modules/
 dist/

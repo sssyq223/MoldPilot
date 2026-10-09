@@ -21,6 +21,6 @@ export const capabilityUi:any={
  delegationReasonPlaceholder:'例如：低风险辅材采购金额小、资料齐全时允许自动同意',
  termReplacements:{Agent:'智能体',BOM:'物料清单'},
 }
-export function notificationWorkspaceTarget(notification:any){if(notification?.conversation_id)return {target:'conversation',id:notification.conversation_id};return notification?.kind?.startsWith('contact.')?{target:'contacts',id:notification.resource_id}:null}
+export function notificationWorkspaceTarget(notification:any){if(notification?.conversation_id)return {target:'conversation',id:notification.conversation_id};if(notification?.mail_message_id)return {target:'mail',id:notification.mail_message_id};return notification?.kind?.startsWith('contact.')?{target:'contacts',id:notification.resource_id}:null}
 export function toolEvidenceLinks(item:any){return ['query_contact_cases','query_contact_context'].includes(item?.tool)?(item.data||[]).map((row:any)=>({target:'contacts',id:row.id,label:`查看联络材料：${row.title}`})):[]}
 export function legacyStorageKeys(userId:string){return {approvalMode:`mold.agentPermissionMode.${userId}`,layout:`mold.layout.${userId}`}}

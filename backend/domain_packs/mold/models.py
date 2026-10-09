@@ -76,9 +76,32 @@ class MailMonitorAccount(IdentityMixin, Base):
     last_error: Mapped[str] = mapped_column(Text, default="")
 
 
+class MailMonitorRoute(IdentityMixin, Base):
+    """A mailbox/folder/category rule independent from account credentials."""
+
+    __tablename__ = "mail_monitor_route"
+    account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    folder: Mapped[str] = mapped_column(String(255), default="INBOX")
+    direction: Mapped[str] = mapped_column(String(20), default="INBOX")
+    category: Mapped[str] = mapped_column(String(40))
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    matcher: Mapped[dict] = mapped_column(J, default=dict)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_inbox: Mapped[bool] = mapped_column(Boolean, default=True)
+    archive: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (
+        UniqueConstraint("account_id", "name", name="uq_mail_monitor_route_name"),
+        CheckConstraint("category IN ('QUOTATION','BID_AWARDED','CONSTRUCTION_START','PROJECT_KICKOFF')"),
+        CheckConstraint("direction IN ('INBOX','SENT','CUSTOM')"),
+    )
+
+
 class MailMonitorCursor(IdentityMixin, Base):
     __tablename__ = "mail_monitor_cursor"
-    account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), unique=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), index=True)
+    folder: Mapped[str] = mapped_column(String(255), default="INBOX")
     uid_validity: Mapped[str] = mapped_column(String(80), default="")
     last_uid: Mapped[int] = mapped_column(Integer, default=0)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -89,6 +112,11 @@ class MailMonitorCursor(IdentityMixin, Base):
 class MailMessage(IdentityMixin, Base):
     __tablename__ = "mail_message"
     account_id: Mapped[str] = mapped_column(ForeignKey("mail_monitor_account.id"), index=True)
+    route_id: Mapped[str | None] = mapped_column(ForeignKey("mail_monitor_route.id"), nullable=True, index=True)
+    folder: Mapped[str] = mapped_column(String(255), default="INBOX")
+    direction: Mapped[str] = mapped_column(String(20), default="INBOX")
+    category: Mapped[str] = mapped_column(String(40), default="")
+    category_status: Mapped[str] = mapped_column(String(30), default="UNMATCHED")
     uid_validity: Mapped[str] = mapped_column(String(80), default="")
     uid: Mapped[int] = mapped_column(Integer)
     message_id: Mapped[str] = mapped_column(String(512), default="")
@@ -101,6 +129,9 @@ class MailMessage(IdentityMixin, Base):
     error_code: Mapped[str] = mapped_column(String(80), default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    plain_body: Mapped[str] = mapped_column(Text, default="")
+    html_body: Mapped[str] = mapped_column(Text, default="")
+    raw_file_object_id: Mapped[str] = mapped_column(String(36), default="")
     detail_json: Mapped[dict] = mapped_column(J, default=dict)
     __table_args__ = (
         CheckConstraint("outcome IN ('RECEIVED','IMPORTED','DUPLICATE','IGNORED_SENDER','IGNORED_NO_DOCUMENT','IGNORED_NO_KEYWORD','FAILED','QUARANTINED','PARTIAL_FAILURE')"),
@@ -120,6 +151,8 @@ class MailDocument(IdentityMixin, Base):
     classification_reason: Mapped[str] = mapped_column(Text, default="")
     file_object_id: Mapped[str] = mapped_column(String(36), default="")
     import_status: Mapped[str] = mapped_column(String(30), default="PENDING")
+    preview_status: Mapped[str] = mapped_column(String(30), default="AVAILABLE")
+    extracted_text: Mapped[str] = mapped_column(Text, default="")
 
 
 def _mapped_exports(module):
@@ -151,6 +184,7 @@ _exports = {
     "PurchaseRequest": PurchaseRequest,
     "PurchaseLine": PurchaseLine,
     "MailMonitorAccount": MailMonitorAccount,
+    "MailMonitorRoute": MailMonitorRoute,
     "MailMonitorCursor": MailMonitorCursor,
     "MailMessage": MailMessage,
     "MailDocument": MailDocument,

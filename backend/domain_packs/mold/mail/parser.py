@@ -69,6 +69,12 @@ class ParsedMail:
     classification_reasons: tuple[str, ...]
     plain_body: str
     html_body: str
+    attachments: tuple[MailDocument, ...] = ()
+    recipients: tuple[str, ...] = ()
+    cc: tuple[str, ...] = ()
+    mail_category: str = ""
+    category_status: str = "UNMATCHED"
+    category_reason: str = ""
 
 
 def decode_header_text(value: str | None) -> str:
@@ -193,6 +199,46 @@ def _attachment_documents(message: Message) -> list[MailDocument]:
                 media_type=part.get_content_type(),
             )
         )
+    return documents
+
+
+def _all_attachment_documents(message: Message) -> list[MailDocument]:
+    """Return bounded attachment bytes for archive/preview purposes.
+
+    Structured spreadsheet extraction remains intentionally limited to the
+    existing import formats.  Mail archiving, however, must retain PDF/image
+    and unknown attachments as well, so preview support can evolve without
+    re-reading the remote mailbox.
+    """
+    documents: list[MailDocument] = []
+    total_bytes = 0
+    seen: set[tuple[str, str]] = set()
+    for part in message.walk():
+        filename = part.get_filename()
+        if not filename:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        if not payload:
+            continue
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise MailDocumentLimitError("邮件单个附件超过100MB解析上限")
+        total_bytes += len(payload)
+        if total_bytes > MAX_ATTACHMENT_BYTES:
+            raise MailDocumentLimitError("邮件附件总大小超过100MB解析上限")
+        name = _decode_filename(filename)
+        digest = hashlib.sha256(payload).hexdigest()
+        key = (name.lower(), digest)
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(documents) >= MAX_ATTACHMENT_COUNT:
+            raise MailDocumentLimitError(f"邮件附件数量不能超过{MAX_ATTACHMENT_COUNT}")
+        documents.append(MailDocument(
+            name=name,
+            data=payload,
+            source="attachment",
+            media_type=part.get_content_type(),
+        ))
     return documents
 
 
@@ -509,10 +555,15 @@ def parse_message(
     worker can store the returned documents and ledger metadata transactionally.
     """
     message, documents, plain_body, html_body = message_documents(data, subject_stem)
+    attachments = _all_attachment_documents(message)
     subject = decode_header_text(message.get("Subject"))
     sender_header = decode_header_text(message.get("From"))
     sender_addresses = [address.lower() for _, address in getaddresses([sender_header]) if address]
     sender = sender_addresses[0] if len(sender_addresses) == 1 else sender_header
+    recipients = tuple(address.lower() for _, address in getaddresses([
+        decode_header_text(message.get("To")), decode_header_text(message.get("Delivered-To")),
+    ]) if address)
+    cc = tuple(address.lower() for _, address in getaddresses([decode_header_text(message.get("Cc"))]) if address)
     rules = tuple(str(item).strip() for item in allowed_senders if str(item).strip())
     sender_allowed = True if not rules else sender_is_allowed(sender_header, rules)
 
@@ -539,4 +590,7 @@ def parse_message(
         classification_reasons=tuple(reasons),
         plain_body=plain_body,
         html_body=html_body,
+        attachments=tuple(attachments),
+        recipients=tuple(dict.fromkeys(recipients)),
+        cc=tuple(dict.fromkeys(cc)),
     )

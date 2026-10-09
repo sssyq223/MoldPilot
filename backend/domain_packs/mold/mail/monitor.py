@@ -1,8 +1,4 @@
-"""Bounded, testable IMAP polling for the MoldPilot mail worker.
-
-The worker owns transport and cursor progression; persistence is injected so
-the same code can be exercised without a real mailbox or database.
-"""
+"""Bounded, testable IMAP polling for the MoldPilot mail worker."""
 
 from __future__ import annotations
 
@@ -10,16 +6,44 @@ import hashlib
 import imaplib
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .parser import MAX_MESSAGE_BYTES, ParsedMail, parse_message
+from .rules import MailRouteRule, classify_routes
 
 MAX_POLL_BYTES = 200 * 1024 * 1024
 MAX_SEARCH_RANGE_SIZE = 10_000
 MAX_SEARCH_RESULT_UIDS = 20_000
-MAX_UID_RETRIES = 3
+
+
+@dataclass(frozen=True)
+class MailRouteConfig:
+    route_id: str
+    name: str
+    folder: str
+    direction: str
+    category: str
+    priority: int = 100
+    matcher: dict[str, Any] | None = None
+    allowed_senders: tuple[str, ...] = ()
+    notify_inbox: bool = True
+    archive: bool = True
+
+    def as_rule(self) -> MailRouteRule:
+        return MailRouteRule(
+            route_id=self.route_id,
+            name=self.name,
+            folder=self.folder,
+            direction=self.direction,
+            category=self.category,
+            priority=self.priority,
+            matcher=self.matcher,
+            allowed_senders=self.allowed_senders,
+            notify_inbox=self.notify_inbox,
+            archive=self.archive,
+        )
 
 
 @dataclass(frozen=True)
@@ -34,6 +58,7 @@ class MailMonitorConfig:
     transport: str = "ssl"
     allowed_senders: tuple[str, ...] = ()
     keywords: dict[str, tuple[str, ...]] | None = None
+    routes: tuple[MailRouteConfig, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,23 +78,19 @@ class PollStats:
 
 
 class MailLedger(Protocol):
-    def load_cursor(self, account_id: str) -> MailCursor: ...
-    def save_cursor(self, account_id: str, cursor: MailCursor) -> None: ...
+    def load_cursor(self, account_id: str, folder: str = "INBOX") -> MailCursor: ...
+    def save_cursor(self, account_id: str, cursor: MailCursor, folder: str = "INBOX") -> None: ...
     def record_message(self, account: MailMonitorConfig, uid: int, uid_validity: str, raw: bytes, parsed: ParsedMail, raw_sha256: str, archive_path: str) -> None: ...
     def record_failure(self, account: MailMonitorConfig, uid: int, uid_validity: str, raw_sha256: str, error: str) -> None: ...
 
 
-def _number(value: Any) -> int | None:
-    if isinstance(value, bytes):
-        value = value.decode("ascii", errors="ignore")
-    match = re.search(r"\b(\d+)\b", str(value or ""))
-    return int(match.group(1)) if match else None
-
-
 def _status_number(response: Any, key: str) -> int | None:
-    text = str(response)
+    text = _response_text(response)
     match = re.search(rf"{key}\s+(\d+)", text, re.IGNORECASE)
-    return int(match.group(1)) if match else _number(response)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(\d+)\b", text)
+    return int(match.group(1)) if match else None
 
 
 def _response_text(response: Any) -> str:
@@ -100,6 +121,17 @@ def _fetch_rfc822(response: Any) -> bytes:
     return b""
 
 
+def _legacy_classification(parsed: ParsedMail) -> ParsedMail:
+    """Keep the pre-route parser behavior for existing configured accounts."""
+    matched = bool(parsed.sender_allowed and (parsed.documents or parsed.attachments))
+    return replace(
+        parsed,
+        mail_category=parsed.business_types[0] if parsed.business_types else "",
+        category_status="MATCHED" if matched else "UNMATCHED",
+        category_reason="兼容旧版文档分类" if matched else "发件人或结构化文档未通过旧版规则",
+    )
+
+
 class MailMonitor:
     def __init__(
         self,
@@ -125,7 +157,7 @@ class MailMonitor:
         return client
 
     def _archive(self, raw: bytes, digest: str) -> str:
-        directory = self.archive_root / self.config.account_name / digest[:2]
+        directory = self.archive_root / self.config.account_name / self.config.folder / digest[:2]
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{digest}.eml"
         if not target.exists():
@@ -137,8 +169,32 @@ class MailMonitor:
                 temporary.unlink(missing_ok=True)
         return str(target)
 
+    def _load_cursor(self) -> MailCursor:
+        try:
+            return self.ledger.load_cursor(self.config.account_id, self.config.folder)
+        except TypeError:
+            return self.ledger.load_cursor(self.config.account_id)
+
+    def _save_cursor(self, cursor: MailCursor) -> None:
+        try:
+            self.ledger.save_cursor(self.config.account_id, cursor, self.config.folder)
+        except TypeError:
+            self.ledger.save_cursor(self.config.account_id, cursor)
+
+    def _classify(self, parsed: ParsedMail) -> ParsedMail:
+        if not self.config.routes:
+            return _legacy_classification(parsed)
+        rules = [route.as_rule() for route in self.config.routes if route.folder == self.config.folder]
+        route, status, reason = classify_routes(parsed, rules)
+        return replace(
+            parsed,
+            mail_category=route.category if route else "",
+            category_status=status,
+            category_reason=reason,
+        )
+
     def poll_once(self) -> PollStats:
-        cursor = self.ledger.load_cursor(self.config.account_id)
+        cursor = self._load_cursor()
         client = self.client_factory(self.config)
         scanned = accepted = ignored = failed = bytes_read = 0
         next_uid = cursor.last_uid
@@ -154,7 +210,7 @@ class MailMonitor:
             next_uid = cursor.last_uid if uid_validity == cursor.uid_validity else 0
             end_uid = min(uidnext - 1, start_uid + MAX_SEARCH_RANGE_SIZE - 1)
             if end_uid < start_uid:
-                self.ledger.save_cursor(self.config.account_id, MailCursor(uid_validity, cursor.last_uid))
+                self._save_cursor(MailCursor(uid_validity, cursor.last_uid))
                 return PollStats(next_uid=cursor.last_uid)
             _kind, search_data = client.uid("search", None, f"UID {start_uid}:{end_uid}")
             raw_uids = re.findall(r"\d+", _response_text(search_data))[:MAX_SEARCH_RESULT_UIDS]
@@ -169,24 +225,31 @@ class MailMonitor:
                     failed += 1
                     self.ledger.record_failure(self.config, uid, uid_validity, "", "IMAP FETCH 未返回 RFC822 内容")
                     continue
+                digest = hashlib.sha256(raw).hexdigest()
                 if len(raw) > MAX_MESSAGE_BYTES or bytes_read + len(raw) > MAX_POLL_BYTES:
                     failed += 1
-                    digest = hashlib.sha256(raw).hexdigest()
                     self.ledger.record_failure(self.config, uid, uid_validity, digest, "邮件或轮询总大小超过解析上限")
                     continue
                 bytes_read += len(raw)
-                digest = hashlib.sha256(raw).hexdigest()
                 try:
-                    parsed = parse_message(raw, subject_stem=f"uid-{uid}", allowed_senders=self.config.allowed_senders, keywords=self.config.keywords)
+                    parsed = parse_message(
+                        raw,
+                        subject_stem=f"uid-{uid}",
+                        allowed_senders=self.config.allowed_senders,
+                        keywords=self.config.keywords,
+                    )
+                    parsed = self._classify(parsed)
                     archive_path = self._archive(raw, digest)
                     self.ledger.record_message(self.config, uid, uid_validity, raw, parsed, digest, archive_path)
-                    accepted += 1 if parsed.sender_allowed and parsed.documents else 0
-                    ignored += 0 if parsed.sender_allowed and parsed.documents else 1
-                except Exception as exc:  # ledger records quarantine/retry policy
+                    if parsed.category_status == "MATCHED":
+                        accepted += 1
+                    else:
+                        ignored += 1
+                except Exception as exc:
                     failed += 1
                     self.ledger.record_failure(self.config, uid, uid_validity, digest, str(exc)[:1000])
                 next_uid = max(next_uid, uid)
-                self.ledger.save_cursor(self.config.account_id, MailCursor(uid_validity, next_uid))
+                self._save_cursor(MailCursor(uid_validity, next_uid))
             return PollStats(scanned, accepted, ignored, failed, bytes_read, next_uid)
         finally:
             try:
@@ -207,5 +270,6 @@ class MailMonitorWorker:
         results = {}
         for account in self.accounts():
             monitor = MailMonitor(account, self.ledger, client_factory=client_factory, archive_root=archive_root)
-            results[account.account_id] = monitor.poll_once()
+            key = account.account_id if account.folder == "INBOX" else f"{account.account_id}:{account.folder}"
+            results[key] = monitor.poll_once()
         return results

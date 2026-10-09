@@ -107,6 +107,6 @@ echo [ERROR] Failed to launch a service window. Check the messages above.
 
 :failed
 echo.
-pause
+if /I not "%~1"=="--check" pause
 popd
 exit /b 1

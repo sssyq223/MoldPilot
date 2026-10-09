@@ -45,10 +45,23 @@ def _document_intake(db, user, event):
 def target(db, user, event):
     if event.kind.startswith('document.ocr.'):
         return {'conversation_id':_document_intake(db,user,event).conversation_id}
+    if event.kind.startswith('mail.'):
+        message = db.get(m.MailMessage, event.resource_id)
+        return {'mail_message_id': event.resource_id,
+                'mail_account_id': message.account_id if message else '',
+                'mail_category': message.category if message else ''}
     return {}
 
 
 def title(kind):
+    if kind.startswith('mail.received.'):
+        labels = {'quotation': '报价', 'bid_awarded': '中标',
+                  'construction_start': '开工', 'project_kickoff': '启动'}
+        return f"收到{labels.get(kind.removeprefix('mail.received.'), '业务')}邮件"
+    if kind == 'mail.review.required':
+        return '邮件分类需要人工复核'
+    if kind == 'mail.processing.failed':
+        return '邮件处理异常，需要重试或人工处理'
     return TITLES.get(kind, "业务处理状态已更新")
 
 
@@ -60,6 +73,12 @@ def permitted(db, user, event):
     if not user or not user.active:
         return False
     try:
+        if event.kind.startswith('mail.'):
+            message = db.get(m.MailMessage, event.resource_id)
+            if not message:
+                return False
+            from domain_packs.mold.authorization import access
+            return access(db, user, 'mail.read', {'account_id': message.account_id}).allowed
         if event.kind.startswith('document.ocr.'):
             _document_intake(db,user,event)
         elif event.kind.startswith("approval."):

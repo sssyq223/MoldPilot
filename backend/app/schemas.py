@@ -228,6 +228,19 @@ class ModelProfileInput(ModelConfigInput):
     name: str = Field(min_length=1, max_length=80)
 
 
+class MailRouteInput(StrictModel):
+    id: str | None = Field(default=None, min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=120)
+    folder: str = Field(default="INBOX", min_length=1, max_length=255)
+    direction: Literal["INBOX", "SENT", "CUSTOM"] = "INBOX"
+    category: Literal["QUOTATION", "BID_AWARDED", "CONSTRUCTION_START", "PROJECT_KICKOFF"]
+    priority: int = Field(default=100, ge=0, le=100000)
+    matcher: dict = Field(default_factory=dict)
+    enabled: bool = True
+    notify_inbox: bool = True
+    archive: bool = True
+
+
 class MailMonitorConfigInput(StrictModel):
     """Administrator-managed IMAP metadata; the password stays out of the DB."""
     id: str | None = Field(default=None, min_length=1, max_length=36)
@@ -242,3 +255,8 @@ class MailMonitorConfigInput(StrictModel):
     keywords: dict[str, list[str]] = Field(default_factory=dict)
     poll_interval_seconds: int = Field(default=60, ge=15, le=3600)
     lookback_days: int = Field(default=7, ge=0, le=90)
+    routes: list[MailRouteInput] = Field(default_factory=list, max_length=128)
+
+
+class MailRoutesInput(StrictModel):
+    routes: list[MailRouteInput] = Field(default_factory=list, max_length=128)

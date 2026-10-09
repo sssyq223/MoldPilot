@@ -501,10 +501,24 @@ def delete_model_profile_api(profile_id: str, user=Depends(current_user)):
         raise DomainError("MODEL_CONFIG_INVALID", str(exc), 400)
 
 
+def _mail_route_view(route):
+    return {
+        "id": route.id, "name": route.name, "folder": route.folder,
+        "direction": route.direction, "category": route.category,
+        "priority": route.priority, "matcher": route.matcher or {},
+        "rule_version": route.rule_version, "enabled": bool(route.enabled),
+        "notify_inbox": bool(route.notify_inbox), "archive": bool(route.archive),
+    }
+
+
 def _mail_account_view(db, row):
-    cursor = db.scalar(select(mold_models.MailMonitorCursor).where(
+    cursors = list(db.scalars(select(mold_models.MailMonitorCursor).where(
         mold_models.MailMonitorCursor.account_id == row.id
-    ))
+    ).order_by(mold_models.MailMonitorCursor.folder)))
+    routes = list(db.scalars(select(mold_models.MailMonitorRoute).where(
+        mold_models.MailMonitorRoute.account_id == row.id
+    ).order_by(mold_models.MailMonitorRoute.folder, mold_models.MailMonitorRoute.priority,
+               mold_models.MailMonitorRoute.name)))
     from .mail_worker import resolve_secret
     return {
         "id": row.id,
@@ -523,11 +537,13 @@ def _mail_account_view(db, row):
         "enabled": bool(row.enabled),
         "status": row.status,
         "last_error": row.last_error or "",
-        "cursor": {
+        "routes": [_mail_route_view(route) for route in routes],
+        "cursors": [{
+            "folder": cursor.folder,
             "uid_validity": cursor.uid_validity,
             "last_uid": cursor.last_uid,
-            "last_polled_at": cursor.last_polled_at.isoformat() if cursor and cursor.last_polled_at else None,
-        } if cursor else None,
+            "last_polled_at": cursor.last_polled_at.isoformat() if cursor.last_polled_at else None,
+        } for cursor in cursors],
     }
 
 
@@ -551,6 +567,34 @@ def _normalize_mail_config(data: s.MailMonitorConfigInput) -> dict:
         "allowed_senders": allowed_senders, "keywords": keywords,
         "poll_interval_seconds": data.poll_interval_seconds, "lookback_days": data.lookback_days,
     }
+
+
+def _normalize_mail_routes(routes):
+    result = []
+    names = set()
+    for route in routes:
+        name = route.name.strip()
+        if name in names:
+            raise DomainError("MAIL_ROUTE_EXISTS", "同一邮箱下路由名称不能重复", 400)
+        names.add(name)
+        matcher = dict(route.matcher or {})
+        for key in ("all_keywords", "any_keywords", "exclude_keywords", "subject_keywords",
+                    "subject_exclude_keywords",
+                    "body_keywords", "senders", "recipients", "attachment_names",
+                    "attachment_extensions"):
+            values = matcher.get(key)
+            if values is not None and not isinstance(values, list):
+                raise DomainError("MAIL_ROUTE_INVALID", f"路由规则 {key} 必须是数组", 400)
+            if isinstance(values, list) and (len(values) > 100 or any(len(str(item)) > 200 for item in values)):
+                raise DomainError("MAIL_ROUTE_INVALID", f"路由规则 {key} 超出限制", 400)
+        result.append({
+            "id": route.id, "name": name, "folder": route.folder.strip(),
+            "direction": route.direction, "category": route.category,
+            "priority": route.priority, "matcher": matcher,
+            "enabled": bool(route.enabled), "notify_inbox": bool(route.notify_inbox),
+            "archive": bool(route.archive),
+        })
+    return result
 
 
 @app.get("/api/mail-monitor/config")
@@ -587,6 +631,29 @@ def save_mail_monitor_config(data: s.MailMonitorConfigInput, user=Depends(curren
         if not row.enabled:
             row.status = "DISABLED"
     db.flush()
+    if data.routes:
+        normalized_routes = _normalize_mail_routes(data.routes)
+        existing_routes = list(db.scalars(select(mold_models.MailMonitorRoute).where(
+            mold_models.MailMonitorRoute.account_id == row.id
+        )))
+        by_id = {item.id: item for item in existing_routes}
+        keep_ids = set()
+        for route_data in normalized_routes:
+            route_id = route_data.pop("id", None)
+            if route_id:
+                route = by_id.get(route_id)
+                if not route:
+                    raise DomainError("MAIL_ROUTE_NOT_FOUND", "邮件监听路由不存在", 404)
+                for key, value in route_data.items():
+                    setattr(route, key, value)
+            else:
+                route = mold_models.MailMonitorRoute(account_id=row.id, **route_data)
+                db.add(route)
+            keep_ids.add(route.id)
+        for route in existing_routes:
+            if route.id not in keep_ids:
+                db.delete(route)
+    db.flush()
     record(db, user, "mail.monitor.config.updated", row.id, {
         "account_name": row.name, "secret_ref": bool(row.secret_ref), "enabled": bool(row.enabled)
     })
@@ -600,6 +667,48 @@ def _mail_manage(db, user, account_id: str):
     if not row:
         raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
     return row
+
+
+@app.get("/api/mail-monitor/config/{account_id}/routes")
+def mail_monitor_routes(account_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = db.get(mold_models.MailMonitorAccount, account_id)
+    if not row:
+        raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": account_id})
+    routes = db.scalars(select(mold_models.MailMonitorRoute).where(
+        mold_models.MailMonitorRoute.account_id == account_id
+    ).order_by(mold_models.MailMonitorRoute.folder, mold_models.MailMonitorRoute.priority,
+               mold_models.MailMonitorRoute.name))
+    return {"routes": [_mail_route_view(item) for item in routes]}
+
+
+@app.put("/api/mail-monitor/config/{account_id}/routes")
+def save_mail_monitor_routes(account_id: str, data: s.MailRoutesInput,
+                             user=Depends(current_user), db=Depends(get_db)):
+    row = _mail_manage(db, user, account_id)
+    normalized_routes = _normalize_mail_routes(data.routes)
+    existing_routes = list(db.scalars(select(mold_models.MailMonitorRoute).where(
+        mold_models.MailMonitorRoute.account_id == row.id
+    )))
+    by_id = {item.id: item for item in existing_routes}
+    keep_ids = set()
+    for route_data in normalized_routes:
+        route_id = route_data.pop("id", None)
+        if route_id:
+            route = by_id.get(route_id)
+            if not route:
+                raise DomainError("MAIL_ROUTE_NOT_FOUND", "邮件监听路由不存在", 404)
+            for key, value in route_data.items():
+                setattr(route, key, value)
+        else:
+            route = mold_models.MailMonitorRoute(account_id=row.id, **route_data)
+            db.add(route)
+        keep_ids.add(route.id)
+    for route in existing_routes:
+        if route.id not in keep_ids:
+            db.delete(route)
+    db.commit()
+    return _mail_account_view(db, row)
 
 
 @app.post("/api/mail-monitor/config/{account_id}/start")
@@ -683,15 +792,15 @@ def test_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(ge
 @app.post("/api/mail-monitor/config/{account_id}/rescan")
 def rescan_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(get_db)):
     row = _mail_manage(db, user, account_id)
-    cursor = db.scalar(select(mold_models.MailMonitorCursor).where(
+    cursors = list(db.scalars(select(mold_models.MailMonitorCursor).where(
         mold_models.MailMonitorCursor.account_id == row.id
-    ))
-    if cursor:
+    )))
+    for cursor in cursors:
         cursor.uid_validity = ""
         cursor.last_uid = 0
         cursor.last_polled_at = None
-    else:
-        db.add(mold_models.MailMonitorCursor(account_id=row.id, uid_validity="", last_uid=0))
+    if not cursors:
+        db.add(mold_models.MailMonitorCursor(account_id=row.id, folder=row.folder, uid_validity="", last_uid=0))
     row.status = "STARTING" if row.enabled else "DISABLED"
     row.last_error = ""
     record(db, user, "mail.monitor.rescan", row.id, {"account_name": row.name})
@@ -702,17 +811,103 @@ def rescan_mail_monitor(account_id: str, user=Depends(current_user), db=Depends(
 @app.get("/api/mail-monitor/config/{account_id}/messages")
 def mail_monitor_messages(account_id: str, limit: int = Query(50, ge=1, le=100),
                           user=Depends(current_user), db=Depends(get_db)):
-    auth.require(db, user, "mail.read")
-    if not db.get(mold_models.MailMonitorAccount, account_id):
+    account = db.get(mold_models.MailMonitorAccount, account_id)
+    if not account:
         raise DomainError("MAIL_ACCOUNT_NOT_FOUND", "邮件监听账户不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": account_id})
     rows = db.scalars(select(mold_models.MailMessage).where(
         mold_models.MailMessage.account_id == account_id
     ).order_by(mold_models.MailMessage.created_at.desc()).limit(limit)).all()
     return {"items": [{"id": row.id, "uid": row.uid, "subject": row.subject,
                        "sender": row.sender, "outcome": row.outcome,
+                       "folder": row.folder, "direction": row.direction,
+                       "category": row.category, "category_status": row.category_status,
                        "received_at": row.received_at.isoformat() if row.received_at else None,
                        "error_message": row.error_message or "", "detail": row.detail_json or {}}
                      for row in rows]}
+
+
+@app.get("/api/mail-monitor/messages/{message_id}")
+def mail_monitor_message_detail(message_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = db.get(mold_models.MailMessage, message_id)
+    if not row:
+        raise DomainError("MAIL_MESSAGE_NOT_FOUND", "邮件记录不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": row.account_id})
+    docs = list(db.scalars(select(mold_models.MailDocument).where(
+        mold_models.MailDocument.message_id == row.id
+    ).order_by(mold_models.MailDocument.created_at)))
+    return {
+        "id": row.id, "account_id": row.account_id, "folder": row.folder,
+        "direction": row.direction, "uid": row.uid, "uid_validity": row.uid_validity,
+        "message_id": row.message_id, "subject": row.subject, "sender": row.sender,
+        "source_sent_at": row.source_sent_at.isoformat() if row.source_sent_at else None,
+        "received_at": row.received_at.isoformat() if row.received_at else None,
+        "category": row.category, "category_status": row.category_status,
+        "outcome": row.outcome, "plain_body": row.plain_body or "", "html_body": row.html_body or "",
+        "detail": row.detail_json or {}, "raw_file_object_id": row.raw_file_object_id or "",
+        "documents": [{"id": item.id, "filename": item.filename, "source": item.source,
+                       "media_type": item.media_type, "sha256": item.sha256,
+                       "byte_size": item.byte_size, "preview_status": item.preview_status,
+                       "extracted_text": item.extracted_text or "", "file_object_id": item.file_object_id}
+                      for item in docs],
+    }
+
+
+@app.get("/api/mail-monitor/messages/{message_id}/raw")
+def mail_monitor_message_raw(message_id: str, user=Depends(current_user), db=Depends(get_db)):
+    row = db.get(mold_models.MailMessage, message_id)
+    if not row or not row.raw_file_object_id:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件原文不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": row.account_id})
+    blob = db.get(m.FileObject, row.raw_file_object_id)
+    if not blob:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件原文不存在", 404)
+    from . import object_storage
+    return StreamingResponse(iter([object_storage.read(blob)]), media_type="message/rfc822",
+                             headers={"Content-Disposition": f'inline; filename="{blob.filename}"'})
+
+
+@app.get("/api/mail-monitor/documents/{document_id}/content")
+def mail_monitor_document_content(document_id: str, user=Depends(current_user), db=Depends(get_db)):
+    document = db.get(mold_models.MailDocument, document_id)
+    message = db.get(mold_models.MailMessage, document.message_id) if document else None
+    if not document or not message:
+        raise DomainError("MAIL_DOCUMENT_NOT_FOUND", "邮件附件不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": message.account_id})
+    if not document.file_object_id:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件附件原件不存在", 404)
+    blob = db.get(m.FileObject, document.file_object_id)
+    if not blob:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件附件原件不存在", 404)
+    from . import object_storage
+    return StreamingResponse(iter([object_storage.read(blob)]), media_type=blob.media_type or "application/octet-stream",
+                             headers={"Content-Disposition": f'inline; filename="{blob.filename}"'})
+
+
+@app.get("/api/mail-monitor/documents/{document_id}/preview")
+def mail_monitor_document_preview(document_id: str, user=Depends(current_user), db=Depends(get_db)):
+    auth.require(db, user, "mail.read")
+    document = db.get(mold_models.MailDocument, document_id)
+    message = db.get(mold_models.MailMessage, document.message_id) if document else None
+    if not document or not message:
+        raise DomainError("MAIL_DOCUMENT_NOT_FOUND", "邮件附件不存在", 404)
+    auth.require(db, user, "mail.read", {"account_id": message.account_id})
+    if not document.file_object_id:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件附件原件不存在", 404)
+    blob = db.get(m.FileObject, document.file_object_id)
+    if not blob:
+        raise DomainError("MAIL_FILE_NOT_FOUND", "邮件附件原件不存在", 404)
+    from . import document_preview, object_storage
+    data = object_storage.read(blob)
+    spreadsheet_types = {
+        "text/csv", "text/tab-separated-values", "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    if blob.media_type in spreadsheet_types:
+        return {"kind": "spreadsheet", "filename": blob.filename,
+                "preview": document_preview.spreadsheet_to_preview(data, blob.media_type, blob.filename)}
+    return StreamingResponse(iter([data]), media_type=blob.media_type or "application/octet-stream",
+                             headers={"Content-Disposition": f'inline; filename="{blob.filename}"'})
 
 
 @app.get("/api/users")

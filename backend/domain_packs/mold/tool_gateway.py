@@ -218,7 +218,7 @@ TOOLS.update({
 TOOLS.update({
     'query_mail_monitor_status': {'description': '查询邮件监听账户、游标、最近轮询状态和错误；只读，不建立 IMAP 连接。', 'permission': 'mail.read'},
     'query_mail_processing_history': {'description': '查询邮件处理台账、解析结果和失败/隔离状态；只读，不自动重试。', 'permission': 'mail.read'},
-    'query_mail_message_detail': {'description': '查询一封邮件的处理详情、分类依据和已解析文档元数据；不回显原始邮件正文。', 'permission': 'mail.read'},
+    'query_mail_message_detail': {'description': '查询一封邮件的完整受控详情、正文、分类依据和附件元数据；原始附件通过受控文件引用访问。', 'permission': 'mail.read'},
     'query_mail_document': {'description': '查询邮件文档元数据、哈希、业务分类和 FileObject 引用；只读。', 'permission': 'mail.read'},
     'prepare_mail_monitor_config': {'description': '准备邮件监听配置确认卡；密码只通过 secret_ref 管理，确认前不会连接邮箱。', 'permission': 'mail.manage'},
     'prepare_mail_monitor_rescan': {'description': '准备指定邮件或账户的受控重扫确认卡；不会绕过幂等、大小上限和人工确认。', 'permission': 'mail.manage'},

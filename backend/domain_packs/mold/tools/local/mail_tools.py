@@ -43,6 +43,7 @@ class MailMonitorConfigInput(StrictModel):
     keywords: dict[str, list[str]] = Field(default_factory=dict)
     poll_interval_seconds: int = Field(default=60, ge=15, le=3600)
     lookback_days: int = Field(default=7, ge=0, le=90)
+    routes: list[dict] = Field(default_factory=list, max_length=128)
 
 
 class MailRescanInput(StrictModel):
@@ -94,6 +95,7 @@ def _account(row):
         "username": row.username, "folder": row.folder, "transport": row.transport,
         "enabled": row.enabled, "status": row.status, "poll_interval_seconds": row.poll_interval_seconds,
         "last_error": row.last_error,
+        "routes": getattr(row, "_mail_routes", []),
     }
 
 
@@ -105,6 +107,10 @@ def _message(row):
         "received_at": row.received_at.isoformat() if row.received_at else None,
         "raw_sha256": row.raw_sha256, "outcome": row.outcome, "error_code": row.error_code,
         "error_message": row.error_message, "retry_count": row.retry_count, "detail": row.detail_json or {},
+        "folder": row.folder, "direction": row.direction, "category": row.category,
+        "category_status": row.category_status,
+        "plain_body": (row.plain_body or "")[:120000],
+        "html_body": (row.html_body or "")[:120000],
     }
 
 
@@ -114,7 +120,8 @@ def _document(row):
         "source": row.source, "media_type": row.media_type, "sha256": row.sha256,
         "byte_size": row.byte_size, "business_type": row.business_type,
         "classification_reason": row.classification_reason, "file_object_id": row.file_object_id,
-        "import_status": row.import_status,
+        "import_status": row.import_status, "preview_status": row.preview_status,
+        "extracted_text": (row.extracted_text or "")[:120000],
     }
 
 
@@ -142,8 +149,22 @@ def execute_tool(db, user, key, arguments, run=None):
         if data.account_name:
             query = query.where(m.MailMonitorAccount.name == data.account_name)
         accounts = list(db.scalars(query.limit(100)))
-        cursors = {row.account_id: row for row in db.scalars(select(m.MailMonitorCursor))}
-        return {"data": [{**_account(row), "cursor": {"uid_validity": cursors[row.id].uid_validity, "last_uid": cursors[row.id].last_uid, "last_polled_at": cursors[row.id].last_polled_at.isoformat() if cursors[row.id].last_polled_at else None} if row.id in cursors else None} for row in accounts], "source": "agent_db", "as_of": now().isoformat(), "limitations": ["不代表当前 IMAP 连接已成功；需要后台 worker 的最近心跳和错误记录。"]}
+        route_rows = list(db.scalars(select(m.MailMonitorRoute).where(
+            m.MailMonitorRoute.account_id.in_([row.id for row in accounts])
+        ))) if accounts else []
+        routes_by_account = {}
+        for route in route_rows:
+            routes_by_account.setdefault(route.account_id, []).append({
+                "id": route.id, "name": route.name, "folder": route.folder,
+                "direction": route.direction, "category": route.category,
+                "priority": route.priority, "matcher": route.matcher or {},
+                "enabled": bool(route.enabled), "notify_inbox": bool(route.notify_inbox),
+                "archive": bool(route.archive),
+            })
+        for account in accounts:
+            account._mail_routes = routes_by_account.get(account.id, [])
+        cursors = {(row.account_id, row.folder): row for row in db.scalars(select(m.MailMonitorCursor))}
+        return {"data": [{**_account(row), "cursors": [{"folder": cursor.folder, "uid_validity": cursor.uid_validity, "last_uid": cursor.last_uid, "last_polled_at": cursor.last_polled_at.isoformat() if cursor.last_polled_at else None} for (account_id, _folder), cursor in cursors.items() if account_id == row.id]} for row in accounts], "source": "agent_db", "as_of": now().isoformat(), "limitations": ["不代表当前 IMAP 连接已成功；需要后台 worker 的最近心跳和错误记录。"]}
     if key == "query_mail_processing_history":
         query = select(m.MailMessage).order_by(m.MailMessage.created_at.desc()).limit(data.limit)
         if data.account_name:

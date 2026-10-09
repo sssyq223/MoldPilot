@@ -117,6 +117,18 @@ def readable(db, user, blob):
     signature_links = list(db.scalars(select(m.CustomerDeliverySignatureAttachment).where(
         m.CustomerDeliverySignatureAttachment.file_id == blob.id
     )))
+    mail_links = list(db.scalars(select(m.MailDocument).where(
+        m.MailDocument.file_object_id == blob.id
+    )))
+    if mail_links:
+        from domain_packs.mold.authorization import access
+        return any(
+            access(db, user, 'mail.read', {
+                'account_id': message.account_id,
+            }).allowed
+            for link in mail_links
+            if (message := db.get(m.MailMessage, link.message_id)) is not None
+        )
     if not contact_links and not contract_links and not design_links and not signing_links and not trial_links and not acceptance_links and not release_links and not signature_links:
         return None
     if any(
