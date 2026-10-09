@@ -647,19 +647,17 @@ def test_document_worker_preclassifies_three_pages_then_reuses_them_for_full_con
         claimed = worker.claim(Session)
         worker.process_claim(Session, claimed[0], claimed[1], Provider(), paddle)
         assert paddle.calls == [1, 2, 3]
-        with Session.begin() as db:
-            group = m.ContractIntakeGroup(
-                intake_id=ids["intake"], group_key="contract-1", status="FULL_OCR_QUEUED"
-            )
-            db.add(group)
-            db.flush()
-            intake_file = db.get(m.DocumentIntakeFile, ids["file"])
-            intake_file.contract_group_id = group.id
-            intake_file.confirmed_type = "SALES_CONTRACT"
-            db.get(m.DocumentIntake, ids["intake"]).status = "FULL_OCR_QUEUED"
-            full_job = m.DocumentOcrJob(intake_file_id=ids["file"], phase="FULL_CONTRACT")
-            db.add(full_job)
-            db.flush()
+        with Session() as db:
+            group = db.scalar(select(m.ContractIntakeGroup).where(
+                m.ContractIntakeGroup.intake_id == ids["intake"]
+            ))
+            full_job = db.scalar(select(m.DocumentOcrJob).where(
+                m.DocumentOcrJob.intake_file_id == ids["file"],
+                m.DocumentOcrJob.phase == "FULL_CONTRACT",
+            ))
+            assert group is not None
+            assert group.status == "FULL_OCR_QUEUED"
+            assert full_job is not None
             full_job_id = full_job.id
         full_claim = worker.claim(Session)
         assert full_claim[0] == full_job_id
@@ -699,7 +697,7 @@ def test_document_worker_claims_and_completes_preclassification(monkeypatch):
             assert job.status == "SUCCEEDED"
             assert intake_file.suggested_type == "SALES_CONTRACT"
             assert str(intake_file.suggested_confidence) == "0.9600"
-            assert intake.status == "AWAITING_TYPE_CONFIRMATION"
+            assert intake.status == "FULL_OCR_QUEUED"
     finally:
         engine.dispose()
 

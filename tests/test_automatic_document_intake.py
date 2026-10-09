@@ -101,7 +101,10 @@ def classified_upload(client, data):
         name = 'synthetic-classifier'
         def classify(self, document, **kwargs):
             assert document.page_count == 1
-            return Classification('SALES_CONTRACT', Decimal('0.98'))
+            # Keep this fixture in the low-confidence branch so these tests
+            # exercise the explicit type-confirmation gate.  High-confidence
+            # auto-routing is covered by the document-worker tests.
+            return Classification('SALES_CONTRACT', Decimal('0.80'))
     assert run_once(data[1], Provider())
     with data[1]() as db:
         intake = db.scalar(select(m.DocumentIntake))

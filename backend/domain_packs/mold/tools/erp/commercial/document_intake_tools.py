@@ -133,11 +133,16 @@ def _bound_intakes(db, user, run):
 def _intake_for_bound_file(db, user, run, file_id):
     bound_ids = {str(row['id']) for row in _run_files(db, user, run)}
     if str(file_id) not in bound_ids:
-        # A file selector is an operation input, so it must be explicitly
-        # bound to this Agent Run.  Conversation-level visibility is enough
-        # for read-only history rendering, but it is not write/lookup
-        # authorization for a tool call.
-        raise DomainError('FILE_CONTEXT_INVALID', '文件不属于当前 Agent Run 或当前会话', 403)
+        # Ordinary follow-up Runs have no new attachment binding.  Read-only
+        # contract questions may still point at a file uploaded earlier in the
+        # same conversation; writes continue to require explicit Run binding.
+        blob = db.scalar(select(m.FileObject).where(
+            m.FileObject.id == str(file_id),
+            m.FileObject.owner_id == user.id,
+            m.FileObject.conversation_id == run.conversation_id,
+        ))
+        if not blob:
+            raise DomainError('FILE_CONTEXT_INVALID', '文件不属于当前 Agent Run 或当前会话', 403)
     intake = db.scalar(select(m.DocumentIntake).join(
         m.DocumentIntakeFile, m.DocumentIntakeFile.intake_id == m.DocumentIntake.id,
     ).where(
@@ -148,6 +153,41 @@ def _intake_for_bound_file(db, user, run, file_id):
     if not intake:
         raise DomainError('NOT_FOUND', '文件尚未登记文档接收批次', 404)
     return intake
+
+
+def _recognized_pages(db, intake):
+    """Return the text already cached by the background OCR/preclassify pass.
+
+    This is intentionally read-only and bounded.  It lets a user ask about a
+    just-uploaded contract while the full field extraction still waits for the
+    confirmation card; the model can answer from the same page evidence rather
+    than claiming that the attachment is unavailable.
+    """
+    rows = db.execute(select(
+        m.DocumentRecognizedPage, m.DocumentIntakeFile, m.FileObject,
+    ).join(
+        m.DocumentIntakeFile, m.DocumentRecognizedPage.intake_file_id == m.DocumentIntakeFile.id,
+    ).join(
+        m.FileObject, m.FileObject.id == m.DocumentIntakeFile.file_id,
+    ).where(
+        m.DocumentIntakeFile.intake_id == intake.id,
+    ).order_by(m.DocumentIntakeFile.created_at, m.DocumentRecognizedPage.page_number).limit(120)).all()
+    pages = []
+    budget = 60000
+    for page, _intake_file, blob in rows:
+        text = (page.text or '').strip()
+        if not text or budget <= 0:
+            continue
+        text = text[:min(len(text), budget)]
+        pages.append({
+            'file_id': blob.id,
+            'filename': blob.filename,
+            'page_number': page.page_number,
+            'source_kind': page.source_kind,
+            'text': text,
+        })
+        budget -= len(text)
+    return pages
 
 
 def _preview_create(db, user, run, data):
@@ -197,7 +237,7 @@ def _preview_types(db, user, data):
         raise DomainError("ENGINEERING_CONTACT_FILE_REQUIRED", "一个接收批次必须且只能确认一个工程联络单文件", 409)
     return {"操作": "确认文档类型", "接收批次": intake.id, "当前版本": intake.row_version, "文件": rows,
             "后续": "工程联络单将由工程联络 Skill 生成创建 Proposal；销售合同才进入完整 OCR。" if contact_rows
-                     else "只有人工确认为销售合同的文档才会进入完整 OCR。"}
+                     else "低置信度销售合同确认后进入完整 OCR；高置信度销售合同已由上传流程自动进入完整 OCR。"}
 
 
 def _preview_retry(db, user, data):
@@ -263,11 +303,16 @@ def execute_tool(db, user, key, arguments, run=None):
                 raise DomainError('FILE_CONTEXT_INVALID', '文档接收批次不属于当前会话', 403)
         else:
             rows = _bound_intakes(db, user, run)
+        data_rows = []
+        for row in rows:
+            item = contract_intake.serialize(db, row)
+            item['recognized_pages'] = _recognized_pages(db, row)
+            data_rows.append(item)
         return {
-            "data": [contract_intake.serialize(db, row) for row in rows],
+            "data": data_rows,
             "source": "agent_db",
             "as_of": now().isoformat(),
-            "limitations": ["只返回数据库中的权威接收、分类与 OCR 状态；不会轮询 Worker。"],
+            "limitations": ["只返回数据库中的权威接收、分类、已缓存页级文字与 OCR 状态；不会轮询 Worker，也不会把未完成的字段提取当作正式业务事实。"],
         }
     display = _preview(db, user, key, data, run)
     proposal = {

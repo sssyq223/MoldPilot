@@ -1,4 +1,4 @@
-const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING'])
+const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING', 'WAITING_DOCUMENT'])
 
 export function activeRunElapsedSeconds(run: any, nowMs = Date.now()): number {
   const serverSeconds = Math.max(0, Number(run?.progress?.elapsed_seconds) || 0)

@@ -1,27 +1,27 @@
 # 销售合同 PDF 接收、识别复核与审批
 
-版本：3.0.0
+版本：4.0.0
 
-目标：在当前会话中，依据数据库权威状态办理 PDF 接收、人工类型确认、销售合同 OCR 复核和两级审批；每个 Agent Run 只推进当前可办理的一步。
+目标：在当前会话中，依据数据库权威状态办理 PDF 接收、人工类型确认、销售合同 OCR 复核和两级审批；附件上传即启动后台识别，并在同一会话中由 Agent 报告状态；每个 Agent Run 只推进当前可办理的一步。
 
 适用条件：用户在当前会话中要求查看、解释、复核、重试或登记文档识别记录；也兼容尚未自动接收的历史 PDF。
 
-入口边界：上传保存已由系统自动创建预分类作业，无需 Agent Run、Skill 或接收 proposal。分类结果和类型确认入口直接显示在原会话。本人确认销售合同后，系统自动启动完整字段提取。不要要求用户发送一句话来启动这些阶段，也不要重复接收已经进入识别流程的文件。本轮 files 为空不代表会话没有文件；可参考 conversation_files，并用 query_document_intake 查询当前会话的权威任务状态。
+入口边界：上传保存会在同一会话内自动创建预分类作业，并额外触发一个 `ATTACHMENT_UPLOAD` Agent Run，让 Agent 用 `query_document_intake` 报告权威状态。高置信度销售合同会自动继续完整字段 OCR，完成后显示字段二次确认卡；低置信度或其它文档才停在类型确认卡。不要要求用户另开会话或先发送一句话来启动上传识别，也不要重复接收已经进入识别流程的文件。本轮 files 为空不代表会话没有文件；可参考 conversation_files，并用 query_document_intake 查询当前会话的权威任务状态。用户在既有会话中追问合同内容时，仍须先查询当前会话的文档接收和 OCR 状态。
 
-工具决策：由模型根据当前 Run 的意图和数据库状态自行判断是否调用工具；宿主不得代替模型调用上述工具，也不得因为附件存在而隐式执行工具。
+工具决策：上传触发的 `ATTACHMENT_UPLOAD` Run 必须调用只读的 `query_document_intake`，把后台识别状态带回会话；普通追问合同内容也必须调用 `query_document_intake` 或相关合同查询工具取得依据。宿主负责上传后排队后台识别，但不得代替模型生成会话回复。不要在上传触发 Run 中调用 `prepare_document_intake` 重复创建批次。
 
 边界：
 - 文件名、模型判断和 OCR 结果都不是正式业务事实。
-- 只接受 PDF；非销售合同只分类归档，只有人工确认为销售合同的文件进入完整 OCR。
+- 只接受 PDF；高置信度销售合同自动进入完整 OCR，人工确认保留在字段、项目、模具和合同关系复核卡；低置信度或非销售合同仍走类型确认。
 - 不得自动创建项目、客户或模具；项目、客户、全部模具明细及合同关系必须由本人确认。
 - 所有 `prepare_*` 工具只生成 proposal；必须等待本人确认，不得声称已经写入。
 - OCR 由独立 Worker 异步执行，任务卡自动更新并由系统发送阶段完成或失败通知。本 Run 不轮询、不等待；用户需要解释或辅助复核时才在同一会话继续对话。
 - 不得绕过“业务主管 → 财务负责人”顺序两级审批；财务确认前不得声称合同已生效。
 
 步骤：
-1. 先调用 `query_document_intake`，不传参数读取当前 Run 绑定文件对应的识别状态；如需单文件才传绑定的 `file_id`。不要把附件 `file_id` 当作 `document_intake_id`。只有明确发现历史文件尚未接收且属于本 Run 绑定文件时，才使用 `query_uploaded_files` 核对后准备兼容性的 `prepare_document_intake`；不能为已自动接收的 PDF 重建批次。
+1. 对 `ATTACHMENT_UPLOAD` Run 或任何引用合同附件的追问，先调用 `query_document_intake`，不传参数读取当前 Run 绑定文件或当前会话已登记批次的识别状态和已缓存页级文字；如需单文件才传绑定的 `file_id`。不要把附件 `file_id` 当作 `document_intake_id`。只有查询明确显示某个历史文件尚未接收，且用户明确要求开始识别时，才使用 `query_uploaded_files` 核对后准备兼容性的 `prepare_document_intake`；不能为已自动接收的 PDF 重建批次。
 2. 状态仍在处理时说明当前真实阶段及错误/重试情况，不轮询，不声称完成；`OCR_FAILED` 时解释具体错误，可按用户请求准备 `prepare_document_ocr_retry`，仍须本人确认。任务卡也提供独立于模型的本人确认重试入口。
-3. `AWAITING_TYPE_CONFIRMATION` 时解释每个文件的机器候选，引导用户在现有任务卡核对或修改类型与合同分组。用户明确要求在对话中准备建议时仍可用 `prepare_document_type_confirmation`；准备建议不等于确认类型。销售合同须明确分组，非销售合同不得加入合同分组。
+3. `AWAITING_TYPE_CONFIRMATION` 时解释每个文件的机器候选，引导用户在现有任务卡核对或修改类型与合同分组。用户明确要求在对话中准备建议时仍可用 `prepare_document_type_confirmation`；准备建议不等于确认类型。销售合同须明确分组，非销售合同不得加入合同分组。若用户此时追问合同内容，可基于 `query_document_intake` 返回的已缓存页级文字回答，并标注候选、未完成复核。
 4. 完整 OCR 完成后，调用 `query_sales_contract_intake` 读取识别分组、机器原值、标准化值、文件、页码和当前状态。不得把候选值当作已确认值。
 5. 状态为 `AWAITING_FIELD_CONFIRMATION` 时，必须展示项目候选、客户冲突、全部字段、模具明细、付款节点和合同关系。即使只有一个项目候选也必须人工确认；每条模具明细都必须映射到目标项目已有正式模具。
 6. 调用 `prepare_sales_contract_intake_review` 生成字段、项目、模具和关系复核 proposal。本人确认后，重新调用 `query_sales_contract_intake`，确认状态已经成为 `READY_FOR_DRAFT`。

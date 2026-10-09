@@ -5,7 +5,6 @@ import { api, post, shanghai } from './api'
 import {capabilityName,auditName,numberText,fieldName,valueText} from '@domain-pack/uiText'
 import {initialProduct} from '@domain-pack/product'
 import SettingsPage from './components/SettingsPage.vue'
-import ModelSelector from './components/ModelSelector.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
 import WelcomePanel from '@domain-pack/components/WelcomePanel.vue'
 import DomainWorkspacePanel from '@domain-pack/components/DomainWorkspacePanel.vue'
@@ -36,7 +35,7 @@ function changeTheme(theme:ColorTheme){colorTheme.value=theme;applyTheme(theme)}
 const product=ref<any>(initialProduct)
 const modelName=ref('未配置模型')
 const modelLimits=ref<any>({context_window:8192,max_output_tokens:2048})
-const modelPicker=ref<any>(null),chatModelSelection=ref<{model_profile_id:string;reasoning_effort:string}|null>(null),modelSelectionReady=ref(false)
+const modelProfiles=ref<any[]>([]),activeModelProfileId=ref(''),modelSwitchingId=ref('')
 const DEFAULT_SIDEBAR_WIDTH=248
 const DEFAULT_WORKSPACE_WIDTH=650
 const MIN_WORKSPACE_WIDTH=420
@@ -182,7 +181,7 @@ const latestContextUsage=computed(()=>{
  return {context_window:windowTokens,max_output_tokens:Number(modelLimits.value?.max_output_tokens||2048),used_tokens:inputTokens,remaining_tokens:remaining,used_percent:windowTokens?Math.round(inputTokens/windowTokens*1000)/10:0,input_tokens:0,input_tokens_estimated:inputTokens,output_tokens:0,reasoning_tokens:0,total_tokens:0,tool_count:0,tool_schema_count:0,tool_message_tokens_estimated:0,compaction_count:0,token_source:'estimate',remaining_label:formatTokenCount(remaining),used_label:formatTokenCount(inputTokens),window_label:formatTokenCount(windowTokens)}
 })
 watchEffect(()=>{if(typeof document!=='undefined')document.documentElement.style.setProperty('--context-percent',`${Math.min(100,Math.max(0,Number(latestContextUsage.value?.used_percent||0)))}%`)})
-const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
+const runStatus:Record<string,string>={QUEUED:'任务已排队',RUNNING:'正在执行',WAITING_DOCUMENT:'等待文档解析',WAITING_CONFIGURATION:'等待模型配置',SUCCEEDED:'执行已完成',FAILED:'执行未完成',CANCELLED:'已停止'}
 const runErrorMessages:Record<string,string>={
  HTTPStatusError:'Harness 保存运行状态或调用内部接口时发生 HTTP 异常。',
  HARNESS_BACKEND_REJECTED:'Harness 的内部请求被后端拒绝。',
@@ -192,6 +191,8 @@ const runErrorMessages:Record<string,string>={
  MODEL_CONNECT_TIMEOUT:'连接模型服务超时。',
  MODEL_READ_TIMEOUT:'等待模型回复超时。',
  MODEL_NETWORK_ERROR:'模型服务网络连接异常。',
+  STORAGE_UNAVAILABLE:'附件存储不可用，解析任务已停止，请重新上传文件后再试。',
+  DOCUMENT_OCR_FAILED:'合同 OCR 解析未完成，请在右侧文件识别工作区查看原因后重试。',
  ERP_DESIGN_MCP_UNAVAILABLE:'ERP 设计服务当前不可达或响应超时，请启动 management-system ERP 后端并确认 MCP 地址可访问后重试。',
  ERP_DESIGN_MCP_CONFIG_INVALID:'ERP 设计 MCP 配置无效，请检查 ERP 地址和访问令牌。',
  ERP_DESIGN_MCP_NOT_INSTALLED:'ERP 设计 MCP 运行时未安装或配置不完整，请检查 Mold 业务包的 MCP 目录。',
@@ -450,14 +451,14 @@ function setProposalConfirmed(stepId:string,confirmed=true){
  confirmedProposalSteps.value={...confirmedProposalSteps.value,[stepId]:confirmed}
 }
 function runProcessExpanded(run:any){
- if(['QUEUED','RUNNING'].includes(run.status))return true
+ if(['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status))return true
  const chosen=runProcessOpen.value[run.id]
  if(chosen!==undefined)return chosen
  return false
 }
 function toggleRunProcess(run:any){runProcessOpen.value={...runProcessOpen.value,[run.id]:!runProcessExpanded(run)}}
 function runDurationSeconds(run:any){
- if(run.status==='RUNNING'||run.status==='QUEUED')return activeRunElapsedSeconds(run,runClockMs.value)
+ if(run.status==='RUNNING'||run.status==='QUEUED'||run.status==='WAITING_DOCUMENT')return activeRunElapsedSeconds(run,runClockMs.value)
  return calculateRunDurationSeconds(run,runClock.value)
 }
 function durationText(seconds:number){
@@ -779,8 +780,25 @@ async function loadProduct(){
  product.value={...loaded,workspace_tabs:Array.isArray(loaded.workspace_tabs)?loaded.workspace_tabs.filter((tab:any)=>installedTabs.has(tab.key)):[]}
  document.title=`${product.value.product_name} · ${product.value.display_name}`
 }
-function onModelSelected(model:any){modelName.value=model.model;modelLimits.value={context_window:model.context_window,max_output_tokens:model.max_output_tokens}}
-function toggleModelPopover(value:boolean){modelPopoverOpen.value=value;if(value){contextPopoverOpen.value=false;approvalModePopoverOpen.value=false}}
+async function loadModelProfiles(){
+ if(!me.value?.super_admin){modelProfiles.value=[];activeModelProfileId.value='';return}
+ const config=await api('/model-config')
+ modelProfiles.value=Array.isArray(config.profiles)?config.profiles:[]
+ activeModelProfileId.value=String(config.active_profile_id||'')
+ modelName.value=config.model||'未配置模型'
+ modelLimits.value={context_window:config.context_window,max_output_tokens:config.max_output_tokens}
+}
+async function switchModelProfile(profile:any){
+ if(modelSwitchingId.value)return
+ if(String(profile.id)===activeModelProfileId.value){modelPopoverOpen.value=false;return}
+ modelSwitchingId.value=String(profile.id)
+ try{
+  const config=await post(`/model-profiles/${profile.id}/activate`)
+  modelProfiles.value=config.profiles||[];activeModelProfileId.value=String(config.active_profile_id||'')
+  modelName.value=config.model||'未配置模型';modelLimits.value={context_window:config.context_window,max_output_tokens:config.max_output_tokens}
+  modelPopoverOpen.value=false
+ }catch(e:any){fail(e.message)}finally{modelSwitchingId.value=''}
+}
 async function handleProposalConfirmed(stepId:string,runId=''){
  setProposalConfirmed(stepId,true)
  if(runId)runProcessOpen.value={...runProcessOpen.value,[runId]:false}
@@ -796,10 +814,10 @@ async function handleCurrentProposalDecision(dismissed=false){
  if(dismissed)await handleProposalDismissed(context.item.id,context.run.id)
  else await handleProposalConfirmed(context.item.id,context.run.id)
 }
-async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;if(!chatModelSelection.value){modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value}const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await refresh();try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
+async function restore(){const response=await api('/me');me.value=response.user;permissions.value=response.permissions;modelName.value=response.model??'未配置模型';modelLimits.value=response.model_limits||modelLimits.value;const legacy=legacyStorageKeys(me.value.id);const savedMode=localStorage.getItem(approvalModeStorageKey())??(legacy.approvalMode?localStorage.getItem(legacy.approvalMode):null);approvalPermissionMode.value=savedMode==='delegated_auto'?'delegated_auto':'ask';await Promise.all([refresh(),loadModelProfiles()]);try{const savedLayout=localStorage.getItem(productStoragePrefix()+'.layout.'+me.value.id)??(legacy.layout?localStorage.getItem(legacy.layout):null);const layout=JSON.parse(savedLayout??'{}');width.value=Math.max(MIN_WORKSPACE_WIDTH,Math.min(layout.width??DEFAULT_WORKSPACE_WIDTH,window.innerWidth-480));sidebarWidth.value=Math.max(190,Math.min(layout.sidebarWidth??DEFAULT_SIDEBAR_WIDTH,420));expanded.value=false;panel.value=''}catch{}}
 onMounted(async()=>{try{await loadProduct();await restore()}catch(e:any){fail(e.message||'工作台初始化失败')}finally{loading.value=false;await nextTick();await fitInitialConversations()}})
 async function login(){busy.value=true;error.value='';try{await post('/auth/login',{username:username.value,password:password.value});password.value='';await restore()}catch(e:any){fail(e.message)}finally{busy.value=false}}
-function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];processedFileIds.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];conversationHasMore.value=true;conversationLoadingMore.value=false;conversationLoading.value=false;runs.value=[];localErpTurns.value=[];detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};chatModelSelection.value=null;modelSelectionReady.value=false;prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;erpDesignOrdersDialog.value=null;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';closeErpDesignPreview();loadedErpDesignImportStatuses.clear();erpDesignImportReceipts.value={};search.value=''}
+function clearSessionData(){closeRunEvents();conversationEpoch++;selectedFiles.value=[];processedFileIds.value=[];workspaceTargets.value={};me.value=null;permissions.value=[];conversations.value=[];conversationHasMore.value=true;conversationLoadingMore.value=false;conversationLoading.value=false;runs.value=[];localErpTurns.value=[];detail.value=null;approvals.value=[];initiatedApprovals.value=[];approvalWorkItems.value={copied:[],overdue:[]};notices.value=[];capabilities.value={tools:[],skills:[]};modelProfiles.value=[];activeModelProfileId.value='';modelSwitchingId.value='';prompt.value='';expanded.value=false;full.value=false;conversation.value='';activeConversationTitle.value='';activeConversationArchived.value=false;panel.value='';password.value='';showNotices.value=false;showProfile.value=false;settingsOpen.value=false;erpDesignOrdersDialog.value=null;showSidebarSearch.value=false;contextPopoverOpen.value=false;modelPopoverOpen.value=false;approvalModePopoverOpen.value=false;approvalPermissionMode.value='ask';closeErpDesignPreview();loadedErpDesignImportStatuses.clear();erpDesignImportReceipts.value={};search.value=''}
 async function logout(){try{await post('/auth/logout');clearSessionData()}catch(e:any){fail(e.message)}}
 function saveLayout(){if(me.value)localStorage.setItem(productStoragePrefix()+'.layout.'+me.value.id,JSON.stringify({width:width.value,sidebarWidth:sidebarWidth.value}))}
 async function openPanel(key:string){if(!workspaceTabs.value.some((tab:any)=>tab.key===key))return;panel.value=key;expanded.value=true;saveLayout()}
@@ -1033,7 +1051,7 @@ async function tryHandleErpDesignFormMessage(): Promise<boolean> {
  if(importRequested)return await importErpDesignFromText(erpDesignPreview.value||updatedCurrent,text)
  return true
 }
-async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value||!modelSelectionReady.value)return;const submittedText=prompt.value.trim();if(await tryHandleErpDesignFormMessage()){appendLocalErpTurn(submittedText,erpTextActionNotice.value);return}busy.value=true;error.value='';const selection=chatModelSelection.value?{...chatModelSelection.value}:null;const senderId=me.value?.id;try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value,...selection});if(me.value?.id!==senderId)return;modelPicker.value?.bindConversation(r.conversation_id,selection);selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
+async function send(){if(activeConversationArchived.value){fail('归档会话只可查看，请先在设置中取消归档再继续发送');return}if(!prompt.value.trim()||busy.value||uploading.value)return;const submittedText=prompt.value.trim();if(await tryHandleErpDesignFormMessage()){appendLocalErpTurn(submittedText,erpTextActionNotice.value);return}busy.value=true;error.value='';try{const r=await post('/runs',{prompt:prompt.value,conversation_id:conversation.value||null,file_ids:selectedFiles.value.map(f=>f.id),agent_permission_mode:approvalPermissionMode.value});selectedFiles.value=[];prompt.value='';conversation.value=r.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(r.conversation_id)}catch(e:any){fail(e.message)}finally{busy.value=false}}
 async function queryGroupKeywordPage(result:any,page:number){
  if(!result||page<1||busy.value)return
  const filter=result.keywordText?`，包含“${result.keywordText}”`:''
@@ -1059,7 +1077,12 @@ async function uploadFiles(event:Event){
    const form=new FormData();for(const file of files)form.append('files',file,file.name)
    const query=new URLSearchParams({request_key:crypto.randomUUID()});if(target)query.set('conversation_id',target)
    const result=await api('/files/batch?'+query.toString(),{method:'POST',body:form})
-   if(epoch===conversationEpoch){conversation.value=result.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(result.conversation_id);documentRefresh.value++}
+   if(epoch===conversationEpoch){conversation.value=result.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(result.conversation_id);documentRefresh.value++;await openPanel('documents')}
+   const attachmentRun=product.value?.attachment_run,allowedMediaTypes=Array.isArray(attachmentRun?.media_types)?attachmentRun.media_types:[],batchFiles=Array.isArray(result.files)?result.files:[]
+   if(attachmentRun?.enabled&&batchFiles.length&&allowedMediaTypes.length&&batchFiles.every((file:any)=>allowedMediaTypes.includes(file.media_type))){
+    const run=await post('/runs',{prompt:'',conversation_id:result.conversation_id,file_ids:batchFiles.map((file:any)=>file.id),trigger:'ATTACHMENT_UPLOAD',agent_permission_mode:approvalPermissionMode.value})
+    if(epoch===conversationEpoch){conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id);await openPanel('documents')}
+   }
    return
   }
   for(const file of files){const query=new URLSearchParams({filename:file.name,request_key:crypto.randomUUID()});if(target)query.set('conversation_id',target)
@@ -1068,8 +1091,8 @@ async function uploadFiles(event:Event){
  }
   const attachmentRun=product.value?.attachment_run,allowedMediaTypes=Array.isArray(attachmentRun?.media_types)?attachmentRun.media_types:[]
   if(attachmentRun?.enabled&&uploaded.length&&allowedMediaTypes.length&&uploaded.every(file=>allowedMediaTypes.includes(file.media_type))){
-   const run=await post('/runs',{prompt:'',conversation_id:target,file_ids:uploaded.map(file=>file.id),trigger:'ATTACHMENT_UPLOAD',agent_permission_mode:approvalPermissionMode.value,...chatModelSelection.value})
-   if(epoch===conversationEpoch){const bound=new Set(uploaded.map(file=>file.id));selectedFiles.value=selectedFiles.value.filter(file=>!bound.has(file.id));conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id)}
+   const run=await post('/runs',{prompt:'',conversation_id:target,file_ids:uploaded.map(file=>file.id),trigger:'ATTACHMENT_UPLOAD',agent_permission_mode:approvalPermissionMode.value})
+   if(epoch===conversationEpoch){const bound=new Set(uploaded.map(file=>file.id));selectedFiles.value=selectedFiles.value.filter(file=>!bound.has(file.id));conversation.value=run.conversation_id;activeConversationArchived.value=false;await refresh();await selectConversation(run.conversation_id);await openPanel('documents')}
   }else await refresh()
  }catch(e:any){fail(e.message)}finally{uploading.value=false}
 }
@@ -1099,12 +1122,11 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
     <div v-if="conversationLoading" class="conversation-loading" role="status"><span class="pulse"/>正在打开会话…</div>
     <section v-else-if="!conversationRuns.length&&selectedFiles.length&&conversation" class="draft-conversation" aria-label="待发送附件会话">
       <div class="draft-conversation-card">
-        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'支持自动处理的文件正在后台解析，无需发送消息；其他附件可输入问题后发送任务。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
+        <div class="draft-conversation-head"><span><Paperclip :size="18"/></span><div><strong>附件已进入当前会话</strong><p class="muted">{{product.attachment_processing?.enabled?'文件已自动进入后台解析，解析状态和工具调用会回到本会话；你可以继续追问合同内容。':'文件已保存。请在下方输入需要核对的问题，然后发送任务。'}}</p></div></div>
         <FileMaterial v-for="file in selectedFiles" :key="file.id" :file="file" @error="fail"/>
       </div>
     </section>
     <WelcomePanel v-else-if="!conversationRuns.length&&!processedFileIds.length" :capabilities="capabilities" @prompt="prompt=$event"/>
-    <component :is="conversationDocumentComponent" v-if="conversation&&conversationDocumentComponent&&product.attachment_processing?.enabled" :key="conversation+'|'+me?.authorization_hash" :conversation-id="conversation" :archived="activeConversationArchived" :refresh-key="documentRefresh" @processed="documentFilesHandled" @draft-action="handleAdminStartDraftAction"/>
     <article v-for="run in conversationRuns" :key="run.id" class="conversation-turn">
       <div class="message-block user-message-block">
         <div class="user-message">{{run.prompt}}<FileMaterial v-for="file in run.files||[]" :key="file.id" :file="file" :reusable="!activeConversationArchived" @reuse="reuseConversationFile" @error="fail"/></div>
@@ -1116,10 +1138,10 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
       </div>
       <div class="agent-answer message-block">
         <div class="answer-body">
-          <div v-if="runPendingProposal(run)||run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&visibleRunFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING'].includes(run.status)||runPendingProposal(run)}"/>{{runPendingProposal(run)?'等待批准':(runStatus[run.status]??'任务状态待确认')}}<template v-if="['QUEUED','RUNNING'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
+          <div v-if="runPendingProposal(run)||run.status!=='SUCCEEDED'&&!(run.status==='FAILED'&&visibleRunFinalTrace(run))" class="run-label"><span :class="{pulse:['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)||runPendingProposal(run)}"/>{{runPendingProposal(run)?'等待批准':(runStatus[run.status]??'任务状态待确认')}}<template v-if="['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)"> · 用时 {{durationText(runDurationSeconds(run))}}</template></div>
           <p v-if="run.status==='WAITING_CONFIGURATION'" class="muted">任务已保存。模型尚未完成配置，当前不会生成业务结论。待审批事项仍可从消息通知中查看。</p>
           <div v-if="runTrace(run).length" class="react-trace" aria-label="执行链路">
-            <button v-if="runProcessTrace(run).length&&!['QUEUED','RUNNING'].includes(run.status)" type="button" class="run-duration-toggle" :aria-expanded="runProcessExpanded(run)" @click="toggleRunProcess(run)">
+            <button v-if="runProcessTrace(run).length&&!['QUEUED','RUNNING','WAITING_DOCUMENT'].includes(run.status)" type="button" class="run-duration-toggle" :aria-expanded="runProcessExpanded(run)" @click="toggleRunProcess(run)">
               {{runDurationLabel(run)}}<ChevronRight class="run-duration-caret" :size="13"/>
             </button>
             <div v-if="runProcessTrace(run).length" class="run-process" :class="{open:runProcessExpanded(run)}" :aria-hidden="!runProcessExpanded(run)">
@@ -1297,9 +1319,25 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
             <p v-if="latestContextUsage.latest_compaction" class="muted small">{{latestContextUsage.latest_compaction.summary}}</p>
           </div>
         </div>
-        <ModelSelector ref="modelPicker" :key="me.id+'|'+me.authorization_hash" :user-id="me.id" :conversation-id="conversation" :storage-prefix="productStoragePrefix()" :open="modelPopoverOpen" :locked="busy||uploading" @update:open="toggleModelPopover" @change="chatModelSelection=$event" @ready="modelSelectionReady=$event" @selected="onModelSelected"/>
+        <div class="model-selector-wrap">
+          <button type="button" class="muted small composer-model-label" title="选择模型" :aria-expanded="modelPopoverOpen" aria-haspopup="menu" @click="modelPopoverOpen=!modelPopoverOpen;contextPopoverOpen=false"><Bot :size="16"/><span>{{modelName}}</span></button>
+          <div v-if="modelPopoverOpen" class="model-popover" role="menu" aria-label="选择模型">
+           <button v-for="profile in modelProfiles" :key="profile.id" type="button" class="model-popover-row"
+            :class="{active:String(profile.id)===activeModelProfileId}" role="menuitemradio"
+            :aria-checked="String(profile.id)===activeModelProfileId" :disabled="Boolean(modelSwitchingId)" @click="switchModelProfile(profile)">
+            <span class="model-popover-label">
+             <Bot :size="15"/>
+             <span class="model-popover-copy">
+              <span>{{profile.name}}</span>
+              <small v-if="(profile.model||'未配置')!==profile.name">{{profile.model||'未配置'}}</small>
+             </span>
+            </span>
+            <Check v-if="String(profile.id)===activeModelProfileId" :size="14"/>
+           </button>
+          </div>
+        </div>
       </div>
-      <button class="send" :class="{stopping:running}" :type="running?'button':'submit'" :disabled="uploading||busy||(!running&&(!prompt.trim()||!modelSelectionReady))" :aria-label="running?'停止当前任务':'发送任务'" :title="running?'停止当前任务':'发送任务'" @click="running&&stopActiveRun()"><Square v-if="running" :size="13" fill="currentColor"/><ArrowUp v-else :size="17"/></button>
+      <button class="send" :class="{stopping:running}" :type="running?'button':'submit'" :disabled="uploading||busy||(!running&&!prompt.trim())" :aria-label="running?'停止当前任务':'发送任务'" :title="running?'停止当前任务':'发送任务'" @click="running&&stopActiveRun()"><Square v-if="running" :size="13" fill="currentColor"/><ArrowUp v-else :size="17"/></button>
     </div>
   </form>
   <small class="composer-note">结论需要业务证据，正式操作以系统回执为准。按当前权限执行。</small>
@@ -1317,6 +1355,7 @@ onUnmounted(()=>{clearInterval(timer);clearInterval(runTimer);closeRunEvents()})
         <template v-else><p v-if="!notices.length" class="notification-center-state">暂无通知记录。</p><button v-for="n in notices" :key="n.id" class="notification-workspace-row" :class="{unread:!n.read}" @click="notice(n)"><span v-if="!n.read" class="unread-dot"/><span class="notification-item-copy"><strong>{{/[\u4e00-\u9fff]/.test(n.title)?n.title:auditName(n.kind)}}</strong><small class="notification-item-meta"><span>{{auditName(n.kind)}}</span><time>{{shanghai(n.created_at)}}</time></small></span><ChevronRight :size="16"/></button></template>
       </div>
     </section>
+    <component v-else-if="panel==='documents'&&conversationDocumentComponent" :is="conversationDocumentComponent" :key="conversation+'|'+me?.authorization_hash" :conversation-id="conversation" :archived="activeConversationArchived" :refresh-key="documentRefresh" @processed="documentFilesHandled" @draft-action="handleAdminStartDraftAction"/>
     <template v-else-if="panel==='approvals'&&detail"><ApprovalPanel :key="detail.id" :detail="detail" @error="fail" @changed="changed"/></template>
     <DomainWorkspacePanel v-else :panel="panel" :target-id="workspaceTargets[panel]||''" @approval="openApproval" @error="fail" @open="openPanel"/>
   </div></template></section>

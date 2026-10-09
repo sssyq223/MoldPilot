@@ -54,7 +54,10 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
     assert product.PUBLIC_METADATA["id"] == "mold"
     assert product.PUBLIC_METADATA["product_name"] == "MoldPilot"
     assert product.PUBLIC_METADATA["attachment_run"] == {
-        "enabled": False, "media_types": ["application/pdf", "image/png", "image/jpeg"],
+        "enabled": True, "media_types": [
+            "application/pdf", "image/png", "image/jpeg",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ],
     }
     assert product.PUBLIC_METADATA['attachment_processing']['batch_upload'] is True
     assert 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in product.PUBLIC_METADATA['attachment_processing']['media_types']

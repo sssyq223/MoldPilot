@@ -192,8 +192,8 @@ TOOLS.update(erp_design_mcp.TOOL_SPECS)
 TOOLS['query_uploaded_files']={'description':'查询本次 Agent Run 绑定、本人上传且仍有权访问的文件元数据；未进行OCR或业务关联。','permission':'file.upload'}
 TOOLS.update({
     'prepare_document_intake': {'description':'准备创建文档接收批次；本人确认后才排队预分类 OCR。','permission':'file.upload'},
-    'query_document_intake': {'description':'读取当前 Agent Run 绑定文件对应的文档接收分类、OCR 与失败状态；若本 Run 没有附件，则读取当前用户当前会话已登记的接收批次；不传参数查询当前范围，也可传 file_id 查询当前会话文件；document_intake_id 只能填写真实接收批次 ID，不能填写文件 ID。','permission':'file.upload'},
-    'prepare_document_type_confirmation': {'description':'准备确认本批次全部文档的类型和销售合同分组；本人确认后才排队完整 OCR。','permission':'file.upload'},
+    'query_document_intake': {'description':'读取当前 Agent Run 绑定文件或当前用户当前会话历史附件对应的文档接收分类、已缓存页级文字、OCR 与失败状态；不传参数查询当前范围，也可传同一会话的 file_id 查询；document_intake_id 只能填写真实接收批次 ID，不能填写文件 ID。只读追问不要求新 Run 绑定附件。','permission':'file.upload'},
+    'prepare_document_type_confirmation': {'description':'准备确认低置信度文档的类型和销售合同分组；高置信度销售合同由上传流程自动排队完整 OCR。','permission':'file.upload'},
     'prepare_document_ocr_retry': {'description':'准备重新排队已最终失败的 OCR 任务；本人确认后才重置失败任务。','permission':'file.upload'},
     'prepare_sales_contract_intake_review': {'description':'准备确认销售合同 OCR 字段、既有项目、正式模具映射和合同关系；本人确认后才形成可登记合同的复核事实。','permission':'sales_contract.create'},
 })
@@ -488,15 +488,30 @@ SKILLS.update({'delivery_risk_analysis':{'name':'供应商发货风险分析','t
                    'activation_queries':['合同','合同登记','销售合同','整套委外合同','合同号','付款节点','补齐合同','替代合同','合同签署','签署文件']},
                'sales_contract_intake':{
                    'name':'销售合同 PDF 接收、识别复核与审批',
-                   'tools':['query_uploaded_files','query_document_intake'],
+                   'tools':['query_uploaded_files','query_document_intake','query_sales_contract_intake'],
                    'optional_tools':['prepare_document_intake','prepare_document_type_confirmation',
                                      'prepare_document_ocr_retry','query_sales_contract_intake',
                                      'prepare_sales_contract_intake_review','prepare_sales_contract_from_intake'],
-                   'trusted_activation_tools':['query_uploaded_files','prepare_document_intake'],
+                   # Upload already creates the intake and queues PRECLASSIFY.
+                   # The attachment-triggered Agent Run reports that state; it
+                   # must not recreate the intake or wait for a proposal.
+                   'trusted_activation_tools':['query_document_intake'],
                    'activation_triggers':['ATTACHMENT_UPLOAD'],
-                   'activation_media_types':['application/pdf'],
+                   'activation_media_types':['application/pdf', 'image/png', 'image/jpeg',
+                                             'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
                    'suppress_tool_search_on_trusted_activation':True,
-                   'activation_queries':['合同识别','OCR合同','识别结果','合同PDF','文档类型确认','OCR重试','从识别记录登记合同']},
+                   # Keep ordinary follow-up questions anchored to the
+                   # uploaded contract.  These are deliberately more
+                   # specific than the generic contract-context skill's
+                   # ``合同`` matcher, so asking for an amount/number/content
+                   # does not fall through to unrelated ERP design tools.
+                   'activation_queries':['合同识别','OCR合同','识别结果','合同PDF','文档类型确认','OCR重试','从识别记录登记合同',
+                                        '合同金额','合同总金额','合同编号','合同内容','合同条款','合同客户','合同日期',
+                                        '合同付款','付款条件','刚才上传的合同','上传的合同','合同附件','合同OCR'],
+                   'auto_activation_queries':['合同金额','合同总金额','合同编号','合同内容','合同条款','合同客户','合同日期',
+                                             '合同付款','付款条件','刚才上传的合同','上传的合同','合同附件','合同OCR','合同识别结果'],
+                   'priority_patterns':[r'合同.{0,12}(?:金额|总额|编号|内容|条款|客户|日期|付款|附件|OCR|识别)',
+                                        r'(?:刚才|上传|附件).{0,12}合同']},
                 'internal_start_readiness':{'name':'正式开工条件核对','tools':['query_internal_start_readiness'],
                     'optional_tools':['prepare_internal_start','prepare_project_mold_handoff'],
                    'activation_queries':['正式开工','开工通知','开工条件','内部开工'],

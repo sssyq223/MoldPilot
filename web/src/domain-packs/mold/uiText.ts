@@ -28,7 +28,7 @@ export function capabilityName(value:any,items:any[]=[]){
  const isKeyLike=(name:string)=>/^[a-z][a-z0-9_]*$/i.test(name)
  return capabilityNames[key]||(!isKeyLike(providedName)&&providedName)||(!isKeyLike(itemName)&&itemName)||(key.startsWith('query_')&&businessNames[key.slice(6)]?'查询'+businessNames[key.slice(6)]:'业务查询能力')
 }
-Object.assign(capabilityNames,{query_contact_cases:'查询工程联络协作',contact_collaboration_review:'工程联络协作核对',query_uploaded_files:'查询本次任务附件',prepare_document_intake:'准备接收 PDF 文档',query_document_intake:'查询文档识别状态',prepare_document_type_confirmation:'准备确认文档类型',prepare_document_ocr_retry:'准备重试文档识别',query_sales_contract_intake:'查询合同识别记录',prepare_sales_contract_intake_review:'准备复核合同识别结果',prepare_sales_contract_from_intake:'准备销售合同审批',sales_contract_intake:'销售合同 PDF 接收与复核',document_engineering_contact_intake:'工程联络单文档接收'})
+Object.assign(capabilityNames,{query_contact_cases:'查询工程联络协作',contact_collaboration_review:'工程联络协作核对',query_uploaded_files:'查询本次任务附件',prepare_document_intake:'准备接收 PDF 文档',query_document_intake:'查询文档识别状态',document_ocr:'合同 OCR 解析',prepare_document_type_confirmation:'准备确认文档类型',prepare_document_ocr_retry:'准备重试文档识别',query_sales_contract_intake:'查询合同识别记录',prepare_sales_contract_intake_review:'准备复核合同识别结果',prepare_sales_contract_from_intake:'准备销售合同审批',sales_contract_intake:'销售合同 PDF 接收与复核',document_engineering_contact_intake:'工程联络单文档接收'})
 export const capabilityDepartmentNames:Record<string,string>={project:'项目管理',purchase:'采购部门',design:'设计部门',engineering:'工程部门',finance:'财务部门',warehouse:'仓储部门',assembly:'装配部门',trial:'试模部门',sales:'销售部门',system:'管理部门'}
 export const capabilityTypeNames:Record<string,string>={query:'查询',operation:'操作',approval:'审批',review:'核对'}
 Object.assign(businessNames,{project_plan_change:'项目计划变更'})

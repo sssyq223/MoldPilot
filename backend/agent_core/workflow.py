@@ -7,7 +7,7 @@ from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow import TaskState
 from .errors import DomainError
-from .assignments import validate_assignment, validate_add_sign_policy, valid_ids
+from .assignments import validate_assignment, validate_add_sign_policy, valid_ids, valid_keys
 from .domain_pack import component
 from .hashing import canonical, content_hash
 
@@ -18,23 +18,127 @@ def _workflow_policy():
 NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
 serializer = BpmnWorkflowSerializer()
 
+WORKFLOW_KEYS = {
+    'business_type', 'nodes', 'applicability', 'material_contract',
+    'form_schema', 'metadata', 'integration',
+}
+NODE_KEYS = {
+    'key', 'name', 'users', 'assignment', 'mode', 'required_approvals',
+    'reject_rules', 'routes', 'default_target', 'agent_auto_approval',
+    'agent_auto_policy', 'allow_transfer', 'allow_proxy', 'add_sign_policy',
+    'return_policy', 'sla', 'task_type', 'form_schema', 'parallel_group',
+    'line_item_scope', 'external_action', 'assignment_pools',
+}
+FORM_TYPES = {'string', 'text', 'integer', 'decimal', 'date', 'datetime', 'boolean', 'enum'}
+
+
+def validate_form_schema(schema, *, label='表单'):
+    """Validate the bounded form contract stored with a workflow.
+
+    Form values are deliberately declarative.  They are later copied into the
+    approval snapshot/action context; no executable expression is accepted.
+    """
+    if schema is None:
+        return
+    if not isinstance(schema, dict) or set(schema) - {'fields', 'allow_extra'}:
+        raise DomainError('INVALID_WORKFLOW', f'{label}配置格式无效')
+    fields = schema.get('fields')
+    if not isinstance(fields, list) or len(fields) > 100:
+        raise DomainError('INVALID_WORKFLOW', f'{label}字段数量无效')
+    keys = set()
+    for field in fields:
+        if not isinstance(field, dict) or set(field) - {'key', 'label', 'type', 'required', 'options', 'min', 'max'}:
+            raise DomainError('INVALID_WORKFLOW', f'{label}字段配置包含未支持的属性')
+        key = field.get('key', '')
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys:
+            raise DomainError('INVALID_WORKFLOW', f'{label}字段标识不合法或重复')
+        keys.add(key)
+        if not isinstance(field.get('label'), str) or not 1 <= len(field['label']) <= 150:
+            raise DomainError('INVALID_WORKFLOW', f'{label}字段必须有名称')
+        if field.get('type') not in FORM_TYPES or type(field.get('required', False)) is not bool:
+            raise DomainError('INVALID_WORKFLOW', f'{label}字段类型或必填标记无效')
+        if field.get('type') == 'enum':
+            options = field.get('options')
+            if not isinstance(options, list) or not 1 <= len(options) <= 100 or any(
+                not isinstance(item, str) or not item for item in options
+            ) or len(options) != len(set(options)):
+                raise DomainError('INVALID_WORKFLOW', f'{label}枚举字段必须配置不重复选项')
+        elif 'options' in field:
+            raise DomainError('INVALID_WORKFLOW', f'{label}非枚举字段不能配置选项')
+        for bound in ('min', 'max'):
+            if bound in field and (not isinstance(field[bound], (int, float)) or isinstance(field[bound], bool)):
+                raise DomainError('INVALID_WORKFLOW', f'{label}字段范围无效')
+    if 'allow_extra' in schema and type(schema['allow_extra']) is not bool:
+        raise DomainError('INVALID_WORKFLOW', f'{label}允许扩展字段标记必须为布尔值')
+
+
+def validate_form_values(schema, values):
+    """Validate submitted values against a published node form contract."""
+    if schema is None:
+        if values:
+            raise DomainError('FORM_FIELDS_NOT_ALLOWED', '当前审批节点没有可填写的表单字段', 400)
+        return
+    validate_form_schema(schema)
+    if not isinstance(values, dict):
+        raise DomainError('FORM_VALUES_INVALID', '审批表单值必须是对象', 400)
+    fields = {field['key']: field for field in schema['fields']}
+    if not schema.get('allow_extra', False) and set(values) - set(fields):
+        raise DomainError('FORM_VALUES_INVALID', '审批表单包含未登记字段', 400)
+    for key, field in fields.items():
+        value = values.get(key)
+        if value is None:
+            if field.get('required'):
+                raise DomainError('FORM_REQUIRED', f'请填写：{field["label"]}', 400)
+            continue
+        kind = field['type']
+        valid = (
+            (kind in {'string', 'text', 'date', 'datetime'} and isinstance(value, str))
+            or (kind == 'integer' and type(value) is int)
+            or (kind == 'decimal' and (isinstance(value, (int, float, str)) and not isinstance(value, bool)))
+            or (kind == 'boolean' and type(value) is bool)
+            or (kind == 'enum' and isinstance(value, str) and value in field['options'])
+        )
+        if not valid:
+            raise DomainError('FORM_VALUES_INVALID', f'字段“{field["label"]}”类型或取值无效', 400)
+        if kind in {'integer', 'decimal'}:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                raise DomainError('FORM_VALUES_INVALID', f'字段“{field["label"]}”必须是数字', 400) from None
+            if 'min' in field and numeric < field['min'] or 'max' in field and numeric > field['max']:
+                raise DomainError('FORM_VALUES_INVALID', f'字段“{field["label"]}”超出允许范围', 400)
+
 
 def validate(config):
     policy = _workflow_policy()
     CATALOG = policy.CATALOG
     business_types = {"generic", *getattr(policy, "WORKFLOW_TYPES", CATALOG)}
-    if not isinstance(config, dict) or not {'business_type','nodes'} <= set(config) or set(config) - {'business_type','nodes','applicability','material_contract'} or not isinstance(config['business_type'], str) or config["business_type"] not in business_types:
+    if not isinstance(config, dict) or not {'business_type','nodes'} <= set(config) or set(config) - WORKFLOW_KEYS or not isinstance(config['business_type'], str) or config["business_type"] not in business_types:
         raise DomainError("INVALID_WORKFLOW", "流程业务类型尚未登记")
     contract=config.get('material_contract')
     if 'material_contract' in config:
         from .evidence_rules import validate_contract
         validate_contract(contract)
+    validate_form_schema(config.get('form_schema'), label='流程表单')
+    if 'metadata' in config and (not isinstance(config['metadata'], dict) or len(config['metadata']) > 50):
+        raise DomainError('INVALID_WORKFLOW', '流程元数据格式无效')
+    if 'integration' in config:
+        integration = config['integration']
+        if not isinstance(integration, dict) or set(integration) - {'system', 'action', 'on_approve', 'payload_fields'}:
+            raise DomainError('INVALID_WORKFLOW', '流程联动配置格式无效')
+        if integration.get('system') not in (None, 'erp') or any(
+            not isinstance(integration.get(key), str) or not integration[key]
+            for key in ('action', 'on_approve') if key in integration
+        ):
+            raise DomainError('INVALID_WORKFLOW', '流程联动目标无效')
+        if 'payload_fields' in integration and not valid_keys(integration['payload_fields'], True):
+            raise DomainError('INVALID_WORKFLOW', '流程联动字段列表无效')
     policy.validate_applicability(config)
     if not isinstance(config["nodes"], list) or not 1 <= len(config["nodes"]) <= 20:
         raise DomainError("INVALID_WORKFLOW", "审批节点数量须为1至20")
     keys = set()
     for node in config["nodes"]:
-        if not isinstance(node, dict) or set(node) - {"key", "name", "users", "assignment", "mode", "required_approvals", "reject_rules", "routes", "default_target", "agent_auto_approval", "agent_auto_policy", "allow_transfer", "allow_proxy", "add_sign_policy", "return_policy", "sla"}:
+        if not isinstance(node, dict) or set(node) - NODE_KEYS:
             raise DomainError("INVALID_WORKFLOW", "包含尚未支持的节点配置")
         key = node.get("key", "")
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or key in keys or key in {"start", "end"} or key.startswith('gateway_'):
@@ -42,6 +146,46 @@ def validate(config):
         keys.add(key)
         if not isinstance(node.get('mode'), str) or node.get("mode") not in {"ALL", "ANY", "QUORUM", "CLAIM"} or not isinstance(node.get("name"), str) or not 1 <= len(node['name']) <= 150:
             raise DomainError("INVALID_WORKFLOW", "必须设置节点名称和审批办理方式")
+        if node.get('task_type', 'approval') not in {'approval', 'business_task'}:
+            raise DomainError('INVALID_WORKFLOW', '节点任务类型只支持 approval 或 business_task')
+        if node.get('task_type') == 'business_task' and (
+            not isinstance(node.get('external_action'), str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{2,79}', node['external_action'])
+        ):
+            raise DomainError('INVALID_WORKFLOW', '业务任务必须配置合法的外部动作标识')
+        if 'external_action' in node and node.get('task_type', 'approval') != 'business_task':
+            raise DomainError('INVALID_WORKFLOW', '只有业务任务节点可以配置外部动作')
+        validate_form_schema(node.get('form_schema'), label=f'节点 {key} 表单')
+        if 'assignment_pools' in node:
+            pools = node['assignment_pools']
+            if (
+                not isinstance(pools, list) or not 1 <= len(pools) <= 10
+                or 'assignment' in node or 'users' in node
+            ):
+                raise DomainError('INVALID_WORKFLOW', '节点审批池配置无效，不能与单一人员规则混用')
+            pool_keys = set()
+            for pool in pools:
+                if not isinstance(pool, dict) or set(pool) - {'key', 'name', 'assignment', 'users', 'mode'}:
+                    raise DomainError('INVALID_WORKFLOW', '审批池配置包含未支持的属性')
+                if not isinstance(pool.get('key'), str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', pool['key']) or pool['key'] in pool_keys:
+                    raise DomainError('INVALID_WORKFLOW', '审批池标识不合法或重复')
+                pool_keys.add(pool['key'])
+                if not isinstance(pool.get('name'), str) or not 1 <= len(pool['name']) <= 150:
+                    raise DomainError('INVALID_WORKFLOW', '审批池必须设置名称')
+                if pool.get('mode') not in {'ALL', 'ANY', 'CLAIM'}:
+                    raise DomainError('INVALID_WORKFLOW', '审批池办理方式只支持 ALL、ANY 或 CLAIM')
+                if ('assignment' in pool) == ('users' in pool):
+                    raise DomainError('INVALID_WORKFLOW', '审批池必须且只能配置一种人员来源')
+                pool_node = ({'assignment': pool['assignment']}
+                             if 'assignment' in pool else {'users': pool['users']})
+                validate_assignment(pool_node)
+        elif 'assignment' not in node and 'users' not in node:
+            raise DomainError('INVALID_WORKFLOW', '节点必须配置人员或审批池')
+        if 'parallel_group' in node and (
+            not isinstance(node['parallel_group'], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', node['parallel_group'])
+        ):
+            raise DomainError('INVALID_WORKFLOW', '并行会签组标识无效')
+        if 'line_item_scope' in node and node['line_item_scope'] not in {'document', 'line', 'line_required'}:
+            raise DomainError('INVALID_WORKFLOW', '明细办理范围无效')
         required_approvals = node.get("required_approvals")
         if node.get("mode") == "QUORUM":
             if type(required_approvals) is not int or not 1 <= required_approvals <= 50:
@@ -71,7 +215,8 @@ def validate(config):
             if not isinstance(node["agent_auto_policy"], dict) or set(node["agent_auto_policy"]) != {"condition"}:
                 raise DomainError("INVALID_WORKFLOW", "Agent 自动审批策略必须包含安全条件")
             validate_condition(node["agent_auto_policy"]["condition"], contract)
-        validate_assignment(node)
+        if 'assignment_pools' not in node:
+            validate_assignment(node)
         validate_add_sign_policy(node)
         if "sla" in node:
             sla = node["sla"]
@@ -97,6 +242,16 @@ def validate(config):
             if not isinstance(rule, dict) or set(rule) != {"condition", "reason"} or not isinstance(rule['reason'], str) or not 1 <= len(rule["reason"]) <= 2000:
                 raise DomainError("INVALID_RULE", "驳回规则必须包含条件和原因")
             validate_condition(rule["condition"],contract)
+    groups = {}
+    for index, node in enumerate(config['nodes']):
+        group = node.get('parallel_group')
+        if group:
+            groups.setdefault(group, []).append(index)
+            if node['mode'] != 'ALL':
+                raise DomainError('INVALID_WORKFLOW', '并行会签组节点必须使用 ALL 模式')
+    for group, indexes in groups.items():
+        if indexes != list(range(min(indexes), max(indexes) + 1)):
+            raise DomainError('INVALID_WORKFLOW', f'并行会签组 {group} 必须连续配置')
     positions = {node['key']: i for i, node in enumerate(config['nodes'])}
     reachable = {0}
     for i, node in enumerate(config['nodes']):
@@ -131,7 +286,12 @@ def compile_bpmn(config):
     proc = etree.SubElement(root, f"{{{NS}}}process", id="approval", isExecutable="true")
     etree.SubElement(proc, f"{{{NS}}}startEvent", id="start")
     for node in config["nodes"]:
-        etree.SubElement(proc, f"{{{NS}}}userTask", id=node["key"], name=node["name"])
+        task = etree.SubElement(proc, f"{{{NS}}}userTask", id=node["key"], name=node["name"])
+        # Keep the generic engine executable while preserving the richer BPM
+        # contract for clients, audit exports, and future service-task workers.
+        task.set("taskType", node.get("task_type", "approval"))
+        if node.get("parallel_group"):
+            task.set("parallelGroup", node["parallel_group"])
     etree.SubElement(proc, f"{{{NS}}}endEvent", id="end")
     def connect(source, target, suffix, expression=None):
         edge = etree.SubElement(proc, f'{{{NS}}}sequenceFlow', id=f'flow_{suffix}', sourceRef=source, targetRef=target)
@@ -222,7 +382,12 @@ def simulate(config, snapshot):
         node = config['nodes'][stage]
         matched, missing = reject_findings(node, snapshot,config.get('material_contract'))
         entry = {'key': node['key'], 'name': node['name'], 'users': node.get('users',[]), 'assignment': node.get('assignment'),
+                 'assignment_pools': node.get('assignment_pools'),
                  'mode': node['mode'], 'required_approvals': node.get('required_approvals'),
+                 'task_type': node.get('task_type', 'approval'),
+                 'parallel_group': node.get('parallel_group'),
+                 'line_item_scope': node.get('line_item_scope', 'document'),
+                 'form_schema': node.get('form_schema', config.get('form_schema')),
                  'rejection_reasons': matched, 'missing_rules': missing}
         path.append(entry)
         if config.get('material_contract') is not None:

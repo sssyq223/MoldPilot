@@ -84,10 +84,11 @@ def test_attachment_upload_run_requires_bound_files_and_records_trusted_trigger(
     attachment_skills = [skill for skill in claimed['skills'] if
                          'ATTACHMENT_UPLOAD' in skill.get('activation_triggers', [])]
     assert [skill['key'] for skill in attachment_skills] == ['sales_contract_intake']
-    assert attachment_skills[0]['activation_media_types'] == ['application/pdf']
-    assert attachment_skills[0]['trusted_activation_tools'] == [
-        'query_uploaded_files', 'prepare_document_intake',
+    assert attachment_skills[0]['activation_media_types'] == [
+        'application/pdf', 'image/png', 'image/jpeg',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     ]
+    assert attachment_skills[0]['trusted_activation_tools'] == ['query_document_intake']
     assert '每个 Agent Run 只推进当前可办理的一步' in attachment_skills[0]['instructions']
     assert client.post(f"/internal/runs/{claimed['id']}/checkpoint", headers=worker_headers(), json={
         'epoch': claimed['epoch'],
