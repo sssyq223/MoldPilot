@@ -20,6 +20,15 @@ def test_buyer_ops_skill_is_registered():
         assert proposal_handlers.handler_for_tool(key).action == "erp_outsource_buyer.execute"
 
 
+def test_spoken_board_row_tolerates_extra_punctuation():
+    assert buyer_todo.spoken_board_row_number("NO.2填写报价") == 2
+    assert buyer_todo.spoken_board_row_number("NO.,2填写报价 总价20000上限66666") == 2
+    assert buyer_todo.spoken_board_row_number("NO,2填写报价") == 2
+    assert buyer_todo.spoken_board_row_number("NO：2填写报价") == 2
+    assert buyer_todo.spoken_board_row_number("NO. 2填写报价") == 2
+    assert buyer_todo.spoken_board_row_number("NOTE 2填写报价") is None
+
+
 def test_buyer_quote_prepare_requires_matching_station(monkeypatch):
     monkeypatch.setattr(buyer_todo, "find_item_by_identity", lambda **kwargs: {
         "inquiryId": 9,
@@ -409,6 +418,10 @@ def test_visible_no_locks_duplicate_batch(monkeypatch):
     spoken = buyer_todo.parse_spoken_buyer_quote("NO.2填写报价，总价300，上限40000")
     assert spoken["board_row"] == 2
     assert spoken["batch"] == "M260063-P1"
+    extra_mark = buyer_todo.parse_spoken_buyer_quote("NO.,2填写报价 总价20000上限66666")
+    assert extra_mark["board_row"] == 2
+    assert extra_mark["our_quote_amount"] == 20000
+    assert extra_mark["auto_accept_max_amount"] == 66666
     bare = buyer_todo.parse_spoken_buyer_quote("第9行报价300上限40000")
     assert bare["board_row"] == 9
     assert bare["batch"] == "M260063-P1"

@@ -28,8 +28,10 @@ DEAL_AMOUNT = re.compile(
     r"|(?:填写|填)\s*成交价\s*(?:是|为|:|：)?\s*(\d+(?:\.\d+)?)"
 )
 ROW_INDEX = re.compile(r"第\s*(\d+)\s*行")
+# NO.2 / NO.,2 / NO：2 — 点号后再多一个逗号、冒号也按行号认。
+NO_ROW_GAP = r"(?:[.\u3002\uff0e]|号)?[\s,，、:：;；\-—_#]*"
 ROW_SPOKEN = re.compile(
-    r"(?:第\s*(\d+|[一二三四五六七八九十])\s*行|(?<![A-Za-z0-9])NO[.\u3002\uff0e]?\s*(\d+))",
+    rf"(?:第\s*(\d+|[一二三四五六七八九十])\s*行|(?<![A-Za-z0-9])NO{NO_ROW_GAP}(\d+))",
     re.IGNORECASE,
 )
 CN_ROW = {
