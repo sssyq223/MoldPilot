@@ -5,6 +5,7 @@ from domain_packs.mold import models as m,domain_schemas as s
 from domain_packs.mold.ports.errors import DomainError
 from domain_packs.mold.authorization import require
 from domain_packs.mold.ports.db import now
+from domain_packs.mold.ports.events import record
 
 TABLES={'contact_resolution':m.ContactResolution,'design_route':m.DesignDetail,'purchase_price':m.PriceDetail,'assembly_issue':m.AssemblyDetail,
         'trial_request':m.TrialDetail,'finance_correction':m.FinanceCorrectionDetail}
@@ -121,16 +122,69 @@ def apply(db,user,subject):
         activate_resolution(db,user,db.get(m.ContactResolution,subject.id))
     elif kind=='design_route':
         detail=db.get(m.DesignDetail,subject.id)
-        reviewer_approved=db.scalar(select(m.ApprovalAction.id).join(m.ApprovalInstance).where(
+        # The migrated ERP reviewer field is legacy reference data.  MoldPilot
+        # BPM owns this approval now, so the ERP write must be gated by an
+        # approval action on the current BPM design-review stage rather than
+        # by a possibly different legacy reviewer_id.
+        design_review_approved=db.scalar(select(m.ApprovalAction.id).join(
+            m.ApprovalInstance, m.ApprovalInstance.id==m.ApprovalAction.instance_id
+        ).join(m.ApprovalSeat, m.ApprovalSeat.id==m.ApprovalAction.seat_id).where(
             m.ApprovalInstance.resource_type=='business_subject',
             m.ApprovalInstance.resource_id==subject.id,
             m.ApprovalInstance.revision==subject.revision,
-            m.ApprovalInstance.round_no==subject.round_no,m.ApprovalAction.user_id==detail.reviewer_id,
+            m.ApprovalInstance.round_no==subject.round_no,
+            m.ApprovalSeat.stage_index==0,
             m.ApprovalAction.decision=='APPROVE').limit(1))
-        if not reviewer_approved:raise DomainError('DESIGN_REVIEW_REQUIRED','本轮须有指定设计复核人员的同意记录')
+        if not design_review_approved:raise DomainError('DESIGN_REVIEW_REQUIRED','本轮须有 MoldPilot 设计主管审批同意记录')
         existing=db.scalar(select(m.BusinessSubject.id).where(m.BusinessSubject.project_id==subject.project_id,
             m.BusinessSubject.kind=='design_route',m.BusinessSubject.status=='EFFECTIVE',m.BusinessSubject.id!=subject.id).limit(1))
         if existing:raise DomainError('DESIGN_CHANGE_REQUIRED','项目已有生效设计；新设计须关联工程变更，不能直接替换')
+        integration_payload = detail.source_snapshot if isinstance(detail.source_snapshot, dict) else {}
+        if integration_payload.get('integration_type') == 'erp_design_upload':
+            # The local BPM decision is the only gate for the ERP write.  Keep
+            # the call idempotent by reusing a prior receipt if an operator is
+            # retrying a completed local instance.
+            session_id = str(integration_payload.get('session_id') or '')
+            prior = db.scalar(select(m.AuditEvent).where(
+                m.AuditEvent.action == 'erp_design_upload.synced',
+                m.AuditEvent.resource_id == session_id,
+            ).order_by(m.AuditEvent.created_at.desc())) if session_id else None
+            if not prior:
+                from domain_packs.mold import erp_direct
+                try:
+                    result = erp_direct.import_design_upload(
+                        payload={
+                            'session_id': int(integration_payload['session_id']),
+                            'sheet_type': integration_payload.get('sheet_type'),
+                            'mold_code': integration_payload.get('mold_code'),
+                            'preview_rows': integration_payload.get('preview_rows') or [],
+                            'design_order_type': integration_payload.get('design_order_type') or 'new_model',
+                            'urgency_level': integration_payload.get('urgency_level') or 'normal',
+                            'expected_date': integration_payload.get('expected_date'),
+                            'purchase_reason': integration_payload.get('purchase_reason'),
+                            'remark': integration_payload.get('remark'),
+                            'allow_duplicate': bool(integration_payload.get('allow_duplicate')),
+                            'import_mode': 'new_request',
+                        },
+                        mold_user_name=getattr(user, 'username', None) or 'admin',
+                    )
+                except Exception as error:
+                    raise DomainError('ERP_SYNC_FAILED', f'审批已完成，但写入 ERP 失败：{error}', 502) from error
+                nested = result.get('result') if isinstance(result, dict) else {}
+                nested = nested if isinstance(nested, dict) else {}
+                request_no = str(nested.get('requestNo') or nested.get('request_no') or '').strip()
+                approval_instance = db.scalar(select(m.ApprovalInstance).where(
+                    m.ApprovalInstance.resource_type == 'business_subject',
+                    m.ApprovalInstance.resource_id == subject.id,
+                ).order_by(m.ApprovalInstance.created_at.desc()))
+                record(db, user, 'erp_design_upload.synced', session_id, {
+                    'status': 'IMPORTED', 'request_no': request_no,
+                    'request_id': nested.get('requestId') or nested.get('request_id'),
+                    'message': str(nested.get('message') or nested.get('successMessage') or '已写入 ERP'),
+                    'subject_id': subject.id,
+                    'instance_id': approval_instance.id if approval_instance else None,
+                    'submitted_by': integration_payload.get('submitted_by'),
+                }, recipients=[integration_payload.get('submitted_by')] if integration_payload.get('submitted_by') else None)
     elif kind=='purchase_price':
         price=db.get(m.PriceDetail,subject.id)
         # Parent project lock in domains.apply serializes overlapping versions in this project.

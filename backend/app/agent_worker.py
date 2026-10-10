@@ -1,4 +1,5 @@
 import time
+import logging
 import httpx
 from .config import settings, model_settings
 from agent_core.harness import run_loop
@@ -6,6 +7,8 @@ from agent_core.model_adapter import ModelAdapter, ModelError
 from agent_core.ollama_adapter import OllamaAdapter
 
 
+
+log = logging.getLogger(__name__)
 class Gateway:
     def __init__(self, client, context):
         self.client, self.run_id, self.epoch = client, context["id"], context["epoch"]
@@ -110,6 +113,12 @@ def main():
                         code = str(exc) or type(exc).__name__
                     else:
                         code = type(exc).__name__
+                    # Preserve bounded provider diagnostics in the server log;
+                    # the browser still receives only the stable error code.
+                    detail = getattr(exc, 'provider_detail', '')
+                    status = getattr(exc, 'provider_status', '')
+                    if detail:
+                        log.warning('model provider failure status=%s detail=%s', status, detail)
                     gateway.post("fail", {"code": code})
             except httpx.HTTPError:
                 time.sleep(5)

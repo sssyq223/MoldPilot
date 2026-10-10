@@ -310,6 +310,9 @@ export type ErpDesignImportReceipt = {
   sessionId: number
   requestNo: string
   message: string
+  status?: string
+  subjectId?: string
+  instanceId?: string
   importedAt: string
   requestId?: string
   processCode?: string
@@ -523,6 +526,9 @@ export function normalizeErpDesignImportReceipt(value: unknown): ErpDesignImport
     sessionId,
     requestNo: String(source?.requestNo ?? source?.request_no ?? '').trim(),
     message: String(source?.message ?? '').trim(),
+    status: String(source?.status ?? '').trim() || undefined,
+    subjectId: String(source?.subjectId ?? source?.subject_id ?? '').trim() || undefined,
+    instanceId: String(source?.instanceId ?? source?.instance_id ?? '').trim() || undefined,
     importedAt: String(source?.importedAt ?? source?.imported_at ?? ''),
   }
   const fields: Array<[keyof ErpDesignImportReceipt, string[]]> = [

@@ -160,7 +160,15 @@ class ModelAdapter:
         if response.status_code == 429:
             raise ModelError("MODEL_RATE_LIMITED")
         if not response.is_success:
-            raise ModelError("MODEL_HTTP_FAILED")
+            # Preserve the stable public code while retaining only a bounded,
+            # server-side diagnostic for troubleshooting.
+            error = ModelError("MODEL_HTTP_FAILED")
+            error.provider_status = response.status_code
+            try:
+                error.provider_detail = response.text[:500].replace("\n", " ")
+            except Exception:
+                error.provider_detail = ""
+            raise error
 
     def generate(self, messages, tools):
         started = time.perf_counter()
@@ -183,6 +191,10 @@ class ModelAdapter:
                         self._record_retry('connect_timeout_before_response', attempt_started)
                         continue
                     raise
+                if response.status_code in {500, 502, 503, 504} and attempt == 0:
+                    response.close()
+                    self._record_retry('upstream_5xx', attempt_started)
+                    continue
                 if self._can_retry_without_json_mode(response.status_code, tools, json_mode):
                     response.close()
                     self._record_retry('json_mode_rejected', attempt_started)

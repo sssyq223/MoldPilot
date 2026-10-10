@@ -1572,7 +1572,9 @@ def unarchive_conversation(conversation_id: str, user=Depends(current_user), db=
 
 @app.post("/api/runs")
 def create_run(data: s.RunInput, user=Depends(current_user), db=Depends(get_db)):
-    prompt = data.prompt if data.prompt.strip() else "处理本次上传附件"
+    prompt = data.prompt if data.prompt.strip() else (
+        "处理本次上传附件" if data.trigger == "ATTACHMENT_UPLOAD" else ""
+    )
     if data.conversation_id:
         conversation = db.scalar(select(m.Conversation).where(m.Conversation.id == data.conversation_id, m.Conversation.user_id == user.id, m.Conversation.archived == False))
         if not conversation: raise DomainError("NOT_FOUND", "会话不存在", 404)

@@ -13,9 +13,12 @@ PROJECT_ROLES = {
     "DESIGN_OWNER": ("设计负责人", "设计、BOM 与工艺路线责任人"),
     "PURCHASE_OWNER": ("采购负责人", "项目采购协调责任人"),
     "MANUFACTURING_OWNER": ("制造负责人", "制造进度与现场协同责任人"),
+    "MOLD_OWNER": ("模具主管", "模具加工与委外节点审批责任人"),
+    "DELIVERY_OWNER": ("交期确认人", "附图方料交期确认责任人"),
     "ASSEMBLY_OWNER": ("装配负责人", "装配齐套与完工责任人"),
     "TRIAL_OWNER": ("试模负责人", "试模排期与问题闭环责任人"),
     "QUALITY_OWNER": ("质量负责人", "质量检验与整改复核责任人"),
+    "WAREHOUSE_OWNER": ("仓储负责人", "仓储收料与对账确认责任人"),
     "SALES_SUPERVISOR": ("业务主管", "销售合同资料与客户项目关系审核责任人"),
     "FINANCE_OWNER": ("财务负责人", "项目收付款节点责任人"),
 }

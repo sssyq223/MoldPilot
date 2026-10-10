@@ -131,6 +131,25 @@ def test_model_stream_retries_one_upstream_5xx_before_any_sse_delta():
     assert model.last_metrics['retry_count'] == 1
 
 
+
+def test_model_generate_retries_one_upstream_5xx_before_response():
+    calls = []
+
+    def serve(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503, text='temporary overload')
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {
+            'role': 'assistant', 'content': '{"response_kind":"CONVERSATION"}'}}]})
+
+    model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test-model',
+                         transport=httpx.MockTransport(serve))
+    message = model.generate([{'role': 'user', 'content': 'query'}], [])
+
+    assert message['content'] == '{"response_kind":"CONVERSATION"}'
+    assert len(calls) == 2
+    assert model.last_metrics['retry_reason'] == 'upstream_5xx'
+
 def test_model_stream_retries_read_timeout_before_first_sse_delta():
     calls = []
     body = 'data: '+json.dumps({'choices': [{'delta': {'role': 'assistant', 'content': '重试成功'},
@@ -230,7 +249,7 @@ def test_upstream_errors_never_expose_response_or_credentials(status, code):
     model = ModelAdapter('https://model.example/v1', 'synthetic-key', 'test', transport=httpx.MockTransport(serve))
     with pytest.raises(ModelError, match=code) as error: model.generate([], [])
     assert str(error.value) == code
-    assert len(calls) == 1
+    assert len(calls) == (2 if status == 500 else 1)
 
 
 @pytest.mark.parametrize('exception,code', [(httpx.ConnectTimeout,'MODEL_CONNECT_TIMEOUT'), (httpx.ReadTimeout,'MODEL_READ_TIMEOUT')])
@@ -1784,6 +1803,43 @@ def test_design_upload_attachment_uses_erp_parser_without_tool_search():
                               'activation_tools': ['erp_design_parse_new_mold_upload'],
                               'activation_queries': ['上传新模钢料表', '上传新模五金表']}]),
              InspectingModel([]), Gateway())
+
+
+def test_bare_workbook_attachment_stays_conversational_until_model_has_intent():
+    class ClarifyingModel(Model):
+        def generate(self, messages, tools):
+            assert tools == []
+            system = messages[0]['content']
+            assert '尚未明确要做什么' in system
+            return {'role': 'assistant', 'content': json.dumps({
+                'response_kind': 'CLARIFICATION',
+                'summary': '这个附件需要我先解析，还是按明确的模具流程上传并触发审批？',
+                'evidence_ids': [], 'suggestions': [],
+            }, ensure_ascii=False)}
+
+    run_loop(context(
+        prompt='', core_tool_names=[],
+        files=[{'filename': 'M250238-P4料单.xlsx',
+                'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}],
+        tools=[{'type': 'function', 'function': {
+            'name': 'erp_design_parse_new_mold_upload',
+            'description': '解析当前设计清单。',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        }}],
+        skills=[{'key': 'erp_new_mold_design_upload',
+                 'name': 'ERP 新模设计上传流程',
+                 'tools': ['erp_design_parse_new_mold_upload']}]),
+        ClarifyingModel([]), Gateway())
+
+
+def test_explicit_new_mold_submission_is_a_model_owned_upload_intent():
+    context_value = {
+        'prompt': '帮我上传新模，触发审批流程',
+        'files': [{'filename': 'M250238-P4料单.xlsx'}],
+        'skills': [{'key': 'erp_new_mold_design_upload'}],
+    }
+    assert harness_module._design_upload_direct_submission_intent(context_value)
+    assert not harness_module._design_attachment_intent_undetermined(context_value)
 
 
 def test_design_upload_attachment_host_invokes_parser_before_model_call():

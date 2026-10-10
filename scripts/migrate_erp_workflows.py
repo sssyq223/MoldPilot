@@ -32,6 +32,23 @@ ROLE_GROUPS = {
     "FINANCE_OWNER": ("DEPARTMENT", "财务部"),
     "MANUFACTURING_OWNER": ("DEPARTMENT", "生产部"),
     "QUALITY_OWNER": ("DEPARTMENT", "品质部"),
+    "WAREHOUSE_OWNER": ("DEPARTMENT", "仓储部"),
+    "MOLD_OWNER": ("DEPARTMENT", "生产部"),
+    "DELIVERY_OWNER": ("DEPARTMENT", "生产部"),
+}
+
+# The ERP catalog assigns these nodes to fixed users.  Keep that identity
+# explicit in MoldPilot instead of expanding a department into an ALL-stage
+# approver pool for every migrated employee.
+FIXED_ROLE_USERS = {
+    "DESIGN_OWNER": "于孟",
+    "PURCHASE_OWNER": "张亚倩",
+    "PROJECT_OWNER": "李辉",
+    "FINANCE_OWNER": "陈财务",
+    "QUALITY_OWNER": "赵殿烨",
+    "WAREHOUSE_OWNER": "薛海峰",
+    "MOLD_OWNER": "谢志华",
+    "DELIVERY_OWNER": "郭伟",
 }
 
 DESIGN_FIXED_USERS = {
@@ -43,7 +60,7 @@ DESIGN_FIXED_USERS = {
 }
 DESIGN_POOL_USERS = {
     "project_owner": "李辉",
-    "design_owner": "谢志华",
+    "mold_owner": "谢志华",
 }
 
 
@@ -115,6 +132,11 @@ def _materialize_assignment(db, node):
         return
     if assignment.get("domain_roles"):
         role = assignment.pop("domain_roles")[0]
+        fixed_name = FIXED_ROLE_USERS.get(role)
+        if fixed_name:
+            node.pop("assignment", None)
+            node["users"] = [_user_for_name(db, fixed_name)]
+            return
         group = _group_for_role(db, role)
         assignment.pop("domain_roles_any", None)
         if group.kind == "ROLE":
@@ -135,7 +157,11 @@ def materialize_assignments(db, config):
                 if "assignment" in pool:
                     holder = {"assignment": pool["assignment"]}
                     _materialize_assignment(db, holder)
-                    pool["assignment"] = holder["assignment"]
+                    if "assignment" in holder:
+                        pool["assignment"] = holder["assignment"]
+                    else:
+                        pool.pop("assignment", None)
+                        pool["users"] = holder.get("users", [])
         else:
             _materialize_assignment(db, node)
     config.setdefault("metadata", {})["assignment_source"] = "moldpilot_assignment_group"

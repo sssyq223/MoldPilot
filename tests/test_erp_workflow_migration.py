@@ -51,7 +51,7 @@ def test_form_values_are_bounded_and_unknown_fields_are_rejected():
 def test_design_same_order_nodes_keep_separate_approval_pools():
     item = next(item for item in templates() if item['process_key'] == 'design_modify_model_approval')
     node = item['config']['nodes'][1]
-    assert [pool['key'] for pool in node['assignment_pools']] == ['project_owner', 'design_owner']
+    assert [pool['key'] for pool in node['assignment_pools']] == ['project_owner', 'mold_owner']
     assert all(pool['mode'] == 'ANY' for pool in node['assignment_pools'])
     result = workflow.simulate(item['config'], {})
     assert result['outcome'] == 'ROUTE_VALID'

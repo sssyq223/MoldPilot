@@ -59,6 +59,12 @@ def test_product_selects_installed_business_pack_and_core_uses_its_contract():
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ],
     }
+    assert product.PUBLIC_METADATA["attachment_intent_run"] == {
+        "enabled": True, "media_types": [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel", "text/csv",
+        ],
+    }
     assert product.PUBLIC_METADATA['attachment_processing']['batch_upload'] is True
     assert 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in product.PUBLIC_METADATA['attachment_processing']['media_types']
     assert product.PUBLIC_METADATA["proposal_presentation"]["value_names"]["supplier_design"] == "供应商设计"
@@ -205,6 +211,7 @@ def test_generic_shell_starts_configured_attachment_runs_without_mold_contract_l
     project_root = Path(__file__).resolve().parents[1]
     app_source = (project_root / "web" / "src" / "App.vue").read_text(encoding="utf-8")
     assert "attachmentRun=product.value?.attachment_run" in app_source
+    assert "attachment_intent_run" in app_source
     assert "allowedMediaTypes.includes(file.media_type)" in app_source
     assert "trigger:'ATTACHMENT_UPLOAD'" in app_source
     for mold_term in ("销售合同", "中标通知", "/api/document-intakes"):

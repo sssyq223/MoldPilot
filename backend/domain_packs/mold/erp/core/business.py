@@ -7,7 +7,7 @@ from domain_packs.mold.ports.db import now,aware
 from domain_packs.mold.models import (Project, Material, PurchaseRequest, PurchaseLine, User, WorkflowDefinition,
                      ApprovalInstance, ApprovalSeat, ApprovalCandidate, ApprovalAction, AgentApprovalDelegation,
                      ApprovalProxyDelegation, HumanIntent,
-                     MaterialBinding, AuditEvent)
+                     MaterialBinding, AuditEvent, FileObject)
 from domain_packs.mold.models import BusinessSubject
 from domain_packs.mold.authorization import require, predicate, select_fields, access
 from domain_packs.mold.ports.errors import DomainError
@@ -119,8 +119,15 @@ def enter_stage(db, instance, definition, req):
     if node.get("assignment_pools"):
         for pool in node["assignment_pools"]:
             try:
+                # Older migrated definitions store the assignment directly as
+                # ``users`` while newer definitions wrap it in ``assignment``.
+                # Keep both shapes executable so migration data can be tested
+                # and gradually normalized without blocking the BPM instance.
+                pool_assignment = pool.get("assignment")
+                if pool_assignment is None:
+                    pool_assignment = {"users": pool.get("users", [])}
                 pool_candidates, pool_sources = resolve_users(
-                    db, {"assignment": pool["assignment"]}, context
+                    db, pool_assignment, context
                 )
             except DomainError:
                 pool_candidates, pool_sources = [], []
@@ -377,6 +384,33 @@ def approval_detail(db, user, instance):
     if isinstance(req,BusinessSubject):
         metadata={k:snapshot[k] for k in ('submitter','submitted_at') if k in snapshot}
         snapshot={**select_fields(snapshot,fields),**metadata,'lines':[]}
+        # Older ERP upload submissions were created before the browser import
+        # form forwarded the parsed file id into the BPM envelope.  Recover
+        # that source attachment from the audited parse event for display and
+        # download without mutating the immutable approval snapshot.
+        if req.kind == 'design_route':
+            detail_snapshot = snapshot.get('detail') if isinstance(snapshot.get('detail'), dict) else {}
+            source_snapshot = detail_snapshot.get('source_snapshot') if isinstance(detail_snapshot.get('source_snapshot'), dict) else {}
+            if source_snapshot.get('integration_type') == 'erp_design_upload' and not detail_snapshot.get('attachments'):
+                session_id = str(source_snapshot.get('session_id') or '')
+                parsed_event = db.scalar(select(AuditEvent).where(
+                    AuditEvent.action == 'erp_design_upload.parsed',
+                    AuditEvent.resource_id == session_id,
+                ).order_by(AuditEvent.created_at.desc())) if session_id else None
+                file_id = (parsed_event.detail or {}).get('file_id') if parsed_event else None
+                blob = db.get(FileObject, str(file_id)) if file_id else None
+                if blob:
+                    detail_snapshot = {
+                        **detail_snapshot,
+                        'attachments': [{
+                            'id': blob.id, 'file_id': blob.id, 'filename': blob.filename,
+                            'title': blob.filename, 'media_type': blob.media_type,
+                            'size': blob.size, 'sha256': blob.sha256, 'version': 1,
+                            'source_kind': 'ERP_UPLOAD_PARSE', 'uploaded_by': blob.owner_id,
+                            'uploaded_at': blob.created_at.isoformat(), 'is_current': True,
+                        }],
+                    }
+                    snapshot = {**snapshot, 'detail': detail_snapshot}
     elif '*' not in fields:
         for key in ('project_id','number','remark'):
             if key not in fields:snapshot.pop(key,None)

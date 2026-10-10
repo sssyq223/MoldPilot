@@ -4,6 +4,7 @@ export const initialProduct={
  display_name:'模具项目智能工作台',
  tagline:'从一个任务开始，让业务能力协同工作。',
  attachment_run:{enabled:true,media_types:['application/pdf','image/png','image/jpeg','application/vnd.openxmlformats-officedocument.wordprocessingml.document']},
+ attachment_intent_run:{enabled:true,media_types:['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-excel','text/csv']},
  attachment_processing:{enabled:true,batch_upload:true,media_types:['application/pdf','image/png','image/jpeg','application/vnd.openxmlformats-officedocument.wordprocessingml.document']},
  workspace_tabs:[
   {key:'documents',name:'文件识别',hint:'查看附件解析进度、OCR结果与二次确认'},

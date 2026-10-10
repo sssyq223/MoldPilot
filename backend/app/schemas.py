@@ -90,7 +90,7 @@ class DecisionInput(StrictModel):
     version: int
     snapshot_hash: str
     decision: Literal["APPROVE", "REJECT", "RETURN"]
-    comment: str = Field(min_length=1, max_length=2000)
+    comment: str = Field(default="", max_length=2000)
     return_target_node_key: str | None = Field(default=None, min_length=1, max_length=80)
     form_values: dict = Field(default_factory=dict)
 
@@ -183,7 +183,11 @@ class RunInput(StrictModel):
 
     @model_validator(mode="after")
     def valid_trigger_payload(self):
-        if self.trigger == "USER" and not self.prompt.strip():
+        # A file-only USER run is a normal conversation turn whose intent is
+        # clarified by the model.  Keep rejecting an actually empty task with
+        # no attachment, while allowing the attachment itself to be the user
+        # message content.
+        if self.trigger == "USER" and not self.prompt.strip() and not self.file_ids:
             raise ValueError("用户任务不能为空")
         if self.trigger == "ATTACHMENT_UPLOAD" and not self.file_ids:
             raise ValueError("附件触发任务必须绑定本次上传文件")

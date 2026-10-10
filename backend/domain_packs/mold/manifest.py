@@ -14,6 +14,12 @@ PUBLIC_METADATA = {
         "application/pdf", "image/png", "image/jpeg",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ]},
+    # Spreadsheet/design-list uploads are normal Agent turns.  They must reach
+    # the model for intent clarification instead of entering contract OCR.
+    "attachment_intent_run": {"enabled": True, "media_types": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel", "text/csv",
+    ]},
     "attachment_processing": {"enabled": True, "batch_upload": True, "media_types": ["application/pdf", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]},
     "workspace_tabs": [
         {"key": "documents", "name": "文件识别", "hint": "查看附件解析进度、OCR结果与二次确认"},
