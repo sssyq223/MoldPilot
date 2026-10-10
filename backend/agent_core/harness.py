@@ -124,6 +124,8 @@ def _structured_result_text(content):
 
 
 FINALIZE_REMINDER = """工具调用阶段现在结束。请只依据已有工具证据回答本次请求，不得扩大查询范围或再次调用工具。不要输出分析、推理过程或自然语言前缀；在单个响应中直接输出约定的 JSON 对象。summary 保持在 400 个汉字以内，suggestions 最多 6 条；evidence_ids 只能填写已经取得的证据编号。"""
+UPLOAD_PARSE_FINALIZE_REMINDER = """本轮只完成了附件解析。请用极简答复：summary 最多两句话，只说明解析是否完成和下一步可选动作；不要把逐行明细、字段规则、无图警告或重复单号全部展开，除非用户明确要求查看。suggestions 最多给出两个自然的下一步选项，例如“继续按新模流程提交审批”或“仅查看解析结果”。仍须输出约定的 JSON 对象。"""
+DESIGN_ATTACHMENT_INTENT_PROMPT = """当前对话里有一个设计清单附件，但用户尚未明确要做什么。请先做意图澄清，不要调用业务工具，也不要自行解析或导入。只用一句简短问题询问用户是要“解析附件”、按某种明确的模具业务流程上传，还是做其他处理；根据用户下一轮的自然语言判断意图。不要把这段话写成固定菜单或强制流程。"""
 PROPOSAL_FINALIZE_REMINDER = """工具返回了待本人确认的 Proposal。工具调用阶段现在结束，不得再次调用任何工具或重复生成 Proposal。请直接输出约定的 JSON 对象，response_kind 必须为 AWAITING_APPROVAL，summary 说明已生成待确认建议，evidence_ids 只能填写本轮已取得的证据编号，suggestions 可为空。"""
 PROTOCOL_REPAIR_REMINDER = """上一轮模型输出不符合智能体协议，不能作为业务答复保存。不要输出自然语言段落，不要重复调用相同参数且已经返回过证据的工具。请直接输出一个 JSON 对象：response_kind、summary、evidence_ids、suggestions。若本次不是业务问题或未取得业务证据，可输出 response_kind=CONVERSATION 或 CLARIFICATION 且 evidence_ids=[]。"""
 EVIDENCE_REPAIR_REMINDER = """上一轮填写了不属于本轮工具结果的 evidence_ids。附件 ID、会话 ID、业务对象 ID 和历史轮次证据都不是本轮证据编号。请删除无效编号；若用户询问业务事实且尚无本轮证据，请先调用当前可用的只读工具取得事实，再用工具返回的 evidence_id 作答。"""
@@ -741,6 +743,34 @@ def _is_design_attachment_upload_request(context):
         and _has_design_list_attachment(context)
         and _has_design_upload_skill(context)
     )
+
+
+def _design_attachment_intent_undetermined(context):
+    """Keep a bare workbook turn conversational until the model has intent."""
+    if not (_has_design_list_attachment(context) and _has_design_upload_skill(context)):
+        return False
+    prompt = str(context.get("prompt") or "").strip()
+    if _is_design_attachment_upload_request(context):
+        return False
+    if _contains_any(prompt, (*DESIGN_UPLOAD_NEW_TERMS, *DESIGN_UPLOAD_MODIFY_TERMS)):
+        return False
+    return not _has_formal_action_intent(prompt)
+
+
+def _design_upload_direct_submission_intent(context):
+    """Allow an explicit upload/approval request to continue after parsing."""
+    if not _has_design_list_attachment(context):
+        return False
+    prompt = str(context.get("prompt") or "")
+    route = _design_upload_route(context)
+    if route not in {"new", "modify"}:
+        return False
+    if _contains_any(prompt, ("不要上传", "只解析", "仅解析", "先解析", "不导入", "不提交")):
+        return False
+    return _contains_any(prompt, (
+        "上传", "导入", "提交", "发起", "触发", "审批", "请购", "采购申请",
+        "submit", "import", "approve",
+    ))
 
 
 def _business_tool_auto_activation_allowed(context):
@@ -1655,6 +1685,14 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         _is_design_attachment_upload_request(context)
         and not design_upload_import_continuation
     )
+    design_attachment_intent_undetermined = (
+        _design_attachment_intent_undetermined(context)
+        and not design_upload_import_continuation
+    )
+    design_upload_direct_submission = (
+        _design_upload_direct_submission_intent(context)
+        and not design_upload_import_continuation
+    )
     preferred_group_keys = DESIGN_UPLOAD_SKILL_KEYS if design_attachment_upload_requested else ()
     tool_groups = _skill_tool_groups(context.get("skills", []), all_tools)
     trusted_skill_groups = _trusted_attachment_skill_groups(context, tool_groups)
@@ -1664,7 +1702,7 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
     activated_skill_keys.update(trusted_skill_keys)
     trusted_skill_activation = bool(trusted_skill_groups) and (not proposal_resolution or post_proposal_continuation)
     mold_repair_upload_confirmation = _is_mold_repair_upload_confirmation(context)
-    business_tools_allowed = bool(all_tools) and (
+    business_tools_allowed = bool(all_tools) and not design_attachment_intent_undetermined and (
         not proposal_resolution or post_proposal_continuation or design_upload_import_continuation
         or mold_repair_upload_confirmation
     ) and (
@@ -1674,7 +1712,8 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         or trusted_skill_activation
     )
     auto_activation_allowed = bool(
-        _business_tool_auto_activation_allowed(context) or trusted_skill_activation
+        not design_attachment_intent_undetermined
+        and (_business_tool_auto_activation_allowed(context) or trusted_skill_activation)
     )
     formal_action_requested = bool(
         (
@@ -1823,6 +1862,15 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
                                             "erp_design_parse_modify_mold_upload"}
                                 and name in all_tools]
                 active_tool_names.update(parser_names)
+                if design_upload_direct_submission and design_upload_route in {"new", "modify"}:
+                    active_tool_names.update({
+                        "erp_design_get_upload_result",
+                        "erp_design_validate_rows",
+                        "erp_design_get_approval_config",
+                        "erp_design_get_modify_mold_approval_config",
+                        "erp_design_import_new_mold" if design_upload_route == "new"
+                        else "erp_design_import_modify_mold",
+                    } & set(all_tools))
                 active_skill_keys.add(group["key"])
             if active_tool_names:
                 suppress_tool_search = True
@@ -2007,7 +2055,9 @@ def run_loop(context, model, gateway, max_turns=12, max_tools=30, max_seconds=No
         _compact_skills(context["skills"], active_skill_keys), ensure_ascii=False,
     )
     design_upload_selection_prompt = ""
-    if design_upload_import_continuation:
+    if design_attachment_intent_undetermined:
+        design_upload_selection_prompt = DESIGN_ATTACHMENT_INTENT_PROMPT
+    elif design_upload_import_continuation:
         design_upload_selection_prompt = (
             "本轮是对上一轮 ERP 设计清单解析结果的明确导入请求，不是重新解析附件。"
             "只能调用本轮工具列表中真实存在的 erp_design_* 工具，严禁虚构 prepare_project_erp_import、"
